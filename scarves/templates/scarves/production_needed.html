@@ -1,0 +1,210 @@
+{% load static %}
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Production Needed</title>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            margin: 1.5rem;
+        }
+        h1 {
+            margin-bottom: 1rem;
+        }
+        form.filter-bar {
+            margin-bottom: 1rem;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            max-width: 100%;
+        }
+        th, td {
+            padding: 0.5rem 0.75rem;
+            border-bottom: 1px solid #ddd;
+            text-align: left;
+        }
+        th {
+            background-color: #f3f3f3;
+        }
+        tr:nth-child(even) {
+            background-color: #fafafa;
+        }
+        .shortage {
+            font-weight: 600;
+        }
+        .fancy {
+            color: #b300b3;
+            font-weight: 600;
+        }
+        .category-pill {
+            display: inline-block;
+            padding: 0.1rem 0.5rem;
+            border-radius: 999px;
+            background: #eee;
+            font-size: 0.8rem;
+        }
+                .recipe-dyes {
+            font-size: 0.85rem;
+            line-height: 1.3;
+        }
+        .recipe-dye {
+            display: inline-flex;
+            align-items: center;
+            margin-right: 0.75rem;
+            margin-bottom: 0.25rem;
+        }
+        .dye-swatch {
+            width: 14px;
+            height: 14px;
+            border-radius: 3px;
+            border: 1px solid #ccc;
+            margin-right: 0.3rem;
+        }
+        .recipe-dye-name {
+            white-space: nowrap;
+        }
+        .actions {
+            white-space: nowrap;
+        }
+        .btn {
+            display: inline-block;
+            padding: 0.3rem 0.6rem;
+            border-radius: 4px;
+            border: 1px solid #888;
+            background: #f5f5f5;
+            cursor: pointer;
+            font-size: 0.85rem;
+        }
+        .btn:hover {
+            background: #e5e5e5;
+        }
+
+                .messages {
+            margin-bottom: 1rem;
+        }
+        .message {
+            padding: 0.5rem 0.75rem;
+            border-radius: 4px;
+            margin-bottom: 0.25rem;
+            font-size: 0.9rem;
+        }
+        .message.success {
+            background-color: #e6ffed;
+            border: 1px solid #8fd19e;
+            color: #245b31;
+        }
+        .message.error {
+            background-color: #ffe6e6;
+            border: 1px solid #e09c9c;
+            color: #7d2424;
+        }
+        .message.info {
+            background-color: #e6f3ff;
+            border: 1px solid #9cbce0;
+            color: #23466b;
+        }
+
+
+    </style>
+</head>
+<body>
+{% if messages %}
+    <div class="messages">
+        {% for message in messages %}
+            <div class="message {{ message.tags }}">
+                {{ message }}
+            </div>
+        {% endfor %}
+    </div>
+{% endif %}
+    <h1>Products to Produce</h1>
+
+    <form method="get" class="filter-bar">
+        <label for="id_category">Filter by category:</label>
+        <select name="category" id="id_category" onchange="this.form.submit()">
+            <option value="">All categories</option>
+            {% for cat in categories %}
+                <option value="{{ cat.id }}" {% if selected_category_id == cat.id %}selected{% endif %}>
+                    {{ cat.name }}
+                </option>
+            {% endfor %}
+        </select>
+        <noscript>
+            <button type="submit">Apply</button>
+        </noscript>
+    </form>
+
+    {% if products %}
+        <table>
+            <thead>
+                <tr>
+                    <th>Finished Product</th>
+                    <th>Category</th>
+                    <th>Recipe</th>
+                    <th>Recipe Details</th>
+                    <th>On Hand</th>
+                    <th>Par</th>
+                    <th>Shortage</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for fp in products %}
+                   <tr>
+                        <td>{{ fp.name }}</td>
+
+                        <td>
+                            <span class="category-pill">
+                                {{ fp.raw_product.category.name }}
+                            </span>
+                        </td>
+
+                        <td>{{ fp.recipe.name }}</td>
+
+                        <td class="recipe-dyes">
+                            {% for rd in fp.recipe.recipe_dyes.all %}
+                                <span class="recipe-dye">
+                                    <span class="dye-swatch"
+                                          style="background-color: {{ rd.dye.hex_color }};"></span>
+                                    <span class="recipe-dye-name">
+                                        {{ rd.dye.name }}
+                                        {% if rd.ratio %}
+                                            ({{ rd.ratio }})
+                                        {% endif %}
+                                    </span>
+                                </span>
+                            {% empty %}
+                                <em>No dyes linked</em>
+                            {% endfor %}
+                        </td>
+
+                        <td>{{ fp.number_on_hand }}</td>
+
+                        <td>{{ fp.par }}</td>
+
+                        <td class="shortage">
+                            {{ fp.shortage }}
+                        </td>
+
+                       <td class="actions">
+                            <form method="post"
+                                  action="{% url 'record_dye_bath' fp.pk %}">
+                                {% csrf_token %}
+                                <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                                <button type="submit" class="btn">
+                                    Finished dye bath
+                                </button>
+                            </form>
+                        </td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <p>No products are currently below par. 🎉</p>
+    {% endif %}
+</body>
+</html>

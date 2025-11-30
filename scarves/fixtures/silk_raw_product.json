@@ -1,0 +1,144 @@
+[
+  {
+    "model": "scarves.rawproductcategory",
+    "pk": 11,
+    "fields": {
+      "name": "Silk"
+    }
+  },
+
+  {
+    "model": "scarves.rawproduct",
+    "fields": {
+      "name": "FShawl",
+      "category": 11,
+      "price": "31.45",
+      "suggested_price": "65.00",
+      "number_per_dye_bath": 4,
+      "order_url": "",
+      "number_on_hand": 0,
+      "sku": "",
+      "notes": ""
+    }
+  },
+
+  {
+    "model": "scarves.rawproduct",
+    "fields": {
+      "name": "Fancy Veil",
+      "category": 11,
+      "price": "41.99",
+      "suggested_price": "100.00",
+      "number_per_dye_bath": 4,
+      "order_url": "",
+      "number_on_hand": 0,
+      "sku": "",
+      "notes": ""
+    }
+  },
+
+  {
+    "model": "scarves.rawproduct",
+    "fields": {
+      "name": "Half Circle Veil",
+      "category": 11,
+      "price": "24.99",
+      "suggested_price": "80.00",
+      "number_per_dye_bath": 4,
+      "order_url": "",
+      "number_on_hand": 0,
+      "sku": "",
+      "notes": ""
+    }
+  },
+
+  {
+    "model": "scarves.rawproduct",
+    "fields": {
+      "name": "Infinity",
+      "category": 11,
+      "price": "15.37",
+      "suggested_price": "35.00",
+      "number_per_dye_bath": 4,
+      "order_url": "",
+      "number_on_hand": 0,
+      "sku": "",
+      "notes": ""
+    }
+  },
+
+  {
+    "model": "scarves.rawproduct",
+    "fields": {
+      "name": "Large Hand-woven Rayon",
+      "category": 11,
+      "price": "9.58",
+      "suggested_price": "45.00",
+      "number_per_dye_bath": 4,
+      "order_url": "",
+      "number_on_hand": 0,
+      "sku": "",
+      "notes": ""
+    }
+  },
+
+  {
+    "model": "scarves.rawproduct",
+    "fields": {
+      "name": "Rectangle Veil",
+      "category": 11,
+      "price": "26.99",
+      "suggested_price": "80.00",
+      "number_per_dye_bath": 4,
+      "order_url": "",
+      "number_on_hand": 0,
+      "sku": "",
+      "notes": ""
+    }
+  },
+
+  {
+    "model": "scarves.rawproduct",
+    "fields": {
+      "name": "Sash Belt",
+      "category": 11,
+      "price": "7.18",
+      "suggested_price": "20.00",
+      "number_per_dye_bath": 4,
+      "order_url": "",
+      "number_on_hand": 0,
+      "sku": "",
+      "notes": ""
+    }
+  },
+
+  {
+    "model": "scarves.rawproduct",
+    "fields": {
+      "name": "Shawl",
+      "category": 11,
+      "price": "16.45",
+      "suggested_price": "50.00",
+      "number_per_dye_bath": 4,
+      "order_url": "",
+      "number_on_hand": 0,
+      "sku": "",
+      "notes": ""
+    }
+  },
+
+  {
+    "model": "scarves.rawproduct",
+    "fields": {
+      "name": "Triangle Fringe",
+      "category": 11,
+      "price": "24.75",
+      "suggested_price": "50.00",
+      "number_per_dye_bath": 4,
+      "order_url": "",
+      "number_on_hand": 0,
+      "sku": "",
+      "notes": ""
+    }
+  }
+]

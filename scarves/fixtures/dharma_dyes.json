@@ -1,0 +1,87 @@
+[
+  {"model": "scarves.dyebrand", "pk": 1, "fields": {
+    "name": "Dharma Acid Dyes",
+    "website": "https://www.dharmatrading.com/dyes/dharma-acid-dyes.html",
+    "notes": ""
+  }},
+  {"model": "scarves.dye", "pk": 1, "fields": {
+    "name": "401 Brilliant Yellow (Primary)", "hex_color": "#ffec05",
+    "brand": 1, "in_stock": true, "sku": "", "notes": ""
+  }},
+  {"model": "scarves.dye", "pk": 2, "fields": {
+    "name": "402 Fire Engine Red (Primary)", "hex_color": "#c41d33",
+    "brand": 1, "in_stock": true, "sku": "", "notes": ""
+  }},
+  {"model": "scarves.dye", "pk": 3, "fields": {
+    "name": "403 Flamingo Pink", "hex_color": "#e16578",
+    "brand": 1, "in_stock": true, "sku": "", "notes": ""
+  }},
+  {"model": "scarves.dye", "pk": 4, "fields": {
+    "name": "404 Sapphire Blue", "hex_color": "#222b79",
+    "brand": 1, "in_stock": true, "sku": "", "notes": ""
+  }},
+  {"model": "scarves.dye", "pk": 5, "fields": {
+    "name": "405 Deep Purple", "hex_color": "#3a1c60",
+    "brand": 1, "in_stock": true, "sku": "", "notes": ""
+  }},
+  {"model": "scarves.dye", "pk": 6, "fields": {
+    "name": "406 Fluorescent Fuchsia (Primary)", "hex_color": "#ed288d",
+    "brand": 1, "in_stock": true, "sku": "", "notes": ""
+  }},
+  {"model": "scarves.dye", "pk": 7, "fields": {
+    "name": "407 Caribbean Blue (Primary)", "hex_color": "#008ca7",
+    "brand": 1, "in_stock": true, "sku": "", "notes": ""
+  }},
+  {"model": "scarves.dye", "pk": 8, "fields": {
+    "name": "408 Teal Green", "hex_color": "#08534f",
+    "brand": 1, "in_stock": true, "sku": "", "notes": ""
+  }},
+  {"model": "scarves.dye", "pk": 9, "fields": {
+    "name": "409 Dark Navy*", "hex_color": "#0a004f",
+    "brand": 1, "in_stock": true, "sku": "", "notes": ""
+  }},
+  {"model": "scarves.dye", "pk": 10, "fields": {
+    "name": "410 Kelly Green", "hex_color": "#009a4c",
+    "brand": 1, "in_stock": true, "sku": "", "notes": ""
+  }},
+  {"model": "scarves.dye", "pk": 11, "fields": {
+    "name": "411 Deep Magenta (Primary)", "hex_color": "#b9146b",
+    "brand": 1, "in_stock": true, "sku": "", "notes": ""
+  }},
+  {"model": "scarves.dye", "pk": 12, "fields": {
+    "name": "412 Pink Orchid", "hex_color": "#c73e8f",
+    "brand": 1, "in_stock": true, "sku": "", "notes": ""
+  }},
+  {"model": "scarves.dye", "pk": 13, "fields": {
+    "name": "413 True Black (Primary)*", "hex_color": "#000001",
+    "brand": 1, "in_stock": true, "sku": "", "notes": ""
+  }},
+  {"model": "scarves.dye", "pk": 14, "fields": {
+    "name": "415 Midnight Blue", "hex_color": "#1f2272",
+    "brand": 1, "in_stock": true, "sku": "", "notes": ""
+  }},
+  {"model": "scarves.dye", "pk": 15, "fields": {
+    "name": "416 Peacock Blue (Primary)", "hex_color": "#064e7e",
+    "brand": 1, "in_stock": true, "sku": "", "notes": ""
+  }},
+  {"model": "scarves.dye", "pk": 16, "fields": {
+    "name": "417 Tobacco Leaf Brown", "hex_color": "#8b5c2b",
+    "brand": 1, "in_stock": true, "sku": "", "notes": ""
+  }},
+  {"model": "scarves.dye", "pk": 17, "fields": {
+    "name": "419 Cayenne Red", "hex_color": "#cb3e34",
+    "brand": 1, "in_stock": true, "sku": "", "notes": ""
+  }},
+  {"model": "scarves.dye", "pk": 18, "fields": {
+    "name": "420 Golden Straw", "hex_color": "#c4a85c",
+    "brand": 1, "in_stock": true, "sku": "", "notes": ""
+  }},
+  {"model": "scarves.dye", "pk": 19, "fields": {
+    "name": "421 Plum Dandy", "hex_color": "#663366",
+    "brand": 1, "in_stock": true, "sku": "", "notes": ""
+  }},
+  {"model": "scarves.dye", "pk": 20, "fields": {
+    "name": "422 Bright Aqua", "hex_color": "#5ccfbf",
+    "brand": 1, "in_stock": true, "sku": "", "notes": ""
+  }}
+]

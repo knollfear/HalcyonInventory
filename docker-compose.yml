@@ -1,0 +1,48 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: django_app
+    command: >
+      sh -c "python manage.py migrate &&
+             python manage.py createsuperuser --noinput || true &&
+             gunicorn mysite.wsgi"
+
+    volumes:
+      - .:/home/app
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGDATABASE: mydb
+      PGUSER: myuser
+      PGPASSWORD: mypassword
+      PGHOST: db
+      PGPORT: 5432
+      DJANGO_SUPERUSER_USERNAME: admin
+      DJANGO_SUPERUSER_PASSWORD: admin123
+      DJANGO_SUPERUSER_EMAIL: admin@example.com
+
+  db:
+    image: postgres:15
+    container_name: postgres_db
+    restart: always
+    environment:
+      POSTGRES_DB: mydb
+      POSTGRES_USER: myuser
+      POSTGRES_PASSWORD: mypassword
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U myuser -d mydb"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:

@@ -1,0 +1,99 @@
+[
+  {
+    "model": "scarves.rawproductcategory",
+    "pk": 10,
+    "fields": {
+      "name": "Yarn"
+    }
+  },
+
+  {
+    "model": "scarves.rawproduct",
+    "fields": {
+      "name": "Heavenly - Angel DK (Set of 10 Skeins)",
+      "category": 10,
+      "price": "12.89",
+      "suggested_price": "38.66",
+      "number_per_dye_bath": 4,
+      "order_url": "",
+      "number_on_hand": 0,
+      "sku": "",
+      "notes": "Package cost: $128.85 for 10 skeins"
+    }
+  },
+
+  {
+    "model": "scarves.rawproduct",
+    "fields": {
+      "name": "Noble - Diamond Extra DK 7030 (Set of 10 Skeins)",
+      "category": 10,
+      "price": "9.14",
+      "suggested_price": "27.42",
+      "number_per_dye_bath": 4,
+      "order_url": "",
+      "number_on_hand": 0,
+      "sku": "",
+      "notes": "Package cost: $91.40 for 10 skeins"
+    }
+  },
+
+  {
+    "model": "scarves.rawproduct",
+    "fields": {
+      "name": "Homespun - Single & Stunning (Set of 10 Skeins)",
+      "category": 10,
+      "price": "6.71",
+      "suggested_price": "20.12",
+      "number_per_dye_bath": 4,
+      "order_url": "",
+      "number_on_hand": 0,
+      "sku": "",
+      "notes": "Package cost: $67.05 for 10 skeins"
+    }
+  },
+
+  {
+    "model": "scarves.rawproduct",
+    "fields": {
+      "name": "Artisan - Ethereal Fingering (437 yds / 100g, 4-Ply)",
+      "category": 10,
+      "price": "8.71",
+      "suggested_price": "26.13",
+      "number_per_dye_bath": 4,
+      "order_url": "",
+      "number_on_hand": 0,
+      "sku": "",
+      "notes": "Package cost: $87.10 for 10 skeins"
+    }
+  },
+
+  {
+    "model": "scarves.rawproduct",
+    "fields": {
+      "name": "Hearth - (Yarn Base)",
+      "category": 10,
+      "price": "2.64",
+      "suggested_price": "7.91",
+      "number_per_dye_bath": 4,
+      "order_url": "",
+      "number_on_hand": 0,
+      "sku": "",
+      "notes": "Package cost: $65.90 for 25 units"
+    }
+  },
+
+  {
+    "model": "scarves.rawproduct",
+    "fields": {
+      "name": "Halo",
+      "category": 10,
+      "price": "2.80",
+      "suggested_price": "8.39",
+      "number_per_dye_bath": 4,
+      "order_url": "https://www.wool2dye4.com/suri-silk-cloud-mini.html",
+      "number_on_hand": 0,
+      "sku": "",
+      "notes": "Package cost: $69.90 for 25 units"
+    }
+  }
+]

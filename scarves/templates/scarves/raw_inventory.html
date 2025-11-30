@@ -1,0 +1,198 @@
+{% load static %}
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Raw Inventory – {{ category.name }}</title>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            margin: 1.5rem;
+        }
+        h1 {
+            margin-bottom: 0.25rem;
+        }
+        .subtitle {
+            margin-bottom: 1rem;
+            color: #555;
+        }
+        .category-nav {
+            margin-bottom: 1rem;
+            font-size: 0.9rem;
+        }
+        .category-link {
+            margin-right: 0.75rem;
+        }
+        .category-link.current {
+            font-weight: 600;
+            text-decoration: underline;
+        }
+
+        .messages {
+            margin-bottom: 1rem;
+        }
+        .message {
+            padding: 0.5rem 0.75rem;
+            border-radius: 4px;
+            margin-bottom: 0.25rem;
+            font-size: 0.9rem;
+        }
+        .message.success {
+            background-color: #e6ffed;
+            border: 1px solid #8fd19e;
+            color: #245b31;
+        }
+        .message.error {
+            background-color: #ffe6e6;
+            border: 1px solid #e09c9c;
+            color: #7d2424;
+        }
+        .message.info {
+            background-color: #e6f3ff;
+            border: 1px solid #9cbce0;
+            color: #23466b;
+        }
+
+        table {
+            border-collapse: collapse;
+            width: 100%;
+        }
+        th, td {
+            padding: 0.5rem 0.75rem;
+            border-bottom: 1px solid #ddd;
+            text-align: left;
+        }
+        th {
+            background-color: #f3f3f3;
+        }
+        tr:nth-child(even) {
+            background-color: #fafafa;
+        }
+        .short {
+            color: #b30000;
+            font-weight: 600;
+        }
+        .ok {
+            color: #2e7d32;
+        }
+        .actions {
+            white-space: nowrap;
+        }
+        .btn {
+            display: inline-block;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            border: 1px solid #888;
+            background: #f5f5f5;
+            cursor: pointer;
+            font-size: 0.8rem;
+            margin-right: 0.25rem;
+            margin-bottom: 0.15rem;
+        }
+        .btn:hover {
+            background: #e5e5e5;
+        }
+        .order-link a {
+            font-size: 0.85rem;
+        }
+    </style>
+</head>
+<body>
+    <h1>Raw Inventory – {{ category.name }}</h1>
+    <div class="subtitle">
+        Review par levels and adjust stock. This page is only for the {{ category.name }} supplier.
+    </div>
+
+    {% if messages %}
+        <div class="messages">
+            {% for message in messages %}
+                <div class="message {{ message.tags }}">
+                    {{ message }}
+                </div>
+            {% endfor %}
+        </div>
+    {% endif %}
+
+    <div class="category-nav">
+        {% for cat in all_categories %}
+            <a href="{% url 'raw_inventory' cat.id %}"
+               class="category-link {% if cat.id == category.id %}current{% endif %}">
+                {{ cat.name }}
+            </a>
+        {% endfor %}
+    </div>
+
+    {% if products %}
+        <table>
+            <thead>
+                <tr>
+                    <th>Raw Product</th>
+                    <th>On Hand</th>
+                    <th>Par</th>
+                    <th>Shortage</th>
+                    <th>Cost</th>
+                    <th>Order URL</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for p in products %}
+                    {% with shortage=p.raw_shortage %}
+                    <tr>
+                        <td>{{ p.name }}</td>
+                        <td>{{ p.number_on_hand }}</td>
+                        <td>{{ p.par_level }}</td>
+                        <td>
+                            {% if shortage > 0 %}
+                                <span class="short">{{ shortage }}</span>
+                            {% else %}
+                                <span class="ok">OK</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if p.price %}
+                                ${{ p.price }}
+                            {% endif %}
+                        </td>
+                        <td class="order-link">
+                            {% if p.order_url %}
+                                <a href="{{ p.order_url }}" target="_blank">Supplier page</a>
+                            {% endif %}
+                        </td>
+                        <td class="actions">
+                            <form method="post"
+                                  action="{% url 'adjust_raw_stock' p.pk %}"
+                                  style="display:inline;">
+                                {% csrf_token %}
+                                <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                                <input type="hidden" name="delta" value="-1">
+                                <button type="submit" class="btn">-1</button>
+                            </form>
+                            <form method="post"
+                                  action="{% url 'adjust_raw_stock' p.pk %}"
+                                  style="display:inline;">
+                                {% csrf_token %}
+                                <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                                <input type="hidden" name="delta" value="1">
+                                <button type="submit" class="btn">+1</button>
+                            </form>
+                            <form method="post"
+                                  action="{% url 'adjust_raw_stock' p.pk %}"
+                                  style="display:inline;">
+                                {% csrf_token %}
+                                <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                                <input type="hidden" name="delta" value="10">
+                                <button type="submit" class="btn">+10</button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endwith %}
+                {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <p>No raw products found for this category.</p>
+    {% endif %}
+</body>
+</html>

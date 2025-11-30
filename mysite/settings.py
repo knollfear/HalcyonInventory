@@ -30,17 +30,20 @@ ALLOWED_HOSTS = ["*"]
 
 # FORM SUBMISSION
 # Comment out the following line and place your railway URL, and your production URL in the array.
-# CSRF_TRUSTED_ORIGINS = ["*"]
+CSRF_TRUSTED_ORIGINS = ["https://server-production-ead0.up.railway.app"]
 
 # Application definition
 
 INSTALLED_APPS = [
+    "scarves.apps.ScarvesConfig",
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'colorfield',
+
 ]
 
 MIDDLEWARE = [
@@ -132,3 +135,6 @@ STATIC_ROOT = os.path.join(BASE_DIR, "staticfiles")
 # https://docs.djangoproject.com/en/4.0/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# settings.py
+LOGIN_REDIRECT_URL = '/admin/'
