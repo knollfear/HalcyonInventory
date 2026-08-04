@@ -943,7 +943,7 @@ def reference_sheet_pdf(request, category_id):
     from reportlab.lib.pagesizes import letter, portrait
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import inch
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, PageBreak, Table, TableStyle
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
 
     category = get_object_or_404(RawProductCategory, pk=category_id)
 
@@ -968,7 +968,9 @@ def reference_sheet_pdf(request, category_id):
     margin = 0.5 * inch
     usable_width = page_w - 2 * margin
     usable_height = page_h - 2 * margin
-    title_h = 0.8 * inch
+    top_gap = 0.15 * inch
+    mid_gap = 0.2 * inch
+    safety = 0.1 * inch  # keeps the flowed block just under the frame height
 
     story = []
     first = True
@@ -989,41 +991,35 @@ def reference_sheet_pdf(request, category_id):
             story.append(PageBreak())
         first = False
 
-        title_block = [
-            Paragraph(recipe.name, title_style),
-            Paragraph(f"{category.name} · {len(items)} item(s)", sub_style),
-        ]
-
-        # Barcodes sit at the bottom; measure their height so the photos can
-        # claim all the space that's left above them.
+        # Measure the fixed parts (title + barcodes) so the photos can take all
+        # the remaining height on THIS page — everything stays on one page so a
+        # recipe's barcodes are always printed with its photos.
+        title_p = Paragraph(recipe.name, title_style)
+        sub_p = Paragraph(f"{category.name} · {len(items)} item(s)", sub_style)
+        _, th = title_p.wrap(usable_width, usable_height)
+        _, sh = sub_p.wrap(usable_width, usable_height)
         bc_grid = _barcode_grid(items, usable_width, name_style, sku_style)
         _, bc_h = bc_grid.wrap(usable_width, usable_height)
 
-        mid_h = usable_height - title_h - bc_h - 0.15 * inch
+        photo_area = (
+            usable_height - th - sh - top_gap - mid_gap - bc_h - safety
+        )
         gallery = None
-        if mid_h > 1.2 * inch:
+        if photo_area > 1.2 * inch:
             gallery = _photo_gallery(
-                _select_recipe_photos(items, cap=4), usable_width, mid_h
+                _select_recipe_photos(items, cap=4), usable_width, photo_area
             )
 
-        # One full-height table per page: title (top), photos (fill), barcodes
-        # (bottom). Row heights sum to ~the page height, pinning barcodes down.
-        page_table = Table(
-            [[title_block], [gallery or ""], [bc_grid]],
-            colWidths=[usable_width],
-            rowHeights=[title_h, max(mid_h, 0), bc_h],
-        )
-        page_table.setStyle(TableStyle([
-            ("VALIGN", (0, 0), (0, 0), "TOP"),
-            ("VALIGN", (0, 1), (0, 1), "MIDDLE"),
-            ("ALIGN", (0, 1), (0, 1), "CENTER"),
-            ("VALIGN", (0, 2), (0, 2), "BOTTOM"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 0),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-            ("TOPPADDING", (0, 0), (-1, -1), 0),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-        ]))
-        story.append(page_table)
+        story.append(title_p)
+        story.append(sub_p)
+        story.append(Spacer(1, top_gap))
+        if gallery is not None:
+            story.append(gallery)
+            story.append(Spacer(1, mid_gap))
+        else:
+            # No photos to show: push the barcodes toward the bottom anyway.
+            story.append(Spacer(1, max(photo_area + mid_gap, 0)))
+        story.append(bc_grid)
 
     if not story:
         story = [Paragraph(f"{category.name} — no active items with recipes.", styles["h1"])]
