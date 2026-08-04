@@ -52,6 +52,11 @@ class RawProductCategory(models.Model):
     Silk, yarn, etc. Expandable without code changes.
     """
     name = models.CharField(max_length=50, unique=True)
+    square_category_id = models.CharField(
+        max_length=100,
+        blank=True,
+        help_text="Square CATEGORY catalog object ID.",
+    )
 
     class Meta:
         verbose_name_plural = "Raw product categories"
@@ -110,6 +115,11 @@ class RawProduct(models.Model):
     par_level = models.PositiveIntegerField(
         default=100,
         help_text="Target undyed quantity to keep on hand. 0 = no par set.",
+    )
+    square_item_id = models.CharField(
+        max_length=100,
+        blank=True,
+        help_text="Square CatalogItem ID for this product.",
     )
 
     class Meta:
@@ -231,6 +241,11 @@ class FinishedProduct(models.Model):
     )
     description = models.TextField(blank=True)
     is_active = models.BooleanField(default=True)
+    square_variation_id = models.CharField(
+        max_length=100,
+        blank=True,
+        help_text="Square CatalogItemVariation ID for this finished product.",
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -255,15 +270,25 @@ class FinishedProduct(models.Model):
 
 class FinishedProductImage(models.Model):
     """
-    Stores any number of image URLs for a finished product.
-    (You can switch this to ImageField later if you want to upload files.)
+    An image for a finished product. `image` holds an uploaded file (stored on
+    the configured default storage — the S3 bucket in production, local disk in
+    dev). `image_url` is kept as an optional fallback for externally-hosted
+    images. Use the `url` property to get whichever is set.
     """
     finished_product = models.ForeignKey(
         FinishedProduct,
         on_delete=models.CASCADE,
         related_name="images",
     )
-    image_url = models.URLField()
+    image = models.ImageField(
+        upload_to="finished_products/",
+        blank=True,
+        help_text="Uploaded image file (stored in the bucket).",
+    )
+    image_url = models.URLField(
+        blank=True,
+        help_text="Optional: URL of an externally-hosted image.",
+    )
     alt_text = models.CharField(
         max_length=200,
         blank=True,
@@ -277,27 +302,55 @@ class FinishedProductImage(models.Model):
     class Meta:
         ordering = ["finished_product", "order"]
 
+    @property
+    def url(self):
+        """Presigned bucket URL for the uploaded file, else the external URL."""
+        if self.image:
+            return self.image.url
+        return self.image_url
+
     def __str__(self):
         return f"Image for {self.finished_product.name} (#{self.order})"
 
 
-class ProductionLog(models.Model):
+class InventoryLog(models.Model):
     """
-    Records a dye bath / production run.
-    One log entry = one time you produced a batch of a finished product.
+    Records any change to finished product inventory: production runs, sales, or manual adjustments.
+    Positive quantity = items added. Negative quantity = items removed.
     """
+    PRODUCTION = "production"
+    SALE = "sale"
+    ADJUSTMENT = "adjustment"
+    LOG_TYPE_CHOICES = [
+        (PRODUCTION, "Production"),
+        (SALE, "Sale"),
+        (ADJUSTMENT, "Adjustment"),
+    ]
+
     finished_product = models.ForeignKey(
         FinishedProduct,
         on_delete=models.PROTECT,
-        related_name="production_logs",
+        related_name="inventory_logs",
     )
     raw_product = models.ForeignKey(
         RawProduct,
         on_delete=models.PROTECT,
-        related_name="production_logs",
+        related_name="inventory_logs",
+        null=True,
+        blank=True,
     )
-    quantity = models.PositiveIntegerField(
-        help_text="Number of finished items added (and raw units consumed).",
+    log_type = models.CharField(
+        max_length=20,
+        choices=LOG_TYPE_CHOICES,
+        default=PRODUCTION,
+    )
+    quantity = models.IntegerField(
+        help_text="Items added (positive) or removed (negative).",
+    )
+    sale_reference = models.CharField(
+        max_length=100,
+        blank=True,
+        help_text="Square order ID for sale entries.",
     )
     created_at = models.DateTimeField(auto_now_add=True)
     notes = models.TextField(blank=True)
@@ -306,5 +359,64 @@ class ProductionLog(models.Model):
         ordering = ["-created_at"]
 
     def __str__(self):
-        return f"{self.quantity} × {self.finished_product.name} on {self.created_at:%Y-%m-%d %H:%M}"
+        return f"{self.log_type} {self.quantity:+d} × {self.finished_product.name} on {self.created_at:%Y-%m-%d %H:%M}"
+
+
+class ProductImageUpload(models.Model):
+    """
+    Tracks a photo uploaded (direct-to-bucket via presigned POST) and its
+    journey to being filed against a FinishedProduct. Matched automatically by
+    decoding the barcode in the image; if that fails the uploader assigns it
+    manually on the upload screen. This row is state/audit only — there is no
+    operator review queue.
+    """
+    STATUS_PENDING = "pending"
+    STATUS_MATCHED = "matched"
+    STATUS_ASSIGNED = "assigned"
+    STATUS_FAILED = "failed"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pending"),
+        (STATUS_MATCHED, "Matched (barcode)"),
+        (STATUS_ASSIGNED, "Assigned (manual)"),
+        (STATUS_FAILED, "Failed"),
+    ]
+
+    key = models.CharField(
+        max_length=255,
+        unique=True,
+        help_text="Object key in the bucket.",
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_PENDING,
+    )
+    detected_sku = models.CharField(
+        max_length=50,
+        blank=True,
+        help_text="SKU decoded from the barcode, if any.",
+    )
+    finished_product = models.ForeignKey(
+        FinishedProduct,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="image_uploads",
+    )
+    product_image = models.ForeignKey(
+        FinishedProductImage,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    error = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.key} ({self.status})"
 

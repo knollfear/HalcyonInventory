@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Yarn Business Calculator</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #faf9f7; --surface: #ffffff; --surface2: #f3f1ed;
+  --border: #e2ddd6; --border2: #ccc8c0;
+  --text: #1a1814; --text2: #6b6660; --text3: #9b9590;
+  --accent: #7c4f2f; --accent-light: #f5ede6; --accent-border: #d4a882;
+  --green: #2d7a4f; --green-bg: #edf7f2; --green-border: #a3d4bc;
+  --amber: #9a6200; --amber-bg: #fef8ec; --amber-border: #f5d078;
+  --red: #b83232; --red-bg: #fdf0f0; --red-border: #f0aaaa;
+  --radius: 8px; --radius-lg: 12px;
+}
+body { background: var(--bg); color: var(--text); font-family: Georgia, serif; font-size: 15px; line-height: 1.6; }
+.app { display: grid; grid-template-columns: 260px 1fr; min-height: 100vh; }
+.sidebar { background: var(--surface); border-right: 1px solid var(--border); position: sticky; top: 0; height: 100vh; overflow-y: auto; display: flex; flex-direction: column; }
+.sidebar-header { padding: 1.25rem 1rem 0.75rem; border-bottom: 1px solid var(--border); }
+.sidebar-header h1 { font-size: 15px; font-weight: 700; color: var(--accent); line-height: 1.3; }
+.sidebar-header p { font-size: 11px; color: var(--text3); margin-top: 3px; font-style: italic; }
+.nav-section { padding: 0.75rem 0.75rem 0.25rem; }
+.nav-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text3); margin-bottom: 4px; }
+.nav-item { display: block; width: 100%; text-align: left; background: none; border: none; padding: 6px 10px; border-radius: var(--radius); font-size: 13px; color: var(--text2); cursor: pointer; font-family: Georgia, serif; }
+.nav-item:hover { background: var(--surface2); color: var(--text); }
+.nav-item.active { background: var(--accent-light); color: var(--accent); font-weight: 700; }
+.sidebar-summary { margin-top: auto; padding: 1rem; border-top: 1px solid var(--border); }
+.sum-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text3); margin-bottom: 8px; }
+.sum-row { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; margin-bottom: 5px; }
+.sum-row .sl { color: var(--text3); }
+.sum-row .sv { font-weight: 700; font-size: 13px; }
+.good { color: var(--green); } .warn { color: var(--amber); } .bad { color: var(--red); }
+.main { padding: 2rem 2.5rem; max-width: 860px; }
+.panel { display: none; } .panel.active { display: block; }
+.panel-title { font-size: 22px; font-weight: 700; color: var(--text); margin-bottom: 3px; }
+.panel-desc { font-size: 13px; color: var(--text3); margin-bottom: 1.5rem; font-style: italic; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 1.25rem 1.5rem; margin-bottom: 1.25rem; }
+.card-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text3); margin-bottom: 1rem; }
+.fg { display: grid; gap: 1rem; }
+.fg2 { grid-template-columns: 1fr 1fr; }
+.fg3 { grid-template-columns: 1fr 1fr 1fr; }
+.field { display: flex; flex-direction: column; gap: 3px; }
+.field label { font-size: 12px; color: var(--text2); font-weight: 700; }
+.field input { padding: 7px 10px; font-size: 14px; border: 1px solid var(--border2); border-radius: var(--radius); background: var(--bg); color: var(--text); font-family: Georgia, serif; width: 100%; }
+.field input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-light); }
+.hint { font-size: 11px; color: var(--text3); font-style: italic; }
+.cn { margin-top: 0.75rem; padding: 9px 12px; border-radius: var(--radius); font-size: 13px; }
+.cn-accent { background: var(--accent-light); border: 1px solid var(--accent-border); color: var(--accent); }
+.cn-plain { background: var(--surface2); color: var(--text2); }
+.alert { padding: 9px 14px; border-radius: var(--radius); font-size: 13px; margin-bottom: 10px; border: 1px solid; }
+.alert.good { background: var(--green-bg); color: var(--green); border-color: var(--green-border); }
+.alert.warn { background: var(--amber-bg); color: var(--amber); border-color: var(--amber-border); }
+.alert.bad  { background: var(--red-bg);  color: var(--red);  border-color: var(--red-border); }
+.metric-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 10px; margin-bottom: 1.25rem; }
+.metric { background: var(--surface2); border-radius: var(--radius); padding: 12px 14px; }
+.metric.hl { background: var(--accent-light); border: 1px solid var(--accent-border); }
+.metric .ml { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text3); margin-bottom: 3px; }
+.metric .mv { font-size: 21px; font-weight: 700; line-height: 1.2; }
+.metric.hl .mv { color: var(--accent); }
+.metric .ms { font-size: 11px; color: var(--text3); margin-top: 2px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; padding: 5px 8px; color: var(--text3); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 2px solid var(--border); }
+th.r { text-align: right; }
+td { padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+td.r { text-align: right; }
+td.dim { color: var(--text2); }
+td.ind { color: var(--text2); padding-left: 20px; }
+tr.subtotal td { font-style: italic; color: var(--text2); }
+tr.total td { font-weight: 700; border-top: 2px solid var(--border); border-bottom: none; padding-top: 9px; }
+tr.hl-row { background: var(--accent-light); }
+.table-note { font-size: 11px; color: var(--text3); margin-top: 8px; font-style: italic; }
+.scen-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; }
+.scen { border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 14px; }
+.scen.target { border-color: var(--accent-border); background: var(--accent-light); }
+.scen .st { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text3); margin-bottom: 6px; }
+.scen.target .st { color: var(--accent); }
+.scen .sv2 { font-size: 20px; font-weight: 700; margin-bottom: 3px; }
+.scen .sd { font-size: 11px; color: var(--text3); }
+.pbar-wrap { margin-bottom: 12px; }
+.pbar-head { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px; }
+.pbar-head .pl { color: var(--text2); }
+.pbar-head .pv { font-weight: 700; }
+.pbar-track { height: 10px; background: var(--surface2); border-radius: 5px; overflow: hidden; border: 1px solid var(--border); }
+.pbar-fill { height: 100%; border-radius: 5px; }
+.be-chart { margin-top: 12px; }
+.be-bars { display: flex; align-items: flex-end; gap: 2px; height: 150px; border-bottom: 2px solid var(--border); }
+.be-bar { flex: 1; min-width: 0; border-radius: 2px 2px 0 0; cursor: default; }
+.be-bar.pos { background: var(--green); }
+.be-bar.neg { background: var(--red); border-radius: 0 0 2px 2px; align-self: flex-start; }
+.be-axis { display: flex; justify-content: space-between; font-size: 10px; color: var(--text3); margin-top: 4px; }
+.be-zero { text-align: center; font-size: 12px; color: var(--text3); margin-top: 6px; }
+@media (max-width: 680px) {
+  .app { grid-template-columns: 1fr; }
+  .sidebar { position: static; height: auto; }
+  .main { padding: 1rem; }
+  .fg2, .fg3 { grid-template-columns: 1fr; }
+  .metric-grid { grid-template-columns: 1fr 1fr; }
+  .scen-grid { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <h1>Yarn Business Calculator</h1>
+      <p>Renaissance Festival &rarr; Shopify expansion</p>
+    </div>
+    <nav class="nav-section">
+      <div class="nav-label">Panels</div>
+      <button class="nav-item active" onclick="showPanel('inputs')">Inputs</button>
+      <button class="nav-item" onclick="showPanel('results')">Results &amp; P&amp;L</button>
+      <button class="nav-item" onclick="showPanel('capacity')">Capacity &amp; Labor</button>
+    </nav>
+    <div class="nav-section">
+      <div class="nav-label">Share</div>
+      <button class="nav-item" onclick="exportToURL()" id="export-btn">&#128279; Copy shareable link</button>
+      <div id="export-msg" style="font-size:11px;color:var(--green);padding:0 10px 6px;display:none">&#10003; Copied to clipboard!</div>
+    </div>
+    <div class="sidebar-summary">
+      <div class="sum-label">Live summary</div>
+      <div class="sum-row"><span class="sl">Revenue/mo</span><span class="sv" id="s-rev">—</span></div>
+      <div class="sum-row"><span class="sl">Profit/mo</span><span class="sv" id="s-profit">—</span></div>
+      <div class="sum-row"><span class="sl">Margin</span><span class="sv" id="s-margin">—</span></div>
+      <div class="sum-row"><span class="sl">Skilled labor $/skein</span><span class="sv" id="s-sister">—</span></div>
+      <div class="sum-row"><span class="sl">Break-even</span><span class="sv" id="s-be">—</span></div>
+      <div class="sum-row"><span class="sl">Oven cap/yr</span><span class="sv" id="s-cap">—</span></div>
+    </div>
+  </aside>
+
+  <main class="main">
+
+    <!-- INPUTS -->
+    <div class="panel active" id="panel-inputs">
+      <div class="panel-title">Inputs</div>
+      <div class="panel-desc">Edit any value — all panels update instantly.</div>
+
+      <div class="card">
+        <div class="card-title">Pricing &amp; sales target</div>
+        <div class="fg fg2">
+          <div class="field"><label>Avg sale price per skein ($)</label><input type="number" id="avgPrice" value="29.29" step="0.25" min="0"></div>
+          <div class="field"><label>Target orders / month (online)</label><input type="number" id="ordersPerMo" value="30" step="1" min="0"></div>
+          <div class="field"><label>Avg skeins per order</label><input type="number" id="skeinsPerOrder" value="2" step="1" min="1"></div>
+          <div class="field"><label>Festival skeins / yr (baseline)</label><input type="number" id="festSkeins" value="1400" step="50" min="0"><span class="hint">Used in combined capacity checks</span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Cost of goods — materials (per skein)</div>
+        <div class="fg fg3">
+          <div class="field"><label>Raw yarn cost ($)</label><input type="number" id="yarnCost" value="9.00" step="0.25" min="0"><span class="hint">~$9 base</span></div>
+          <div class="field"><label>Dye &amp; mordant ($)</label><input type="number" id="dyeCost" value="4.00" step="0.25" min="0"></div>
+          <div class="field"><label>Other materials ($)</label><input type="number" id="otherMat" value="0.50" step="0.25" min="0"><span class="hint">Labels, bands, bags</span></div>
+        </div>
+        <div class="cn cn-plain" id="mat-summary"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Labor — skilled (dyeing)</div>
+        <div class="fg fg3">
+          <div class="field"><label>Dye baths per hour</label><input type="number" id="bathsPerHr" value="2" step="0.5" min="0.5"></div>
+          <div class="field"><label>Skeins per dye bath</label><input type="number" id="skeinsPerBath" value="5" step="1" min="1"><span class="hint">Fixed: 5 per bath</span></div>
+          <div class="field"><label>Skilled labor target rate ($/hr)</label><input type="number" id="sisterRate" value="25" step="1" min="0"></div>
+        </div>
+        <div class="cn cn-accent" id="sister-summary"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Labor — unskilled (packing, shipping, admin)</div>
+        <div class="fg fg2">
+          <div class="field"><label>Hours per order</label><input type="number" id="yourHrsPerOrder" value="0.25" step="0.05" min="0"></div>
+          <div class="field"><label>Hourly wage ($/hr)</label><input type="number" id="yourRate" value="16" step="0.25" min="0"></div>
+          <div class="field"><label>Payroll tax &amp; benefits (%)</label><input type="number" id="payrollTax" value="15" step="0.5" min="0"><span class="hint">~15% covers FICA, FUTA, workers comp</span></div>
+        </div>
+        <div class="cn cn-plain" id="your-summary"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Oven / production capacity</div>
+        <div class="fg fg3">
+          <div class="field"><label>Dye baths per firing</label><input type="number" id="bathsPerFiring" value="16" step="1" min="1"><span class="hint">Hard limit: 16 baths</span></div>
+          <div class="field"><label>Firings per day</label><input type="number" id="firingsPerDay" value="1" step="1" min="1"><span class="hint">1 standard; 2 if quick-dry</span></div>
+          <div class="field"><label>Dye days per week</label><input type="number" id="dyeDaysPerWk" value="3" step="1" min="1"></div>
+        </div>
+        <div class="fg fg2" style="margin-top:1rem">
+          <div class="field"><label>Weeks active per year</label><input type="number" id="weeksActive" value="48" step="1" min="1"></div>
+        </div>
+        <div class="cn cn-plain" id="oven-summary"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Startup costs (one-time)</div>
+        <div class="fg fg2">
+          <div class="field"><label>Photography ($)</label><input type="number" id="photoCost" value="3500" step="100" min="0"><span class="hint">$2,000–$5,000 range</span></div>
+          <div class="field"><label>Website design / dev ($)</label><input type="number" id="webDesign" value="500" step="100" min="0"></div>
+          <div class="field"><label>Initial extra inventory ($)</label><input type="number" id="initInventory" value="2000" step="100" min="0"></div>
+          <div class="field"><label>Other startup ($)</label><input type="number" id="otherStartup" value="300" step="100" min="0"></div>
+        </div>
+        <div class="cn cn-plain" id="startup-summary"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Shopify &amp; selling costs (monthly)</div>
+        <div class="fg fg3">
+          <div class="field"><label>Shopify plan ($/mo)</label><input type="number" id="shopifyPlan" value="39" step="1" min="0"><span class="hint">Basic = $39</span></div>
+          <div class="field"><label>Card processing (%)</label><input type="number" id="txFee" value="2.9" step="0.1" min="0"></div>
+          <div class="field"><label>Per-transaction fee ($)</label><input type="number" id="flatFee" value="0.30" step="0.01" min="0"></div>
+          <div class="field"><label>Shipping cost per order ($)</label><input type="number" id="shippingCost" value="5" step="0.5" min="0"></div>
+          <div class="field"><label>Marketing / ads ($/mo)</label><input type="number" id="marketing" value="100" step="25" min="0"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RESULTS -->
+    <div class="panel" id="panel-results">
+      <div class="panel-title">Results &amp; P&amp;L</div>
+      <div class="panel-desc">Monthly economics at the target order volume, plus scenario comparisons.</div>
+      <div id="r-alerts"></div>
+      <div class="metric-grid">
+        <div class="metric"><div class="ml">Monthly profit</div><div class="mv" id="r-profit-mv">—</div><div class="ms" id="r-profit-ms">—</div></div>
+        <div class="metric"><div class="ml">Monthly revenue</div><div class="mv" id="r-rev-mv">—</div><div class="ms" id="r-rev-ms">—</div></div>
+        <div class="metric"><div class="ml">Net margin</div><div class="mv" id="r-margin-mv">—</div><div class="ms">after all costs</div></div>
+        <div class="metric hl"><div class="ml">Break-even on startup</div><div class="mv" id="r-be-mv">—</div><div class="ms" id="r-be-ms">—</div></div>
+      </div>
+      <div class="card">
+        <div class="card-title" id="pnl-title">Monthly P&amp;L</div>
+        <table>
+          <thead><tr><th>Line item</th><th class="r">Monthly</th><th class="r">Per skein</th></tr></thead>
+          <tbody id="pnl-body"></tbody>
+          <tfoot id="pnl-foot"></tfoot>
+        </table>
+      </div>
+      <div class="card">
+        <div class="card-title">Scenario comparison</div>
+        <div class="scen-grid" id="scen-grid"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Startup cost payback — cumulative profit over 24 months</div>
+        <div class="be-chart">
+          <div class="be-bars" id="be-bars"></div>
+          <div class="be-axis"><span>Start</span><span>Mo 6</span><span>Mo 12</span><span>Mo 18</span><span>Mo 24</span></div>
+          <div class="be-zero" id="be-zero"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CAPACITY -->
+    <div class="panel" id="panel-capacity">
+      <div class="panel-title">Capacity &amp; Labor</div>
+      <div class="panel-desc">Oven limits, dye day needs, and what the business can afford to pay for skilled dyeing labor.</div>
+      <div class="card">
+        <div class="card-title">Oven capacity vs demand</div>
+        <div id="cap-bars"></div>
+        <div class="cn cn-plain" style="margin-top:10px" id="cap-detail"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Affordable skilled labor rate — by volume</div>
+        <table>
+          <thead><tr><th>Orders/mo</th><th class="r">Skeins/mo</th><th class="r">Dye hrs/mo</th><th class="r">Max $/hr (break-even)</th><th class="r">Cost at target rate</th></tr></thead>
+          <tbody id="sister-table"></tbody>
+        </table>
+        <div class="table-note">Green = business can afford the target skilled labor rate and still break even. Red = pricing or volume adjustment needed.</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Dye days needed per week — festival + online combined</div>
+        <table>
+          <thead><tr><th>Orders/mo</th><th class="r">Online sk/wk</th><th class="r">Festival sk/wk</th><th class="r">Total sk/wk</th><th class="r">Dye days needed</th></tr></thead>
+          <tbody id="dye-table"></tbody>
+        </table>
+        <div class="table-note" id="dye-note"></div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<script>
+var currentPanel = 'inputs';
+
+function gv(id) { return parseFloat(document.getElementById(id).value) || 0; }
+function el(id) { return document.getElementById(id); }
+function sh(id, h) { el(id).innerHTML = h; }
+function st(id, t) { el(id).textContent = t; }
+function fD(n)   { return '$' + Math.round(n).toLocaleString(); }
+function fD2(n)  { return '$' + Number(n).toFixed(2); }
+function fPct(n) { return Number(n).toFixed(1) + '%'; }
+function prCls(p) { return p > 200 ? 'good' : p > 0 ? 'warn' : 'bad'; }
+function pctColor(p) { return p > 90 ? 'var(--red)' : p > 70 ? 'var(--amber)' : 'var(--green)'; }
+
+function setClass(id, cls) {
+  var e = el(id);
+  e.className = e.className.replace(/\bgood\b|\bwarn\b|\bbad\b/g, '').trim();
+  if (cls) e.classList.add(cls);
+}
+
+function compute() {
+  var avgPrice      = gv('avgPrice');
+  var ordersPerMo   = gv('ordersPerMo');
+  var spo           = gv('skeinsPerOrder');
+  var festSkeins    = gv('festSkeins');
+  var yarnCost      = gv('yarnCost');
+  var dyeCost       = gv('dyeCost');
+  var otherMat      = gv('otherMat');
+  var bathsPerHr    = gv('bathsPerHr');
+  var skeinsPerBath = gv('skeinsPerBath');
+  var sisterRate    = gv('sisterRate');
+  var yourHrsPOrd   = gv('yourHrsPerOrder');
+  var yourRate      = gv('yourRate');
+  var payrollTax    = gv('payrollTax');
+  var yourRateTotal = yourRate * (1 + payrollTax / 100);
+  var bathsPerFire  = gv('bathsPerFiring');
+  var firingsDay    = gv('firingsPerDay');
+  var dyeDaysWk     = gv('dyeDaysPerWk');
+  var weeksActive   = gv('weeksActive');
+  var photoCost     = gv('photoCost');
+  var webDesign     = gv('webDesign');
+  var initInv       = gv('initInventory');
+  var otherStart    = gv('otherStartup');
+  var shopifyPlan   = gv('shopifyPlan');
+  var txFee         = gv('txFee');
+  var flatFee       = gv('flatFee');
+  var shippingCost  = gv('shippingCost');
+  var marketing     = gv('marketing');
+
+  var skeinsPerHr   = bathsPerHr * skeinsPerBath;
+  var sisterCostPer = skeinsPerHr > 0 ? sisterRate / skeinsPerHr : 0;
+  var matCostPer    = yarnCost + dyeCost + otherMat;
+  var yourCostPerOrd= yourHrsPOrd * yourRateTotal;
+  var yourCostPerSk = spo > 0 ? yourCostPerOrd / spo : 0;
+  var grossPer      = avgPrice - matCostPer - sisterCostPer - yourCostPerSk;
+
+  var skeinsPerMo   = ordersPerMo * spo;
+  var revPerMo      = skeinsPerMo * avgPrice;
+  var matPerMo      = skeinsPerMo * matCostPer;
+  var sisterLaborMo = skeinsPerMo * sisterCostPer;
+  var yourLaborMo   = ordersPerMo * yourCostPerOrd;
+  var txFeePerOrd   = (spo * avgPrice * txFee / 100) + flatFee;
+  var txFeesMo      = ordersPerMo * txFeePerOrd;
+  var shippingMo    = ordersPerMo * shippingCost;
+  var totalCostMo   = matPerMo + sisterLaborMo + yourLaborMo + txFeesMo + shippingMo + shopifyPlan + marketing;
+  var profitMo      = revPerMo - totalCostMo;
+  var margin        = revPerMo > 0 ? (profitMo / revPerMo) * 100 : 0;
+
+  var startupTotal  = photoCost + webDesign + initInv + otherStart;
+  var breakEvenMos  = profitMo > 0 ? startupTotal / profitMo : Infinity;
+
+  var hardLimitDay  = bathsPerFire * skeinsPerBath * firingsDay;
+  var annualCap     = hardLimitDay * dyeDaysWk * weeksActive;
+  var festPerWk     = weeksActive > 0 ? festSkeins / weeksActive : 0;
+  var onlinePerWk   = weeksActive > 0 ? (skeinsPerMo * 12) / weeksActive : 0;
+
+  return {
+    avgPrice: avgPrice, ordersPerMo: ordersPerMo, spo: spo, festSkeins: festSkeins,
+    yarnCost: yarnCost, dyeCost: dyeCost, otherMat: otherMat,
+    skeinsPerHr: skeinsPerHr, sisterCostPer: sisterCostPer, sisterRate: sisterRate,
+    matCostPer: matCostPer, yourCostPerOrd: yourCostPerOrd, yourCostPerSk: yourCostPerSk,
+    grossPer: grossPer, skeinsPerMo: skeinsPerMo, revPerMo: revPerMo,
+    matPerMo: matPerMo, sisterLaborMo: sisterLaborMo, yourLaborMo: yourLaborMo,
+    yourRate: yourRate, yourRateTotal: yourRateTotal, payrollTax: payrollTax,
+    txFeePerOrd: txFeePerOrd, txFeesMo: txFeesMo, shippingMo: shippingMo,
+    shopifyPlan: shopifyPlan, marketing: marketing,
+    totalCostMo: totalCostMo, profitMo: profitMo, margin: margin,
+    startupTotal: startupTotal, breakEvenMos: breakEvenMos,
+    hardLimitDay: hardLimitDay, annualCap: annualCap,
+    festPerWk: festPerWk, onlinePerWk: onlinePerWk,
+    dyeDaysWk: dyeDaysWk, weeksActive: weeksActive, shippingCost: shippingCost,
+    bathsPerFire: bathsPerFire, skeinsPerBath: skeinsPerBath, firingsDay: firingsDay
+  };
+}
+
+function render() {
+  var n = compute();
+
+  // ── Input summaries ────────────────────────────────────────────────────────
+  st('mat-summary', 'Total materials: ' + fD2(n.matCostPer) + '/skein  ·  Gross before labor: ' + fD2(n.avgPrice - n.matCostPer) + '/skein');
+  sh('sister-summary',
+    'At <b>' + n.skeinsPerHr.toFixed(1) + ' skeins/hr</b> (' + gv('bathsPerHr') + ' baths/hr × ' + n.skeinsPerBath + ' skeins)' +
+    ' → skilled labor cost = <b>' + fD2(n.sisterCostPer) + '/skein</b> at ' + fD(n.sisterRate) + '/hr' +
+    ' &nbsp;(add payroll taxes above if applicable)'
+  );
+  sh('your-summary',
+    fD2(n.yourRate) + '/hr wage + ' + n.payrollTax + '% payroll taxes = <b>' + fD2(n.yourRateTotal) + '/hr total</b>' +
+    ' &nbsp;&middot;&nbsp; ' + fD2(n.yourCostPerSk) + '/skein at ' + n.spo + ' skeins/order'
+  );
+  sh('oven-summary',
+    '<b>' + Math.round(n.bathsPerFire) + '</b> baths × <b>' + Math.round(n.skeinsPerBath) + '</b> skeins × <b>' + Math.round(n.firingsDay) + '</b> firing/day' +
+    ' = <b style="color:var(--red)">' + Math.round(n.hardLimitDay) + ' skeins/day hard limit</b>' +
+    ' → <b>' + Math.round(n.annualCap).toLocaleString() + ' skeins/yr</b> at ' + n.dyeDaysWk + ' days/wk × ' + n.weeksActive + ' wks'
+  );
+  st('startup-summary', 'Total startup: ' + fD(n.startupTotal));
+
+  // ── Sidebar ────────────────────────────────────────────────────────────────
+  var beText = isFinite(n.breakEvenMos) ? n.breakEvenMos.toFixed(1) + ' mo' : '∞';
+  st('s-rev', fD(n.revPerMo));
+  st('s-profit', fD(n.profitMo)); setClass('s-profit', prCls(n.profitMo));
+  st('s-margin', fPct(n.margin));  setClass('s-margin', n.margin > 20 ? 'good' : n.margin > 10 ? 'warn' : 'bad');
+  st('s-sister', fD2(n.sisterCostPer));
+  st('s-be', beText); setClass('s-be', isFinite(n.breakEvenMos) && n.breakEvenMos < 18 ? 'good' : n.breakEvenMos < 36 ? 'warn' : 'bad');
+  st('s-cap', Math.round(n.annualCap).toLocaleString() + ' sk');
+
+  // ── Results ────────────────────────────────────────────────────────────────
+  var skeinsYrOnline = n.skeinsPerMo * 12;
+  var combined = skeinsYrOnline + n.festSkeins;
+  var combinedUtil = n.annualCap > 0 ? (combined / n.annualCap) * 100 : 0;
+
+  var alerts = '';
+  if (combinedUtil > 100)
+    alerts += '<div class="alert bad">Over capacity: festival + online demand (' + Math.round(combined).toLocaleString() + ' skeins/yr) exceeds oven limit (' + Math.round(n.annualCap).toLocaleString() + '). Add firings or dye days.</div>';
+  else if (combinedUtil > 85)
+    alerts += '<div class="alert warn">Near capacity: ' + combinedUtil.toFixed(0) + '% combined utilization — little buffer for surges.</div>';
+  else
+    alerts += '<div class="alert good">Capacity OK: ' + combinedUtil.toFixed(0) + '% of oven capacity needed for festival + online combined.</div>';
+
+  if (!isFinite(n.breakEvenMos))
+    alerts += '<div class="alert bad">Currently unprofitable — monthly costs exceed revenue. Adjust pricing or cut costs.</div>';
+  else if (n.breakEvenMos > 24)
+    alerts += '<div class="alert warn">Startup payback takes ' + n.breakEvenMos.toFixed(0) + ' months. Consider reducing photo cost or raising prices.</div>';
+  else
+    alerts += '<div class="alert good">Startup costs recover in ' + n.breakEvenMos.toFixed(1) + ' months — solid payback timeline.</div>';
+  sh('r-alerts', alerts);
+
+  // Metrics
+  st('r-profit-mv', fD(n.profitMo)); setClass('r-profit-mv', prCls(n.profitMo));
+  st('r-profit-ms', fD(n.profitMo * 12) + '/yr');
+  st('r-rev-mv', fD(n.revPerMo));
+  st('r-rev-ms', (n.skeinsPerMo * 12) + ' skeins/yr online');
+  st('r-margin-mv', fPct(n.margin)); setClass('r-margin-mv', n.margin > 20 ? 'good' : n.margin > 10 ? 'warn' : 'bad');
+  st('r-be-mv', beText);
+  st('r-be-ms', fD(n.startupTotal) + ' to recover');
+
+  // P&L
+  st('pnl-title', 'Monthly P&L — at ' + n.ordersPerMo + ' orders/mo');
+  var grossAfterCOGS = n.revPerMo - n.matPerMo - n.sisterLaborMo - n.yourLaborMo;
+  var yarnMo = n.matCostPer > 0 ? n.matPerMo * (n.yarnCost / n.matCostPer) : 0;
+  var dyeMo  = n.matCostPer > 0 ? n.matPerMo * (n.dyeCost  / n.matCostPer) : 0;
+  var othMo  = n.matCostPer > 0 ? n.matPerMo * (n.otherMat / n.matCostPer) : 0;
+  var perSkNet = n.skeinsPerMo > 0 ? n.profitMo / n.skeinsPerMo : 0;
+  sh('pnl-body',
+    '<tr><td class="dim">Revenue</td><td class="r">' + fD(n.revPerMo) + '</td><td class="r">' + fD2(n.avgPrice) + '</td></tr>' +
+    '<tr><td class="ind">— Raw yarn</td><td class="r">(' + fD(yarnMo) + ')</td><td class="r">' + fD2(n.yarnCost) + '</td></tr>' +
+    '<tr><td class="ind">— Dye &amp; mordant</td><td class="r">(' + fD(dyeMo) + ')</td><td class="r">' + fD2(n.dyeCost) + '</td></tr>' +
+    '<tr><td class="ind">— Other materials</td><td class="r">(' + fD(othMo) + ')</td><td class="r">' + fD2(n.otherMat) + '</td></tr>' +
+    '<tr><td class="ind">— Skilled dyeing labor</td><td class="r">(' + fD(n.sisterLaborMo) + ')</td><td class="r">' + fD2(n.sisterCostPer) + '</td></tr>' +
+    '<tr><td class="ind">— Unskilled labor (packing/admin)</td><td class="r">(' + fD(n.yourLaborMo) + ')</td><td class="r">' + fD2(n.yourCostPerSk) + '</td></tr>' +
+    '<tr class="subtotal"><td class="dim">Gross profit</td><td class="r">' + fD(grossAfterCOGS) + '</td><td class="r">' + fD2(n.grossPer) + '</td></tr>' +
+    '<tr><td class="dim">Payment processing</td><td class="r">(' + fD(n.txFeesMo) + ')</td><td class="r">' + fD2(n.skeinsPerMo > 0 ? n.txFeesMo / n.skeinsPerMo : 0) + '</td></tr>' +
+    '<tr><td class="dim">Shipping &amp; packaging</td><td class="r">(' + fD(n.shippingMo) + ')</td><td class="r">' + fD2(n.skeinsPerMo > 0 ? n.shippingMo / n.skeinsPerMo : 0) + '</td></tr>' +
+    '<tr><td class="dim">Shopify subscription</td><td class="r">(' + fD(n.shopifyPlan) + ')</td><td class="r">—</td></tr>' +
+    '<tr><td class="dim">Marketing</td><td class="r">(' + fD(n.marketing) + ')</td><td class="r">—</td></tr>'
+  );
+  var netColor = n.profitMo >= 0 ? 'var(--green)' : 'var(--red)';
+  sh('pnl-foot', '<tr class="total"><td>Net profit</td><td class="r" style="color:' + netColor + '">' + fD(n.profitMo) + '</td><td class="r" style="color:' + netColor + '">' + fD2(perSkNet) + '</td></tr>');
+
+  // Scenarios
+  var scenOrders = [Math.round(n.ordersPerMo * 0.5), n.ordersPerMo, Math.round(n.ordersPerMo * 1.5)];
+  var scenLabels = ['Conservative (0.5×)', 'Base case (1×)', 'Optimistic (1.5×)'];
+  var scenHtml = '';
+  for (var si = 0; si < 3; si++) {
+    var ord = scenOrders[si];
+    var sk = ord * n.spo;
+    var rev = sk * n.avgPrice;
+    var cost = (sk * n.matCostPer) + (sk * n.sisterCostPer) + (ord * n.yourCostPerOrd)
+             + (ord * n.txFeePerOrd) + (ord * n.shippingCost) + n.shopifyPlan + n.marketing;
+    var profit = rev - cost;
+    var cls = prCls(profit);
+    var isTarget = si === 1 ? ' target' : '';
+    scenHtml += '<div class="scen' + isTarget + '">' +
+      '<div class="st">' + scenLabels[si] + ' &middot; ' + ord + ' orders/mo</div>' +
+      '<div class="sv2 ' + cls + '">' + fD(profit) + '<span style="font-size:13px;font-weight:400">/mo</span></div>' +
+      '<div class="sd">' + fD(rev) + ' rev &middot; ' + (sk * 12).toLocaleString() + ' sk/yr</div>' +
+      '</div>';
+  }
+  sh('scen-grid', scenHtml);
+
+  // Break-even chart
+  var beData = [];
+  for (var mi = 0; mi <= 24; mi++) {
+    beData.push(mi === 0 ? -n.startupTotal : -n.startupTotal + n.profitMo * mi);
+  }
+  var maxAbs = 1;
+  for (var bi = 0; bi < beData.length; bi++) { maxAbs = Math.max(maxAbs, Math.abs(beData[bi])); }
+  var barsHtml = '';
+  for (var bi2 = 0; bi2 < beData.length; bi2++) {
+    var bv = beData[bi2];
+    var pct = Math.min(Math.abs(bv) / maxAbs, 1);
+    var bh = Math.max(Math.round(pct * 140), 2);
+    var label = bi2 === 0 ? 'Start' : 'Mo ' + bi2;
+    if (bv >= 0) {
+      barsHtml += '<div class="be-bar pos" style="height:' + bh + 'px" title="' + label + ': ' + fD(bv) + '"></div>';
+    } else {
+      barsHtml += '<div class="be-bar neg" style="height:' + bh + 'px" title="' + label + ': ' + fD(bv) + '"></div>';
+    }
+  }
+  sh('be-bars', barsHtml);
+  var crossover = -1;
+  for (var ci = 0; ci < beData.length; ci++) { if (beData[ci] >= 0) { crossover = ci; break; } }
+  if (crossover > 0)
+    st('be-zero', 'Breaks even at month ' + crossover + '  ·  ends at ' + fD(beData[24]));
+  else if (isFinite(n.breakEvenMos))
+    st('be-zero', 'Breaks even at month ' + Math.ceil(n.breakEvenMos));
+  else
+    st('be-zero', 'Does not break even within 24 months at current settings');
+
+  // ── Capacity ───────────────────────────────────────────────────────────────
+  function pbar(label, used, max, unit) {
+    var pct = max > 0 ? Math.min((used / max) * 100, 100) : 0;
+    var color = pctColor(pct);
+    return '<div class="pbar-wrap">' +
+      '<div class="pbar-head"><span class="pl">' + label + '</span><span class="pv">' +
+      Math.round(used).toLocaleString() + ' / ' + Math.round(max).toLocaleString() + ' ' + unit + ' (' + pct.toFixed(0) + '%)</span></div>' +
+      '<div class="pbar-track"><div class="pbar-fill" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+      '</div>';
+  }
+  sh('cap-bars',
+    pbar('Online orders alone', skeinsYrOnline, n.annualCap, 'skeins/yr') +
+    pbar('Festival alone', n.festSkeins, n.annualCap, 'skeins/yr') +
+    pbar('Combined total demand', combined, n.annualCap, 'skeins/yr')
+  );
+  sh('cap-detail',
+    Math.round(n.bathsPerFire) + ' baths × ' + Math.round(n.skeinsPerBath) + ' skeins × ' + Math.round(n.firingsDay) + ' firing/day' +
+    ' = <b style="color:var(--red)">' + Math.round(n.hardLimitDay) + ' skeins/day hard limit</b>' +
+    ' &nbsp;·&nbsp; ' + n.dyeDaysWk + ' days/wk × ' + n.weeksActive + ' wks = <b>' + Math.round(n.annualCap).toLocaleString() + ' skeins/yr capacity</b>'
+  );
+
+  // Generate 7 volumes spanning 0.25x to 2x of target, rounded to nearest 5
+  var tgt = n.ordersPerMo;
+  var rawVols = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
+  var volumes = rawVols.map(function(m) { return Math.max(1, Math.round(tgt * m / 5) * 5); });
+  // Deduplicate while preserving order
+  volumes = volumes.filter(function(v, i, a) { return a.indexOf(v) === i; });
+  var sisterHtml = '';
+  for (var vi = 0; vi < volumes.length; vi++) {
+    var vord = volumes[vi];
+    var vsk = vord * n.spo;
+    var vrev = vsk * n.avgPrice;
+    var vmat = vsk * n.matCostPer;
+    var vyour = vord * n.yourCostPerOrd;
+    var vtx = vord * n.txFeePerOrd;
+    var vship = vord * n.shippingCost;
+    var vfix = n.shopifyPlan + n.marketing;
+    var vforSister = vrev - vmat - vyour - vtx - vship - vfix;
+    var vdyeHrs = n.skeinsPerHr > 0 ? vsk / n.skeinsPerHr : 0;
+    var vmaxRate = vdyeHrs > 0 ? vforSister / vdyeHrs : 0;
+    var vtargetCost = vdyeHrs * n.sisterRate;
+    var vcanAfford = vmaxRate >= n.sisterRate;
+    var visTarget = Math.abs(vord - n.ordersPerMo) < Math.max(1, n.ordersPerMo * 0.05);
+    sisterHtml += '<tr' + (visTarget ? ' class="hl-row"' : '') + '>' +
+      '<td>' + vord + (visTarget ? ' ←' : '') + '</td>' +
+      '<td class="r">' + vsk + '</td>' +
+      '<td class="r">' + vdyeHrs.toFixed(1) + '</td>' +
+      '<td class="r ' + (vcanAfford ? 'good' : 'bad') + '">' + fD(vmaxRate) + '/hr</td>' +
+      '<td class="r">' + fD(vtargetCost) + '/mo</td>' +
+      '</tr>';
+  }
+  sh('sister-table', sisterHtml);
+
+  var dyeHtml = '';
+  for (var di = 0; di < volumes.length; di++) {
+    var dord = volumes[di];
+    var dsk = dord * n.spo;
+    var donlineWk = n.weeksActive > 0 ? (dsk * 12) / n.weeksActive : 0;
+    var dtotal = donlineWk + n.festPerWk;
+    var ddays = n.hardLimitDay > 0 ? dtotal / n.hardLimitDay : 99;
+    var dok = ddays <= 7;
+    var disTarget = Math.abs(dord - n.ordersPerMo) < Math.max(1, n.ordersPerMo * 0.05);
+    dyeHtml += '<tr' + (disTarget ? ' class="hl-row"' : '') + '>' +
+      '<td>' + dord + (disTarget ? ' ←' : '') + '</td>' +
+      '<td class="r">' + donlineWk.toFixed(1) + '</td>' +
+      '<td class="r">' + n.festPerWk.toFixed(1) + '</td>' +
+      '<td class="r">' + dtotal.toFixed(1) + '</td>' +
+      '<td class="r ' + (dok ? 'good' : 'bad') + '">' + ddays.toFixed(1) + '</td>' +
+      '</tr>';
+  }
+  sh('dye-table', dyeHtml);
+  st('dye-note', 'Based on ' + Math.round(n.hardLimitDay) + ' skeins/day capacity and ' + n.festSkeins + ' festival skeins across ' + Math.round(n.weeksActive) + ' weeks. Red = more than 7 days/week required (impossible).');
+}
+
+function showPanel(name) {
+  currentPanel = name;
+  var panels = ['inputs', 'results', 'capacity'];
+  for (var i = 0; i < panels.length; i++) {
+    el('panel-' + panels[i]).className = 'panel' + (panels[i] === name ? ' active' : '');
+  }
+  var btns = document.querySelectorAll('.nav-item');
+  for (var j = 0; j < btns.length; j++) {
+    btns[j].className = 'nav-item' + (j === panels.indexOf(name) ? ' active' : '');
+  }
+  render();
+}
+
+function exportToURL() {
+  var params = new URLSearchParams();
+  var fields = document.querySelectorAll('input[type="number"]');
+  for (var i = 0; i < fields.length; i++) {
+    params.set(fields[i].id, fields[i].value);
+  }
+  var url = window.location.href.split('?')[0] + '?' + params.toString();
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(url).then(showExportMsg);
+  } else {
+    var ta = document.createElement('textarea');
+    ta.value = url;
+    ta.style.cssText = 'position:fixed;opacity:0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    showExportMsg();
+  }
+}
+
+function showExportMsg() {
+  var msg = el('export-msg');
+  msg.style.display = 'block';
+  setTimeout(function() { msg.style.display = 'none'; }, 2500);
+}
+
+function loadFromURL() {
+  var params = new URLSearchParams(window.location.search);
+  params.forEach(function(value, key) {
+    var inp = document.getElementById(key);
+    if (inp && inp.type === 'number') { inp.value = value; }
+  });
+}
+
+var inputs = document.querySelectorAll('input[type="number"]');
+for (var i = 0; i < inputs.length; i++) {
+  inputs[i].addEventListener('input', render);
+}
+
+loadFromURL();
+render();
+</script>
+</body>
+</html>

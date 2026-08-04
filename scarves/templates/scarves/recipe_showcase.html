@@ -1,0 +1,78 @@
+<!-- templates/scarves/recipe_showcase.html -->
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Recipes</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 24px; }
+    table { border-collapse: collapse; width: 100%; max-width: 1200px; }
+    th, td { border-bottom: 1px solid #ddd; padding: 10px; vertical-align: top; }
+    th { text-align: left; }
+    .dyes { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chip {
+      border: 1px solid #ccc; border-radius: 999px;
+      padding: 4px 10px; font-size: 13px; background: #fff;
+      display: inline-flex; gap: 8px; align-items: center;
+    }
+    .swatches { display: flex; gap: 6px; flex-wrap: wrap; }
+    .swatch {
+      width: 18px; height: 18px; border-radius: 6px;
+      border: 1px solid rgba(0,0,0,0.25);
+      display: inline-block;
+    }
+    .hex { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 12px; color: #444; }
+    .muted { color: #666; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h1>Recipe Showcase</h1>
+  <p class="muted">Read-only for now. Shows active recipes and their dyes.</p>
+
+  <table>
+    <thead>
+      <tr>
+        <th style="width: 28%;">Recipe</th>
+        <th style="width: 48%;">Dyes</th>
+        <th style="width: 24%;">Colors</th>
+      </tr>
+    </thead>
+    <tbody>
+{% for recipe in recipes %}
+  <tr>
+    <td><strong>{{ recipe.name }}</strong></td>
+
+    <td>
+      {% if recipe.recipe_dyes.all %}
+        <div class="dyes">
+          {% for rd in recipe.recipe_dyes.all %}
+            <span class="chip">
+              {{ rd.dye.name }}
+            </span>
+          {% endfor %}
+        </div>
+      {% else %}
+        <span class="muted">No dyes yet</span>
+      {% endif %}
+    </td>
+
+    <td>
+      {% if recipe.recipe_dyes.all %}
+        <div class="swatches">
+          {% for rd in recipe.recipe_dyes.all %}
+            <span
+              class="swatch"
+              title="{{ rd.dye.name }} — {{ rd.dye.hex_color }}"
+              style="background: {{ rd.dye.hex_color }};"
+            ></span>
+          {% endfor %}
+        </div>
+      {% endif %}
+    </td>
+  </tr>
+{% endfor %}
+
+    </tbody>
+  </table>
+</body>
+</html>

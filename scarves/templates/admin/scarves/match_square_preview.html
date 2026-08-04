@@ -1,0 +1,47 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+<h1>Preview Square Catalog Matches</h1>
+<p>Review the proposed matches below. Use the dropdowns to correct any mismatches, then click <strong>Confirm</strong>.</p>
+
+<form method="post">
+  {% csrf_token %}
+  <input type="hidden" name="action" value="preview_square_match">
+  <input type="hidden" name="apply" value="1">
+  {% for rp in queryset %}
+    <input type="hidden" name="{{ action_checkbox_name }}" value="{{ rp.pk }}">
+  {% endfor %}
+
+  {% for match in matches %}
+  <div style="border:1px solid #ccc; padding:16px; margin-bottom:24px; border-radius:4px;">
+    <h2 style="margin-top:0;">{{ match.rp.name }}
+      {% if match.rp.square_item_id %}
+        <span style="font-size:0.7em; color:#666;">(already mapped: {{ match.rp.square_item_id }})</span>
+      {% endif %}
+    </h2>
+
+    <label><strong>Square Catalog Item:</strong></label><br>
+    <select name="item_{{ match.rp.pk }}" style="width:100%; max-width:600px; margin-bottom:12px;">
+      <option value="">-- leave unchanged --</option>
+      {% for item in match.alternatives %}
+      <option value="{{ item.id }}"
+        {% if match.best_item and item.id == match.best_item.id %}selected{% endif %}>
+        {{ item.item_data.name }} — {{ item.price_display }} ({{ item.id }})
+      </option>
+      {% endfor %}
+    </select>
+
+    {% if match.variation_matches %}
+    <p style="color:#666; font-size:0.9em;">
+      {{ match.variation_matches|length }} color variation(s) will be created in Square when you run sync_to_square.
+    </p>
+    {% endif %}
+  </div>
+  {% endfor %}
+
+  <div style="margin-top:16px;">
+    <input type="submit" value="Confirm and Save" class="default" style="margin-right:8px;">
+    <a href="../" class="button cancel-link">Cancel</a>
+  </div>
+</form>
+{% endblock %}

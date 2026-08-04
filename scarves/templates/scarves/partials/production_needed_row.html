@@ -1,0 +1,25 @@
+<tr id="fp-{{ fp.id }}" {% if fp.number_on_hand == 0 %}style="background:#ffecec;"{% endif %}>
+  <td style="padding:0.4rem;">{{ fp.name }}</td>
+  <td style="padding:0.4rem;">{{ fp.raw_product.category.name }}</td>
+  <td style="padding:0.4rem;">{{ fp.raw_product.name }}</td>
+  <td style="padding:0.4rem; text-align:right;">{{ fp.number_on_hand }}</td>
+  <td style="padding:0.4rem; text-align:right;">{{ fp.par_level }}</td>
+  <td style="padding:0.4rem; text-align:right; font-weight:700;">{{ fp.shortage }}</td>
+
+  <td style="padding:0.4rem; white-space:nowrap;">
+    <form
+      method="post"
+      action="{% url 'record_dye_bath' fp.pk %}"
+      hx-post="{% url 'record_dye_bath' fp.pk %}"
+      hx-target="#fp-{{ fp.id }}"
+      hx-swap="outerHTML"
+      style="display:inline;"
+    >
+      {% csrf_token %}
+      <input type="hidden" name="next" value="{{ request.get_full_path }}">
+      <button type="submit" class="btn">
+        Dye bath (+{{ fp.raw_product.number_per_dye_bath }})
+      </button>
+    </form>
+  </td>
+</tr>

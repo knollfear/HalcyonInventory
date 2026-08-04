@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<html>
+<head><title>Reference Sheets</title></head>
+<body>
+<h1>Reference Sheets</h1>
+<ul>
+  {% for category in categories %}
+  <li><a href="{% url 'reference_sheet_pdf' category.pk %}">{{ category.name }}</a></li>
+  {% endfor %}
+</ul>
+</body>
+</html>

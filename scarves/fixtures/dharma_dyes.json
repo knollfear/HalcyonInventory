@@ -1,87 +1,91 @@
 [
   {"model": "scarves.dyebrand", "pk": 1, "fields": {
     "name": "Dharma Acid Dyes",
-    "website": "https://www.dharmatrading.com/dyes/dharma-acid-dyes.html",
+    "website": "",
     "notes": ""
   }},
-  {"model": "scarves.dye", "pk": 1, "fields": {
-    "name": "401 Brilliant Yellow (Primary)", "hex_color": "#ffec05",
-    "brand": 1, "in_stock": true, "sku": "", "notes": ""
-  }},
-  {"model": "scarves.dye", "pk": 2, "fields": {
-    "name": "402 Fire Engine Red (Primary)", "hex_color": "#c41d33",
-    "brand": 1, "in_stock": true, "sku": "", "notes": ""
-  }},
-  {"model": "scarves.dye", "pk": 3, "fields": {
-    "name": "403 Flamingo Pink", "hex_color": "#e16578",
-    "brand": 1, "in_stock": true, "sku": "", "notes": ""
-  }},
-  {"model": "scarves.dye", "pk": 4, "fields": {
-    "name": "404 Sapphire Blue", "hex_color": "#222b79",
-    "brand": 1, "in_stock": true, "sku": "", "notes": ""
-  }},
-  {"model": "scarves.dye", "pk": 5, "fields": {
-    "name": "405 Deep Purple", "hex_color": "#3a1c60",
-    "brand": 1, "in_stock": true, "sku": "", "notes": ""
-  }},
-  {"model": "scarves.dye", "pk": 6, "fields": {
-    "name": "406 Fluorescent Fuchsia (Primary)", "hex_color": "#ed288d",
-    "brand": 1, "in_stock": true, "sku": "", "notes": ""
-  }},
-  {"model": "scarves.dye", "pk": 7, "fields": {
-    "name": "407 Caribbean Blue (Primary)", "hex_color": "#008ca7",
-    "brand": 1, "in_stock": true, "sku": "", "notes": ""
-  }},
-  {"model": "scarves.dye", "pk": 8, "fields": {
-    "name": "408 Teal Green", "hex_color": "#08534f",
-    "brand": 1, "in_stock": true, "sku": "", "notes": ""
-  }},
-  {"model": "scarves.dye", "pk": 9, "fields": {
-    "name": "409 Dark Navy*", "hex_color": "#0a004f",
-    "brand": 1, "in_stock": true, "sku": "", "notes": ""
-  }},
-  {"model": "scarves.dye", "pk": 10, "fields": {
-    "name": "410 Kelly Green", "hex_color": "#009a4c",
-    "brand": 1, "in_stock": true, "sku": "", "notes": ""
-  }},
-  {"model": "scarves.dye", "pk": 11, "fields": {
-    "name": "411 Deep Magenta (Primary)", "hex_color": "#b9146b",
-    "brand": 1, "in_stock": true, "sku": "", "notes": ""
-  }},
-  {"model": "scarves.dye", "pk": 12, "fields": {
-    "name": "412 Pink Orchid", "hex_color": "#c73e8f",
-    "brand": 1, "in_stock": true, "sku": "", "notes": ""
-  }},
-  {"model": "scarves.dye", "pk": 13, "fields": {
-    "name": "413 True Black (Primary)*", "hex_color": "#000001",
-    "brand": 1, "in_stock": true, "sku": "", "notes": ""
-  }},
-  {"model": "scarves.dye", "pk": 14, "fields": {
-    "name": "415 Midnight Blue", "hex_color": "#1f2272",
-    "brand": 1, "in_stock": true, "sku": "", "notes": ""
-  }},
-  {"model": "scarves.dye", "pk": 15, "fields": {
-    "name": "416 Peacock Blue (Primary)", "hex_color": "#064e7e",
-    "brand": 1, "in_stock": true, "sku": "", "notes": ""
-  }},
-  {"model": "scarves.dye", "pk": 16, "fields": {
-    "name": "417 Tobacco Leaf Brown", "hex_color": "#8b5c2b",
-    "brand": 1, "in_stock": true, "sku": "", "notes": ""
-  }},
-  {"model": "scarves.dye", "pk": 17, "fields": {
-    "name": "419 Cayenne Red", "hex_color": "#cb3e34",
-    "brand": 1, "in_stock": true, "sku": "", "notes": ""
-  }},
-  {"model": "scarves.dye", "pk": 18, "fields": {
-    "name": "420 Golden Straw", "hex_color": "#c4a85c",
-    "brand": 1, "in_stock": true, "sku": "", "notes": ""
-  }},
-  {"model": "scarves.dye", "pk": 19, "fields": {
-    "name": "421 Plum Dandy", "hex_color": "#663366",
-    "brand": 1, "in_stock": true, "sku": "", "notes": ""
-  }},
-  {"model": "scarves.dye", "pk": 20, "fields": {
-    "name": "422 Bright Aqua", "hex_color": "#5ccfbf",
-    "brand": 1, "in_stock": true, "sku": "", "notes": ""
-  }}
+  {"model":"scarves.dye","pk":1,"fields":{"name":"401 Brilliant Yellow (Primary)","hex_color":"#ffec05","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":2,"fields":{"name":"402 Fire Engine Red (Primary)","hex_color":"#c41d33","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":3,"fields":{"name":"403 Flamingo Pink","hex_color":"#e16578","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":4,"fields":{"name":"404 Sapphire Blue","hex_color":"#222b79","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":5,"fields":{"name":"405 Deep Purple","hex_color":"#3a1c60","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":6,"fields":{"name":"406 Fluorescent Fuchsia (Primary)","hex_color":"#ed288d","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":7,"fields":{"name":"407 Caribbean Blue (Primary)","hex_color":"#008ca7","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":8,"fields":{"name":"408 Teal Green","hex_color":"#08534f","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":9,"fields":{"name":"409 Dark Navy*","hex_color":"#0a004f","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":10,"fields":{"name":"410 Kelly Green","hex_color":"#009a4c","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":11,"fields":{"name":"411 Deep Magenta (Primary)","hex_color":"#b9146b","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":12,"fields":{"name":"412 Pink Orchid","hex_color":"#c73e8f","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":13,"fields":{"name":"413 True Black (Primary)*","hex_color":"#000001","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":14,"fields":{"name":"415 Midnight Blue","hex_color":"#1f2272","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":15,"fields":{"name":"416 Peacock Blue (Primary)","hex_color":"#064e7e","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":16,"fields":{"name":"417 Tobacco Leaf Brown","hex_color":"#8b5c2b","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":17,"fields":{"name":"419 Cayenne Red","hex_color":"#cb3e34","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":18,"fields":{"name":"420 Golden Straw","hex_color":"#c4a85c","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":19,"fields":{"name":"421 Plum Dandy","hex_color":"#663366","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":20,"fields":{"name":"422 Bright Aqua","hex_color":"#5ccfbf","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":21,"fields":{"name":"423 Blazing Orange","hex_color":"#f26522","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":22,"fields":{"name":"424 True Turquoise","hex_color":"#00b6ea","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":23,"fields":{"name":"425 Amethyst","hex_color":"#9b3776","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":24,"fields":{"name":"426 Pecan Brown","hex_color":"#543f3f","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":25,"fields":{"name":"427 Sand Dune","hex_color":"#afa694","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":26,"fields":{"name":"428 Chocolate Brown","hex_color":"#481f1b","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":27,"fields":{"name":"429 Alpine Blue","hex_color":"#5c87cb","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":28,"fields":{"name":"430 Persimmon","hex_color":"#e8894e","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":29,"fields":{"name":"431 Lilac","hex_color":"#705fa4","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":30,"fields":{"name":"432 Antique Mauve","hex_color":"#845565","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":31,"fields":{"name":"434 Pistachio","hex_color":"#c4df9b","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":32,"fields":{"name":"435 Soft Tan","hex_color":"#c2b264","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":33,"fields":{"name":"436 Twilight Gray","hex_color":"#3c4854","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":34,"fields":{"name":"438 Olive Brown","hex_color":"#5e5945","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":35,"fields":{"name":"439 Espresso Bean","hex_color":"#2c1c1c","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":36,"fields":{"name":"440 Oxblood Red","hex_color":"#a12033","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":37,"fields":{"name":"441 Peach Blush","hex_color":"#f5a997","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":38,"fields":{"name":"442 Honey Mustard","hex_color":"#efc550","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":39,"fields":{"name":"443 Tangelo","hex_color":"#d86142","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":40,"fields":{"name":"444 Electric Violet","hex_color":"#4b2b85","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":41,"fields":{"name":"445 Fluorescent Lemon (Primary)","hex_color":"#ffff00","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":42,"fields":{"name":"446 Silver Gray","hex_color":"#8a8a8c","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":43,"fields":{"name":"447 Emerald Green","hex_color":"#007951","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":44,"fields":{"name":"448 Chartreuse","hex_color":"#b7cb48","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":45,"fields":{"name":"449 Vanilla Cream","hex_color":"#fff4b6","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":46,"fields":{"name":"450 Sage Leaf","hex_color":"#8fac9b","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":47,"fields":{"name":"451 Moss Green","hex_color":"#305722","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":48,"fields":{"name":"452 Forest Green","hex_color":"#0b473e","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":49,"fields":{"name":"453 Fawn","hex_color":"#aa7548","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":50,"fields":{"name":"454 Poinsettia","hex_color":"#bd243b","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":51,"fields":{"name":"455 Royal Purple","hex_color":"#491953","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":52,"fields":{"name":"456 Fluorescent Safety Orange","hex_color":"#f97d1b","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":53,"fields":{"name":"457 Extreme Blue","hex_color":"#28468c","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":54,"fields":{"name":"458 Cabernet","hex_color":"#641a3c","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":55,"fields":{"name":"459 Intense Iris","hex_color":"#40256d","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":56,"fields":{"name":"460 Saffron Spice","hex_color":"#cf702d","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":57,"fields":{"name":"461 Avocado","hex_color":"#6f752c","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":58,"fields":{"name":"462 Teddy Bear Brown","hex_color":"#613e29","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":59,"fields":{"name":"463 Duckling","hex_color":"#ffe65b","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":60,"fields":{"name":"464 Hyacinth","hex_color":"#979ecf","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":61,"fields":{"name":"465 Lichen","hex_color":"#b7bb59","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":62,"fields":{"name":"466 Baby Blue Eyes","hex_color":"#9ad1e4","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":63,"fields":{"name":"469 Golden Poppy","hex_color":"#fec532","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":64,"fields":{"name":"470 Berry Crush","hex_color":"#a20069","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":65,"fields":{"name":"471 Sour Apple","hex_color":"#a5ca57","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":66,"fields":{"name":"472 Blued Steel","hex_color":"#003152","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":67,"fields":{"name":"473 Spearmint Breeze","hex_color":"#7fcbae","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":68,"fields":{"name":"474 Valentine Blush","hex_color":"#ecb2be","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":69,"fields":{"name":"475 Aubergine","hex_color":"#4a012d","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":70,"fields":{"name":"476 Toner Black*","hex_color":"#231f20","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":71,"fields":{"name":"477 Cherry Bomb","hex_color":"#cc224c","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":72,"fields":{"name":"478 Purple Pop (fluor.)","hex_color":"#a7509e","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":73,"fields":{"name":"479 Radioactive (fluor.)","hex_color":"#c6d92c","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":74,"fields":{"name":"480 Sea Spray","hex_color":"#6db7bf","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":75,"fields":{"name":"481 Ballerina Pink","hex_color":"#facbca","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":76,"fields":{"name":"482 Delphinium Blue","hex_color":"#9eafc5","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":77,"fields":{"name":"483 Chinese Red","hex_color":"#d62b4c","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":78,"fields":{"name":"484 Platinum","hex_color":"#c6c7c5","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":79,"fields":{"name":"485 Frozen Blue","hex_color":"#2abeda","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":80,"fields":{"name":"486 Champagne","hex_color":"#e9d6ba","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":81,"fields":{"name":"487 Indigo Blue","hex_color":"#1f578b","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":82,"fields":{"name":"488 Ivory","hex_color":"#f3ead7","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":83,"fields":{"name":"489 Monarch Orange","hex_color":"#f78d1e","brand":1,"in_stock":true,"sku":"","notes":""}},
+  {"model":"scarves.dye","pk":84,"fields":{"name":"490 Tornado Gray","hex_color":"#7a7e85","brand":1,"in_stock":true,"sku":"","notes":""}}
 ]

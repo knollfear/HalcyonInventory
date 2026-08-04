@@ -1,0 +1,117 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Bulk Inventory Update</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; margin: 1.5rem; max-width: 900px; }
+    .messages { margin-bottom: 1rem; }
+    .message { padding: 0.5rem 0.75rem; border-radius: 6px; margin-bottom: 0.25rem; }
+    .message.success { background: #e6ffed; border: 1px solid #8fd19e; color: #245b31; }
+    .message.error { background: #ffe6e6; border: 1px solid #e09c9c; color: #7d2424; }
+    .message.info { background: #e6f3ff; border: 1px solid #9cbce0; color: #23466b; }
+
+    table { border-collapse: collapse; width: 100%; margin-bottom: 1.5rem; }
+    th, td { border-bottom: 1px solid #ddd; padding: 0.5rem; vertical-align: middle; }
+    th { background: #f3f3f3; text-align: left; }
+    input[type="number"] { width: 6rem; }
+    .btn { padding: 0.5rem 0.9rem; border: 1px solid #777; background: #f6f6f6; border-radius: 6px; cursor: pointer; }
+    .btn:hover { background: #eaeaea; }
+    .hint { color: #666; margin: 0.5rem 0 1rem; }
+    .small { font-size: 0.9rem; color: #444; }
+    .muted { color: #888; }
+    .group-title { margin: 1.25rem 0 0.25rem; }
+    .cat { font-weight: 600; margin-top: 1rem; }
+    fieldset { border: 1px solid #ddd; border-radius: 8px; margin-bottom: 1rem; padding: 0.75rem 1rem; }
+    label.pick { display: inline-block; margin: 0.15rem 1rem 0.15rem 0; white-space: nowrap; }
+  </style>
+</head>
+<body>
+  <h1>Bulk Inventory Update</h1>
+
+  {% if messages %}
+    <div class="messages">
+      {% for message in messages %}
+        <div class="message {{ message.tags }}">{{ message }}</div>
+      {% endfor %}
+    </div>
+  {% endif %}
+
+  {% if picker_products %}
+    {# ---- Picker: no raw_ids supplied ---- #}
+    <p class="hint">
+      Pick the raw products whose finished-product inventory you want to update,
+      then load the editor. (Or open directly with
+      <code>/scarves/bulk-inventory/?raw_ids=1,2,3</code>.)
+    </p>
+
+    <form method="get">
+      {% regroup picker_products by category as category_list %}
+      {% for cat in category_list %}
+        <fieldset>
+          <legend class="cat">{{ cat.grouper.name }}</legend>
+          {% for rp in cat.list %}
+            <label class="pick">
+              <input type="checkbox" name="raw_ids" value="{{ rp.id }}">
+              {{ rp.name }} <span class="muted">(id={{ rp.id }}, on&nbsp;hand&nbsp;{{ rp.number_on_hand }})</span>
+            </label>
+          {% endfor %}
+        </fieldset>
+      {% endfor %}
+      <button class="btn" type="submit">Load selected →</button>
+    </form>
+
+  {% else %}
+    {# ---- Editor: raw_ids supplied ---- #}
+    <p class="hint">
+      Editing finished products for raw_ids <code>{{ raw_ids_param }}</code>.
+      Change any count and save — unchanged rows are left alone, and every change
+      is recorded in the inventory log as an adjustment.
+      <a href="{% url 'bulk_inventory_update' %}">Pick different products</a>.
+    </p>
+
+    <form method="post">
+      {% csrf_token %}
+
+      {% for group in groups %}
+        <h2 class="group-title">
+          {{ group.raw_product.name }}
+          <span class="small muted">— {{ group.raw_product.category.name }} (id={{ group.raw_product.id }})</span>
+        </h2>
+
+        {% if group.rows %}
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 45%;">Recipe</th>
+                <th style="width: 15%;">Current</th>
+                <th style="width: 20%;">New count</th>
+                <th>Finished product</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in group.rows %}
+                <tr>
+                  <td>{{ row.fp.recipe.name }}</td>
+                  <td>{{ row.fp.number_on_hand }}</td>
+                  <td>
+                    {{ row.field }}
+                    {% if row.field.errors %}
+                      <div class="small" style="color:#b00;">{{ row.field.errors }}</div>
+                    {% endif %}
+                  </td>
+                  <td class="small muted">{{ row.fp.name }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% else %}
+          <p class="muted small">No active finished products for this raw product yet.</p>
+        {% endif %}
+      {% endfor %}
+
+      <button class="btn" type="submit">Save inventory</button>
+    </form>
+  {% endif %}
+</body>
+</html>

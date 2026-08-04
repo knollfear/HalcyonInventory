@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Upload Product Photos</title>
+    <style>
+        :root { --accent: #23466b; }
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, system-ui, sans-serif;
+            margin: 0; padding: 1rem;
+            max-width: 640px; margin-inline: auto;
+            color: #1a1a1a;
+        }
+        h1 { font-size: 1.35rem; }
+        .muted { color: #777; font-size: 0.85rem; }
+        .warn { color: #8a5a00; }
+        .picker {
+            display: block; width: 100%;
+            padding: 1.5rem 1rem; margin: 1rem 0;
+            border: 2px dashed #9cbce0; border-radius: 12px;
+            background: #f2f7fd; text-align: center;
+            font-size: 1.1rem; color: var(--accent); cursor: pointer;
+        }
+        .picker input { display: none; }
+        .card {
+            border: 1px solid #ddd; border-radius: 10px;
+            padding: 0.75rem; margin: 0.6rem 0; background: #fafafa;
+        }
+        .card .thumb {
+            width: 64px; height: 64px; object-fit: cover;
+            border-radius: 6px; margin-right: 0.6rem; vertical-align: middle;
+        }
+        .filed { display: flex; align-items: center; gap: 0.6rem; }
+        .results { margin-top: 0.4rem; }
+        .result {
+            display: block; width: 100%; text-align: left;
+            padding: 0.5rem 0.6rem; margin: 0.2rem 0;
+            border: 1px solid #cbd6e2; border-radius: 6px;
+            background: #fff; cursor: pointer; font-size: 0.95rem;
+        }
+        .result:hover { background: #eef4fb; }
+        input[type=text] {
+            width: 100%; padding: 0.55rem 0.6rem; font-size: 1rem;
+            border: 1px solid #bbb; border-radius: 6px;
+        }
+        .error { color: #a11; }
+    </style>
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+</head>
+<body hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
+    {% csrf_token %}
+    <h1>Upload Product Photos</h1>
+
+    {% if not use_s3 %}
+        <p class="warn">⚠️ Bucket storage isn't configured on this environment,
+        so uploads are disabled here. This works on the deployed site.</p>
+    {% else %}
+        <p class="muted">Each photo is filed automatically by reading its barcode.
+        If a barcode can't be read, you'll pick the product yourself.</p>
+
+        <label class="picker">
+            📷 Tap to take or choose photos
+            <input type="file" id="file-input" accept="image/*" multiple>
+        </label>
+
+        <div id="cards"></div>
+
+        <script>
+        (function () {
+            const csrftoken = "{{ csrf_token }}";
+            const presignUrl = "{% url 'presign_upload' %}";
+            const processTpl = "{% url 'process_upload' 0 %}";  // .../upload/0/process/
+            const input = document.getElementById("file-input");
+            const cards = document.getElementById("cards");
+
+            input.addEventListener("change", async (e) => {
+                const files = Array.from(e.target.files);
+                input.value = "";
+                for (const file of files) { await handleFile(file); }
+            });
+
+            async function handleFile(file) {
+                const card = document.createElement("div");
+                card.className = "card";
+                card.textContent = "⏳ Uploading " + file.name + "…";
+                cards.prepend(card);
+                try {
+                    // 1. Ask Django for presigned POST fields.
+                    const presign = await fetch(presignUrl, {
+                        method: "POST",
+                        headers: {
+                            "X-CSRFToken": csrftoken,
+                            "Content-Type": "application/x-www-form-urlencoded",
+                        },
+                        body: new URLSearchParams({
+                            content_type: file.type || "image/jpeg",
+                        }),
+                    });
+                    if (!presign.ok) throw new Error("could not start upload");
+                    const { upload_id, url, fields } = await presign.json();
+
+                    // 2. Upload the file straight to the bucket.
+                    const form = new FormData();
+                    Object.entries(fields).forEach(([k, v]) => form.append(k, v));
+                    form.append("file", file);
+                    const put = await fetch(url, { method: "POST", body: form });
+                    if (!put.ok) throw new Error("bucket upload failed");
+
+                    // 3. Let the server decode + file it; HTMX swaps in the result
+                    //    (and wires up any type-ahead in the returned fragment).
+                    card.id = "card-" + upload_id;
+                    card.textContent = "🔍 Reading barcode…";
+                    const processUrl = processTpl.replace("/0/", "/" + upload_id + "/");
+                    await htmx.ajax("POST", processUrl, {
+                        target: "#card-" + upload_id,
+                        swap: "outerHTML",
+                        headers: { "X-CSRFToken": csrftoken },
+                    });
+                } catch (err) {
+                    card.className = "card error";
+                    card.textContent = "❌ " + file.name + ": " + err.message;
+                }
+            }
+        })();
+        </script>
+    {% endif %}
+</body>
+</html>

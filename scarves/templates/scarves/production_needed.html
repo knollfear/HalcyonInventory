@@ -109,6 +109,7 @@
 
 
     </style>
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
 </head>
 <body>
 {% if messages %}
@@ -120,91 +121,95 @@
         {% endfor %}
     </div>
 {% endif %}
-    <h1>Products to Produce</h1>
+   <h1>Products to Produce</h1>
 
-    <form method="get" class="filter-bar">
-        <label for="id_category">Filter by category:</label>
-        <select name="category" id="id_category" onchange="this.form.submit()">
-            <option value="">All categories</option>
-            {% for cat in categories %}
-                <option value="{{ cat.id }}" {% if selected_category_id == cat.id %}selected{% endif %}>
-                    {{ cat.name }}
-                </option>
+<form method="get" class="filter-bar">
+  <label for="id_category">Filter by category:</label>
+  <select name="category" id="id_category" onchange="this.form.submit()">
+    <option value="">All categories</option>
+    {% for cat in categories %}
+      <option value="{{ cat.id }}" {% if selected_category_id == cat.id %}selected{% endif %}>
+        {{ cat.name }}
+      </option>
+    {% endfor %}
+  </select>
+</form>
+
+{% if groups %}
+  {% for g in groups %}
+    <div style="margin: 1rem 0; padding: 0.75rem; border: 1px solid #ddd; border-radius: 8px; background: #fafafa;">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:1rem;">
+        <div>
+          <div style="font-size: 1.1rem; font-weight: 700;">
+            {{ g.recipe_name }}
+            {% if g.has_zero %}
+              <span style="margin-left:0.5rem; color:#b30000; font-weight:700;">⚠ Has at least one product with zero on-hand</span>
+            {% endif %}
+          </div>
+
+          <!-- Recipe dyes (shown once per group) -->
+          <div style="margin-top:0.4rem; font-size:0.9rem;">
+            {% for rd in g.recipe_obj.recipe_dyes.all %}
+              <span style="display:inline-flex; align-items:center; margin-right:0.75rem; margin-bottom:0.25rem;">
+                <span style="width:14px;height:14px;border-radius:3px;border:1px solid #ccc;margin-right:0.3rem;background:{{ rd.dye.hex_color }};"></span>
+                {{ rd.dye.name }}
+              </span>
+            {% empty %}
+              <em>No dyes linked</em>
             {% endfor %}
-        </select>
-        <noscript>
-            <button type="submit">Apply</button>
-        </noscript>
-    </form>
+          </div>
+        </div>
+      </div>
 
-    {% if products %}
-        <table>
-            <thead>
-                <tr>
-                    <th>Finished Product</th>
-                    <th>Category</th>
-                    <th>Recipe</th>
-                    <th>Recipe Details</th>
-                    <th>On Hand</th>
-                    <th>Par</th>
-                    <th>Shortage</th>
-                    <th>Actions</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for fp in products %}
-                   <tr>
-                        <td>{{ fp.name }}</td>
+      <div style="margin-top:0.75rem;">
+        <table style="width:100%; border-collapse:collapse;">
+          <thead>
+            <tr>
+              <th style="text-align:left; padding:0.4rem; border-bottom:1px solid #ddd;">Finished Product</th>
+              <th style="text-align:left; padding:0.4rem; border-bottom:1px solid #ddd;">Category</th>
+              <th style="text-align:left; padding:0.4rem; border-bottom:1px solid #ddd;">Base (Raw)</th>
+              <th style="text-align:right; padding:0.4rem; border-bottom:1px solid #ddd;">On Hand</th>
+              <th style="text-align:right; padding:0.4rem; border-bottom:1px solid #ddd;">Par</th>
+              <th style="text-align:right; padding:0.4rem; border-bottom:1px solid #ddd;">Shortage</th>
+                <th style="text-align:left; padding:0.4rem; border-bottom:1px solid #ddd;">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for fp in g.items %}
+              <tr id="fp-{{ fp.id }}" {% if fp.number_on_hand == 0 %}style="background:#ffecec;"{% endif %}>
+                  <td style="padding:0.4rem;">{{ fp.name }}</td>
+                  <td style="padding:0.4rem;">{{ fp.raw_product.category.name }}</td>
+                  <td style="padding:0.4rem;">{{ fp.raw_product.name }}</td>
+                  <td style="padding:0.4rem; text-align:right;">{{ fp.number_on_hand }}</td>
+                  <td style="padding:0.4rem; text-align:right;">{{ fp.par_level }}</td>
+                  <td style="padding:0.4rem; text-align:right; font-weight:700;">{{ fp.shortage }}</td>
 
-                        <td>
-                            <span class="category-pill">
-                                {{ fp.raw_product.category.name }}
-                            </span>
-                        </td>
+                  <td style="padding:0.4rem; white-space:nowrap;">
+                    <form
+                      method="post"
+                      action="{% url 'record_dye_bath' fp.pk %}"
+                      hx-post="{% url 'record_dye_bath' fp.pk %}"
+                      hx-target="#fp-{{ fp.id }}"
+                      hx-swap="outerHTML"
+                      style="display:inline;"
+                    >
+                      {% csrf_token %}
+                      <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                      <button type="submit" class="btn">
+                        Dye bath (+{{ fp.raw_product.number_per_dye_bath }})
+                      </button>
+                    </form>
+                  </td>
+              </tr>
 
-                        <td>{{ fp.recipe.name }}</td>
-
-                        <td class="recipe-dyes">
-                            {% for rd in fp.recipe.recipe_dyes.all %}
-                                <span class="recipe-dye">
-                                    <span class="dye-swatch"
-                                          style="background-color: {{ rd.dye.hex_color }};"></span>
-                                    <span class="recipe-dye-name">
-                                        {{ rd.dye.name }}
-                                        {% if rd.ratio %}
-                                            ({{ rd.ratio }})
-                                        {% endif %}
-                                    </span>
-                                </span>
-                            {% empty %}
-                                <em>No dyes linked</em>
-                            {% endfor %}
-                        </td>
-
-                        <td>{{ fp.number_on_hand }}</td>
-
-                        <td>{{ fp.par }}</td>
-
-                        <td class="shortage">
-                            {{ fp.shortage }}
-                        </td>
-
-                       <td class="actions">
-                            <form method="post"
-                                  action="{% url 'record_dye_bath' fp.pk %}">
-                                {% csrf_token %}
-                                <input type="hidden" name="next" value="{{ request.get_full_path }}">
-                                <button type="submit" class="btn">
-                                    Finished dye bath
-                                </button>
-                            </form>
-                        </td>
-                    </tr>
-                {% endfor %}
-            </tbody>
+            {% endfor %}
+          </tbody>
         </table>
-    {% else %}
-        <p>No products are currently below par. 🎉</p>
-    {% endif %}
+      </div>
+    </div>
+  {% endfor %}
+{% else %}
+  <p>No products are currently below par. 🎉</p>
+{% endif %}
 </body>
 </html>

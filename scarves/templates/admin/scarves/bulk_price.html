@@ -1,0 +1,36 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+<h1>Bulk Update Finished Product Prices</h1>
+
+<p>Set a new price for all active finished products belonging to the selected raw product(s):</p>
+
+<ul>
+  {% for rp in queryset %}
+  <li><strong>{{ rp.name }}</strong> — {{ rp.finished_products.filter.is_active }} ({{ rp.finished_products.count }} finished products)</li>
+  {% endfor %}
+</ul>
+
+<form method="post">
+  {% csrf_token %}
+  <input type="hidden" name="action" value="bulk_update_finished_price">
+  <input type="hidden" name="apply" value="1">
+  {% for rp in queryset %}
+    <input type="hidden" name="{{ action_checkbox_name }}" value="{{ rp.pk }}">
+  {% endfor %}
+
+  <p>
+    <label for="new_price"><strong>New price ($):</strong></label><br>
+    <input type="number" id="new_price" name="new_price" step="0.01" min="0.01"
+           style="font-size:1.2em; padding:6px; width:150px;" required autofocus>
+  </p>
+
+  <p style="color:#666; font-size:0.9em;">
+    This will update all active finished products for the selected raw product(s).
+    Run sync_to_square afterward to push the new prices to Square.
+  </p>
+
+  <input type="submit" value="Update Prices" class="default" style="margin-right:8px;">
+  <a href="../" class="button cancel-link">Cancel</a>
+</form>
+{% endblock %}

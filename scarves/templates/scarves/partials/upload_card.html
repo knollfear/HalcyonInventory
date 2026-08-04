@@ -1,0 +1,30 @@
+<div class="card" id="card-{{ upload.id }}">
+    {% if matched %}
+        <div class="filed">
+            {% if upload.product_image %}
+                <img class="thumb" src="{{ upload.product_image.url }}" alt="">
+            {% endif %}
+            <div>
+                ✅ Filed to <strong>{{ upload.finished_product.name }}</strong>
+                {% if upload.detected_sku %}
+                    <div class="muted">barcode {{ upload.detected_sku }}</div>
+                {% else %}
+                    <div class="muted">assigned manually</div>
+                {% endif %}
+            </div>
+        </div>
+    {% elif needs_assign %}
+        <div class="needs-assign">
+            <div class="warn">⚠️ Couldn't read a barcode — pick the product:</div>
+            <input type="text"
+                   name="q"
+                   placeholder="Type product name or SKU…"
+                   autocomplete="off"
+                   hx-get="{% url 'product_search' %}"
+                   hx-trigger="keyup changed delay:250ms"
+                   hx-target="#results-{{ upload.id }}"
+                   hx-vals='{"upload_id": "{{ upload.id }}"}'>
+            <div class="results" id="results-{{ upload.id }}"></div>
+        </div>
+    {% endif %}
+</div>

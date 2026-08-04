@@ -1,0 +1,45 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+<h1>Match to Square Categories</h1>
+<form method="post">
+  {% csrf_token %}
+  <input type="hidden" name="action" value="match_square_categories">
+  <input type="hidden" name="apply" value="1">
+  {% for cat in queryset %}
+    <input type="hidden" name="{{ action_checkbox_name }}" value="{{ cat.pk }}">
+  {% endfor %}
+
+  <table>
+    <thead>
+      <tr>
+        <th>Django Category</th>
+        <th>Square Category</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for cat in queryset %}
+      <tr>
+        <td style="padding:8px 16px 8px 0;"><strong>{{ cat.name }}</strong></td>
+        <td>
+          <select name="cat_{{ cat.pk }}" style="min-width:300px;">
+            <option value="">-- leave unchanged --</option>
+            {% for sq in square_cats %}
+            <option value="{{ sq.id }}"
+              {% if cat.square_category_id == sq.id %}selected{% endif %}>
+              {{ sq.category_data.name }} — {{ sq.id }}
+            </option>
+            {% endfor %}
+          </select>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div style="margin-top:16px;">
+    <input type="submit" value="Save" class="default" style="margin-right:8px;">
+    <a href="../" class="button cancel-link">Cancel</a>
+  </div>
+</form>
+{% endblock %}

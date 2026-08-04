@@ -27,10 +27,14 @@ SECRET_KEY = 'django-insecure-rc^*w^w&6g9_(uvx#6s*bnt!w)l0rdi%!l7mv#y%uc&x%wo5pk
 DEBUG = True
 
 ALLOWED_HOSTS = ["*"]
+APPEND_SLASH = False
 
 # FORM SUBMISSION
 # Comment out the following line and place your railway URL, and your production URL in the array.
-CSRF_TRUSTED_ORIGINS = ["https://server-production-ead0.up.railway.app"]
+CSRF_TRUSTED_ORIGINS = [
+    "https://server-production-ead0.up.railway.app",
+    "https://server-development-d24f.up.railway.app",
+]
 
 # Application definition
 
@@ -131,10 +135,69 @@ STATIC_URL = 'static/'
 STATICFILES_DIRS = [os.path.join(BASE_DIR, "static")]
 STATIC_ROOT = os.path.join(BASE_DIR, "staticfiles")
 
+# Media / file storage
+# ---------------------
+# User-uploaded files (e.g. product images) use Django's `default` storage.
+# The backend is chosen at startup by env vars: if the Railway S3 bucket vars
+# are present we use django-storages' S3 backend; otherwise we fall back to the
+# local filesystem so local dev needs no cloud creds. Railway's bucket is
+# S3-compatible, so this is the standard boto3/S3 backend pointed at Railway's
+# endpoint URL — swapping to real AWS S3 (or anything else) later is env-only.
+# Variable names match Railway's automated django-storages integration, which
+# injects them as reference values (${{Images.*}}) from the bucket service.
+S3_BUCKET_NAME = os.environ.get("AWS_STORAGE_BUCKET_NAME", "")
+S3_ENDPOINT_URL = os.environ.get("AWS_S3_ENDPOINT_URL", "")
+S3_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID", "")
+S3_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY", "")
+
+USE_S3 = bool(S3_BUCKET_NAME and S3_ENDPOINT_URL and S3_ACCESS_KEY_ID)
+
+if USE_S3:
+    STORAGES = {
+        "default": {
+            "BACKEND": "storages.backends.s3.S3Storage",
+            "OPTIONS": {
+                "bucket_name": S3_BUCKET_NAME,
+                "endpoint_url": S3_ENDPOINT_URL,
+                "access_key": S3_ACCESS_KEY_ID,
+                "secret_key": S3_SECRET_ACCESS_KEY,
+                "region_name": os.environ.get("AWS_S3_REGION_NAME", "auto"),
+                # Signed URLs work regardless of bucket ACL support. If you make
+                # the bucket public-read, set querystring_auth=False for stable,
+                # cacheable URLs.
+                "querystring_auth": True,
+                "file_overwrite": False,
+                # Railway/MinIO-style S3 needs path-style addressing, not the
+                # virtual-hosted (bucket.endpoint) style AWS uses.
+                "addressing_style": "path",
+            },
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
+else:
+    STORAGES = {
+        "default": {
+            "BACKEND": "django.core.files.storage.FileSystemStorage",
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
+    MEDIA_URL = "media/"
+    MEDIA_ROOT = os.path.join(BASE_DIR, "media")
+
 # Default primary key field type
 # https://docs.djangoproject.com/en/4.0/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+SQUARE_ACCESS_TOKEN = os.environ.get("SQUARE_ACCESS_TOKEN", "")
+SQUARE_LOCATION_ID = os.environ.get("SQUARE_LOCATION_ID", "")
+SQUARE_ENVIRONMENT = os.environ.get("SQUARE_ENVIRONMENT", "sandbox")
+SQUARE_WEBHOOK_SIGNATURE_KEY = os.environ.get("SQUARE_WEBHOOK_SIGNATURE_KEY", "")
+SQUARE_WEBHOOK_URL = os.environ.get("SQUARE_WEBHOOK_URL", "")
+
 # settings.py
-LOGIN_REDIRECT_URL = '/admin/'
+LOGIN_REDIRECT_URL = '/accounts/'

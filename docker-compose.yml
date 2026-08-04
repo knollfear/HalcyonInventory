@@ -7,7 +7,7 @@ services:
     command: >
       sh -c "python manage.py migrate &&
              python manage.py createsuperuser --noinput || true &&
-             gunicorn mysite.wsgi"
+             gunicorn mysite.wsgi --bind 0.0.0.0:8000"
 
     volumes:
       - .:/home/app
@@ -25,6 +25,10 @@ services:
       DJANGO_SUPERUSER_USERNAME: admin
       DJANGO_SUPERUSER_PASSWORD: admin123
       DJANGO_SUPERUSER_EMAIL: admin@example.com
+      SQUARE_ACCESS_TOKEN: ${SQUARE_ACCESS_TOKEN}
+      SQUARE_LOCATION_ID: ${SQUARE_LOCATION_ID}
+      SQUARE_ENVIRONMENT: ${SQUARE_ENVIRONMENT:-sandbox}
+
 
   db:
     image: postgres:15

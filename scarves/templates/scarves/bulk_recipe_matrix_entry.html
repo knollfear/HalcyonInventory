@@ -1,0 +1,98 @@
+{% load form_extras %}
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Bulk Recipe Inventory Matrix</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; margin: 1.5rem; }
+    .messages { margin-bottom: 1rem; }
+    .message { padding: 0.5rem 0.75rem; border-radius: 6px; margin-bottom: 0.25rem; }
+    .message.success { background: #e6ffed; border: 1px solid #8fd19e; color: #245b31; }
+    .message.error { background: #ffe6e6; border: 1px solid #e09c9c; color: #7d2424; }
+    .message.info { background: #e6f3ff; border: 1px solid #9cbce0; color: #23466b; }
+
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border-bottom: 1px solid #ddd; padding: 0.5rem; vertical-align: top; }
+    th { background: #f3f3f3; text-align: left; }
+    input[type="text"] { width: 100%; }
+    input[type="number"] { width: 7rem; }
+    .btn { padding: 0.5rem 0.9rem; border: 1px solid #777; background: #f6f6f6; border-radius: 6px; cursor: pointer; }
+    .btn:hover { background: #eaeaea; }
+    .hint { color: #666; margin: 0.5rem 0 1rem; }
+    .small { font-size: 0.9rem; color: #444; }
+  </style>
+</head>
+<body>
+  <h1>Bulk Inventory Entry (by Recipe)</h1>
+
+  {% if messages %}
+    <div class="messages">
+      {% for message in messages %}
+        <div class="message {{ message.tags }}">{{ message }}</div>
+      {% endfor %}
+    </div>
+  {% endif %}
+
+  <div class="hint">
+    Open with: <code>/scarves/bulk-matrix/?raw_ids=1,2,3</code><br>
+    Each row is a recipe name and counts for each raw product. Blank cells won’t change existing inventory.
+  </div>
+
+  {% if raw_products %}
+    <div class="small" style="margin-bottom: 0.75rem;">
+      <strong>Columns:</strong>
+      {% for rp in raw_products %}
+        <span style="margin-right: 0.75rem;">{{ rp.category.name }} — {{ rp.name }} (id={{ rp.id }})</span>
+      {% endfor %}
+    </div>
+  {% endif %}
+
+  {% if formset %}
+    <form method="post">
+      {% csrf_token %}
+      {{ formset.management_form }}
+
+      <table>
+        <thead>
+          <tr>
+            <th style="width: 22%;">Recipe Name</th>
+            {% for rp, field_name in columns %}
+              <th>{{ rp.name }}<br><span class="small">(id={{ rp.id }})</span></th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+  {% for form in formset %}
+    <tr>
+      <td>
+        {{ form.recipe_name }}
+        {% if form.recipe_name.errors %}
+          <div class="small" style="color:#b00;">{{ form.recipe_name.errors }}</div>
+        {% endif %}
+      </td>
+
+      {% for rp, field_name in columns %}
+        {% with field=form|get_item:field_name %}
+          <td>
+            {{ field }}
+            {% if field.errors %}
+              <div class="small" style="color:#b00;">{{ field.errors }}</div>
+            {% endif %}
+          </td>
+        {% endwith %}
+      {% endfor %}
+    </tr>
+  {% endfor %}
+</tbody>
+      </table>
+
+      <div style="margin-top: 1rem;">
+        <button class="btn" type="submit">Save 10 recipes</button>
+      </div>
+    </form>
+  {% else %}
+    <p>Provide raw_ids to render the form.</p>
+  {% endif %}
+</body>
+</html>

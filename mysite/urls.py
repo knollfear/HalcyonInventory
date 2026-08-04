@@ -13,6 +13,8 @@ Including another URLconf
     1. Import the include() function: from django.urls import include, path
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
+from django.conf import settings
+from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import include, path
 
@@ -20,4 +22,10 @@ urlpatterns = [
     path('accounts/', admin.site.urls),
     path("scarves/", include("scarves.urls")),
 ]
+
+# Serve user-uploaded media from the local filesystem in dev. In production
+# USE_S3 is on, so media is served by the bucket (via presigned URLs) and this
+# block is skipped.
+if settings.DEBUG and not settings.USE_S3:
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
 
