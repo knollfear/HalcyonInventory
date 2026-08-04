@@ -784,7 +784,8 @@ def square_webhook(request):
 @page_meta(
     title="Reference Sheets",
     description="Pick a category to generate a printable barcode/SKU reference "
-                "sheet (PDF) for the recipe × raw-product matrix.",
+                "sheet (PDF) — one portrait page per recipe with photos and "
+                "per-item barcode cards.",
     category="Reference Sheets",
 )
 def reference_sheet_index(request):
@@ -795,32 +796,159 @@ def reference_sheet_index(request):
     return render(request, "scarves/reference_sheet_index.html", {"categories": categories})
 
 
+def _image_flowable(fpi, max_w, max_h):
+    """A ReportLab Image of a FinishedProductImage's uploaded file, scaled to
+    fit max_w x max_h (preserving aspect), or None if there's no usable file.
+    Bytes come from the configured storage (the bucket in prod)."""
+    from reportlab.platypus import Image as RLImage
+    from reportlab.lib.utils import ImageReader
+
+    if not fpi or not fpi.image:
+        return None
+    try:
+        with fpi.image.open("rb") as f:
+            bio = BytesIO(f.read())
+        iw, ih = ImageReader(bio).getSize()
+    except Exception:
+        return None
+    if not iw or not ih:
+        return None
+    ratio = min(max_w / iw, max_h / ih)
+    bio.seek(0)
+    return RLImage(bio, width=iw * ratio, height=ih * ratio)
+
+
+def _select_recipe_photos(items, cap=4):
+    """One uploaded photo per item first (item order), then fill remaining
+    slots with each item's additional photos, up to `cap`. Only counts images
+    that have an uploaded file (external image_url can't be embedded)."""
+    per_item = [[img for img in fp.images.all() if img.image] for fp in items]
+    selected = []
+    for imgs in per_item:            # first photo of each item
+        if len(selected) >= cap:
+            break
+        if imgs:
+            selected.append(imgs[0])
+    idx = 1                          # then fill from additional photos
+    while len(selected) < cap:
+        added = False
+        for imgs in per_item:
+            if len(selected) >= cap:
+                break
+            if len(imgs) > idx:
+                selected.append(imgs[idx])
+                added = True
+        if not added:
+            break
+        idx += 1
+    return selected[:cap]
+
+
+def _photo_gallery(photos, usable_width):
+    """Arrange 1-4 photos adaptively: 1 large, 2 side-by-side, 3-4 in a 2x2
+    grid. Returns a flowable (Table) or None."""
+    from reportlab.lib.units import inch
+    from reportlab.platypus import Table, TableStyle, Spacer
+
+    n = len(photos)
+    if n == 0:
+        return None
+
+    gap = 0.2 * inch
+    if n == 1:
+        flow = _image_flowable(photos[0], usable_width, 4.6 * inch)
+        if flow is None:
+            return None
+        grid, col_widths = [[flow]], [usable_width]
+    else:
+        col_w = (usable_width - gap) / 2
+        cell_h = 3.6 * inch if n == 2 else 2.9 * inch
+        cells = [_image_flowable(p, col_w, cell_h) or Spacer(1, 1) for p in photos]
+        if n == 2:
+            grid = [[cells[0], cells[1]]]
+        elif n == 3:
+            grid = [[cells[0], cells[1]], [cells[2], ""]]
+        else:
+            grid = [[cells[0], cells[1]], [cells[2], cells[3]]]
+        col_widths = [col_w, col_w]
+
+    t = Table(grid, colWidths=col_widths, hAlign="CENTER")
+    t.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    return t
+
+
+def _barcode_card(fp, card_w, name_style, sku_style):
+    """A bordered card: item (raw-product) name, Code128 barcode, and SKU."""
+    from reportlab.lib import colors
+    from reportlab.lib.units import inch
+    from reportlab.platypus import Table, TableStyle, Paragraph, Spacer
+    from reportlab.graphics.barcode import code128
+
+    inner = [Paragraph(fp.raw_product.name, name_style), Spacer(1, 0.06 * inch)]
+    if fp.sku:
+        inner.append(code128.Code128(fp.sku, barHeight=0.45 * inch, barWidth=0.62))
+        inner.append(Spacer(1, 0.03 * inch))
+        inner.append(Paragraph(fp.sku, sku_style))
+    else:
+        inner.append(Paragraph(f"${fp.price} (no SKU)", sku_style))
+
+    card = Table([[inner]], colWidths=[card_w])
+    card.setStyle(TableStyle([
+        ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor("#9cbce0")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    return card
+
+
+def _barcode_grid(items, usable_width, name_style, sku_style):
+    """2-across grid of barcode cards for all items sharing the recipe."""
+    from reportlab.lib.units import inch
+    from reportlab.platypus import Table, TableStyle
+
+    gap = 0.25 * inch
+    card_w = (usable_width - gap) / 2
+    cards = [_barcode_card(fp, card_w, name_style, sku_style) for fp in items]
+    rows = []
+    for i in range(0, len(cards), 2):
+        pair = cards[i:i + 2]
+        if len(pair) == 1:
+            pair.append("")
+        rows.append(pair)
+    grid = Table(rows, colWidths=[card_w, card_w], hAlign="CENTER")
+    grid.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    return grid
+
+
 @page_meta(
     title="Reference Sheet PDF",
-    description="Generates the landscape PDF reference sheet (Code128 barcodes "
-                "per SKU) for one category. Linked from the Reference Sheets page.",
+    description="Generates a printable PDF reference sheet for one category: "
+                "one portrait page per recipe, with product photos and a "
+                "Code128 barcode card for every item sharing that recipe.",
     category="Reference Sheets",
     note="Requires a category id in the URL · returns a PDF.",
 )
 def reference_sheet_pdf(request, category_id):
     from reportlab.lib import colors
-    from reportlab.lib.pagesizes import letter, landscape
+    from reportlab.lib.pagesizes import letter, portrait
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import inch
-    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-    from reportlab.graphics.barcode import code128
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
 
     category = get_object_or_404(RawProductCategory, pk=category_id)
-
-    raw_products = (
-        RawProduct.objects.filter(
-            category=category,
-            is_active=True,
-            finished_products__is_active=True,
-        )
-        .distinct()
-        .order_by("name")
-    )
 
     from .models import Recipe
     recipes = (
@@ -833,75 +961,59 @@ def reference_sheet_pdf(request, category_id):
         .order_by("name")
     )
 
-    fps = (
-        FinishedProduct.objects.filter(
-            raw_product__in=raw_products,
-            recipe__in=recipes,
-            is_active=True,
-        )
-        .select_related("raw_product", "recipe")
-    )
-    matrix = {}
-    for fp in fps:
-        matrix.setdefault(fp.recipe_id, {})[fp.raw_product_id] = fp
-
     styles = getSampleStyleSheet()
-    small = ParagraphStyle("small", parent=styles["Normal"], fontSize=7, leading=9)
-    header_style = ParagraphStyle("header", parent=styles["Normal"], fontSize=10, leading=12, fontName="Helvetica-Bold", textColor=colors.white)
-    recipe_style = ParagraphStyle("recipe", parent=styles["Normal"], fontSize=8, leading=10, fontName="Helvetica-Bold")
+    title_style = ParagraphStyle("title", parent=styles["h1"], fontSize=18, leading=22)
+    sub_style = ParagraphStyle("sub", parent=styles["Normal"], fontSize=10, textColor=colors.HexColor("#555555"))
+    name_style = ParagraphStyle("cardname", parent=styles["Normal"], fontSize=10, leading=12, fontName="Helvetica-Bold", alignment=1)
+    sku_style = ParagraphStyle("cardsku", parent=styles["Normal"], fontSize=8, leading=10, alignment=1)
 
-    header_row = [Paragraph("Color / Recipe", header_style)] + [
-        Paragraph(rp.name, header_style) for rp in raw_products
-    ]
-    table_data = [header_row]
+    page_w, page_h = portrait(letter)
+    margin = 0.5 * inch
+    usable_width = page_w - 2 * margin
 
+    story = []
+    first = True
     for recipe in recipes:
-        row = [Paragraph(recipe.name, recipe_style)]
-        for rp in raw_products:
-            fp = matrix.get(recipe.pk, {}).get(rp.pk)
-            if fp and fp.sku:
-                bc = code128.Code128(fp.sku, barHeight=0.35 * inch, barWidth=0.65)
-                cell = [bc, Spacer(1, 0.05 * inch), Paragraph(f"{fp.sku}", small)]
-            elif fp:
-                cell = [Paragraph(f"${fp.price}\n(no SKU)", small)]
-            else:
-                cell = [Paragraph("—", small)]
-            row.append(cell)
-        table_data.append(row)
+        items = list(
+            FinishedProduct.objects.filter(
+                recipe=recipe,
+                raw_product__category=category,
+                is_active=True,
+            )
+            .select_related("raw_product")
+            .prefetch_related("images")
+            .order_by("raw_product__name")
+        )
+        if not items:
+            continue
+        if not first:
+            story.append(PageBreak())
+        first = False
 
-    usable_width = 10.2 * inch
-    recipe_col_width = 1.3 * inch
-    data_col_width = (usable_width - recipe_col_width) / len(raw_products)
-    col_widths = [recipe_col_width] + [data_col_width] * len(raw_products)
+        story.append(Paragraph(recipe.name, title_style))
+        story.append(Paragraph(f"{category.name} · {len(items)} item(s)", sub_style))
+        story.append(Spacer(1, 0.2 * inch))
 
-    table = Table(table_data, colWidths=col_widths, repeatRows=1)
-    table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1a3a5c")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#ffffff")),
-        ("BACKGROUND", (0, 1), (0, -1), colors.HexColor("#dce6f0")),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("TOPPADDING", (0, 0), (-1, -1), 12),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 12),
-        ("LEFTPADDING", (0, 0), (-1, -1), 14),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 14),
-    ]))
+        gallery = _photo_gallery(_select_recipe_photos(items, cap=4), usable_width)
+        if gallery is not None:
+            story.append(gallery)
+            story.append(Spacer(1, 0.25 * inch))
+
+        story.append(_barcode_grid(items, usable_width, name_style, sku_style))
+
+    if not story:
+        story = [Paragraph(f"{category.name} — no active items with recipes.", styles["h1"])]
 
     buf = BytesIO()
     doc = SimpleDocTemplate(
         buf,
-        pagesize=landscape(letter),
-        topMargin=0.4 * inch,
-        bottomMargin=0.4 * inch,
-        leftMargin=0.4 * inch,
-        rightMargin=0.4 * inch,
+        pagesize=portrait(letter),
+        topMargin=margin,
+        bottomMargin=margin,
+        leftMargin=margin,
+        rightMargin=margin,
     )
-    doc.build([
-        Paragraph(f"{category.name} — Reference Sheet", styles["h1"]),
-        Spacer(1, 0.15 * inch),
-        table,
-    ])
-
+    doc.build(story)
     buf.seek(0)
     return HttpResponse(buf, content_type="application/pdf")
 
