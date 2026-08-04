@@ -816,7 +816,7 @@ def _image_flowable(fpi, max_w, max_h):
         im.load()
         if im.mode not in ("RGB", "L"):
             im = im.convert("RGB")
-        im.thumbnail((1000, 1000), PILImage.LANCZOS)
+        im.thumbnail((1400, 1400), PILImage.LANCZOS)
         out = BytesIO()
         im.save(out, format="JPEG", quality=80)
         out.seek(0)
@@ -855,40 +855,26 @@ def _select_recipe_photos(items, cap=4):
     return selected[:cap]
 
 
-def _photo_gallery(photos, usable_width):
-    """Arrange 1-4 photos adaptively: 1 large, 2 side-by-side, 3-4 in a 2x2
-    grid. Returns a flowable (Table) or None."""
-    from reportlab.lib.units import inch
+def _photo_gallery(photos, usable_width, area_h):
+    """Stack photos vertically, each spanning the full page width, sharing the
+    vertical space `area_h`. Full-width best fits landscape photos on a portrait
+    page (least whitespace). Returns a flowable (Table) or None."""
     from reportlab.platypus import Table, TableStyle, Spacer
 
     n = len(photos)
-    if n == 0:
+    if n == 0 or area_h <= 0:
         return None
 
-    gap = 0.2 * inch
-    if n == 1:
-        flow = _image_flowable(photos[0], usable_width, 4.6 * inch)
-        if flow is None:
-            return None
-        grid, col_widths = [[flow]], [usable_width]
-    else:
-        col_w = (usable_width - gap) / 2
-        cell_h = 3.6 * inch if n == 2 else 2.9 * inch
-        cells = [_image_flowable(p, col_w, cell_h) or Spacer(1, 1) for p in photos]
-        if n == 2:
-            grid = [[cells[0], cells[1]]]
-        elif n == 3:
-            grid = [[cells[0], cells[1]], [cells[2], ""]]
-        else:
-            grid = [[cells[0], cells[1]], [cells[2], cells[3]]]
-        col_widths = [col_w, col_w]
-
-    t = Table(grid, colWidths=col_widths, hAlign="CENTER")
+    per_h = area_h / n
+    rows = [[_image_flowable(p, usable_width, per_h) or Spacer(1, 1)] for p in photos]
+    t = Table(rows, colWidths=[usable_width], rowHeights=[per_h] * n)
     t.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
     ]))
     return t
 
@@ -957,7 +943,7 @@ def reference_sheet_pdf(request, category_id):
     from reportlab.lib.pagesizes import letter, portrait
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import inch
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, PageBreak, Table, TableStyle
 
     category = get_object_or_404(RawProductCategory, pk=category_id)
 
@@ -981,6 +967,8 @@ def reference_sheet_pdf(request, category_id):
     page_w, page_h = portrait(letter)
     margin = 0.5 * inch
     usable_width = page_w - 2 * margin
+    usable_height = page_h - 2 * margin
+    title_h = 0.8 * inch
 
     story = []
     first = True
@@ -1001,16 +989,41 @@ def reference_sheet_pdf(request, category_id):
             story.append(PageBreak())
         first = False
 
-        story.append(Paragraph(recipe.name, title_style))
-        story.append(Paragraph(f"{category.name} · {len(items)} item(s)", sub_style))
-        story.append(Spacer(1, 0.2 * inch))
+        title_block = [
+            Paragraph(recipe.name, title_style),
+            Paragraph(f"{category.name} · {len(items)} item(s)", sub_style),
+        ]
 
-        gallery = _photo_gallery(_select_recipe_photos(items, cap=4), usable_width)
-        if gallery is not None:
-            story.append(gallery)
-            story.append(Spacer(1, 0.25 * inch))
+        # Barcodes sit at the bottom; measure their height so the photos can
+        # claim all the space that's left above them.
+        bc_grid = _barcode_grid(items, usable_width, name_style, sku_style)
+        _, bc_h = bc_grid.wrap(usable_width, usable_height)
 
-        story.append(_barcode_grid(items, usable_width, name_style, sku_style))
+        mid_h = usable_height - title_h - bc_h - 0.15 * inch
+        gallery = None
+        if mid_h > 1.2 * inch:
+            gallery = _photo_gallery(
+                _select_recipe_photos(items, cap=4), usable_width, mid_h
+            )
+
+        # One full-height table per page: title (top), photos (fill), barcodes
+        # (bottom). Row heights sum to ~the page height, pinning barcodes down.
+        page_table = Table(
+            [[title_block], [gallery or ""], [bc_grid]],
+            colWidths=[usable_width],
+            rowHeights=[title_h, max(mid_h, 0), bc_h],
+        )
+        page_table.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (0, 0), "TOP"),
+            ("VALIGN", (0, 1), (0, 1), "MIDDLE"),
+            ("ALIGN", (0, 1), (0, 1), "CENTER"),
+            ("VALIGN", (0, 2), (0, 2), "BOTTOM"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ]))
+        story.append(page_table)
 
     if not story:
         story = [Paragraph(f"{category.name} — no active items with recipes.", styles["h1"])]
