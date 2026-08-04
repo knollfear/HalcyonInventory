@@ -48,6 +48,17 @@ if not SECRET_KEY:
     SECRET_KEY = "django-insecure-dev-only-not-for-deployment"
 
 ALLOWED_HOSTS = ["*"]
+
+# Railway terminates TLS at its edge and forwards to us over plain HTTP, so
+# request.is_secure() is False and build_absolute_uri() emits http:// URLs.
+# On an https:// page the browser then refuses those as mixed active content —
+# which broke the game's "play again"/size buttons, since the embeddable
+# fragment has to use absolute URLs to work on other origins.
+#
+# Only safe because the proxy always sets this header itself; if the app were
+# ever reachable without going through it, a client could spoof the header.
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
 # Django default: auto-redirect a slashless URL (e.g. /reference-sheet/11) to
 # its slashed route (/reference-sheet/11/) when only the latter matches. Only
 # affects GETs; POSTs aren't redirected (the Square webhook registers both

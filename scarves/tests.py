@@ -185,6 +185,22 @@ class BoardViewTests(TestCase):
                 self.assertRegex(card["image_url"], r"^https?://")
         self.assertRegex(response.context["board_url"], r"^https?://")
 
+    def test_urls_are_https_behind_a_tls_terminating_proxy(self):
+        """Railway forwards over plain HTTP with X-Forwarded-Proto: https. If
+        Django doesn't trust that header it emits http:// absolute URLs, which
+        an https:// page blocks as mixed active content — breaking the buttons
+        in the fragment. Invisible on localhost, fatal in prod."""
+        response = self.client.get(
+            reverse("game_board"), HTTP_X_FORWARDED_PROTO="https"
+        )
+        self.assertTrue(
+            response.context["board_url"].startswith("https://"),
+            response.context["board_url"],
+        )
+        for card in response.context["cards"]:
+            if card["kind"] == "photo":
+                self.assertFalse(card["image_url"].startswith("http://"))
+
     def test_family_mode_is_off_by_default(self):
         response = self.client.get(reverse("game_board"))
         self.assertEqual(response.context["family_qs"], "")
