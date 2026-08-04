@@ -4,6 +4,6 @@
         "builder": "RAILPACK"
     },
     "deploy": {
-        "startCommand": "gunicorn mysite.wsgi"
+        "startCommand": "gunicorn mysite.wsgi --timeout 120"
     }
 }

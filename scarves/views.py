@@ -799,23 +799,34 @@ def reference_sheet_index(request):
 def _image_flowable(fpi, max_w, max_h):
     """A ReportLab Image of a FinishedProductImage's uploaded file, scaled to
     fit max_w x max_h (preserving aspect), or None if there's no usable file.
-    Bytes come from the configured storage (the bucket in prod)."""
+
+    The source is downscaled with PIL first: phone photos are ~4000px/several
+    MB, and embedding them at full resolution makes reportlab's base85 encode
+    slow enough to hit the gunicorn timeout (and bloats the PDF). ~1000px is
+    plenty for print at these display sizes."""
     from reportlab.platypus import Image as RLImage
-    from reportlab.lib.utils import ImageReader
+    from PIL import Image as PILImage
 
     if not fpi or not fpi.image:
         return None
     try:
         with fpi.image.open("rb") as f:
-            bio = BytesIO(f.read())
-        iw, ih = ImageReader(bio).getSize()
+            raw = f.read()
+        im = PILImage.open(BytesIO(raw))
+        im.load()
+        if im.mode not in ("RGB", "L"):
+            im = im.convert("RGB")
+        im.thumbnail((1000, 1000), PILImage.LANCZOS)
+        out = BytesIO()
+        im.save(out, format="JPEG", quality=80)
+        out.seek(0)
+        iw, ih = im.size
     except Exception:
         return None
     if not iw or not ih:
         return None
     ratio = min(max_w / iw, max_h / ih)
-    bio.seek(0)
-    return RLImage(bio, width=iw * ratio, height=ih * ratio)
+    return RLImage(out, width=iw * ratio, height=ih * ratio)
 
 
 def _select_recipe_photos(items, cap=4):
