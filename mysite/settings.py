@@ -73,6 +73,7 @@ APPEND_SLASH = True
 # Set CSRF_EXTRA_ORIGINS to a comma-separated list to add domains without a code
 # change, e.g. "https://play.halcyonsilks.com,https://app.halcyonsilks.com".
 CSRF_TRUSTED_ORIGINS = [
+    "https://production.halcyonsilks.com",
     "https://server-production-ead0.up.railway.app",
     "https://server-development-d24f.up.railway.app",
 ]
