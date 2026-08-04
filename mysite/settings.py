@@ -13,6 +13,8 @@ https://docs.djangoproject.com/en/4.0/ref/settings/
 import os
 from pathlib import Path
 
+from django.core.exceptions import ImproperlyConfigured
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -20,11 +22,30 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/4.0/howto/deployment/checklist/
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-rc^*w^w&6g9_(uvx#6s*bnt!w)l0rdi%!l7mv#y%uc&x%wo5pk'
-
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+# Off unless explicitly switched on, so a missing or typo'd env var fails safe.
+# docker-compose sets DEBUG=1 for local dev; Railway sets it per service.
+# This matters more since /scarves/game/ went public: with DEBUG on, an
+# unhandled exception renders settings and env vars (Square token, S3 keys,
+# SECRET_KEY) to anonymous visitors.
+DEBUG = os.environ.get("DEBUG", "").lower() in ("1", "true", "yes")
+
+# SECURITY WARNING: keep the secret key used in production secret!
+# The old key was committed to git, so it must be treated as public. Rotating
+# it signs everyone out (sessions are signed with it) but does NOT affect
+# stored passwords, which are hashed independently.
+#
+# No production fallback on purpose: if DJANGO_SECRET_KEY is missing the app
+# refuses to boot rather than quietly running on a known-public key. Dev keeps
+# a throwaway default so nothing extra is needed to run locally.
+SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "")
+if not SECRET_KEY:
+    if not DEBUG:
+        raise ImproperlyConfigured(
+            "DJANGO_SECRET_KEY is not set. Refusing to start with DEBUG off "
+            "rather than fall back to a key that is public in git history."
+        )
+    SECRET_KEY = "django-insecure-dev-only-not-for-deployment"
 
 ALLOWED_HOSTS = ["*"]
 # Django default: auto-redirect a slashless URL (e.g. /reference-sheet/11) to

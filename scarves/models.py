@@ -419,11 +419,15 @@ class ProductImageUpload(models.Model):
 
     @property
     def preview_url(self):
-        """Presigned GET URL of the uploaded file, so it can be shown while the
-        uploader assigns it manually. Empty if bucket storage isn't configured."""
+        """URL of the uploaded file, so it can be shown while the uploader
+        assigns it manually: presigned GET from the bucket, or the local
+        storage URL in dev."""
         from django.conf import settings
-        if not settings.USE_S3 or not self.key:
+        if not self.key:
             return ""
+        if not settings.USE_S3:
+            from django.core.files.storage import default_storage
+            return default_storage.url(self.key)
         from .s3utils import presigned_get
         return presigned_get(self.key)
 

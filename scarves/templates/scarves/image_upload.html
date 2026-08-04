@@ -59,9 +59,10 @@
     <h1>Upload Product Photos</h1>
 
     {% if not use_s3 %}
-        <p class="warn">⚠️ Bucket storage isn't configured on this environment,
-        so uploads are disabled here. This works on the deployed site.</p>
-    {% else %}
+        <p class="warn">⚠️ No bucket configured — photos are saved to local
+        storage instead. Barcode matching works the same.</p>
+    {% endif %}
+
         <p class="muted">Each photo is filed automatically by reading its barcode.
         If a barcode can't be read, you'll pick the product yourself.</p>
 
@@ -75,7 +76,9 @@
         <script>
         (function () {
             const csrftoken = "{{ csrf_token }}";
+            const useS3 = {{ use_s3|yesno:"true,false" }};
             const presignUrl = "{% url 'presign_upload' %}";
+            const localUrl = "{% url 'local_upload' %}";
             const processTpl = "{% url 'process_upload' 0 %}";  // .../upload/0/process/
             const input = document.getElementById("file-input");
             const cards = document.getElementById("cards");
@@ -92,26 +95,13 @@
                 card.textContent = "⏳ Uploading " + file.name + "…";
                 cards.prepend(card);
                 try {
-                    // 1. Ask Django for presigned POST fields.
-                    const presign = await fetch(presignUrl, {
-                        method: "POST",
-                        headers: {
-                            "X-CSRFToken": csrftoken,
-                            "Content-Type": "application/x-www-form-urlencoded",
-                        },
-                        body: new URLSearchParams({
-                            content_type: file.type || "image/jpeg",
-                        }),
-                    });
-                    if (!presign.ok) throw new Error("could not start upload");
-                    const { upload_id, url, fields } = await presign.json();
-
-                    // 2. Upload the file straight to the bucket.
-                    const form = new FormData();
-                    Object.entries(fields).forEach(([k, v]) => form.append(k, v));
-                    form.append("file", file);
-                    const put = await fetch(url, { method: "POST", body: form });
-                    if (!put.ok) throw new Error("bucket upload failed");
+                    // 1 & 2. Get the bytes stored. Two transports, same result:
+                    //   bucket  -> presign, then the browser POSTs straight to it
+                    //   local   -> POST to Django, which writes to default storage
+                    // Step 3 below is identical either way.
+                    const upload_id = useS3
+                        ? await uploadToBucket(file)
+                        : await uploadToServer(file);
 
                     // 3. Let the server decode + file it; HTMX swaps in the result
                     //    (and wires up any type-ahead in the returned fragment).
@@ -127,6 +117,40 @@
                     card.className = "card error";
                     card.textContent = "❌ " + file.name + ": " + err.message;
                 }
+            }
+
+            async function uploadToBucket(file) {
+                const presign = await fetch(presignUrl, {
+                    method: "POST",
+                    headers: {
+                        "X-CSRFToken": csrftoken,
+                        "Content-Type": "application/x-www-form-urlencoded",
+                    },
+                    body: new URLSearchParams({
+                        content_type: file.type || "image/jpeg",
+                    }),
+                });
+                if (!presign.ok) throw new Error("could not start upload");
+                const { upload_id, url, fields } = await presign.json();
+
+                const form = new FormData();
+                Object.entries(fields).forEach(([k, v]) => form.append(k, v));
+                form.append("file", file);
+                const put = await fetch(url, { method: "POST", body: form });
+                if (!put.ok) throw new Error("bucket upload failed");
+                return upload_id;
+            }
+
+            async function uploadToServer(file) {
+                const form = new FormData();
+                form.append("file", file);
+                const res = await fetch(localUrl, {
+                    method: "POST",
+                    headers: { "X-CSRFToken": csrftoken },
+                    body: form,
+                });
+                if (!res.ok) throw new Error("upload failed");
+                return (await res.json()).upload_id;
             }
         })();
         </script>

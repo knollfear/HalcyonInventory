@@ -1,0 +1,13 @@
+# Overrides for running tests locally: drop the host port bindings so a
+# Postgres already listening on 5432 (another project) doesn't collide.
+#   docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm web python manage.py test
+#
+# `ports: []` would NOT work here: Compose merges lists by appending, so an
+# empty list is a no-op. The `!reset` tag (Compose 2.24+) is what actually
+# clears the mapping.
+#
+# Only `db` is reset -- `web` keeps 8000:8000 so `docker compose up` with this
+# override still serves the app.
+services:
+  db:
+    ports: !reset []

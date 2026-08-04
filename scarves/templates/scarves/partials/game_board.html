@@ -1,0 +1,250 @@
+{% comment %}
+The entire matching game, as one self-contained fragment.
+
+This is rendered into pages on other origins (the Shopify store), so it can rely
+on *nothing* from the host page: all CSS and JS are inline, all URLs absolute,
+and every selector is scoped under this instance's unique root id so a theme's
+styles and ours can't collide.
+{% endcomment %}
+<div id="sg-{{ instance_id }}" class="sg-root">
+  <style>
+    #sg-{{ instance_id }} {
+      --sg-fg: #1a1a1a;
+      --sg-muted: #777;
+      --sg-accent: #23466b;
+      --sg-line: #d8dee6;
+      font-family: -apple-system, system-ui, sans-serif;
+      color: var(--sg-fg);
+      max-width: 780px;
+      margin-inline: auto;
+      line-height: 1.4;
+    }
+    #sg-{{ instance_id }} * { box-sizing: border-box; }
+
+    #sg-{{ instance_id }} .sg-bar {
+      display: flex; flex-wrap: wrap; align-items: center; gap: .5rem;
+      margin-bottom: .75rem;
+    }
+    #sg-{{ instance_id }} .sg-stats {
+      margin-left: auto; font-variant-numeric: tabular-nums;
+      color: var(--sg-muted); font-size: .9rem;
+    }
+    #sg-{{ instance_id }} .sg-btn {
+      font: inherit; font-size: .85rem; padding: .35rem .7rem;
+      border: 1px solid var(--sg-line); border-radius: 999px;
+      background: #fff; color: var(--sg-accent); cursor: pointer;
+    }
+    #sg-{{ instance_id }} .sg-btn:hover { background: #eef4fb; }
+    #sg-{{ instance_id }} .sg-btn[aria-pressed="true"] {
+      background: var(--sg-accent); border-color: var(--sg-accent); color: #fff;
+    }
+
+    /* auto-fit reflows 4x3 on desktop to 3x4 on a phone with no media query */
+    #sg-{{ instance_id }} .sg-grid {
+      display: grid; gap: .6rem;
+      grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+    }
+
+    #sg-{{ instance_id }} .sg-card {
+      aspect-ratio: 3 / 4; perspective: 800px;
+      background: none; border: 0; padding: 0; font: inherit; cursor: pointer;
+    }
+    #sg-{{ instance_id }} .sg-inner {
+      position: relative; width: 100%; height: 100%;
+      transition: transform .35s ease; transform-style: preserve-3d;
+    }
+    #sg-{{ instance_id }} .sg-card.sg-up .sg-inner,
+    #sg-{{ instance_id }} .sg-card.sg-done .sg-inner { transform: rotateY(180deg); }
+
+    #sg-{{ instance_id }} .sg-face {
+      position: absolute; inset: 0;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      backface-visibility: hidden; -webkit-backface-visibility: hidden;
+      border: 1px solid var(--sg-line); border-radius: 10px;
+      overflow: hidden; padding: .4rem; text-align: center;
+    }
+    #sg-{{ instance_id }} .sg-back {
+      background: linear-gradient(135deg, #2f5a86, #23466b);
+      color: #fff; font-size: 1.5rem;
+    }
+    #sg-{{ instance_id }} .sg-front { background: #fff; transform: rotateY(180deg); }
+    #sg-{{ instance_id }} .sg-front img {
+      width: 100%; height: 100%; object-fit: cover; border-radius: 6px; display: block;
+    }
+    #sg-{{ instance_id }} .sg-label {
+      font-weight: 600; font-size: .95rem; hyphens: auto; overflow-wrap: anywhere;
+    }
+
+    #sg-{{ instance_id }} .sg-card.sg-done { cursor: default; }
+    #sg-{{ instance_id }} .sg-card.sg-done .sg-front {
+      border-color: #2e7d52; box-shadow: inset 0 0 0 2px #2e7d52;
+    }
+    #sg-{{ instance_id }} .sg-card.sg-miss .sg-front {
+      border-color: #b3403a; box-shadow: inset 0 0 0 2px #b3403a;
+    }
+
+    /* dye swatches: the teaching moment, hidden until the pair is matched */
+    #sg-{{ instance_id }} .sg-dyes {
+      display: none; flex-wrap: wrap; gap: .2rem;
+      justify-content: center; margin-top: .3rem;
+    }
+    #sg-{{ instance_id }} .sg-card.sg-done .sg-dyes { display: flex; }
+    #sg-{{ instance_id }} .sg-chip {
+      width: 13px; height: 13px; border-radius: 50%;
+      border: 1px solid rgba(0,0,0,.25);
+    }
+    #sg-{{ instance_id }} .sg-dyenames {
+      display: none; font-size: .65rem; color: var(--sg-muted);
+      margin-top: .15rem; overflow-wrap: anywhere;
+    }
+    #sg-{{ instance_id }} .sg-card.sg-done .sg-dyenames { display: block; }
+
+    #sg-{{ instance_id }} .sg-win {
+      margin-top: .85rem; padding: .7rem .9rem;
+      border: 1px solid #bcd8c6; border-radius: 10px;
+      background: #f1f8f3; text-align: center;
+    }
+    #sg-{{ instance_id }} .sg-note { color: var(--sg-muted); font-size: .85rem; }
+
+    @media (prefers-reduced-motion: reduce) {
+      #sg-{{ instance_id }} .sg-inner { transition: none; }
+    }
+  </style>
+
+  {% if too_few %}
+    <p class="sg-note">
+      Not enough photographed recipes to build a board yet — add product photos
+      and this fills in automatically.
+    </p>
+  {% else %}
+    <div class="sg-bar">
+      {% for n in sizes %}
+        <button type="button" class="sg-btn"
+                aria-pressed="{% if n == requested_pairs %}true{% else %}false{% endif %}"
+                hx-get="{{ board_url }}?pairs={{ n }}{{ family_qs }}"
+                hx-target="#sg-{{ instance_id }}"
+                hx-swap="outerHTML">{{ n }} pairs</button>
+      {% endfor %}
+      <span class="sg-stats" data-sg-stats>Moves 0 · 0:00</span>
+    </div>
+
+    <div class="sg-grid" data-sg-grid>
+      {% for card in cards %}
+        <button type="button" class="sg-card" data-pair="{{ card.pair_id }}"
+                aria-label="Hidden card">
+          <span class="sg-inner">
+            <span class="sg-face sg-back" aria-hidden="true">?</span>
+            <span class="sg-face sg-front">
+              {% if card.kind == "photo" %}
+                <img src="{{ card.image_url }}" alt="{{ card.alt_text }}" loading="lazy">
+              {% else %}
+                <span class="sg-label">{{ card.name }}</span>
+                <span class="sg-dyes">
+                  {% for dye in card.dyes %}
+                    <span class="sg-chip" style="background: {{ dye.hex_color }}"
+                          title="{{ dye.name }}"></span>
+                  {% endfor %}
+                </span>
+                <span class="sg-dyenames">
+                  {% for dye in card.dyes %}{{ dye.name }}{% if not forloop.last %} · {% endif %}{% endfor %}
+                </span>
+              {% endif %}
+            </span>
+          </span>
+        </button>
+      {% endfor %}
+    </div>
+
+    <div class="sg-win" data-sg-win hidden>
+      <strong>Matched all {{ pairs }}!</strong>
+      <div class="sg-note" data-sg-winstats></div>
+      <button type="button" class="sg-btn" style="margin-top:.5rem"
+              hx-get="{{ board_url }}?pairs={{ requested_pairs }}{{ family_qs }}"
+              hx-target="#sg-{{ instance_id }}"
+              hx-swap="outerHTML">Play again</button>
+    </div>
+  {% endif %}
+
+  <script>
+  (function () {
+    // Scoped to this instance's root. The root is replaced wholesale on every
+    // re-deal (outerHTML swap), so its listeners die with it — no accumulation,
+    // and two boards on one page stay independent.
+    var root = document.getElementById("sg-{{ instance_id }}");
+    if (!root) return;
+    var grid = root.querySelector("[data-sg-grid]");
+    if (!grid) return;
+
+    var statsEl = root.querySelector("[data-sg-stats]");
+    var winEl = root.querySelector("[data-sg-win]");
+    var winStatsEl = root.querySelector("[data-sg-winstats]");
+
+    var totalPairs = {{ pairs }};
+    var first = null, moves = 0, matched = 0;
+    var locked = false, startedAt = null, ticker = null;
+
+    function clock() {
+      if (!startedAt) return "0:00";
+      var s = Math.floor((Date.now() - startedAt) / 1000);
+      return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+    }
+    function paint() {
+      if (statsEl) statsEl.textContent = "Moves " + moves + " · " + clock();
+    }
+    function reveal(card, up) {
+      card.classList.toggle("sg-up", up);
+      card.setAttribute("aria-label", up ? "Revealed card" : "Hidden card");
+    }
+
+    grid.addEventListener("click", function (event) {
+      var card = event.target.closest(".sg-card");
+      if (!card || !grid.contains(card)) return;
+      // Ignore clicks while a mismatched pair is still showing, and re-clicks
+      // on an already-revealed or already-matched card.
+      if (locked || card.classList.contains("sg-up") || card.classList.contains("sg-done")) return;
+
+      if (!startedAt) {
+        startedAt = Date.now();
+        ticker = setInterval(paint, 1000);
+      }
+
+      reveal(card, true);
+
+      if (!first) { first = card; return; }
+
+      moves++;
+      paint();
+
+      if (first.dataset.pair === card.dataset.pair) {
+        var a = first, b = card;
+        first = null;
+        matched++;
+        a.classList.add("sg-done");
+        b.classList.add("sg-done");
+        if (matched === totalPairs) {
+          if (ticker) clearInterval(ticker);
+          if (winStatsEl) winStatsEl.textContent = moves + " moves in " + clock() + ".";
+          if (winEl) winEl.hidden = false;
+        }
+        return;
+      }
+
+      locked = true;
+      var x = first, y = card;
+      first = null;
+      x.classList.add("sg-miss");
+      y.classList.add("sg-miss");
+      setTimeout(function () {
+        x.classList.remove("sg-miss");
+        y.classList.remove("sg-miss");
+        reveal(x, false);
+        reveal(y, false);
+        locked = false;
+      }, 900);
+    });
+
+    paint();
+  })();
+  </script>
+</div>

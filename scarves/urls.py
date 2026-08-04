@@ -34,8 +34,11 @@ urlpatterns = [
     path("reference-sheet/<int:category_id>/", views.reference_sheet_pdf, name="reference_sheet_pdf"),
     path("images/upload/", views.image_upload, name="image_upload"),
     path("images/upload/presign/", views.presign_upload, name="presign_upload"),
+    path("images/upload/local/", views.local_upload, name="local_upload"),
     path("images/upload/<int:upload_id>/process/", views.process_upload, name="process_upload"),
     path("images/upload/<int:upload_id>/assign/", views.assign_upload, name="assign_upload"),
     path("images/products/search/", views.product_search, name="product_search"),
+    path("game/", views.game_page, name="game_page"),
+    path("game/board/", views.game_board, name="game_board"),
 ]
 

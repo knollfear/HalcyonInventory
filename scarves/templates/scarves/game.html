@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Scarf Matching Game</title>
+    <style>
+        :root { --accent: #23466b; }
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, system-ui, sans-serif;
+            margin: 0; padding: 1rem;
+            max-width: 820px; margin-inline: auto;
+            color: #1a1a1a;
+        }
+        h1 { font-size: 1.35rem; margin-bottom: .25rem; }
+        .muted { color: #777; font-size: 0.85rem; }
+        details { margin-top: 2rem; font-size: .9rem; }
+        summary { cursor: pointer; color: var(--accent); }
+        pre {
+            background: #f6f8fa; border: 1px solid #e2e6ea; border-radius: 8px;
+            padding: .75rem; overflow-x: auto; font-size: .8rem;
+        }
+    </style>
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+</head>
+<body>
+    <h1>Scarf Matching Game</h1>
+    <p class="muted">
+        Match each scarf photo to the dye recipe that produced it. Matched pairs
+        reveal the recipe's dyes.
+    </p>
+
+    {# The game is loaded rather than inlined, so this page and an embed on
+       another site both go through exactly the same endpoint. #}
+    <div hx-get="{{ board_url }}?pairs={{ default_pairs }}" hx-trigger="load">
+        <p class="muted">Dealing…</p>
+    </div>
+
+    <details>
+        <summary>Embed this game on another site</summary>
+        <p class="muted">
+            Drop this into any page — a Shopify theme section, a blog post,
+            anywhere. No iframe, so it inherits the surrounding page's width and
+            flows with the rest of the content.
+        </p>
+<pre>&lt;script src="https://unpkg.com/htmx.org@1.9.12"&gt;&lt;/script&gt;
+&lt;div hx-get="{{ embed_origin }}{{ board_url }}?pairs={{ default_pairs }}"
+     hx-trigger="load"&gt;&lt;/div&gt;</pre>
+        <p class="muted">
+            If the host page already loads htmx, skip the script tag. Add
+            <code>&amp;family=1</code> to deal every board from a single color
+            family instead of at random — much harder, and only as good as the
+            recipe/dye color data behind it.
+        </p>
+    </details>
+</body>
+</html>

@@ -17,6 +17,7 @@ services:
       db:
         condition: service_healthy
     environment:
+      DEBUG: "1"
       PGDATABASE: mydb
       PGUSER: myuser
       PGPASSWORD: mypassword

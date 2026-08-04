@@ -2,12 +2,14 @@ import base64
 import hashlib
 import hmac
 import json
+import random
 import uuid
 from decimal import Decimal
 from io import BytesIO
 
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
+from django.core.files.storage import default_storage
 from django.forms import formset_factory
 from django import forms
 from django.http import HttpResponse, JsonResponse
@@ -32,6 +34,7 @@ from django.contrib import messages
 from django.shortcuts import render, redirect
 from django.template.response import TemplateResponse
 
+from .colorutils import pick_color_cluster
 from .forms import QuickRecipeRowForm
 from .models import Dye, Recipe
 from .s3utils import download_object, presigned_post
@@ -1072,7 +1075,7 @@ def _attach_image(upload, product):
                 "straight to the bucket and auto-filed to the matching product "
                 "by reading its barcode. Unreadable ones are assigned inline.",
     category="Products",
-    note="Requires bucket storage configured (USE_S3).",
+    note="Uploads to the bucket when configured, otherwise to local storage.",
 )
 @login_required
 def image_upload(request):
@@ -1109,6 +1112,44 @@ def presign_upload(request):
 
 @require_POST
 @login_required
+def local_upload(request):
+    """Dev-only transport: take the file straight into default storage.
+
+    The bucket path (presign -> browser POSTs to the bucket) needs S3, so
+    without it the upload page was unusable locally. Everything downstream —
+    barcode decode, SKU match, manual assign — is storage-agnostic and shared,
+    so this only replaces the two transport steps.
+    """
+    if settings.USE_S3:
+        return JsonResponse(
+            {"error": "Bucket storage is configured; use the presigned upload."},
+            status=400,
+        )
+
+    f = request.FILES.get("file")
+    if not f:
+        return JsonResponse({"error": "No file supplied."}, status=400)
+
+    content_type = (f.content_type or "image/jpeg").lower()
+    ext = _CONTENT_TYPE_EXT.get(content_type, ".jpg")
+    # Storage may rename on collision, so trust the key it hands back —
+    # _attach_image points FinishedProductImage.image at exactly this key.
+    key = default_storage.save(f"finished_products/{uuid.uuid4().hex}{ext}", f)
+
+    upload = ProductImageUpload.objects.create(key=key)
+    return JsonResponse({"upload_id": upload.id})
+
+
+def _upload_bytes(key):
+    """Read an uploaded object back, from the bucket or from local storage."""
+    if settings.USE_S3:
+        return download_object(key)
+    with default_storage.open(key, "rb") as fh:
+        return fh.read()
+
+
+@require_POST
+@login_required
 def process_upload(request, upload_id):
     """Download the object, decode its barcode, and file it if a SKU matches."""
     upload = get_object_or_404(ProductImageUpload, id=upload_id)
@@ -1124,7 +1165,7 @@ def process_upload(request, upload_id):
         from pyzbar.pyzbar import decode as zbar_decode
         from PIL import Image
 
-        data = download_object(upload.key)
+        data = _upload_bytes(upload.key)
         img = Image.open(BytesIO(data))
         codes = [r.data.decode("utf-8", "ignore").strip() for r in zbar_decode(img)]
     except Exception as exc:  # decode/download failure -> fall back to manual
@@ -1188,3 +1229,187 @@ def assign_upload(request, upload_id):
 
     return render(request, "scarves/partials/upload_card.html",
                   {"upload": upload, "matched": True})
+
+
+# --------------------------------------------------------------------------
+# Matching game
+#
+# Public, and designed to be embedded on other origins (the Shopify store), so
+# the whole game ships as one self-contained htmx fragment. The server deals a
+# board; the browser plays it. Doing the flips server-side would be 50-100
+# requests per game and would need a session cookie, which is blocked as a
+# third-party cookie inside an embed.
+# --------------------------------------------------------------------------
+
+GAME_PAIR_SIZES = (4, 6, 8)
+GAME_DEFAULT_PAIRS = 6
+
+
+def _recipe_game_pool():
+    """Active recipes that have at least one photographed active product.
+
+    Unlike the PDF reference sheet (`_select_recipe_photos`), externally-hosted
+    images are fine here — the browser fetches them itself — so we don't filter
+    down to images with an uploaded file.
+    """
+    return list(
+        Recipe.objects.filter(
+            is_active=True,
+            finished_products__is_active=True,
+        )
+        .filter(
+            Q(finished_products__images__image__gt="")
+            | Q(finished_products__images__image_url__gt=""),
+        )
+        .distinct()
+        .prefetch_related(
+            Prefetch(
+                "recipe_dyes",
+                queryset=RecipeDye.objects.select_related("dye").order_by("order", "id"),
+            ),
+            Prefetch(
+                "finished_products",
+                queryset=FinishedProduct.objects.filter(is_active=True).prefetch_related("images"),
+            ),
+        )
+    )
+
+
+def _recipe_images(recipe):
+    """Every usable image across a recipe's active products."""
+    return [
+        img
+        for fp in recipe.finished_products.all()
+        for img in fp.images.all()
+        if img.image or img.image_url
+    ]
+
+
+def _deal_board(pairs, pool=None, rng=None, family=False):
+    """Deal `pairs` photo/name card pairs, shuffled.
+
+    One pair per *recipe*, never per product: an infinity and a rectangle from
+    the same dye bath photograph almost identically, so dealing both would make
+    the board unwinnable by sight.
+
+    `family=True` draws the board from a single color family instead of at
+    random, which is a much harder and more useful drill (Blueberry vs Midnight
+    Sky vs Aegean Sea). It's opt-in because it leans on dye-swatch hexes as a
+    proxy for the photographed color — see `colorutils` — and is only as good as
+    the recipe/dye color data behind it.
+    """
+    rng = rng or random
+    pool = _recipe_game_pool() if pool is None else pool
+
+    if family:
+        chosen = pick_color_cluster(pool, pairs, rng=rng)
+    else:
+        chosen = rng.sample(pool, min(pairs, len(pool)))
+
+    cards = []
+    for pair_id, recipe in enumerate(chosen, start=1):
+        images = _recipe_images(recipe)
+        if not images:
+            continue
+        image = rng.choice(images)
+        dyes = [
+            {"name": rd.dye.name, "hex_color": rd.dye.hex_color}
+            for rd in recipe.recipe_dyes.all()
+        ]
+        cards.append({
+            "pair_id": pair_id,
+            "kind": "photo",
+            "image_url": image.url,
+            "alt_text": image.alt_text or recipe.name,
+            "name": recipe.name,
+            "dyes": dyes,
+        })
+        cards.append({
+            "pair_id": pair_id,
+            "kind": "name",
+            "name": recipe.name,
+            "dyes": dyes,
+        })
+
+    rng.shuffle(cards)
+    return cards, len(cards) // 2
+
+
+def _cors_headers(response):
+    """Open up the game endpoints so any page can embed them.
+
+    htmx sends the custom `HX-Request` header, which makes the browser fire a
+    preflight — so `Allow-Origin` on its own is not enough, and getting this
+    half-right fails silently in the console. The board is anonymous public
+    read-only data with no cookies and no writes, hence the wildcard.
+    """
+    response["Access-Control-Allow-Origin"] = "*"
+    response["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+    response["Access-Control-Allow-Headers"] = (
+        "HX-Request, HX-Current-URL, HX-Target, HX-Trigger, HX-Trigger-Name, HX-Boosted"
+    )
+    response["Access-Control-Max-Age"] = "86400"
+    return response
+
+
+@require_http_methods(["GET", "OPTIONS"])
+def game_board(request):
+    """The game itself, as an embeddable fragment. Anonymous; no CSRF (GET only)."""
+    if request.method == "OPTIONS":
+        return _cors_headers(HttpResponse(status=204))
+
+    try:
+        requested = int(request.GET.get("pairs", GAME_DEFAULT_PAIRS))
+    except (TypeError, ValueError):
+        requested = GAME_DEFAULT_PAIRS
+    if requested not in GAME_PAIR_SIZES:
+        requested = GAME_DEFAULT_PAIRS
+
+    # Opt-in: deal from one color family instead of at random. Off by default
+    # until the recipe/dye color data is known to be trustworthy.
+    family = request.GET.get("family") in ("1", "true", "yes")
+
+    pool = _recipe_game_pool()
+    cards, dealt = _deal_board(min(requested, len(pool)), pool=pool, family=family)
+
+    # Absolute URLs throughout: this fragment is rendered into pages on *other*
+    # origins, where a relative path would resolve against the host site and
+    # 404. Testing only on the Django page would never catch it.
+    for card in cards:
+        url = card.get("image_url")
+        if url and not url.startswith(("http://", "https://", "//")):
+            card["image_url"] = request.build_absolute_uri(url)
+
+    response = render(request, "scarves/partials/game_board.html", {
+        "cards": cards,
+        "pairs": dealt,
+        "requested_pairs": requested,
+        # Only offer sizes the catalog can actually fill.
+        "sizes": [n for n in GAME_PAIR_SIZES if n <= len(pool)],
+        "board_url": request.build_absolute_uri(reverse("game_board")),
+        # Carried through so "play again" and the size toggle keep the mode.
+        "family_qs": "&family=1" if family else "",
+        "too_few": dealt < 2,
+        # Scopes this instance's CSS and JS, so two embeds on one page don't
+        # collide and a re-swap can't leave a stale listener behind.
+        "instance_id": uuid.uuid4().hex[:8],
+    })
+    return _cors_headers(response)
+
+
+@page_meta(
+    title="Scarf Matching Game",
+    description="Public memory game: match each scarf photo to its dye recipe "
+                "name. Boards are dealt from a single color family, so it drills "
+                "the distinctions that actually matter.",
+    category="Public",
+    note="No login required; embeddable on other sites.",
+)
+def game_page(request):
+    """Thin public shell. The game arrives via htmx so it can also be dropped
+    into the Shopify storefront with the same endpoint."""
+    return render(request, "scarves/game.html", {
+        "board_url": reverse("game_board"),
+        "default_pairs": GAME_DEFAULT_PAIRS,
+        "embed_origin": request.build_absolute_uri("/").rstrip("/"),
+    })

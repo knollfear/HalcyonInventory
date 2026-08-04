@@ -146,3 +146,7 @@ cython_debug/
 
 # LSP config files
 pyrightconfig.json
+
+# Locally uploaded product photos (MEDIA_ROOT). Prod stores these in the
+# bucket; the local upload fallback writes them here.
+media/
