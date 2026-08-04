@@ -66,10 +66,20 @@ SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 APPEND_SLASH = True
 
 # FORM SUBMISSION
-# Comment out the following line and place your railway URL, and your production URL in the array.
+# Origins allowed to submit forms. A hostname missing from this list fails CSRF
+# on every POST (admin login included) while GETs look perfectly fine — so a new
+# custom domain appears to work until someone tries to log in.
+#
+# Set CSRF_EXTRA_ORIGINS to a comma-separated list to add domains without a code
+# change, e.g. "https://play.halcyonsilks.com,https://app.halcyonsilks.com".
 CSRF_TRUSTED_ORIGINS = [
     "https://server-production-ead0.up.railway.app",
     "https://server-development-d24f.up.railway.app",
+]
+CSRF_TRUSTED_ORIGINS += [
+    origin.strip()
+    for origin in os.environ.get("CSRF_EXTRA_ORIGINS", "").split(",")
+    if origin.strip()
 ]
 
 # Application definition
