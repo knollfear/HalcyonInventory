@@ -417,6 +417,16 @@ class ProductImageUpload(models.Model):
     class Meta:
         ordering = ["-created_at"]
 
+    @property
+    def preview_url(self):
+        """Presigned GET URL of the uploaded file, so it can be shown while the
+        uploader assigns it manually. Empty if bucket storage isn't configured."""
+        from django.conf import settings
+        if not settings.USE_S3 or not self.key:
+            return ""
+        from .s3utils import presigned_get
+        return presigned_get(self.key)
+
     def __str__(self):
         return f"{self.key} ({self.status})"
 

@@ -47,3 +47,13 @@ def download_object(key):
     client = get_s3_client()
     resp = client.get_object(Bucket=settings.S3_BUCKET_NAME, Key=key)
     return resp["Body"].read()
+
+
+def presigned_get(key, expires=3600):
+    """A presigned GET URL for viewing an object in the browser (<img> src)."""
+    client = get_s3_client()
+    return client.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": settings.S3_BUCKET_NAME, "Key": key},
+        ExpiresIn=expires,
+    )

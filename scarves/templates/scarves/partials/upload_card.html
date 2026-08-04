@@ -15,6 +15,9 @@
         </div>
     {% elif needs_assign %}
         <div class="needs-assign">
+            {% if upload.preview_url %}
+                <img class="preview" src="{{ upload.preview_url }}" alt="Uploaded photo">
+            {% endif %}
             <div class="warn">⚠️ Couldn't read a barcode — pick the product:</div>
             <input type="text"
                    name="q"
