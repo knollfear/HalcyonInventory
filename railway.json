@@ -4,6 +4,6 @@
         "builder": "RAILPACK"
     },
     "deploy": {
-        "startCommand": "gunicorn mysite.wsgi --timeout 120"
+        "startCommand": "python manage.py collectstatic --noinput && gunicorn mysite.wsgi --timeout 120"
     }
 }
