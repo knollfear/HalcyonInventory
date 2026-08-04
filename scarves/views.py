@@ -943,7 +943,7 @@ def reference_sheet_pdf(request, category_id):
     from reportlab.lib.pagesizes import letter, portrait
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import inch
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, KeepInFrame
 
     category = get_object_or_404(RawProductCategory, pk=category_id)
 
@@ -959,8 +959,8 @@ def reference_sheet_pdf(request, category_id):
     )
 
     styles = getSampleStyleSheet()
-    title_style = ParagraphStyle("title", parent=styles["h1"], fontSize=18, leading=22)
-    sub_style = ParagraphStyle("sub", parent=styles["Normal"], fontSize=10, textColor=colors.HexColor("#555555"))
+    title_style = ParagraphStyle("title", parent=styles["h1"], fontSize=18, leading=22, spaceBefore=0, spaceAfter=0)
+    sub_style = ParagraphStyle("sub", parent=styles["Normal"], fontSize=10, textColor=colors.HexColor("#555555"), spaceBefore=0, spaceAfter=0)
     name_style = ParagraphStyle("cardname", parent=styles["Normal"], fontSize=10, leading=12, fontName="Helvetica-Bold", alignment=1)
     sku_style = ParagraphStyle("cardsku", parent=styles["Normal"], fontSize=8, leading=10, alignment=1)
 
@@ -1010,16 +1010,17 @@ def reference_sheet_pdf(request, category_id):
                 _select_recipe_photos(items, cap=4), usable_width, photo_area
             )
 
-        story.append(title_p)
-        story.append(sub_p)
-        story.append(Spacer(1, top_gap))
+        block = [title_p, sub_p, Spacer(1, top_gap)]
         if gallery is not None:
-            story.append(gallery)
-            story.append(Spacer(1, mid_gap))
+            block += [gallery, Spacer(1, mid_gap)]
         else:
             # No photos to show: push the barcodes toward the bottom anyway.
-            story.append(Spacer(1, max(photo_area + mid_gap, 0)))
-        story.append(bc_grid)
+            block.append(Spacer(1, max(photo_area + mid_gap, 0)))
+        block.append(bc_grid)
+
+        # Force the whole recipe (photos + every barcode row) onto one page;
+        # shrink slightly rather than split if it's ever a hair too tall.
+        story.append(KeepInFrame(usable_width, usable_height, block, mode="shrink"))
 
     if not story:
         story = [Paragraph(f"{category.name} — no active items with recipes.", styles["h1"])]
