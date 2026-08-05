@@ -239,6 +239,25 @@ class RecipeEditTests(TestCase):
         self.assertIn("Agean Sea", names)
         self.assertNotIn("blueeyes-mid-navy", names)
 
+    def test_copy_source_list_only_offers_recipes_that_have_dyes(self):
+        """Offering a dye-less recipe as a copy source is a no-op that looks
+        like a bug — and nothing else pins this query down."""
+        response = self.client.get(reverse("recipe_row", args=[self.target.pk]))
+        offered = {src["pk"] for src in response.context["dye_sources"]}
+        self.assertIn(self.source.pk, offered)
+        self.assertNotIn(self.target.pk, offered)
+        for pk in offered:
+            self.assertTrue(
+                Recipe.objects.get(pk=pk).recipe_dyes.exists(),
+                f"recipe {pk} offered as a copy source but has no dyes",
+            )
+
+    def test_recipe_is_not_offered_as_its_own_copy_source(self):
+        response = self.client.get(reverse("recipe_row", args=[self.source.pk]))
+        html = response.content.decode()
+        select = html.split('id="src-')[1].split("</select>")[0]
+        self.assertNotIn(f'value="{self.source.pk}"', select)
+
     def test_copy_prefills_without_saving(self):
         """The whole point of copy-then-adjust: the pickers populate but the
         database must be untouched until Save."""
