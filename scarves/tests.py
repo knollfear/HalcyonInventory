@@ -330,6 +330,55 @@ class RecipeEditTests(TestCase):
         )
 
 
+class PageSmokeTests(TestCase):
+    """Actually render every GET-able page as a logged-in user.
+
+    A template syntax error took /scarves/images/upload/ down in production and
+    nothing caught it: the only check was an anonymous request, which got a 302
+    login redirect and never rendered the template at all. Checking status codes
+    while logged out proves almost nothing.
+
+    Every @page_meta view is included automatically, so new pages are covered
+    the moment they're added.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("smoke", "s@example.test", "pw")
+        self.client.force_login(self.user)
+        # Enough data that pages have something to render.
+        recipe = make_recipe("Smoke Test Recipe")
+        make_product(recipe, "Smoke Test Product")
+
+    def test_every_page_meta_view_renders(self):
+        from scarves import urls as scarves_urls
+
+        checked = []
+        for entry in scarves_urls.urlpatterns:
+            callback = getattr(entry, "callback", None)
+            if callback is None or not getattr(callback, "page_meta", None):
+                continue
+            # Views needing URL params can't be reversed without them.
+            if getattr(entry.pattern, "converters", None):
+                continue
+            url = reverse(entry.name)
+            with self.subTest(url=url):
+                # Any template or view error raises here rather than returning
+                # a quiet 500, which is exactly what we want from a smoke test.
+                response = self.client.get(url)
+                self.assertLess(response.status_code, 500, url)
+            checked.append(url)
+
+        # Guard against the loop silently matching nothing.
+        self.assertGreater(len(checked), 5, checked)
+        self.assertIn(reverse("image_upload"), checked)
+
+    def test_image_upload_renders_for_a_logged_in_user(self):
+        """The specific regression: unbalanced {% endif %} in the template."""
+        response = self.client.get(reverse("image_upload"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Upload Product Photos")
+
+
 class ColorUtilsTests(TestCase):
     def test_hex_parsing_is_forgiving(self):
         self.assertEqual(hex_to_rgb("#1a2b3c"), (26, 43, 60))

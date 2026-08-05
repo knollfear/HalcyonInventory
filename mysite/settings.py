@@ -248,3 +248,34 @@ SQUARE_WEBHOOK_URL = os.environ.get("SQUARE_WEBHOOK_URL", "")
 
 # settings.py
 LOGIN_REDIRECT_URL = '/accounts/'
+
+# Django's default logging puts a require_debug_true filter on the console
+# handler, so with DEBUG off unhandled exceptions go only to mail_admins —
+# which isn't configured here, meaning 500s vanish with no trace anywhere.
+# Railway captures stdout/stderr, so sending everything there makes production
+# errors readable in the deploy logs without turning DEBUG back on.
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "verbose": {
+            "format": "{levelname} {asctime} {name} {message}",
+            "style": "{",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "verbose",
+        },
+    },
+    "root": {"handlers": ["console"], "level": "INFO"},
+    "loggers": {
+        # Unhandled view exceptions, with traceback.
+        "django.request": {
+            "handlers": ["console"],
+            "level": "ERROR",
+            "propagate": False,
+        },
+    },
+}
