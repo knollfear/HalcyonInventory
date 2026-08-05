@@ -9,6 +9,7 @@ from io import BytesIO
 
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
+from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.forms import formset_factory
 from django import forms
@@ -37,7 +38,7 @@ from django.template.response import TemplateResponse
 from .colorutils import nearest_by_color, pick_color_cluster
 from .forms import QuickRecipeRowForm, RecipeDyesForm
 from .models import Dye, Recipe
-from .s3utils import download_object, presigned_post
+from .s3utils import download_object, presigned_post, upload_object
 from django.db.models import Prefetch
 
 
@@ -941,10 +942,12 @@ def _image_flowable(fpi, max_w, max_h):
     """A ReportLab Image of a FinishedProductImage's uploaded file, scaled to
     fit max_w x max_h (preserving aspect), or None if there's no usable file.
 
-    The source is downscaled with PIL first: phone photos are ~4000px/several
-    MB, and embedding them at full resolution makes reportlab's base85 encode
-    slow enough to hit the gunicorn timeout (and bloats the PDF). ~1000px is
-    plenty for print at these display sizes."""
+    The source is downscaled with PIL first. Uploads are already capped at
+    IMAGE_MAX_EDGE, so for anything shot since that change this is a no-op —
+    but it stays as the backstop that made the PDF viable in the first place:
+    at full phone resolution reportlab's base85 encode was slow enough to
+    threaten the gunicorn timeout, and it bloated the file. Externally-sourced
+    images still arrive at whatever size they like."""
     from reportlab.platypus import Image as RLImage
     from PIL import Image as PILImage
 
@@ -1286,6 +1289,74 @@ def _upload_bytes(key):
         return fh.read()
 
 
+def _replace_upload_bytes(key, data, content_type):
+    """Overwrite an uploaded object in place. Returns the key actually written.
+
+    Local storage is configured not to overwrite either, so the old file is
+    removed first; the returned key is what the caller must trust, since a
+    FinishedProductImage points straight at it.
+    """
+    if settings.USE_S3:
+        upload_object(key, data, content_type=content_type)
+        return key
+    default_storage.delete(key)
+    return default_storage.save(key, ContentFile(data))
+
+
+# Long edge of a stored product photo. Phone cameras hand us ~4000px / 5MB
+# JPEGs, which is 40MB+ of downloads for one round of the matching game and
+# slow enough in the reference-sheet PDF to threaten the gunicorn timeout.
+# 1200 is comfortably past what either use needs.
+IMAGE_MAX_EDGE = 1200
+IMAGE_JPEG_QUALITY = 85
+
+
+def _shrink_image(data, max_edge=IMAGE_MAX_EDGE):
+    """Downscale an uploaded photo so its long edge is at most `max_edge`.
+
+    Returns `(bytes, content_type)`, or None when the image is already small
+    enough and correctly oriented — an in-bounds upload is never re-encoded,
+    so it can't lose quality just by passing through here.
+
+    Aspect ratio is preserved: a 4032x3024 phone photo becomes 1200x900, and a
+    portrait one 900x1200. Nothing is cropped or squared off.
+
+    The format is kept as-is so the object still matches the extension in its
+    key and the Content-Type it was uploaded under.
+    """
+    from PIL import Image as PILImage, ImageOps
+
+    im = PILImage.open(BytesIO(data))
+    im.load()
+    fmt = (im.format or "JPEG").upper()
+
+    # 0x0112 is the EXIF Orientation tag. Phones record rotation there rather
+    # than rotating the pixels, and re-encoding drops the tag — so a portrait
+    # photo that looked upright would come out sideways in the games and the
+    # PDF. Baking the rotation in is what makes the resize safe.
+    needs_rotation = im.getexif().get(0x0112, 1) != 1
+
+    if max(im.size) <= max_edge and not needs_rotation:
+        return None
+
+    im = ImageOps.exif_transpose(im)
+    im.thumbnail((max_edge, max_edge), PILImage.LANCZOS)
+
+    out = BytesIO()
+    if fmt == "PNG":
+        im.save(out, "PNG", optimize=True)
+        return out.getvalue(), "image/png"
+    if fmt == "WEBP":
+        im.save(out, "WEBP", quality=IMAGE_JPEG_QUALITY)
+        return out.getvalue(), "image/webp"
+
+    # Everything else lands as JPEG, which is what phone cameras send anyway.
+    if im.mode not in ("RGB", "L"):
+        im = im.convert("RGB")
+    im.save(out, "JPEG", quality=IMAGE_JPEG_QUALITY, optimize=True, progressive=True)
+    return out.getvalue(), "image/jpeg"
+
+
 @require_POST
 @login_required
 def process_upload(request, upload_id):
@@ -1297,17 +1368,39 @@ def process_upload(request, upload_id):
         return render(request, "scarves/partials/upload_card.html",
                       {"upload": upload, "matched": True})
 
+    data = None
     codes = []
     try:
-        # Imported lazily so the app still runs where libzbar0 isn't installed.
-        from pyzbar.pyzbar import decode as zbar_decode
-        from PIL import Image
-
         data = _upload_bytes(upload.key)
-        img = Image.open(BytesIO(data))
-        codes = [r.data.decode("utf-8", "ignore").strip() for r in zbar_decode(img)]
-    except Exception as exc:  # decode/download failure -> fall back to manual
+    except Exception as exc:
         upload.error = str(exc)
+
+    if data is not None:
+        try:
+            # Imported lazily so the app still runs where libzbar0 isn't installed.
+            from pyzbar.pyzbar import decode as zbar_decode
+            from PIL import Image
+
+            # Decoded at full resolution, before the downscale below: a Code128
+            # label is a small part of the frame, and shrinking first is exactly
+            # what would stop it resolving.
+            img = Image.open(BytesIO(data))
+            codes = [r.data.decode("utf-8", "ignore").strip() for r in zbar_decode(img)]
+        except Exception as exc:  # decode failure -> fall back to manual assign
+            upload.error = str(exc)
+
+        # Swap the phone-sized original for a display-sized copy. Done after the
+        # decode and before the photo is ever served, so nothing downstream —
+        # the games, the PDF, the upload card — deals with a 5MB file again.
+        try:
+            shrunk = _shrink_image(data)
+            if shrunk:
+                body, content_type = shrunk
+                upload.key = _replace_upload_bytes(upload.key, body, content_type)
+        except Exception as exc:
+            # A photo that won't resize is still a usable photo; keep the
+            # original rather than losing the upload over it.
+            upload.error = (upload.error + " | " if upload.error else "") + f"resize: {exc}"
 
     product = None
     for code in codes:

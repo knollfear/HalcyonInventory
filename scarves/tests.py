@@ -10,9 +10,14 @@ Two things here are worth more than they look:
   Django page itself keeps working perfectly.
 """
 import random
+import shutil
+import tempfile
+from unittest import mock
 
 from django.contrib.auth.models import User
-from django.test import TestCase
+from django.core.files.base import ContentFile
+from django.core.files.storage import default_storage
+from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from .colorutils import (
@@ -30,6 +35,7 @@ from .models import (
     DyeBrand,
     FinishedProduct,
     FinishedProductImage,
+    ProductImageUpload,
     RawProduct,
     RawProductCategory,
     Recipe,
@@ -602,6 +608,275 @@ class PageSmokeTests(TestCase):
         response = self.client.get(reverse("image_upload"))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Upload Product Photos")
+
+
+def make_jpeg(size=(4032, 3024), exif_orientation=None, color=(180, 90, 60)):
+    """Bytes of a JPEG, optionally carrying an EXIF orientation tag."""
+    from io import BytesIO
+    from PIL import Image
+
+    img = Image.new("RGB", size, color)
+    buf = BytesIO()
+    if exif_orientation is None:
+        img.save(buf, "JPEG", quality=90)
+    else:
+        exif = img.getexif()
+        exif[0x0112] = exif_orientation
+        img.save(buf, "JPEG", quality=90, exif=exif)
+    return buf.getvalue()
+
+
+def image_size(data):
+    from io import BytesIO
+    from PIL import Image
+
+    return Image.open(BytesIO(data)).size
+
+
+class ShrinkImageTests(TestCase):
+    """Downscaling on upload — what keeps a round of the game from costing 40MB."""
+
+    def test_long_edge_is_capped_and_aspect_is_kept(self):
+        from .views import IMAGE_MAX_EDGE, _shrink_image
+
+        body, content_type = _shrink_image(make_jpeg((4032, 3024)))
+        self.assertEqual(image_size(body), (IMAGE_MAX_EDGE, 900))
+        self.assertEqual(content_type, "image/jpeg")
+
+    def test_portrait_is_capped_on_its_own_long_edge(self):
+        """The cap is on the longer side, not on width — a portrait photo must
+        come back 900x1200, never squashed toward a square."""
+        from .views import _shrink_image
+
+        body, _ = _shrink_image(make_jpeg((3024, 4032)))
+        self.assertEqual(image_size(body), (900, 1200))
+
+    def test_result_is_dramatically_smaller(self):
+        from .views import _shrink_image
+
+        original = make_jpeg((4032, 3024))
+        body, _ = _shrink_image(original)
+        self.assertLess(len(body), len(original) / 4)
+
+    def test_an_already_small_image_is_left_alone(self):
+        """Returning None rather than re-encoding: a second pass over an
+        in-bounds photo must not cost it any quality."""
+        from .views import _shrink_image
+
+        self.assertIsNone(_shrink_image(make_jpeg((1200, 900))))
+        self.assertIsNone(_shrink_image(make_jpeg((800, 600))))
+
+    def test_exif_rotation_is_baked_into_the_pixels(self):
+        """Phones store rotation in EXIF instead of rotating the pixels, and
+        re-encoding drops the tag. Without transposing first, every portrait
+        photo would come out sideways in the games and the PDF — and it would
+        look fine right up until it was resized.
+        """
+        from .views import _shrink_image
+
+        # Orientation 6 = rotate 90°: a 4000x3000 file that displays as 3000x4000.
+        body, _ = _shrink_image(make_jpeg((4000, 3000), exif_orientation=6))
+        self.assertEqual(image_size(body), (900, 1200))
+
+    def test_a_small_image_needing_rotation_is_still_rewritten(self):
+        from .views import _shrink_image
+
+        result = _shrink_image(make_jpeg((800, 600), exif_orientation=6))
+        self.assertIsNotNone(result)
+        self.assertEqual(image_size(result[0]), (600, 800))
+
+    def test_png_and_webp_keep_their_format(self):
+        """The key's extension and the stored Content-Type were set at presign
+        time; changing format here would leave both lying."""
+        from io import BytesIO
+        from PIL import Image
+        from .views import _shrink_image
+
+        for fmt, content_type in (("PNG", "image/png"), ("WEBP", "image/webp")):
+            buf = BytesIO()
+            Image.new("RGB", (2000, 1500), (20, 120, 90)).save(buf, fmt)
+            body, got = _shrink_image(buf.getvalue())
+            with self.subTest(fmt=fmt):
+                self.assertEqual(got, content_type)
+                self.assertEqual(Image.open(BytesIO(body)).format, fmt)
+                self.assertEqual(image_size(body), (1200, 900))
+
+
+@override_settings(MEDIA_ROOT=tempfile.mkdtemp())
+class ProcessUploadResizeTests(TestCase):
+    """The resize where it actually runs: the upload pipeline."""
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("up", "u@example.test", "pw")
+        self.client.force_login(self.user)
+
+    def _upload(self, data=None):
+        key = default_storage.save(
+            "finished_products/test.jpg", ContentFile(data or make_jpeg())
+        )
+        return ProductImageUpload.objects.create(key=key)
+
+    def test_upload_is_downscaled_in_place(self):
+        from .views import IMAGE_MAX_EDGE
+
+        upload = self._upload()
+        before = default_storage.size(upload.key)
+
+        response = self.client.post(reverse("process_upload", args=[upload.id]))
+        self.assertEqual(response.status_code, 200)
+
+        upload.refresh_from_db()
+        with default_storage.open(upload.key, "rb") as fh:
+            stored = fh.read()
+        self.assertEqual(max(image_size(stored)), IMAGE_MAX_EDGE)
+        self.assertLess(len(stored), before / 4)
+
+    def test_the_photo_served_to_the_games_is_the_small_one(self):
+        """The whole point: FinishedProductImage must end up pointing at the
+        downscaled object, not at a leftover original."""
+        from .views import IMAGE_MAX_EDGE
+
+        product = make_product(make_recipe("Barcoded"), "Barcoded Scarf", with_image=False)
+        product.sku = "SKU-RESIZE-1"
+        product.save()
+
+        upload = self._upload()
+        # Stand in for a successful barcode decode, so the matched path runs.
+        with mock.patch("pyzbar.pyzbar.decode") as decode:
+            decode.return_value = [mock.Mock(data=b"SKU-RESIZE-1")]
+            self.client.post(reverse("process_upload", args=[upload.id]))
+
+        upload.refresh_from_db()
+        self.assertEqual(upload.status, ProductImageUpload.STATUS_MATCHED)
+        fpi = product.images.get()
+        self.assertEqual(fpi.image.name, upload.key)
+        with fpi.image.open("rb") as fh:
+            self.assertEqual(max(image_size(fh.read())), IMAGE_MAX_EDGE)
+
+    def test_barcode_is_decoded_before_the_downscale(self):
+        """A Code128 label is a small part of the frame; decoding a 1200px copy
+        is exactly what would stop it resolving. The decoder must see the
+        original pixels."""
+        from .views import IMAGE_MAX_EDGE
+
+        upload = self._upload(make_jpeg((4032, 3024)))
+        seen = {}
+        with mock.patch("pyzbar.pyzbar.decode") as decode:
+            decode.side_effect = lambda img: seen.setdefault("size", img.size) and []
+            self.client.post(reverse("process_upload", args=[upload.id]))
+        self.assertEqual(seen["size"], (4032, 3024))
+        self.assertGreater(max(seen["size"]), IMAGE_MAX_EDGE)
+
+    def test_a_photo_that_will_not_resize_is_kept_not_lost(self):
+        upload = self._upload(b"this is not an image at all")
+        response = self.client.post(reverse("process_upload", args=[upload.id]))
+        self.assertEqual(response.status_code, 200)
+
+        upload.refresh_from_db()
+        self.assertTrue(default_storage.exists(upload.key))
+        self.assertNotEqual(upload.error, "")
+
+
+@override_settings(MEDIA_ROOT=tempfile.mkdtemp())
+class StoredFileCleanupTests(TestCase):
+    """Deleting a photo must take its stored file with it.
+
+    Django stopped deleting files on model delete in 1.3, so without the
+    post_delete receivers a removal in the admin drops the row and leaves the
+    object in the bucket — paying storage forever with nothing left that knows
+    its key. Invisible from the admin, which reports success either way.
+    """
+
+    def _image(self):
+        product = make_product(make_recipe("Cleanup"), "Cleanup Scarf", with_image=False)
+        fpi = FinishedProductImage(finished_product=product)
+        fpi.image.save("cleanup.jpg", ContentFile(make_jpeg((40, 30))), save=True)
+        return product, fpi
+
+    def test_deleting_an_image_row_deletes_its_file(self):
+        _, fpi = self._image()
+        name = fpi.image.name
+        self.assertTrue(default_storage.exists(name))
+
+        fpi.delete()
+        self.assertFalse(default_storage.exists(name))
+
+    def test_bulk_delete_also_deletes_files(self):
+        """The admin's checkbox action deletes through the queryset, which never
+        calls Model.delete() — only the signal reaches it."""
+        _, fpi = self._image()
+        name = fpi.image.name
+
+        FinishedProductImage.objects.all().delete()
+        self.assertFalse(default_storage.exists(name))
+
+    def test_deleting_the_product_cascades_to_its_files(self):
+        product, fpi = self._image()
+        name = fpi.image.name
+
+        product.delete()
+        self.assertFalse(default_storage.exists(name))
+
+    def test_deleting_an_unfiled_upload_deletes_its_object(self):
+        """An upload whose barcode never matched has no FinishedProductImage at
+        all, so its tracking row is the only thing pointing at the object."""
+        key = default_storage.save("finished_products/orphan.jpg",
+                                   ContentFile(make_jpeg((40, 30))))
+        upload = ProductImageUpload.objects.create(key=key)
+
+        upload.delete()
+        self.assertFalse(default_storage.exists(key))
+
+    def test_a_row_with_no_file_deletes_cleanly(self):
+        product = make_product(make_recipe("External"), "External Scarf", with_image=False)
+        fpi = FinishedProductImage.objects.create(
+            finished_product=product, image_url="https://example.test/x.jpg"
+        )
+        fpi.delete()  # must not raise
+        self.assertEqual(FinishedProductImage.objects.count(), 0)
+
+
+@override_settings(MEDIA_ROOT=tempfile.mkdtemp())
+class PurgeCommandTests(TestCase):
+    def setUp(self):
+        product = make_product(make_recipe("Purge"), "Purge Scarf", with_image=False)
+        self.fpi = FinishedProductImage(finished_product=product)
+        self.fpi.image.save("purge.jpg", ContentFile(make_jpeg((40, 30))), save=True)
+        self.upload = ProductImageUpload.objects.create(key=self.fpi.image.name)
+
+    def test_dry_run_deletes_nothing(self):
+        from django.core.management import call_command
+        from io import StringIO
+
+        out = StringIO()
+        call_command("purge_product_images", stdout=out)
+        self.assertIn("Dry run", out.getvalue())
+        self.assertEqual(FinishedProductImage.objects.count(), 1)
+        self.assertTrue(default_storage.exists(self.fpi.image.name))
+
+    def test_yes_deletes_rows_and_files(self):
+        from django.core.management import call_command
+        from io import StringIO
+
+        name = self.fpi.image.name
+        call_command("purge_product_images", "--yes", stdout=StringIO())
+
+        self.assertEqual(FinishedProductImage.objects.count(), 0)
+        self.assertEqual(ProductImageUpload.objects.count(), 0)
+        self.assertFalse(default_storage.exists(name))
+
+    def test_keep_external_leaves_url_only_rows(self):
+        from django.core.management import call_command
+        from io import StringIO
+
+        product = FinishedProduct.objects.first()
+        FinishedProductImage.objects.create(
+            finished_product=product, image_url="https://example.test/keep.jpg"
+        )
+        call_command("purge_product_images", "--yes", "--keep-external", stdout=StringIO())
+
+        remaining = FinishedProductImage.objects.all()
+        self.assertEqual([i.image_url for i in remaining], ["https://example.test/keep.jpg"])
 
 
 class TemplateHygieneTests(TestCase):

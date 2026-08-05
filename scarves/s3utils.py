@@ -49,6 +49,29 @@ def download_object(key):
     return resp["Body"].read()
 
 
+def upload_object(key, data, content_type="image/jpeg"):
+    """Write bytes to a key, replacing whatever is there.
+
+    Used to swap a freshly-uploaded phone photo for its downscaled version.
+    This goes through boto3 rather than default_storage on purpose: the storage
+    backend is configured with file_overwrite=False, so saving under an existing
+    name would quietly write to a *different* key and leave the original behind.
+    """
+    client = get_s3_client()
+    client.put_object(
+        Bucket=settings.S3_BUCKET_NAME,
+        Key=key,
+        Body=data,
+        ContentType=content_type,
+    )
+
+
+def delete_object(key):
+    """Remove an object from the bucket. Missing keys are not an error."""
+    client = get_s3_client()
+    client.delete_object(Bucket=settings.S3_BUCKET_NAME, Key=key)
+
+
 def presigned_get(key, expires=3600):
     """A presigned GET URL for viewing an object in the browser (<img> src)."""
     client = get_s3_client()
