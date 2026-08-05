@@ -64,26 +64,27 @@ unique root id so a theme's styles and ours can't collide.
     }
     #qz-{{ instance_id }} .qz-start p { margin: .5rem 0 1rem; }
 
-    /* The photo box is a fixed shape so the layout doesn't jump between
-       questions as portrait and landscape shots alternate.
+    /* No fixed box: the photo takes the page width and whatever height it
+       needs. There's no such thing as a wrong shape here, so pinning one only
+       ever forces a compromise — cropping the frame (cover) or padding it with
+       dead space (contain in a fixed box).
 
-       object-fit: contain, not cover — cover fills the box by cropping, which
-       cut the top and bottom off a portrait scarf and hid exactly the detail
-       the question turns on. Letterboxing is the right trade here: the whole
-       frame matters more than a tidy edge.
+       Both constraints are maxes, so whichever binds first wins: a portrait
+       shot is limited by height, a landscape one by width, and either way the
+       whole frame is shown at the largest size that fits. The height cap is
+       what keeps the answers reachable without scrolling; without it a 900x1200
+       upload is ~530px tall on a phone and pushes them off the screen.
 
-       The box is portrait because the catalogue is (uploads land at 900x1200),
-       so contain wastes almost nothing on the common case. max-height keeps it
-       from eating a phone screen and pushing the answers below the fold; when
-       that clamp bites, the box goes wider than its ratio and the photo simply
-       centres inside it. */
+       The trade is that the answers shift a little as photo heights vary
+       between questions. Worth it — seeing the whole scarf is the point. */
     #qz-{{ instance_id }} .qz-photo {
-      margin: 0; aspect-ratio: 3 / 4; width: 100%; max-height: 46vh;
-      border: 1px solid var(--qz-line); border-radius: 12px;
-      overflow: hidden; background: #f2f4f7;
+      margin: 0; text-align: center;
     }
     #qz-{{ instance_id }} .qz-photo img {
-      width: 100%; height: 100%; object-fit: contain; display: block;
+      max-width: 100%; max-height: 52vh;
+      width: auto; height: auto;
+      display: block; margin: 0 auto;
+      border: 1px solid var(--qz-line); border-radius: 12px;
     }
 
     #qz-{{ instance_id }} .qz-prompt {
