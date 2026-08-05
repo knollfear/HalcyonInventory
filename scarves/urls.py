@@ -42,5 +42,7 @@ urlpatterns = [
     path("images/products/search/", views.product_search, name="product_search"),
     path("game/", views.game_page, name="game_page"),
     path("game/board/", views.game_board, name="game_board"),
+    path("quiz/", views.quiz_page, name="quiz_page"),
+    path("quiz/board/", views.quiz_board, name="quiz_board"),
 ]
 

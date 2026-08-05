@@ -33,8 +33,10 @@ Swapped with hx-swap="outerHTML" targeting this <tr>.
 
       <div class="copyrow">
         <label class="muted" for="src-{{ recipe.pk }}">Copy dyes from</label>
-        {# Loads that recipe's dyes into the pickers below. Nothing is written
-           until Save, so the copy can be adjusted first. #}
+        {% comment %}
+        Loads that recipe's dyes into the pickers below. Nothing is written
+        until Save, so the copy can be adjusted first.
+        {% endcomment %}
         <select id="src-{{ recipe.pk }}" name="source"
                 hx-get="{% url 'recipe_row' recipe.pk %}"
                 hx-include="this"

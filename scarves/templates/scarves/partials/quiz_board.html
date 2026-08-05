@@ -1,0 +1,399 @@
+{% comment %}
+The entire name quiz, as one self-contained fragment.
+
+Like the matching board, this is rendered into pages on other origins (the
+Shopify store), so it can rely on *nothing* from the host page: all CSS and JS
+inline, all URLs absolute, and every selector scoped under this instance's
+unique root id so a theme's styles and ours can't collide.
+{% endcomment %}
+<div id="qz-{{ instance_id }}" class="qz-root">
+  <style>
+    #qz-{{ instance_id }} {
+      --qz-fg: #1a1a1a;
+      --qz-muted: #777;
+      --qz-accent: #23466b;
+      --qz-line: #d8dee6;
+      --qz-good: #2e7d52;
+      --qz-bad: #b3403a;
+      font-family: -apple-system, system-ui, sans-serif;
+      color: var(--qz-fg);
+      max-width: 520px;
+      margin-inline: auto;
+      line-height: 1.4;
+    }
+    #qz-{{ instance_id }} * { box-sizing: border-box; }
+    /* Load-bearing: several rules below set display on elements that also carry
+       the `hidden` attribute, and a display rule would otherwise beat it. */
+    #qz-{{ instance_id }} [hidden] { display: none !important; }
+
+    #qz-{{ instance_id }} .qz-bar {
+      display: flex; flex-wrap: wrap; align-items: center; gap: .5rem;
+      margin-bottom: .6rem;
+    }
+    #qz-{{ instance_id }} .qz-stats {
+      margin-left: auto; font-variant-numeric: tabular-nums;
+      color: var(--qz-muted); font-size: .9rem;
+    }
+    #qz-{{ instance_id }} .qz-btn {
+      font: inherit; font-size: .85rem; padding: .35rem .7rem;
+      border: 1px solid var(--qz-line); border-radius: 999px;
+      background: #fff; color: var(--qz-accent); cursor: pointer;
+    }
+    #qz-{{ instance_id }} .qz-btn:hover { background: #eef4fb; }
+    #qz-{{ instance_id }} .qz-btn[aria-pressed="true"] {
+      background: var(--qz-accent); border-color: var(--qz-accent); color: #fff;
+    }
+    #qz-{{ instance_id }} .qz-btn-go {
+      background: var(--qz-accent); border-color: var(--qz-accent); color: #fff;
+      font-size: .95rem; padding: .5rem 1.4rem;
+    }
+    #qz-{{ instance_id }} .qz-btn-go:hover { background: #2f5a86; }
+
+    #qz-{{ instance_id }} .qz-track {
+      height: 4px; border-radius: 999px; background: var(--qz-line);
+      overflow: hidden; margin-bottom: .8rem;
+    }
+    #qz-{{ instance_id }} .qz-fill {
+      display: block; height: 100%; width: 0;
+      background: var(--qz-accent); transition: width .25s ease;
+    }
+
+    #qz-{{ instance_id }} .qz-start {
+      border: 1px solid var(--qz-line); border-radius: 12px;
+      padding: 1.4rem 1rem; text-align: center;
+    }
+    #qz-{{ instance_id }} .qz-start p { margin: .5rem 0 1rem; }
+
+    /* The photo box is a fixed shape so the layout doesn't jump between
+       questions as portrait and landscape shots alternate. */
+    #qz-{{ instance_id }} .qz-photo {
+      margin: 0; aspect-ratio: 4 / 3; width: 100%;
+      border: 1px solid var(--qz-line); border-radius: 12px;
+      overflow: hidden; background: #f2f4f7;
+    }
+    #qz-{{ instance_id }} .qz-photo img {
+      width: 100%; height: 100%; object-fit: cover; display: block;
+    }
+
+    #qz-{{ instance_id }} .qz-prompt {
+      margin: .7rem 0 .5rem; font-size: .85rem; color: var(--qz-muted);
+    }
+
+    #qz-{{ instance_id }} .qz-options { display: grid; gap: .45rem; }
+    #qz-{{ instance_id }} .qz-opt {
+      font: inherit; text-align: left; width: 100%;
+      padding: .6rem .8rem; border: 1px solid var(--qz-line);
+      border-radius: 10px; background: #fff; color: var(--qz-fg);
+      cursor: pointer; overflow-wrap: anywhere;
+    }
+    #qz-{{ instance_id }} .qz-opt:hover:not([disabled]) {
+      border-color: var(--qz-accent); background: #eef4fb;
+    }
+    #qz-{{ instance_id }} .qz-opt[disabled] { cursor: default; }
+    /* Right and wrong are marked with a glyph as well as a color: a red/green
+       pair alone is invisible to the commonest form of color blindness, which
+       is a poor look on a page about telling colors apart. */
+    #qz-{{ instance_id }} .qz-opt.qz-right {
+      border-color: var(--qz-good); box-shadow: inset 0 0 0 1px var(--qz-good);
+      background: #f1f8f3;
+    }
+    #qz-{{ instance_id }} .qz-opt.qz-wrong {
+      border-color: var(--qz-bad); box-shadow: inset 0 0 0 1px var(--qz-bad);
+      background: #fdf2f1;
+    }
+    #qz-{{ instance_id }} .qz-opt.qz-right::after { content: " ✓"; color: var(--qz-good); font-weight: 700; }
+    #qz-{{ instance_id }} .qz-opt.qz-wrong::after { content: " ✕"; color: var(--qz-bad); font-weight: 700; }
+
+    /* The teaching moment: the dyes behind the scarf, revealed once answered. */
+    #qz-{{ instance_id }} .qz-reveal {
+      margin-top: .7rem; padding: .6rem .8rem;
+      border: 1px solid var(--qz-line); border-radius: 10px; background: #fafbfc;
+      display: flex; flex-wrap: wrap; align-items: center; gap: .4rem;
+    }
+    #qz-{{ instance_id }} .qz-dyes { display: inline-flex; gap: .2rem; }
+    #qz-{{ instance_id }} .qz-chip {
+      width: 13px; height: 13px; border-radius: 50%;
+      border: 1px solid rgba(0,0,0,.25);
+    }
+    #qz-{{ instance_id }} .qz-dyenames {
+      font-size: .75rem; color: var(--qz-muted); overflow-wrap: anywhere;
+    }
+    #qz-{{ instance_id }} .qz-reveal .qz-btn { margin-left: auto; }
+
+    #qz-{{ instance_id }} .qz-end {
+      border: 1px solid #bcd8c6; border-radius: 12px;
+      background: #f1f8f3; padding: 1rem; text-align: center;
+    }
+    #qz-{{ instance_id }} .qz-score {
+      font-size: 2rem; font-weight: 700; font-variant-numeric: tabular-nums;
+      line-height: 1.1;
+    }
+    #qz-{{ instance_id }} .qz-missed {
+      margin: .8rem 0 0; padding: .8rem 0 0; border-top: 1px solid #bcd8c6;
+      text-align: left;
+    }
+    #qz-{{ instance_id }} .qz-missed ul { list-style: none; margin: .4rem 0 0; padding: 0; }
+    #qz-{{ instance_id }} .qz-missed li {
+      display: flex; align-items: center; gap: .5rem; padding: .25rem 0;
+      font-size: .85rem;
+    }
+    #qz-{{ instance_id }} .qz-missed img {
+      width: 42px; height: 42px; object-fit: cover;
+      border-radius: 6px; flex: none; display: block;
+    }
+    #qz-{{ instance_id }} .qz-note { color: var(--qz-muted); font-size: .85rem; }
+
+    @media (prefers-reduced-motion: reduce) {
+      #qz-{{ instance_id }} .qz-fill { transition: none; }
+    }
+  </style>
+
+  {% if too_few %}
+    <p class="qz-note">
+      Not enough photographed products to build a quiz yet — add product photos
+      and this fills in automatically.
+    </p>
+  {% else %}
+    <div class="qz-bar">
+      {% for n in lengths %}
+        <button type="button" class="qz-btn"
+                aria-pressed="{% if n == requested_questions %}true{% else %}false{% endif %}"
+                hx-get="{{ board_url }}?questions={{ n }}{{ family_qs }}"
+                hx-target="#qz-{{ instance_id }}"
+                hx-swap="outerHTML">{{ n }} questions</button>
+      {% endfor %}
+      <span class="qz-stats" data-qz-stats>0 pts · 0:00</span>
+    </div>
+
+    <div class="qz-track"><span class="qz-fill" data-qz-fill></span></div>
+
+    {% comment %}
+    An explicit start is what makes scoring on time honest: the fragment may
+    land well above the fold and sit unread for a minute. It also gives the
+    first two photos somewhere to preload.
+    {% endcomment %}
+    <div class="qz-start" data-qz-start>
+      <strong>Name that scarf</strong>
+      <p class="qz-note">
+        {{ asked }} photo{{ asked|pluralize }}, four names each. A right answer
+        scores {{ points_correct }}, plus up to {{ speed_bonus }} more the faster
+        you call it.
+      </p>
+      <button type="button" class="qz-btn qz-btn-go" data-qz-go>Start</button>
+    </div>
+
+    <div data-qz-questions hidden>
+      {% for q in questions %}
+        <section class="qz-q" data-qz-answer="{{ q.answer }}" {% if not forloop.first %}hidden{% endif %}>
+          <figure class="qz-photo">
+            {% comment %}
+            src is filled in by JS, one question ahead, so a 15-question quiz
+            doesn't fire 15 image requests at once on a phone.
+
+            The alt is deliberately generic: this image's real alt text is
+            usually the product name, which would read the answer straight out
+            to a screen reader.
+            {% endcomment %}
+            <img data-qz-src="{{ q.image_url }}" alt="A hand-dyed scarf. Which name below is it?">
+          </figure>
+          <p class="qz-prompt">Question {{ forloop.counter }} of {{ asked }}</p>
+          <div class="qz-options">
+            {% for opt in q.options %}
+              <button type="button" class="qz-opt"
+                      data-qz-correct="{% if opt.correct %}1{% else %}0{% endif %}">{{ opt.name }}</button>
+            {% endfor %}
+          </div>
+          <div class="qz-reveal" data-qz-reveal hidden>
+            <span class="qz-dyes">
+              {% for dye in q.dyes %}
+                <span class="qz-chip" style="background: {{ dye.hex_color }}"
+                      title="{{ dye.name }}"></span>
+              {% endfor %}
+            </span>
+            <span class="qz-dyenames">
+              {% for dye in q.dyes %}{{ dye.name }}{% if not forloop.last %} · {% endif %}{% empty %}{{ q.recipe_name }}{% endfor %}
+            </span>
+            <button type="button" class="qz-btn" data-qz-next>
+              {% if forloop.last %}See results{% else %}Next{% endif %}
+            </button>
+          </div>
+        </section>
+      {% endfor %}
+    </div>
+
+    <div class="qz-end" data-qz-end hidden>
+      <div class="qz-score" data-qz-final>0</div>
+      <div class="qz-note" data-qz-breakdown></div>
+      <div class="qz-missed" data-qz-missed hidden>
+        <strong style="font-size:.85rem">Worth another look</strong>
+        <ul data-qz-missedlist></ul>
+      </div>
+      <button type="button" class="qz-btn" style="margin-top:.8rem"
+              hx-get="{{ board_url }}?questions={{ requested_questions }}{{ family_qs }}"
+              hx-target="#qz-{{ instance_id }}"
+              hx-swap="outerHTML">Play again</button>
+    </div>
+  {% endif %}
+
+  <script>
+  (function () {
+    // Scoped to this instance's root. The root is replaced wholesale on every
+    // re-deal (outerHTML swap), so its listeners die with it — no accumulation,
+    // and two quizzes on one page stay independent.
+    var root = document.getElementById("qz-{{ instance_id }}");
+    if (!root) return;
+    var wrap = root.querySelector("[data-qz-questions]");
+    if (!wrap) return;
+
+    var questions = Array.prototype.slice.call(wrap.querySelectorAll(".qz-q"));
+    var startEl = root.querySelector("[data-qz-start]");
+    var statsEl = root.querySelector("[data-qz-stats]");
+    var fillEl = root.querySelector("[data-qz-fill]");
+    var endEl = root.querySelector("[data-qz-end]");
+    var finalEl = root.querySelector("[data-qz-final]");
+    var breakdownEl = root.querySelector("[data-qz-breakdown]");
+    var missedEl = root.querySelector("[data-qz-missed]");
+    var missedListEl = root.querySelector("[data-qz-missedlist]");
+
+    var total = questions.length;
+    if (!total) return;
+
+    // Kept in sync with the constants in views.py, which is where they're tuned.
+    var POINTS = {{ points_correct }};
+    var BONUS = {{ speed_bonus }};
+    var WINDOW = {{ speed_window }};
+
+    var index = 0, right = 0, score = 0;
+    var startedAt = null, shownAt = null, ticker = null, advance = null;
+    var missed = [];
+
+    function clock() {
+      if (!startedAt) return "0:00";
+      var s = Math.floor((Date.now() - startedAt) / 1000);
+      return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+    }
+    function paint() {
+      if (statsEl) statsEl.textContent = score + " pts · " + clock();
+      if (fillEl) fillEl.style.width = (index / total * 100) + "%";
+    }
+    // Load the current photo and the next one, so the following question is
+    // already decoded by the time it's shown.
+    function preload(i) {
+      for (var n = i; n <= i + 1 && n < total; n++) {
+        var img = questions[n].querySelector("img[data-qz-src]");
+        if (img && !img.getAttribute("src")) {
+          img.setAttribute("src", img.getAttribute("data-qz-src"));
+        }
+      }
+    }
+    function award(seconds) {
+      return POINTS + Math.max(0, Math.round(BONUS * (1 - seconds / WINDOW)));
+    }
+
+    function show(i) {
+      questions.forEach(function (q, n) { q.hidden = n !== i; });
+      preload(i);
+      shownAt = Date.now();
+      paint();
+      // Move focus to the first option so a keyboard or screen-reader user
+      // lands on the new question rather than back at the top of the host page.
+      var firstOpt = questions[i].querySelector(".qz-opt");
+      if (firstOpt) firstOpt.focus({ preventScroll: true });
+    }
+
+    function finish() {
+      if (ticker) clearInterval(ticker);
+      var elapsed = clock();
+      questions.forEach(function (q) { q.hidden = true; });
+      if (fillEl) fillEl.style.width = "100%";
+      if (finalEl) finalEl.textContent = score + " pts";
+      if (breakdownEl) {
+        breakdownEl.textContent = right + " of " + total + " right in " + elapsed + ".";
+      }
+      if (missed.length && missedListEl) {
+        missed.forEach(function (item) {
+          var li = document.createElement("li");
+          if (item.src) {
+            var img = document.createElement("img");
+            img.src = item.src;
+            img.alt = "";
+            li.appendChild(img);
+          }
+          var span = document.createElement("span");
+          span.textContent = item.answer;
+          li.appendChild(span);
+          missedListEl.appendChild(li);
+        });
+        missedEl.hidden = false;
+      }
+      if (endEl) endEl.hidden = false;
+      if (statsEl) statsEl.textContent = score + " pts · " + elapsed;
+    }
+
+    function next() {
+      if (advance) { clearTimeout(advance); advance = null; }
+      index++;
+      if (index >= total) { finish(); return; }
+      show(index);
+    }
+
+    function answer(section, button) {
+      var seconds = shownAt ? (Date.now() - shownAt) / 1000 : 0;
+      var correct = button.dataset.qzCorrect === "1";
+      var options = section.querySelectorAll(".qz-opt");
+
+      Array.prototype.forEach.call(options, function (opt) {
+        opt.disabled = true;
+        // Mark the right answer wherever it is, so a wrong guess still teaches.
+        if (opt.dataset.qzCorrect === "1") opt.classList.add("qz-right");
+      });
+      if (!correct) {
+        button.classList.add("qz-wrong");
+        var img = section.querySelector("img[data-qz-src]");
+        missed.push({
+          answer: section.dataset.qzAnswer,
+          src: img ? img.getAttribute("data-qz-src") : "",
+        });
+      } else {
+        right++;
+        score += award(seconds);
+      }
+
+      var reveal = section.querySelector("[data-qz-reveal]");
+      if (reveal) reveal.hidden = false;
+      paint();
+
+      // A right answer needs no reading time, so it moves on by itself; a wrong
+      // one waits for the tap, so the correct name can actually be read.
+      if (correct) advance = setTimeout(next, 900);
+    }
+
+    wrap.addEventListener("click", function (event) {
+      var section = event.target.closest(".qz-q");
+      if (!section || !wrap.contains(section)) return;
+
+      if (event.target.closest("[data-qz-next]")) { next(); return; }
+
+      var button = event.target.closest(".qz-opt");
+      if (!button || button.disabled) return;
+      answer(section, button);
+    });
+
+    if (startEl) {
+      startEl.addEventListener("click", function (event) {
+        if (!event.target.closest("[data-qz-go]")) return;
+        startEl.hidden = true;
+        wrap.hidden = false;
+        startedAt = Date.now();
+        ticker = setInterval(paint, 1000);
+        show(0);
+      });
+    }
+
+    // Fetched before Start is pressed, so question one isn't a blank box while
+    // the clock runs.
+    preload(0);
+    paint();
+  })();
+  </script>
+</div>

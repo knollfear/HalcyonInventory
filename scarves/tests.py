@@ -1,5 +1,5 @@
 """
-Tests for the public matching game.
+Tests for the public games — the matching board and the name quiz.
 
 Two things here are worth more than they look:
 
@@ -15,7 +15,15 @@ from django.contrib.auth.models import User
 from django.test import TestCase
 from django.urls import reverse
 
-from .colorutils import delta_e, hex_to_lab, hex_to_rgb, pick_color_cluster, recipe_color
+from .colorutils import (
+    delta_e,
+    hex_to_lab,
+    hex_to_rgb,
+    nearest_by_color,
+    palette_distance,
+    pick_color_cluster,
+    recipe_palette,
+)
 from .forms import RecipeDyesForm
 from .models import (
     Dye,
@@ -210,6 +218,223 @@ class BoardViewTests(TestCase):
         self.assertEqual(response.context["family_qs"], "&family=1")
 
 
+class QuizPoolTests(TestCase):
+    def test_one_product_per_recipe(self):
+        """Same dedupe guarantee as the matching board, and it matters more
+        here: two names from one dye bath under one photo is a question with two
+        right answers."""
+        from .views import _quiz_product_pool
+
+        recipe = make_recipe("Stormy Sea")
+        make_product(recipe, "Stormy Sea Infinity")
+        make_product(recipe, "Stormy Sea Rectangle")
+
+        self.assertEqual(len(_quiz_product_pool()), 1)
+
+    def test_unphotographed_and_inactive_are_excluded(self):
+        from .views import _quiz_product_pool
+
+        make_product(make_recipe("A"), "Photographed")
+        make_product(make_recipe("B"), "Unphotographed", with_image=False)
+        make_product(make_recipe("C"), "Discontinued", active=False)
+        make_product(make_recipe("D", active=False), "Retired Recipe")
+
+        names = {p.name for p in _quiz_product_pool()}
+        self.assertEqual(names, {"Photographed"})
+
+
+class QuizDealTests(TestCase):
+    def setUp(self):
+        for i in range(12):
+            make_product(make_recipe(f"Recipe {i}"), f"Product {i}")
+
+    def test_deals_the_requested_number_of_questions(self):
+        from .views import _deal_quiz
+
+        self.assertEqual(len(_deal_quiz(10)), 10)
+
+    def test_every_question_has_exactly_one_right_answer(self):
+        from .views import _deal_quiz
+
+        for question in _deal_quiz(10):
+            correct = [o for o in question["options"] if o["correct"]]
+            self.assertEqual(len(correct), 1, question["options"])
+            self.assertEqual(correct[0]["name"], question["answer"])
+
+    def test_options_are_four_distinct_names(self):
+        """A repeated name would be a second right answer or a wasted slot."""
+        from .views import _deal_quiz, QUIZ_CHOICES
+
+        for question in _deal_quiz(10):
+            names = [o["name"] for o in question["options"]]
+            self.assertEqual(len(names), QUIZ_CHOICES)
+            self.assertEqual(len(set(names)), QUIZ_CHOICES, names)
+
+    def test_no_product_is_asked_about_twice(self):
+        from .views import _deal_quiz
+
+        answers = [q["answer"] for q in _deal_quiz(10)]
+        self.assertEqual(len(set(answers)), len(answers))
+
+    def test_the_answer_is_not_always_in_the_same_slot(self):
+        """A stable position would make the quiz winnable without looking — and
+        a forgotten shuffle looks fine in any single hand-played round."""
+        from .views import _deal_quiz
+
+        slots = set()
+        for question in _deal_quiz(12, rng=random.Random(0)):
+            slots.add(next(
+                i for i, o in enumerate(question["options"]) if o["correct"]
+            ))
+        self.assertGreater(len(slots), 1, slots)
+
+    def test_distractors_never_share_the_answers_recipe(self):
+        from .views import _deal_quiz, _quiz_product_pool
+
+        # Two products off one recipe: only one may ever reach the pool, so the
+        # other can never turn up as a distractor beside it.
+        recipe = make_recipe("Twinned")
+        make_product(recipe, "Twinned Infinity")
+        make_product(recipe, "Twinned Rectangle")
+
+        pool_names = {p.name for p in _quiz_product_pool()}
+        for question in _deal_quiz(12):
+            for option in question["options"]:
+                self.assertIn(option["name"], pool_names)
+        self.assertLessEqual(
+            len({"Twinned Infinity", "Twinned Rectangle"} & pool_names), 1
+        )
+
+    def test_small_pool_degrades_instead_of_erroring(self):
+        from .views import _deal_quiz
+
+        FinishedProduct.objects.exclude(name="Product 0").update(is_active=False)
+        questions = _deal_quiz(10)
+        self.assertEqual(len(questions), 1)
+        self.assertEqual(len(questions[0]["options"]), 1)
+
+    def test_empty_pool_deals_nothing(self):
+        from .views import _deal_quiz
+
+        FinishedProductImage.objects.all().delete()
+        self.assertEqual(_deal_quiz(10), [])
+
+    def test_family_mode_draws_distractors_from_one_color_family(self):
+        """The assertion that catches an inverted distance comparison: wrong
+        answers from across the color wheel still play fine, they're just too
+        easy to be worth asking.
+
+        Three dyes apiece, because that's what a real scarf is — a flow across
+        several distinct colors, not one blended shade.
+        """
+        from .views import _deal_quiz, _quiz_product_pool
+
+        FinishedProduct.objects.update(is_active=False)
+        blues = [
+            ("#0a1f6b", "#1b3f9b", "#3f6fd0"),
+            ("#12276f", "#2450a5", "#4c7cd8"),
+            ("#1b2f78", "#2d5bb0", "#5a88e0"),
+            ("#0e2270", "#1f47a0", "#4573cc"),
+        ]
+        oranges = [
+            ("#e8720c", "#f59b3c", "#c25a05"),
+            ("#f07d18", "#ffab4e", "#cc6408"),
+            ("#d96a05", "#eb9333", "#b85502"),
+            ("#e97a10", "#fba044", "#c85f06"),
+        ]
+        for i, hexes in enumerate(blues):
+            make_product(make_recipe(f"Blue {i}", hexes=hexes), f"Blue Scarf {i}")
+        for i, hexes in enumerate(oranges):
+            make_product(make_recipe(f"Orange {i}", hexes=hexes), f"Orange Scarf {i}")
+
+        pool = _quiz_product_pool()
+        for seed in range(8):
+            for question in _deal_quiz(4, pool=pool, rng=random.Random(seed), family=True):
+                families = {o["name"].split()[0] for o in question["options"]}
+                self.assertEqual(
+                    len(families), 1, f"seed {seed} mixed families: {families}"
+                )
+
+
+class QuizViewTests(TestCase):
+    def setUp(self):
+        for i in range(12):
+            make_product(make_recipe(f"Recipe {i}"), f"Product {i}")
+
+    def test_page_and_board_are_public(self):
+        """The regression that would silently break every embed: an auth
+        redirect on either endpoint."""
+        self.assertEqual(self.client.get(reverse("quiz_page")).status_code, 200)
+        self.assertEqual(self.client.get(reverse("quiz_board")).status_code, 200)
+
+    def test_board_sends_cors_headers(self):
+        response = self.client.get(reverse("quiz_board"))
+        self.assertEqual(response["Access-Control-Allow-Origin"], "*")
+
+    def test_preflight_allows_the_htmx_request_header(self):
+        response = self.client.options(reverse("quiz_board"))
+        self.assertEqual(response.status_code, 204)
+        self.assertIn("HX-Request", response["Access-Control-Allow-Headers"])
+
+    def test_questions_param_controls_length(self):
+        response = self.client.get(reverse("quiz_board"), {"questions": 5})
+        self.assertEqual(response.context["asked"], 5)
+
+    def test_bogus_questions_param_falls_back_to_default(self):
+        for bad in ("99", "-1", "abc", ""):
+            response = self.client.get(reverse("quiz_board"), {"questions": bad})
+            self.assertEqual(response.context["requested_questions"], 10, bad)
+
+    def test_image_urls_are_absolute(self):
+        """Relative URLs would resolve against the *host* site when embedded,
+        and 404 there while working fine on the Django page."""
+        response = self.client.get(reverse("quiz_board"))
+        for question in response.context["questions"]:
+            self.assertRegex(question["image_url"], r"^https?://")
+        self.assertRegex(response.context["board_url"], r"^https?://")
+
+    def test_urls_are_https_behind_a_tls_terminating_proxy(self):
+        response = self.client.get(
+            reverse("quiz_board"), HTTP_X_FORWARDED_PROTO="https"
+        )
+        self.assertTrue(response.context["board_url"].startswith("https://"))
+
+    def test_thin_pool_shows_the_empty_state_instead_of_a_giveaway(self):
+        from .views import QUIZ_MIN_POOL
+
+        keep = [f"Product {i}" for i in range(QUIZ_MIN_POOL - 1)]
+        FinishedProduct.objects.exclude(name__in=keep).update(is_active=False)
+        response = self.client.get(reverse("quiz_board"))
+        self.assertTrue(response.context["too_few"])
+        self.assertContains(response, "Not enough photographed products")
+
+    def test_scoring_constants_reach_the_template(self):
+        """The JS reads these from the render; a rename in views.py that missed
+        the template would silently score every answer as NaN."""
+        from .views import QUIZ_POINTS_CORRECT, QUIZ_SPEED_BONUS, QUIZ_SPEED_WINDOW
+
+        response = self.client.get(reverse("quiz_board"))
+        body = response.content.decode()
+        self.assertIn(f"var POINTS = {QUIZ_POINTS_CORRECT};", body)
+        self.assertIn(f"var BONUS = {QUIZ_SPEED_BONUS};", body)
+        self.assertIn(f"var WINDOW = {QUIZ_SPEED_WINDOW};", body)
+
+    def test_alt_text_does_not_leak_the_answer(self):
+        """The image's stored alt text is usually the product name, which would
+        read the answer straight out to a screen reader."""
+        FinishedProductImage.objects.update(alt_text="Product 3")
+        response = self.client.get(reverse("quiz_board"))
+        body = response.content.decode()
+        for question in response.context["questions"]:
+            self.assertNotIn(f'alt="{question["answer"]}"', body)
+
+    def test_family_mode_is_off_by_default(self):
+        response = self.client.get(reverse("quiz_board"))
+        self.assertEqual(response.context["family_qs"], "")
+        response = self.client.get(reverse("quiz_board"), {"family": "1"})
+        self.assertEqual(response.context["family_qs"], "&family=1")
+
+
 class RecipeEditTests(TestCase):
     """Edit mode on the recipe showcase — filling in the dye backlog."""
 
@@ -379,6 +604,31 @@ class PageSmokeTests(TestCase):
         self.assertContains(response, "Upload Product Photos")
 
 
+class TemplateHygieneTests(TestCase):
+    def test_no_multiline_hash_comments(self):
+        """`{# #}` is single-line only — spread it over two lines and Django
+        renders the whole thing as visible text.
+
+        It fails silently and looks exactly like a comment in the editor, which
+        is how it reached the public game page and the recipe showcase before
+        anyone noticed. `{% comment %}` is the multi-line form.
+        """
+        import re
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent / "templates"
+        pattern = re.compile(r"\{#(?:(?!#\}).)*?\n(?:(?!#\}).)*?#\}", re.S)
+
+        offenders = []
+        for path in sorted(root.rglob("*.html")):
+            text = path.read_text()
+            for match in pattern.finditer(text):
+                line = text[: match.start()].count("\n") + 1
+                offenders.append(f"{path.relative_to(root)}:{line}")
+
+        self.assertEqual(offenders, [], "use {% comment %} for multi-line comments")
+
+
 class ColorUtilsTests(TestCase):
     def test_hex_parsing_is_forgiving(self):
         self.assertEqual(hex_to_rgb("#1a2b3c"), (26, 43, 60))
@@ -393,8 +643,46 @@ class ColorUtilsTests(TestCase):
         orange = hex_to_lab("#e8720c")
         self.assertLess(delta_e(navy, midnight), delta_e(navy, orange))
 
-    def test_recipe_color_is_weighted_by_ratio(self):
-        """A recipe that is 90% blue should read as blue, not as a 50/50 muddle."""
+    def test_scarves_are_matched_on_a_shared_color_not_on_an_average(self):
+        """The correction that this whole module now turns on.
+
+        The dyes are not blended into one shade — a red-and-blue scarf shows red
+        and blue and flows between them. So it belongs next to a red-and-yellow
+        scarf, which visibly shares its red, and *not* next to a solid purple,
+        which shares nothing but happens to sit where the average lands.
+
+        Averaging gets this exactly backwards, which is why the assertion is
+        written as a comparison: it fails if anyone reintroduces one.
+        """
+        red_blue = recipe_palette(make_recipe("Red Blue", hexes=("#ff0000", "#0000ff")))
+        red_yellow = recipe_palette(make_recipe("Red Yellow", hexes=("#ff0000", "#ffff00")))
+        solid_purple = recipe_palette(make_recipe("Solid Purple", hexes=("#7f007f",)))
+
+        self.assertLess(
+            palette_distance(red_blue, red_yellow),
+            palette_distance(red_blue, solid_purple),
+        )
+
+    def test_a_shared_accent_alone_does_not_make_two_scarves_alike(self):
+        """`closest_pair` on its own ties every recipe that shares a black
+        accent, which is most of them. The spread term breaks those ties on
+        whether the rest of the palette lines up."""
+        target = make_recipe("Target", hexes=("#0a1f6b", "#111111"))
+        also_blue = make_recipe("Also Blue", hexes=("#12276f", "#111111"))
+        orange = make_recipe("Orange", hexes=("#e8720c", "#111111"))
+
+        target_palette = recipe_palette(target)
+        self.assertEqual(
+            palette_distance(target_palette, recipe_palette(also_blue))[0],
+            palette_distance(target_palette, recipe_palette(orange))[0],
+        )
+        picked = nearest_by_color([orange, also_blue], target, 1)
+        self.assertEqual([r.name for r in picked], ["Also Blue"])
+
+    def test_a_trace_dye_still_counts_as_a_visible_color(self):
+        """Ratio governs how much cloth a dye covers, not whether you can see
+        it — the 10% dye still gets its own band, so it stays in the palette at
+        full strength."""
         recipe = make_recipe("Mostly Blue", hexes=("#0000ff", "#ff0000"))
         rds = list(recipe.recipe_dyes.order_by("order"))
         rds[0].ratio = 90
@@ -402,14 +690,15 @@ class ColorUtilsTests(TestCase):
         rds[1].ratio = 10
         rds[1].save()
 
-        weighted = recipe_color(Recipe.objects.get(pk=recipe.pk))
-        pure_blue = hex_to_lab("#0000ff")
-        even_split = hex_to_lab("#7f007f")
-        self.assertLess(delta_e(weighted, pure_blue), delta_e(weighted, even_split))
+        palette = recipe_palette(Recipe.objects.get(pk=recipe.pk))
+        self.assertEqual(len(palette), 2)
+        nearest_to_red = min(delta_e(lab, hex_to_lab("#ff0000")) for lab in palette)
+        self.assertAlmostEqual(nearest_to_red, 0, places=6)
 
-    def test_recipe_with_no_dyes_has_no_color(self):
+    def test_recipe_with_no_dyes_has_no_palette(self):
         recipe = make_recipe("Colorless", hexes=())
-        self.assertIsNone(recipe_color(recipe))
+        self.assertEqual(recipe_palette(recipe), [])
+        self.assertIsNone(palette_distance(recipe_palette(recipe), [hex_to_lab("#ff0000")]))
 
     def test_cluster_picks_near_neighbours_not_far_ones(self):
         """The assertion that catches an inverted distance comparison — a bug
@@ -431,6 +720,29 @@ class ColorUtilsTests(TestCase):
             families = {r.name.split()[0] for r in picked}
             self.assertEqual(len(picked), 3)
             self.assertEqual(len(families), 1, f"seed {seed} mixed families: {families}")
+
+    def test_nearest_ranks_by_color_not_by_order(self):
+        blues = [make_recipe(f"Blue {i}", hexes=(h,))
+                 for i, h in enumerate(("#0a1f6b", "#12276f", "#1b2f78"))]
+        oranges = [make_recipe(f"Orange {i}", hexes=(h,))
+                   for i, h in enumerate(("#e8720c", "#f07d18", "#d96a05"))]
+
+        target = blues[0]
+        candidates = oranges + blues[1:]
+        picked = nearest_by_color(candidates, target, 2)
+        self.assertEqual({r.name for r in picked}, {"Blue 1", "Blue 2"})
+
+    def test_nearest_falls_back_when_colors_are_missing(self):
+        colorless = make_recipe("Colorless", hexes=())
+        others = [make_recipe(f"Other {i}") for i in range(3)]
+
+        # An uncolorable target can't be ranked against, so it fills at random
+        # rather than returning nothing.
+        self.assertEqual(len(nearest_by_color(others, colorless, 2)), 2)
+        # An uncolorable candidate is filler, used only once the rest run out.
+        picked = nearest_by_color([colorless] + others, others[0], 2)
+        self.assertNotIn("Colorless", {r.name for r in picked})
+        self.assertEqual(nearest_by_color(others, others[0], 0), [])
 
     def test_cluster_handles_pool_smaller_than_board(self):
         make_recipe("Only One")

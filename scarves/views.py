@@ -34,7 +34,7 @@ from django.contrib import messages
 from django.shortcuts import render, redirect
 from django.template.response import TemplateResponse
 
-from .colorutils import pick_color_cluster
+from .colorutils import nearest_by_color, pick_color_cluster
 from .forms import QuickRecipeRowForm, RecipeDyesForm
 from .models import Dye, Recipe
 from .s3utils import download_object, presigned_post
@@ -1549,5 +1549,185 @@ def game_page(request):
     return render(request, "scarves/game.html", {
         "board_url": reverse("game_board"),
         "default_pairs": GAME_DEFAULT_PAIRS,
+        "quiz_url": reverse("quiz_page"),
+        "embed_origin": request.build_absolute_uri("/").rstrip("/"),
+    })
+
+
+# --------------------------------------------------------------------------
+# Name quiz
+#
+# Multiple-choice sibling of the matching game, and deliberately the same shape:
+# one self-contained htmx fragment, dealt whole by the server and played in the
+# browser, so it drops into the Shopify storefront through the same endpoint
+# with no session cookie (blocked third-party inside an embed) and no per-answer
+# round trip.
+#
+# The consequence of dealing whole is that the answers sit in the DOM, so the
+# score is not tamper-proof. That's the accepted trade for embeddability — it's
+# a shop-window game, not a leaderboard.
+# --------------------------------------------------------------------------
+
+QUIZ_LENGTHS = (5, 10, 15)
+QUIZ_DEFAULT_QUESTIONS = 10
+QUIZ_CHOICES = 4
+# Below this there aren't enough names to build a question that isn't a giveaway.
+QUIZ_MIN_POOL = QUIZ_CHOICES
+
+# Scoring lives here rather than in the template's JS so it's tunable in one
+# place and assertable in a test: a right answer is worth QUIZ_POINTS_CORRECT,
+# plus a bonus that starts at QUIZ_SPEED_BONUS and decays to nothing over
+# QUIZ_SPEED_WINDOW seconds of thinking.
+QUIZ_POINTS_CORRECT = 100
+QUIZ_SPEED_BONUS = 50
+QUIZ_SPEED_WINDOW = 10
+
+
+def _quiz_product_pool():
+    """Active, photographed finished products — at most one per recipe.
+
+    The one-per-recipe rule is the same guarantee the matching game makes, for
+    the same reason: an infinity and a rectangle from one dye bath photograph
+    near-identically, so putting both names under one photo makes the question
+    unanswerable rather than hard. Because every option in the quiz — the answer
+    and all its distractors — is drawn from this one list, dedupe here fixes it
+    everywhere.
+    """
+    products = (
+        FinishedProduct.objects.filter(is_active=True, recipe__is_active=True)
+        .filter(Q(images__image__gt="") | Q(images__image_url__gt=""))
+        .distinct()
+        .select_related("recipe")
+        .prefetch_related(
+            "images",
+            Prefetch(
+                "recipe__recipe_dyes",
+                queryset=RecipeDye.objects.select_related("dye").order_by("order", "id"),
+            ),
+        )
+    )
+
+    seen = set()
+    pool = []
+    for product in products:
+        if product.recipe_id in seen:
+            continue
+        seen.add(product.recipe_id)
+        pool.append(product)
+    return pool
+
+
+def _product_images(product):
+    """Every usable image on a product."""
+    return [img for img in product.images.all() if img.image or img.image_url]
+
+
+def _deal_quiz(questions, pool=None, rng=None, family=False, choices=QUIZ_CHOICES):
+    """Deal `questions` multiple-choice questions: a photo and `choices` names.
+
+    `family=True` draws the distractors from the answer's nearest color
+    neighbours instead of at random — a far harder drill, and the whole point of
+    the exercise. It's opt-in for the same reason it is on the matching game:
+    it leans on dye-swatch hexes as a proxy for the photographed color, so it's
+    only as good as the recipe/dye data behind it.
+    """
+    rng = rng or random
+    pool = _quiz_product_pool() if pool is None else pool
+
+    asked = rng.sample(pool, min(questions, len(pool)))
+
+    out = []
+    for product in asked:
+        images = _product_images(product)
+        if not images:
+            continue
+
+        others = [p for p in pool if p.pk != product.pk]
+        wanted = min(choices - 1, len(others))
+        if family:
+            distractors = nearest_by_color(
+                others, product.recipe, wanted,
+                recipe_of=lambda p: p.recipe, rng=rng,
+            )
+        else:
+            distractors = rng.sample(others, wanted)
+
+        options = [{"name": p.name, "correct": False} for p in distractors]
+        options.append({"name": product.name, "correct": True})
+        rng.shuffle(options)
+
+        out.append({
+            "image_url": rng.choice(images).url,
+            "answer": product.name,
+            "recipe_name": product.recipe.name,
+            "options": options,
+            "dyes": [
+                {"name": rd.dye.name, "hex_color": rd.dye.hex_color}
+                for rd in product.recipe.recipe_dyes.all()
+            ],
+        })
+
+    return out
+
+
+@require_http_methods(["GET", "OPTIONS"])
+def quiz_board(request):
+    """The quiz itself, as an embeddable fragment. Anonymous; no CSRF (GET only)."""
+    if request.method == "OPTIONS":
+        return _cors_headers(HttpResponse(status=204))
+
+    try:
+        requested = int(request.GET.get("questions", QUIZ_DEFAULT_QUESTIONS))
+    except (TypeError, ValueError):
+        requested = QUIZ_DEFAULT_QUESTIONS
+    if requested not in QUIZ_LENGTHS:
+        requested = QUIZ_DEFAULT_QUESTIONS
+
+    family = request.GET.get("family") in ("1", "true", "yes")
+
+    pool = _quiz_product_pool()
+    questions = _deal_quiz(requested, pool=pool, family=family)
+
+    # Absolute, for the same reason as the matching board: this fragment renders
+    # into pages on other origins, where a relative path resolves against the
+    # host site and 404s. Testing only on the Django page would never catch it.
+    for question in questions:
+        url = question["image_url"]
+        if url and not url.startswith(("http://", "https://", "//")):
+            question["image_url"] = request.build_absolute_uri(url)
+
+    response = render(request, "scarves/partials/quiz_board.html", {
+        "questions": questions,
+        "asked": len(questions),
+        "requested_questions": requested,
+        # Only offer lengths the catalog can actually fill.
+        "lengths": [n for n in QUIZ_LENGTHS if n <= len(pool)],
+        "board_url": request.build_absolute_uri(reverse("quiz_board")),
+        "family_qs": "&family=1" if family else "",
+        "too_few": len(pool) < QUIZ_MIN_POOL,
+        "points_correct": QUIZ_POINTS_CORRECT,
+        "speed_bonus": QUIZ_SPEED_BONUS,
+        "speed_window": QUIZ_SPEED_WINDOW,
+        # Scopes this instance's CSS and JS, so two embeds on one page don't
+        # collide and a re-swap can't leave a stale listener behind.
+        "instance_id": uuid.uuid4().hex[:8],
+    })
+    return _cors_headers(response)
+
+
+@page_meta(
+    title="Name That Scarf",
+    description="Public multiple-choice quiz: a scarf photo and four names, "
+                "ten times over. Scored on how many you get right and how fast "
+                "you answer.",
+    category="Public",
+    note="No login required; embeddable on other sites.",
+)
+def quiz_page(request):
+    """Thin public shell, same as the matching game's."""
+    return render(request, "scarves/quiz.html", {
+        "board_url": reverse("quiz_board"),
+        "default_questions": QUIZ_DEFAULT_QUESTIONS,
+        "game_url": reverse("game_page"),
         "embed_origin": request.build_absolute_uri("/").rstrip("/"),
     })
