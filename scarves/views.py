@@ -788,6 +788,19 @@ def _verify_square_signature(request):
     return hmac.compare_digest(signature, expected)
 
 
+def _bulk_inventory_picker_products():
+    """
+    Raw products worth picking on the bulk-inventory page: active, and with at
+    least one active finished product. Anything else has no rows to edit.
+    """
+    return (
+        RawProduct.objects.filter(is_active=True, finished_products__is_active=True)
+        .select_related("category")
+        .distinct()
+        .order_by("category__name", "name")
+    )
+
+
 def build_bulk_inventory_form_class(finished_products):
     """
     Dynamically builds a Form with one optional count field per finished
@@ -821,15 +834,10 @@ def bulk_inventory_update(request):
 
     # No selection yet: show a picker grouped by category.
     if not raw_ids:
-        picker_products = (
-            RawProduct.objects.filter(is_active=True)
-            .select_related("category")
-            .order_by("category__name", "name")
-        )
         return render(
             request,
             "scarves/bulk_inventory_update.html",
-            {"picker_products": picker_products},
+            {"show_picker": True, "picker_products": _bulk_inventory_picker_products()},
         )
 
     raw_products_by_id = {
@@ -845,15 +853,10 @@ def bulk_inventory_update(request):
 
     if not raw_products:
         messages.error(request, "No valid raw products found for the provided raw_ids.")
-        picker_products = (
-            RawProduct.objects.filter(is_active=True)
-            .select_related("category")
-            .order_by("category__name", "name")
-        )
         return render(
             request,
             "scarves/bulk_inventory_update.html",
-            {"picker_products": picker_products},
+            {"show_picker": True, "picker_products": _bulk_inventory_picker_products()},
         )
 
     finished_products = list(
@@ -861,6 +864,27 @@ def bulk_inventory_update(request):
         .select_related("raw_product", "recipe")
         .order_by("raw_product__name", "recipe__name", "name")
     )
+
+    # Raw products with nothing to edit only add empty tables — drop them.
+    with_rows = {fp.raw_product_id for fp in finished_products}
+    empty = [rp for rp in raw_products if rp.id not in with_rows]
+    raw_products = [rp for rp in raw_products if rp.id in with_rows]
+    if empty:
+        messages.info(
+            request,
+            "Skipped (no active finished products yet): "
+            + ", ".join(rp.name for rp in empty)
+            + ".",
+        )
+        # Keep the skipped ids out of the save-redirect so the notice isn't sticky.
+        raw_ids_param = ",".join(str(rp.id) for rp in raw_products)
+
+    if not raw_products:
+        return render(
+            request,
+            "scarves/bulk_inventory_update.html",
+            {"show_picker": True, "picker_products": _bulk_inventory_picker_products()},
+        )
 
     FormClass = build_bulk_inventory_form_class(finished_products)
 
@@ -980,10 +1004,51 @@ def square_webhook(request):
     category="Reference Sheets",
 )
 def reference_sheet_index(request):
-    categories = RawProductCategory.objects.filter(
+    """Category picker for the reference-sheet PDFs.
+
+    Carries the same kind of at-a-glance counts as `raw_inventory_index`, so
+    the page says what you'd get before you wait on a PDF build: one page per
+    recipe, one barcode card per item, and how many items would print without a
+    photo — the sheet's whole point is matching a photo to a barcode.
+    """
+    printable = Q(
         raw_products__is_active=True,
         raw_products__finished_products__is_active=True,
-    ).distinct().order_by("name")
+        raw_products__finished_products__recipe__is_active=True,
+    )
+    categories = list(
+        RawProductCategory.objects.annotate(
+            recipe_count=Count(
+                "raw_products__finished_products__recipe",
+                filter=printable,
+                distinct=True,
+            ),
+            item_count=Count(
+                "raw_products__finished_products",
+                filter=printable,
+                distinct=True,
+            ),
+        )
+        .filter(recipe_count__gt=0)
+        .order_by("name")
+    )
+
+    # Only an uploaded file can be embedded in the PDF, so an external
+    # image_url doesn't count as having a photo (see _select_recipe_photos).
+    photoless = dict(
+        FinishedProduct.objects.filter(
+            is_active=True,
+            raw_product__is_active=True,
+            recipe__is_active=True,
+        )
+        .exclude(images__image__gt="")
+        .values("raw_product__category")
+        .annotate(n=Count("pk", distinct=True))
+        .values_list("raw_product__category", "n")
+    )
+    for category in categories:
+        category.photoless = photoless.get(category.pk, 0)
+
     return render(request, "scarves/reference_sheet_index.html", {"categories": categories})
 
 

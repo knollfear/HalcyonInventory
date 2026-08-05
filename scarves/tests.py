@@ -1105,6 +1105,167 @@ class RawInventoryIndexTests(TestCase):
             self.assertEqual(self.client.get(href.decode()).status_code, 200)
 
 
+class ReferenceSheetIndexTests(TestCase):
+    """The PDF picker. Same card layout as the raw-inventory picker, so it
+    carries the same kind of counts."""
+
+    def setUp(self):
+        self.silk, _ = RawProductCategory.objects.get_or_create(name="Silk")
+        self.url = reverse("reference_sheet_index")
+
+    def _item(self, name, category=None, active=True, recipe_active=True, photo=False):
+        raw, _ = RawProduct.objects.get_or_create(
+            name=f"raw-{name}", category=category or self.silk,
+            defaults={"price": "5.00"},
+        )
+        product = FinishedProduct.objects.create(
+            name=name, raw_product=raw,
+            recipe=make_recipe(f"{name}-recipe", active=recipe_active),
+            price="30.00", is_active=active,
+        )
+        if photo:
+            # Only an uploaded file counts; the path needn't resolve for this.
+            FinishedProductImage.objects.create(
+                finished_product=product, image="finished_products/x.jpg"
+            )
+        return product
+
+    def _categories(self):
+        return self.client.get(self.url).context["categories"]
+
+    def test_it_counts_pages_and_barcodes(self):
+        """One PDF page per recipe, one barcode card per item."""
+        shared = make_recipe("Stormy")
+        for name in ("Scarf A", "Scarf B"):
+            raw = RawProduct.objects.create(
+                name=f"raw-{name}", category=self.silk, price="5.00"
+            )
+            FinishedProduct.objects.create(
+                name=name, raw_product=raw, recipe=shared, price="30.00"
+            )
+        self._item("Sunset Scarf")
+
+        category = self._categories()[0]
+        self.assertEqual(category.recipe_count, 2)
+        self.assertEqual(category.item_count, 3)
+
+    def test_it_counts_items_that_would_print_without_a_photo(self):
+        self._item("Has One", photo=True)
+        self._item("Bare", photo=False)
+        self._item("Also Bare", photo=False)
+
+        self.assertEqual(self._categories()[0].photoless, 2)
+
+    def test_an_external_image_url_is_not_a_photo(self):
+        """The PDF embeds uploaded files only — a URL-only image still prints
+        as a barcode with no picture."""
+        product = self._item("Linked")
+        FinishedProductImage.objects.create(
+            finished_product=product, image_url="https://example.test/x.jpg"
+        )
+        self.assertEqual(self._categories()[0].photoless, 1)
+
+    def test_categories_with_nothing_printable_are_left_out(self):
+        self._item("Live")
+        self._item("Retired", category=RawProductCategory.objects.create(name="Gone"),
+                   active=False)
+        self._item("StaleRecipe",
+                   category=RawProductCategory.objects.create(name="Stale"),
+                   recipe_active=False)
+        RawProductCategory.objects.create(name="Empty")
+
+        self.assertEqual([c.name for c in self._categories()], ["Silk"])
+
+    def test_it_links_back_to_the_site_map(self):
+        self.assertContains(self.client.get(self.url), reverse("index"))
+
+    def test_every_listed_category_actually_builds_a_pdf(self):
+        self._item("Habotai")
+        self._item("Wool", category=RawProductCategory.objects.create(name="Yarn"))
+
+        response = self.client.get(self.url)
+        hrefs = re.findall(rb'href="(/scarves/reference-sheet/\d+/)"', response.content)
+        self.assertEqual(len(hrefs), 2)
+        for href in hrefs:
+            pdf = self.client.get(href.decode())
+            self.assertEqual(pdf.status_code, 200)
+            self.assertEqual(pdf["Content-Type"], "application/pdf")
+
+
+class BulkInventoryPickerTests(TestCase):
+    """A raw product with no active finished products has no rows to edit, so
+    offering it on the picker only leads to an empty form."""
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("bulk", "b@example.test", "pw")
+        self.client.force_login(self.user)
+        self.silk, _ = RawProductCategory.objects.get_or_create(name="Silk")
+        self.url = reverse("bulk_inventory_update")
+
+    def _raw(self, name, active=True):
+        return RawProduct.objects.create(
+            name=name, category=self.silk, price="5.00", is_active=active,
+        )
+
+    def _finished(self, raw, name, active=True):
+        return FinishedProduct.objects.create(
+            name=name, raw_product=raw, recipe=make_recipe(f"{name}-recipe"),
+            price="30.00", is_active=active,
+        )
+
+    def _picker_names(self, response):
+        return [rp.name for rp in response.context["picker_products"]]
+
+    def test_only_raw_products_with_finished_products_are_listed(self):
+        stocked = self._raw("Habotai")
+        self._finished(stocked, "Stormy Habotai")
+        self._raw("Never Dyed")
+        retired_only = self._raw("Retired Line")
+        self._finished(retired_only, "Old Scarf", active=False)
+
+        self.assertEqual(self._picker_names(self.client.get(self.url)), ["Habotai"])
+
+    def test_a_raw_product_appears_once_however_many_finished_products(self):
+        stocked = self._raw("Habotai")
+        self._finished(stocked, "Stormy Habotai")
+        self._finished(stocked, "Sunset Habotai")
+
+        self.assertEqual(self._picker_names(self.client.get(self.url)), ["Habotai"])
+
+    def test_an_empty_raw_id_is_skipped_and_reported(self):
+        stocked = self._raw("Habotai")
+        self._finished(stocked, "Stormy Habotai")
+        empty = self._raw("Never Dyed")
+
+        response = self.client.get(self.url, {"raw_ids": f"{stocked.id},{empty.id}"})
+        self.assertEqual(
+            [g["raw_product"].name for g in response.context["groups"]], ["Habotai"]
+        )
+        self.assertContains(response, "Never Dyed")
+        # The save-redirect drops it, so the notice doesn't come back every save.
+        self.assertEqual(response.context["raw_ids_param"], str(stocked.id))
+
+    def test_all_empty_raw_ids_fall_back_to_the_picker(self):
+        empty = self._raw("Never Dyed")
+
+        response = self.client.get(self.url, {"raw_ids": str(empty.id)})
+        self.assertTrue(response.context["show_picker"])
+        self.assertNotIn("groups", response.context)
+
+    def test_both_views_link_back_to_the_site_map(self):
+        stocked = self._raw("Habotai")
+        self._finished(stocked, "Stormy Habotai")
+
+        self.assertContains(self.client.get(self.url), reverse("index"))
+        self.assertContains(
+            self.client.get(self.url, {"raw_ids": str(stocked.id)}), reverse("index")
+        )
+
+    def test_it_requires_login(self):
+        self.client.logout()
+        self.assertEqual(self.client.get(self.url).status_code, 302)
+
+
 class TemplateHygieneTests(TestCase):
     def test_no_multiline_hash_comments(self):
         """`{# #}` is single-line only — spread it over two lines and Django

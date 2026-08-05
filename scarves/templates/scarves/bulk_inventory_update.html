@@ -1,29 +1,70 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Bulk Inventory Update</title>
   <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; margin: 1.5rem; max-width: 900px; }
-    .messages { margin-bottom: 1rem; }
-    .message { padding: 0.5rem 0.75rem; border-radius: 6px; margin-bottom: 0.25rem; }
-    .message.success { background: #e6ffed; border: 1px solid #8fd19e; color: #245b31; }
-    .message.error { background: #ffe6e6; border: 1px solid #e09c9c; color: #7d2424; }
-    .message.info { background: #e6f3ff; border: 1px solid #9cbce0; color: #23466b; }
-
-    table { border-collapse: collapse; width: 100%; margin-bottom: 1.5rem; }
-    th, td { border-bottom: 1px solid #ddd; padding: 0.5rem; vertical-align: middle; }
-    th { background: #f3f3f3; text-align: left; }
-    input[type="number"] { width: 6rem; }
-    .btn { padding: 0.5rem 0.9rem; border: 1px solid #777; background: #f6f6f6; border-radius: 6px; cursor: pointer; }
-    .btn:hover { background: #eaeaea; }
-    .hint { color: #666; margin: 0.5rem 0 1rem; }
-    .small { font-size: 0.9rem; color: #444; }
+    /* Same shell as the site map and raw-inventory picker: tinted page,
+       centered column, white cards, #1558a0 for anything clickable. */
+    body {
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      padding: 24px; max-width: 900px; margin: 0 auto;
+      color: #1a2230; background: #f7f8fa;
+    }
+    h1 { margin-bottom: 4px; }
+    a { color: #1558a0; text-underline-offset: 2px; }
+    .lead { color: #666; font-size: 14px; margin-top: 0; line-height: 1.5; }
+    .small { font-size: 13px; color: #444; }
     .muted { color: #888; }
-    .group-title { margin: 1.25rem 0 0.25rem; }
-    .cat { font-weight: 600; margin-top: 1rem; }
-    fieldset { border: 1px solid #ddd; border-radius: 8px; margin-bottom: 1rem; padding: 0.75rem 1rem; }
-    label.pick { display: inline-block; margin: 0.15rem 1rem 0.15rem 0; white-space: nowrap; }
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12px; background: #f1f3f6; border-radius: 4px; padding: 2px 6px;
+    }
+
+    .messages { margin: 16px 0; }
+    .message {
+      padding: 8px 12px; border-radius: 8px; margin-bottom: 6px; font-size: 14px;
+    }
+    .message.success { background: #f1f8f3; border: 1px solid #bcd8c6; color: #2e7d52; }
+    .message.error { background: #fdf2f1; border: 1px solid #f0c8c4; color: #8a2f2a; }
+    .message.info { background: #fff6e0; border: 1px solid #f0e0b0; color: #8a5a00; }
+
+    .card {
+      border: 1px solid #e1e5ea; border-radius: 10px; padding: 16px;
+      background: #fff; margin-top: 14px;
+    }
+    .card-title { font-size: 17px; font-weight: 600; margin: 0 0 12px; }
+
+    table { border-collapse: collapse; width: 100%; }
+    th, td { padding: 8px 10px; border-bottom: 1px solid #eef1f4; vertical-align: middle; }
+    th {
+      text-align: left; font-size: 12px; text-transform: uppercase;
+      letter-spacing: .03em; color: #667; border-bottom: 1px solid #e1e5ea;
+    }
+    tbody tr:last-child td { border-bottom: none; }
+    input[type="number"] {
+      width: 5.5rem; padding: 5px 8px; font: inherit;
+      border: 1px solid #cfd6de; border-radius: 6px; background: #fff;
+    }
+    input[type="number"]:focus {
+      outline: none; border-color: #1558a0; box-shadow: 0 0 0 3px rgba(21, 88, 160, .12);
+    }
+
+    .btn {
+      padding: 9px 16px; font: inherit; font-weight: 600;
+      border: 1px solid #1558a0; background: #1558a0; color: #fff;
+      border-radius: 8px; cursor: pointer;
+    }
+    .btn:hover { background: #0d3d73; border-color: #0d3d73; }
+    .actions { margin-top: 18px; }
+
+    legend { font-weight: 600; color: #1a3a5c; padding: 0 4px; }
+    label.pick {
+      display: inline-flex; align-items: baseline; gap: 6px;
+      margin: 3px 16px 3px 0; white-space: nowrap;
+    }
+    .back { display: inline-block; margin-top: 22px; font-size: 13px; }
   </style>
 </head>
 <body>
@@ -37,33 +78,45 @@
     </div>
   {% endif %}
 
-  {% if picker_products %}
+  {% if show_picker %}
     {# ---- Picker: no raw_ids supplied ---- #}
-    <p class="hint">
+    <p class="lead">
       Pick the raw products whose finished-product inventory you want to update,
-      then load the editor. (Or open directly with
-      <code>/scarves/bulk-inventory/?raw_ids=1,2,3</code>.)
+      then load the editor. Only raw products that already have active finished
+      products are listed — the rest have nothing to update. (Or open directly
+      with <code>/scarves/bulk-inventory/?raw_ids=1,2,3</code>.)
     </p>
 
-    <form method="get">
-      {% regroup picker_products by category as category_list %}
-      {% for cat in category_list %}
-        <fieldset>
-          <legend class="cat">{{ cat.grouper.name }}</legend>
-          {% for rp in cat.list %}
-            <label class="pick">
-              <input type="checkbox" name="raw_ids" value="{{ rp.id }}">
-              {{ rp.name }} <span class="muted">(id={{ rp.id }}, on&nbsp;hand&nbsp;{{ rp.number_on_hand }})</span>
-            </label>
-          {% endfor %}
-        </fieldset>
-      {% endfor %}
-      <button class="btn" type="submit">Load selected →</button>
-    </form>
+    {% if picker_products %}
+      <form method="get">
+        {% regroup picker_products by category as category_list %}
+        {% for cat in category_list %}
+          <div class="card">
+            <fieldset style="border: 0; margin: 0; padding: 0;">
+              <legend class="card-title">{{ cat.grouper.name }}</legend>
+              {% for rp in cat.list %}
+                <label class="pick">
+                  <input type="checkbox" name="raw_ids" value="{{ rp.id }}">
+                  <span>
+                    {{ rp.name }}
+                    <span class="muted small">(id={{ rp.id }}, on&nbsp;hand&nbsp;{{ rp.number_on_hand }})</span>
+                  </span>
+                </label>
+              {% endfor %}
+            </fieldset>
+          </div>
+        {% endfor %}
+        <div class="actions">
+          <button class="btn" type="submit">Load selected →</button>
+        </div>
+      </form>
+    {% else %}
+      <div class="card muted">No raw product has an active finished product yet.</div>
+    {% endif %}
 
   {% else %}
     {# ---- Editor: raw_ids supplied ---- #}
-    <p class="hint">
+    <p class="lead">
       Editing finished products for raw_ids <code>{{ raw_ids_param }}</code>.
       Change any count and save — unchanged rows are left alone, and every change
       is recorded in the inventory log as an adjustment.
@@ -74,12 +127,12 @@
       {% csrf_token %}
 
       {% for group in groups %}
-        <h2 class="group-title">
-          {{ group.raw_product.name }}
-          <span class="small muted">— {{ group.raw_product.category.name }} (id={{ group.raw_product.id }})</span>
-        </h2>
+        <div class="card">
+          <h2 class="card-title">
+            {{ group.raw_product.name }}
+            <span class="small muted">— {{ group.raw_product.category.name }} (id={{ group.raw_product.id }})</span>
+          </h2>
 
-        {% if group.rows %}
           <table>
             <thead>
               <tr>
@@ -97,7 +150,7 @@
                   <td>
                     {{ row.field }}
                     {% if row.field.errors %}
-                      <div class="small" style="color:#b00;">{{ row.field.errors }}</div>
+                      <div class="small" style="color:#8a2f2a;">{{ row.field.errors }}</div>
                     {% endif %}
                   </td>
                   <td class="small muted">{{ row.fp.name }}</td>
@@ -105,13 +158,15 @@
               {% endfor %}
             </tbody>
           </table>
-        {% else %}
-          <p class="muted small">No active finished products for this raw product yet.</p>
-        {% endif %}
+        </div>
       {% endfor %}
 
-      <button class="btn" type="submit">Save inventory</button>
+      <div class="actions">
+        <button class="btn" type="submit">Save inventory</button>
+      </div>
     </form>
   {% endif %}
+
+  <a class="back" href="{% url 'index' %}">← Site map</a>
 </body>
 </html>
