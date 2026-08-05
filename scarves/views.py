@@ -35,7 +35,7 @@ from django.shortcuts import render, redirect
 from django.template.response import TemplateResponse
 
 from .colorutils import pick_color_cluster
-from .forms import QuickRecipeRowForm
+from .forms import QuickRecipeRowForm, RecipeDyesForm
 from .models import Dye, Recipe
 from .s3utils import download_object, presigned_post
 from django.db.models import Prefetch
@@ -378,29 +378,167 @@ def quick_recipe_entry(request):
 
     return render(request, "scarves/quick_recipe_entry.html", {"forms": forms, "dye_hex": dye_hex})
 
-@page_meta(
-    title="Recipe Showcase",
-    description="Read-only gallery of active recipes and their dyes, with color "
-                "swatches.",
-    category="Recipes",
-)
-@login_required
-def recipe_showcase(request):
+def _showcase_recipes(missing_only=False):
+    """Active recipes with their dyes and their finished products.
+
+    Finished products (and a photo) come along because the recipe name alone is
+    often not enough to know what a colorway actually was — looking at the
+    scarf is how you identify the dyes.
+    """
     recipes = (
         Recipe.objects.filter(is_active=True)
         .prefetch_related(
             Prefetch(
                 "recipe_dyes",  # ← matches your related_name
                 queryset=RecipeDye.objects.select_related("dye").order_by("order", "id"),
-            )
+            ),
+            Prefetch(
+                "finished_products",
+                queryset=FinishedProduct.objects.filter(is_active=True)
+                .prefetch_related("images")
+                .order_by("name"),
+            ),
         )
         .order_by("name")
     )
+    if missing_only:
+        recipes = recipes.filter(recipe_dyes__isnull=True)
+    return recipes
+
+
+def _recipe_row_context(request, recipe, form=None, source=None, saved=False):
+    """Shared context for one showcase row, however it is rendered."""
+    if form is None:
+        # Prefill from the source recipe when copying, else from the recipe's
+        # own dyes. Either way nothing is written until Save.
+        prefill = source if source is not None else recipe
+        initial = {
+            f"dye{i}": rd.dye_id
+            for i, rd in enumerate(prefill.recipe_dyes.all()[: RecipeDyesForm.SLOTS], start=1)
+        }
+        form = RecipeDyesForm(initial=initial)
+    return {
+        "recipe": recipe,
+        "form": form,
+        "edit_mode": True,
+        "copied_from": source,
+        "saved": saved,
+        "dye_sources": _dye_source_recipes(),
+    }
+
+
+def _dye_source_recipes():
+    """Recipes that have dyes recorded — the library you can copy from."""
+    return (
+        Recipe.objects.filter(recipe_dyes__isnull=False)
+        .distinct()
+        .order_by("name")
+        .values("pk", "name")
+    )
+
+
+@page_meta(
+    title="Recipe Showcase",
+    description="Gallery of active recipes with their dyes, colour swatches and "
+                "the finished products made from them. Edit mode fills in "
+                "missing dyes, including copying them from a recipe that "
+                "already has them.",
+    category="Recipes",
+    note="Add ?edit=true to edit dyes, &missing=true for just the backlog.",
+)
+@login_required
+def recipe_showcase(request):
+    edit_mode = request.GET.get("edit") == "true"
+    missing_only = request.GET.get("missing") == "true"
+    recipes = list(_showcase_recipes(missing_only=missing_only))
+
+    rows = []
+    if edit_mode:
+        sources = _dye_source_recipes()
+        for recipe in recipes:
+            initial = {
+                f"dye{i}": rd.dye_id
+                for i, rd in enumerate(recipe.recipe_dyes.all()[: RecipeDyesForm.SLOTS], start=1)
+            }
+            rows.append({
+                "recipe": recipe,
+                "form": RecipeDyesForm(initial=initial),
+                "edit_mode": True,
+                "dye_sources": sources,
+            })
+    else:
+        rows = [{"recipe": r, "edit_mode": False} for r in recipes]
+
+    total = Recipe.objects.filter(is_active=True).count()
+    without = Recipe.objects.filter(is_active=True, recipe_dyes__isnull=True).count()
 
     return render(
         request,
         "scarves/recipe_showcase.html",
-        {"recipes": recipes},
+        {
+            "rows": rows,
+            "edit_mode": edit_mode,
+            "missing_only": missing_only,
+            "total_count": total,
+            "missing_count": without,
+            # Swatch colours for the pickers, same idea as quick recipe entry.
+            "dye_hex": json.dumps(
+                {str(d.pk): str(d.hex_color) for d in Dye.objects.all()}
+            ),
+        },
+    )
+
+
+@login_required
+def recipe_row(request, pk):
+    """One showcase row, re-rendered. `?source=<pk>` prefills the pickers from
+    another recipe's dyes without saving; no source re-renders the row as it
+    stands (used by Cancel)."""
+    recipe = get_object_or_404(
+        Recipe.objects.prefetch_related("recipe_dyes__dye", "finished_products__images"),
+        pk=pk,
+    )
+    source = None
+    source_pk = request.GET.get("source")
+    if source_pk:
+        source = (
+            Recipe.objects.filter(pk=source_pk)
+            .prefetch_related("recipe_dyes__dye")
+            .first()
+        )
+
+    return render(
+        request,
+        "scarves/partials/recipe_row.html",
+        _recipe_row_context(request, recipe, source=source),
+    )
+
+
+@require_POST
+@login_required
+def recipe_dyes_save(request, pk):
+    """Save one recipe's dyes and hand back the re-rendered row."""
+    recipe = get_object_or_404(Recipe, pk=pk)
+    form = RecipeDyesForm(request.POST)
+
+    if not form.is_valid():
+        recipe = Recipe.objects.prefetch_related(
+            "recipe_dyes__dye", "finished_products__images"
+        ).get(pk=pk)
+        return render(
+            request,
+            "scarves/partials/recipe_row.html",
+            _recipe_row_context(request, recipe, form=form),
+        )
+
+    form.save(recipe)
+    recipe = Recipe.objects.prefetch_related(
+        "recipe_dyes__dye", "finished_products__images"
+    ).get(pk=pk)
+    return render(
+        request,
+        "scarves/partials/recipe_row.html",
+        _recipe_row_context(request, recipe, saved=True),
     )
 
 

@@ -11,10 +11,12 @@ Two things here are worth more than they look:
 """
 import random
 
+from django.contrib.auth.models import User
 from django.test import TestCase
 from django.urls import reverse
 
 from .colorutils import delta_e, hex_to_lab, hex_to_rgb, pick_color_cluster, recipe_color
+from .forms import RecipeDyesForm
 from .models import (
     Dye,
     DyeBrand,
@@ -206,6 +208,107 @@ class BoardViewTests(TestCase):
         self.assertEqual(response.context["family_qs"], "")
         response = self.client.get(reverse("game_board"), {"family": "1"})
         self.assertEqual(response.context["family_qs"], "&family=1")
+
+
+class RecipeEditTests(TestCase):
+    """Edit mode on the recipe showcase — filling in the dye backlog."""
+
+    def setUp(self):
+        self.user = User.objects.create_user("staff", password="pw")
+        self.client.force_login(self.user)
+        # A recipe that already has dyes (the copy source) and one without.
+        self.source = make_recipe("blueeyes-mid-navy", hexes=("#2b5fa8", "#1a2340"))
+        self.target = make_recipe("Agean Sea", hexes=())
+        make_product(self.target, "Half Circle Veil - Agean Sea")
+
+    def test_read_only_by_default(self):
+        response = self.client.get(reverse("recipe_showcase"))
+        self.assertFalse(response.context["edit_mode"])
+        self.assertNotContains(response, "Copy dyes from")
+
+    def test_edit_mode_renders_pickers(self):
+        response = self.client.get(reverse("recipe_showcase"), {"edit": "true"})
+        self.assertTrue(response.context["edit_mode"])
+        self.assertContains(response, "Copy dyes from")
+
+    def test_missing_filter_shows_only_dyeless_recipes(self):
+        response = self.client.get(
+            reverse("recipe_showcase"), {"edit": "true", "missing": "true"}
+        )
+        names = [row["recipe"].name for row in response.context["rows"]]
+        self.assertIn("Agean Sea", names)
+        self.assertNotIn("blueeyes-mid-navy", names)
+
+    def test_copy_prefills_without_saving(self):
+        """The whole point of copy-then-adjust: the pickers populate but the
+        database must be untouched until Save."""
+        response = self.client.get(
+            reverse("recipe_row", args=[self.target.pk]), {"source": self.source.pk}
+        )
+        form = response.context["form"]
+        source_dye_ids = [rd.dye_id for rd in self.source.recipe_dyes.all()]
+        self.assertEqual(form.initial["dye1"], source_dye_ids[0])
+        self.assertEqual(form.initial["dye2"], source_dye_ids[1])
+        self.assertEqual(self.target.recipe_dyes.count(), 0)
+
+    def test_save_writes_dyes_in_slot_order(self):
+        d1, d2 = [rd.dye for rd in self.source.recipe_dyes.all()]
+        response = self.client.post(
+            reverse("recipe_dyes_save", args=[self.target.pk]),
+            {"dye1": d1.pk, "dye2": "", "dye3": d2.pk, "dye4": "", "dye5": ""},
+        )
+        self.assertEqual(response.status_code, 200)
+        rows = list(self.target.recipe_dyes.order_by("order"))
+        # Gaps collapse: slot 3 becomes order 2, so order stays 1..n contiguous.
+        self.assertEqual([r.dye_id for r in rows], [d1.pk, d2.pk])
+        self.assertEqual([r.order for r in rows], [1, 2])
+
+    def test_save_replaces_rather_than_appends(self):
+        d1, d2 = [rd.dye for rd in self.source.recipe_dyes.all()]
+        self.client.post(
+            reverse("recipe_dyes_save", args=[self.target.pk]), {"dye1": d1.pk}
+        )
+        self.client.post(
+            reverse("recipe_dyes_save", args=[self.target.pk]), {"dye1": d2.pk}
+        )
+        self.assertEqual([rd.dye_id for rd in self.target.recipe_dyes.all()], [d2.pk])
+
+    def test_saving_all_blank_clears_the_recipe(self):
+        d1 = self.source.recipe_dyes.first().dye
+        self.client.post(
+            reverse("recipe_dyes_save", args=[self.target.pk]), {"dye1": d1.pk}
+        )
+        self.client.post(reverse("recipe_dyes_save", args=[self.target.pk]), {})
+        self.assertEqual(self.target.recipe_dyes.count(), 0)
+
+    def test_duplicate_dye_is_rejected_and_nothing_is_written(self):
+        d1 = self.source.recipe_dyes.first().dye
+        response = self.client.post(
+            reverse("recipe_dyes_save", args=[self.target.pk]),
+            {"dye1": d1.pk, "dye2": d1.pk},
+        )
+        self.assertFalse(response.context["form"].is_valid())
+        self.assertEqual(self.target.recipe_dyes.count(), 0)
+
+    def test_out_of_stock_dyes_stay_selectable(self):
+        """Recording history must not depend on current stock — otherwise a dye
+        going out of stock makes its recipes un-editable."""
+        dye = self.source.recipe_dyes.first().dye
+        Dye.objects.filter(pk=dye.pk).update(in_stock=False)
+        form = RecipeDyesForm()
+        self.assertIn(dye, form.fields["dye1"].queryset)
+
+    def test_edit_endpoints_require_login(self):
+        self.client.logout()
+        for url in [
+            reverse("recipe_showcase") + "?edit=true",
+            reverse("recipe_row", args=[self.target.pk]),
+        ]:
+            self.assertEqual(self.client.get(url).status_code, 302, url)
+        self.assertEqual(
+            self.client.post(reverse("recipe_dyes_save", args=[self.target.pk])).status_code,
+            302,
+        )
 
 
 class ColorUtilsTests(TestCase):

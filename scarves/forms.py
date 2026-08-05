@@ -4,6 +4,58 @@ from django.db import transaction
 
 from .models import Dye, Recipe, RecipeDye, RawProduct  # RecipeDye is your through model
 
+class RecipeDyesForm(forms.Form):
+    """Edit just the dye assignments of one existing recipe.
+
+    Unlike QuickRecipeRowForm this never touches the recipe's name and never
+    creates recipes — it is for filling in dyes on records that already exist.
+
+    Deliberately offers *all* dyes, not just in_stock ones: this records what a
+    recipe historically used, and a dye going out of stock must not make its
+    recipes un-editable. (Every dye is in stock today, so this is a latent trap
+    rather than a current bug.)
+    """
+
+    SLOTS = 5  # RecipeDye.order validates 1..5
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        queryset = Dye.objects.select_related("brand").order_by("brand__name", "name")
+        for i in range(1, self.SLOTS + 1):
+            self.fields[f"dye{i}"] = forms.ModelChoiceField(
+                queryset=queryset, required=False, label=f"Dye {i}"
+            )
+
+    def clean(self):
+        cleaned = super().clean()
+        chosen = [cleaned.get(f"dye{i}") for i in range(1, self.SLOTS + 1)]
+        picked = [d.pk for d in chosen if d]
+        if len(picked) != len(set(picked)):
+            self.add_error(None, "Please don't select the same dye more than once.")
+        return cleaned
+
+    def selected_dyes(self):
+        """The chosen dyes in slot order, gaps removed."""
+        return [
+            d
+            for d in (self.cleaned_data.get(f"dye{i}") for i in range(1, self.SLOTS + 1))
+            if d
+        ]
+
+    @transaction.atomic
+    def save(self, recipe):
+        """Replace the recipe's dyes with the selected ones.
+
+        Replace rather than merge, matching QuickRecipeRowForm: it makes the
+        form a straightforward picture of the final state, and lets a row be
+        cleared by emptying every slot.
+        """
+        RecipeDye.objects.filter(recipe=recipe).delete()
+        for order, dye in enumerate(self.selected_dyes(), start=1):
+            RecipeDye.objects.create(recipe=recipe, dye=dye, order=order)
+        return recipe
+
+
 class QuickRecipeRowForm(forms.Form):
     name = forms.CharField(max_length=150, required=False)  # allow blank rows
     dye1 = forms.ModelChoiceField(queryset=Dye.objects.filter(in_stock=True), required=False)

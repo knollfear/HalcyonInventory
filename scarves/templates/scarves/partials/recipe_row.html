@@ -1,0 +1,99 @@
+{% comment %}
+One row of the recipe showcase, in read-only or edit mode.
+
+Rendered three ways, always from here so they can't drift: inline by the
+showcase page, by recipe_row (copy prefill / cancel) and by recipe_dyes_save.
+Swapped with hx-swap="outerHTML" targeting this <tr>.
+{% endcomment %}
+<tr id="recipe-row-{{ recipe.pk }}"{% if saved %} class="just-saved"{% endif %}>
+  <td>
+    <strong>{{ recipe.name }}</strong>
+    {% if saved %}<span class="savedtag">saved</span>{% endif %}
+  </td>
+
+  {# The scarf itself — the recipe name rarely says what the colorway was. #}
+  <td class="products">
+    {% for fp in recipe.finished_products.all %}
+      {% for img in fp.images.all %}{% if forloop.first %}
+        <img class="thumb" src="{{ img.url }}" alt="{{ fp.name }}" loading="lazy">
+      {% endif %}{% endfor %}
+    {% empty %}
+      <span class="muted">No products</span>
+    {% endfor %}
+    <div class="muted names">
+      {% for fp in recipe.finished_products.all %}{{ fp.name }}{% if not forloop.last %}, {% endif %}{% endfor %}
+    </div>
+  </td>
+
+  {% if edit_mode %}
+    <td colspan="2">
+      {% if form.non_field_errors %}
+        <div class="errorlist">{{ form.non_field_errors }}</div>
+      {% endif %}
+
+      <div class="copyrow">
+        <label class="muted" for="src-{{ recipe.pk }}">Copy dyes from</label>
+        {# Loads that recipe's dyes into the pickers below. Nothing is written
+           until Save, so the copy can be adjusted first. #}
+        <select id="src-{{ recipe.pk }}" name="source"
+                hx-get="{% url 'recipe_row' recipe.pk %}"
+                hx-include="this"
+                hx-target="#recipe-row-{{ recipe.pk }}"
+                hx-swap="outerHTML">
+          <option value="">— pick a recipe —</option>
+          {% for src in dye_sources %}
+            {% if src.pk != recipe.pk %}
+              <option value="{{ src.pk }}"{% if copied_from and copied_from.pk == src.pk %} selected{% endif %}>{{ src.name }}</option>
+            {% endif %}
+          {% endfor %}
+        </select>
+        {% if copied_from %}
+          <span class="copied">copied from <strong>{{ copied_from.name }}</strong> — not saved yet</span>
+        {% endif %}
+      </div>
+
+      <div class="pickers">
+        {% for field in form %}
+          <div class="colorcell">
+            {{ field }}
+            <span class="swatch" data-for="{{ field.id_for_label }}"></span>
+          </div>
+        {% endfor %}
+      </div>
+
+      <div class="rowactions">
+        <button type="button"
+                hx-post="{% url 'recipe_dyes_save' recipe.pk %}"
+                hx-include="closest tr"
+                hx-target="#recipe-row-{{ recipe.pk }}"
+                hx-swap="outerHTML">Save</button>
+        <button type="button" class="secondary"
+                hx-get="{% url 'recipe_row' recipe.pk %}"
+                hx-target="#recipe-row-{{ recipe.pk }}"
+                hx-swap="outerHTML">Reset</button>
+      </div>
+    </td>
+  {% else %}
+    <td>
+      {% if recipe.recipe_dyes.all %}
+        <div class="dyes">
+          {% for rd in recipe.recipe_dyes.all %}
+            <span class="chip">{{ rd.dye.name }}</span>
+          {% endfor %}
+        </div>
+      {% else %}
+        <span class="muted">No dyes yet</span>
+      {% endif %}
+    </td>
+    <td>
+      {% if recipe.recipe_dyes.all %}
+        <div class="swatches">
+          {% for rd in recipe.recipe_dyes.all %}
+            <span class="swatch" title="{{ rd.dye.name }} — {{ rd.dye.hex_color }}"
+                  style="background: {{ rd.dye.hex_color }};"></span>
+          {% endfor %}
+        </div>
+      {% endif %}
+    </td>
+  {% endif %}
+</tr>

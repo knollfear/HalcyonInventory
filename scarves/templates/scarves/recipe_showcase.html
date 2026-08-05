@@ -23,56 +23,119 @@
     }
     .hex { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 12px; color: #444; }
     .muted { color: #666; font-size: 13px; }
+
+    /* --- edit mode --- */
+    .toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 14px; }
+    .toolbar a { color: #23466b; }
+    .pill {
+      border: 1px solid #cbd6e2; border-radius: 999px; padding: 4px 12px;
+      text-decoration: none; font-size: 14px; background: #fff;
+    }
+    .pill.on { background: #23466b; border-color: #23466b; color: #fff; }
+    .pickers { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+    .colorcell { display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: center; }
+    .colorcell select { padding: 6px; min-width: 150px; }
+    .colorcell .swatch { width: 22px; height: 22px; }
+    .copyrow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .copyrow select { padding: 6px; }
+    .copied { color: #8a5a00; font-size: 13px; }
+    .rowactions { margin-top: 10px; display: flex; gap: 8px; }
+    button {
+      padding: 7px 14px; border-radius: 8px; border: 1px solid #23466b;
+      background: #23466b; color: #fff; cursor: pointer; font: inherit;
+    }
+    button.secondary { background: #fff; color: #23466b; }
+    .errorlist { color: #b00020; margin: 0 0 6px; }
+    .savedtag {
+      font-size: 11px; color: #2e7d52; border: 1px solid #bcd8c6;
+      border-radius: 999px; padding: 1px 8px; margin-left: 6px;
+    }
+    tr.just-saved { background: #f1f8f3; }
+    .thumb {
+      width: 68px; height: 68px; object-fit: cover;
+      border-radius: 6px; border: 1px solid #ddd; margin-right: 4px;
+    }
+    .products .names { margin-top: 4px; }
+    .htmx-request { opacity: .55; }
   </style>
 </head>
-<body>
+<body hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
+  {% csrf_token %}
   <h1>Recipe Showcase</h1>
-  <p class="muted">Read-only for now. Shows active recipes and their dyes.</p>
+
+  <div class="toolbar">
+    {% if edit_mode %}
+      <a class="pill on" href="?">Editing — switch to read-only</a>
+    {% else %}
+      <a class="pill" href="?edit=true">Edit dyes</a>
+    {% endif %}
+
+    {% if edit_mode %}
+      {% if missing_only %}
+        <a class="pill on" href="?edit=true">Showing only recipes missing dyes</a>
+      {% else %}
+        <a class="pill" href="?edit=true&missing=true">Show only missing dyes</a>
+      {% endif %}
+    {% endif %}
+
+    <span class="muted">{{ missing_count }} of {{ total_count }} active recipes have no dyes recorded.</span>
+  </div>
+
+  {% if edit_mode %}
+    <p class="muted">
+      Pick dyes directly, or copy them from a recipe that already has them and
+      adjust. Nothing is written until you press Save on that row.
+    </p>
+  {% else %}
+    <p class="muted">Active recipes and their dyes.</p>
+  {% endif %}
 
   <table>
     <thead>
       <tr>
-        <th style="width: 28%;">Recipe</th>
-        <th style="width: 48%;">Dyes</th>
-        <th style="width: 24%;">Colors</th>
+        <th style="width: 20%;">Recipe</th>
+        <th style="width: 26%;">Products</th>
+        {% if edit_mode %}
+          <th colspan="2">Dyes</th>
+        {% else %}
+          <th style="width: 34%;">Dyes</th>
+          <th style="width: 20%;">Colors</th>
+        {% endif %}
       </tr>
     </thead>
     <tbody>
-{% for recipe in recipes %}
-  <tr>
-    <td><strong>{{ recipe.name }}</strong></td>
-
-    <td>
-      {% if recipe.recipe_dyes.all %}
-        <div class="dyes">
-          {% for rd in recipe.recipe_dyes.all %}
-            <span class="chip">
-              {{ rd.dye.name }}
-            </span>
-          {% endfor %}
-        </div>
-      {% else %}
-        <span class="muted">No dyes yet</span>
-      {% endif %}
-    </td>
-
-    <td>
-      {% if recipe.recipe_dyes.all %}
-        <div class="swatches">
-          {% for rd in recipe.recipe_dyes.all %}
-            <span
-              class="swatch"
-              title="{{ rd.dye.name }} — {{ rd.dye.hex_color }}"
-              style="background: {{ rd.dye.hex_color }};"
-            ></span>
-          {% endfor %}
-        </div>
-      {% endif %}
-    </td>
-  </tr>
-{% endfor %}
-
+      {% for row in rows %}
+        {% include "scarves/partials/recipe_row.html" with recipe=row.recipe form=row.form edit_mode=row.edit_mode dye_sources=row.dye_sources %}
+      {% empty %}
+        <tr><td colspan="4" class="muted">Nothing to show.</td></tr>
+      {% endfor %}
     </tbody>
   </table>
+
+  {% if edit_mode %}
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+    <script>
+      const dyeHex = {{ dye_hex|safe }};
+
+      function paintSwatch(select) {
+        const swatch = select.parentElement.querySelector(".swatch");
+        if (!swatch) return;
+        const hex = dyeHex[select.value] || "#ffffff";
+        swatch.style.background = hex;
+        swatch.title = hex;
+      }
+      function paintAll(root) {
+        (root || document).querySelectorAll(".colorcell select").forEach(paintSwatch);
+      }
+
+      // Delegated so rows swapped in by htmx are covered without re-binding
+      // (a per-select listener would be lost on every swap).
+      document.addEventListener("change", (e) => {
+        if (e.target.matches(".colorcell select")) paintSwatch(e.target);
+      });
+      document.body.addEventListener("htmx:afterSwap", (e) => paintAll(e.target));
+      paintAll();
+    </script>
+  {% endif %}
 </body>
 </html>

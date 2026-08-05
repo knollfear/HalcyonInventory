@@ -26,6 +26,8 @@ urlpatterns = [
     ),
     path("internal/quick-recipes/", views.quick_recipe_entry, name="quick_recipe_entry"),
     path("internal/recipes/", views.recipe_showcase, name="recipe_showcase"),
+    path("internal/recipes/<int:pk>/row/", views.recipe_row, name="recipe_row"),
+    path("internal/recipes/<int:pk>/dyes/", views.recipe_dyes_save, name="recipe_dyes_save"),
     path("bulk-matrix/", views.bulk_recipe_matrix_entry, name="bulk_recipe_matrix_entry"),
     path("bulk-inventory/", views.bulk_inventory_update, name="bulk_inventory_update"),
     path("webhooks/square", views.square_webhook, name="square_webhook"),
