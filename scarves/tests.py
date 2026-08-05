@@ -942,33 +942,24 @@ class SiteMapTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertIn("/login", response["Location"])
 
-    def test_paramless_views_are_all_linked(self):
-        """The regression that made the page look inert: a card with somewhere
-        to go and no link to it."""
-        unlinked = [
-            i["title"] for i in self._items()
-            if not i["url"] and not i["param_urls"] and not i["needs_params"]
-        ]
-        self.assertEqual(unlinked, [])
-
     def test_the_games_are_linked(self):
         by_title = {i["title"]: i for i in self._items()}
         self.assertEqual(by_title["Name That Scarf"]["url"], reverse("quiz_page"))
         self.assertEqual(by_title["Scarf Matching Game"]["url"], reverse("game_page"))
 
-    def test_category_views_become_real_links(self):
-        """A route taking <int:category_id> used to render as a dead card. It
-        now lists one working link per category."""
-        by_title = {i["title"]: i for i in self._items()}
-        for title in ("Raw Inventory (by category)", "Reference Sheet PDF"):
-            item = by_title[title]
-            with self.subTest(title=title):
-                self.assertFalse(item["needs_params"])
-                self.assertEqual(
-                    [l["label"] for l in item["param_urls"]], ["Silk", "Yarn"]
-                )
-                for link in item["param_urls"]:
-                    self.assertEqual(self.client.get(link["url"]).status_code, 200)
+    def test_there_are_no_dead_cards(self):
+        """Every card on the map goes somewhere. A route needing URL params is
+        listed via its picker page instead of as an unclickable card."""
+        dead = [i["title"] for i in self._items() if not i["url"]]
+        self.assertEqual(dead, [])
+
+    def test_param_routes_are_hidden_in_favour_of_their_pickers(self):
+        titles = {i["title"] for i in self._items()}
+        self.assertNotIn("Raw Inventory (by category)", titles)
+        self.assertNotIn("Reference Sheet PDF", titles)
+        # ...but the pickers that reach them are listed.
+        self.assertIn("Raw Inventory", titles)
+        self.assertIn("Reference Sheets", titles)
 
     def test_every_rendered_link_actually_resolves(self):
         """A directory full of 404s would be worse than no directory."""
@@ -986,15 +977,75 @@ class SiteMapTests(TestCase):
         response = self.client.get(reverse("index")).content.decode()
         self.assertIn(f'<a class="route" href="{reverse("quiz_page")}"', response)
 
-    def test_a_broken_param_lookup_degrades_instead_of_erroring(self):
-        """The site map must never be the thing that 500s."""
-        from scarves import views
 
-        with mock.patch.object(
-            views, "_category_param_links", side_effect=RuntimeError("boom")
-        ):
-            response = self.client.get(reverse("index"))
-        self.assertEqual(response.status_code, 200)
+class RawInventoryIndexTests(TestCase):
+    """The picker that replaced the dead <int:category_id> card."""
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("inv", "i@example.test", "pw")
+        self.client.force_login(self.user)
+        self.silk, _ = RawProductCategory.objects.get_or_create(name="Silk")
+
+    def _raw(self, name, on_hand, par, category=None, active=True):
+        return RawProduct.objects.create(
+            name=name, category=category or self.silk, price="5.00",
+            number_on_hand=on_hand, par_level=par, is_active=active,
+        )
+
+    def test_it_requires_login(self):
+        self.client.logout()
+        self.assertEqual(
+            self.client.get(reverse("raw_inventory_index")).status_code, 302
+        )
+
+    def test_it_links_to_each_category(self):
+        self._raw("Habotai", 10, 20)
+        response = self.client.get(reverse("raw_inventory_index"))
+        self.assertContains(response, reverse("raw_inventory", args=[self.silk.pk]))
+        self.assertContains(response, "Silk")
+
+    def test_it_counts_products_stock_and_shortages(self):
+        self._raw("Below", 3, 20)       # short
+        self._raw("AlsoBelow", 0, 5)    # short
+        self._raw("AtPar", 30, 10)      # fine
+        self._raw("NoPar", 7, 0)        # par 0 = no target, never short
+
+        category = self.client.get(reverse("raw_inventory_index")).context["categories"][0]
+        self.assertEqual(category.product_count, 4)
+        self.assertEqual(category.on_hand, 40)
+        self.assertEqual(category.below_par, 2)
+
+    def test_inactive_products_are_ignored(self):
+        self._raw("Live", 5, 10)
+        self._raw("Retired", 0, 99, active=False)
+
+        category = self.client.get(reverse("raw_inventory_index")).context["categories"][0]
+        self.assertEqual(category.product_count, 1)
+        self.assertEqual(category.below_par, 1)
+
+    def test_categories_with_no_active_products_are_left_out(self):
+        """An empty category is a dead click, which is the thing this page
+        exists to stop."""
+        self._raw("Live", 5, 10)
+        RawProductCategory.objects.create(name="Empty")
+        RawProductCategory.objects.create(name="OnlyRetired")
+        self._raw("Gone", 1, 2,
+                  category=RawProductCategory.objects.get(name="OnlyRetired"),
+                  active=False)
+
+        names = [c.name for c in
+                 self.client.get(reverse("raw_inventory_index")).context["categories"]]
+        self.assertEqual(names, ["Silk"])
+
+    def test_every_listed_category_actually_opens(self):
+        self._raw("Habotai", 10, 20)
+        self._raw("Wool", 4, 4, category=RawProductCategory.objects.create(name="Yarn"))
+
+        response = self.client.get(reverse("raw_inventory_index"))
+        hrefs = re.findall(rb'href="(/scarves/raw-inventory/\d+/)"', response.content)
+        self.assertEqual(len(hrefs), 2)
+        for href in hrefs:
+            self.assertEqual(self.client.get(href.decode()).status_code, 200)
 
 
 class TemplateHygieneTests(TestCase):

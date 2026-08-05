@@ -46,25 +46,24 @@ The site map is for pages a user can GET and see. Omitting the decorator keeps
 those endpoints off the map automatically (no metadata = skipped). Use
 `show_in_index=False` only when a GET page should exist but stay hidden.
 
-Views that need URL params (e.g. `<int:category_id>`) are detected automatically.
-Give them a `param_links` callable and the card lists one real link per value
-instead of a dead "needs params" badge:
+**A view taking URL params (e.g. `<int:category_id>`) does not belong on the
+map.** It can only render as a card nobody can click. Give it a picker page
+instead, decorate the picker, and hide the parameterised view:
 
 ```python
-@page_meta(
-    title="Raw Inventory (by category)",
-    description="...",
-    category="Inventory",
-    param_links=lambda: _category_param_links(),
-)
-def raw_inventory_view(request, category_id):
+@page_meta(title="Raw Inventory", description="Pick a category…", category="Inventory")
+@login_required
+def raw_inventory_index(request):        # listed on the map
+    ...
+
+@page_meta(title="Raw Inventory (by category)", ..., show_in_index=False)
+@login_required
+def raw_inventory_view(request, category_id):   # reached from the picker
     ...
 ```
 
-It takes no arguments, returns `[(label, reverse_kwargs), ...]`, and is called
-at request time so it sees current data. Without it the card falls back to the
-non-clickable "needs params" form. Failures are swallowed — the site map lists
-every other page and must never be the thing that 500s.
+`raw_inventory_index` and `reference_sheet_index` are the two worked examples.
+The map should have **zero** unclickable cards; `SiteMapTests` asserts it.
 
 **Watch the decorator order when adding helpers near a view.** Defining a
 function between `@page_meta`/`@login_required` and the `def` they belong to

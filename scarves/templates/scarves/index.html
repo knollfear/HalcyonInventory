@@ -47,13 +47,6 @@
     }
     a.route { color: #1558a0; text-decoration: none; border: 1px solid #d7e3f2; background: #f2f7fd; }
     a.route:hover { background: #e3eefb; border-color: #1558a0; }
-    .param-links { display: flex; flex-wrap: wrap; gap: 6px; }
-    .param-links a {
-      font-size: 12px; color: #1558a0; text-decoration: none;
-      border: 1px solid #d7e3f2; background: #f2f7fd;
-      border-radius: 999px; padding: 3px 10px;
-    }
-    .param-links a:hover { background: #e3eefb; border-color: #1558a0; }
     .badge {
       display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px;
       border: 1px solid #ccc; color: #666; background: #fafafa;
@@ -72,7 +65,7 @@
     <h2>{{ group.name }}</h2>
     <div class="cards">
       {% for item in group.items %}
-        <div class="card{% if item.url or item.param_urls %} card-link{% endif %}">
+        <div class="card{% if item.url %} card-link{% endif %}">
           <div class="card-title">
             {% if item.url %}
               <a href="{{ item.url }}">{{ item.title }}</a>
@@ -83,11 +76,6 @@
           </div>
           <p class="desc">{{ item.description }}</p>
           {% if item.note %}<div class="note">{{ item.note }}</div>{% endif %}
-          {% if item.param_urls %}
-            <div class="param-links">
-              {% for link in item.param_urls %}<a href="{{ link.url }}">{{ link.label }}</a>{% endfor %}
-            </div>
-          {% endif %}
           <div class="meta">
             {% if item.url %}
               <a class="route" href="{{ item.url }}">{{ item.route }}</a>

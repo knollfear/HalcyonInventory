@@ -16,7 +16,7 @@ from django import forms
 from django.http import HttpResponse, JsonResponse
 from django.urls import reverse
 from django.db import transaction
-from django.db.models import F, Sum, Max, Case, When, IntegerField, ExpressionWrapper, Q
+from django.db.models import F, Count, Sum, Max, Case, When, IntegerField, ExpressionWrapper, Q
 from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST, require_http_methods
@@ -42,8 +42,7 @@ from .s3utils import download_object, presigned_post, upload_object
 from django.db.models import Prefetch
 
 
-def page_meta(title, description, category="General", note="", show_in_index=True,
-              param_links=None):
+def page_meta(title, description, category="General", note="", show_in_index=True):
     """
     Attach human-readable metadata to a view so the site map (index) can
     describe it automatically. Add this decorator to any new view and it will
@@ -51,11 +50,10 @@ def page_meta(title, description, category="General", note="", show_in_index=Tru
 
     note: optional caveat shown under the description (e.g. "POST only",
           "requires ?raw_ids=1,2,3").
-    show_in_index: set False to hide a view from the site map.
-    param_links: for views whose route takes URL params (e.g. <int:category_id>),
-          a zero-arg callable returning [(label, kwargs), ...]. The site map
-          reverses each one, turning a dead "needs params" card into a real list
-          of links. Called at request time, so it sees current data.
+    show_in_index: set False to hide a view from the site map. That's the answer
+          for a route taking URL params: give it a picker page, list the picker,
+          and hide the parameterised view rather than showing a card nobody can
+          click.
     """
     def decorator(view_func):
         view_func.page_meta = {
@@ -64,21 +62,9 @@ def page_meta(title, description, category="General", note="", show_in_index=Tru
             "category": category,
             "note": note,
             "show_in_index": show_in_index,
-            "param_links": param_links,
         }
         return view_func
     return decorator
-
-
-def _category_param_links():
-    """Every raw-product category, as (label, reverse-kwargs) pairs.
-
-    Both category-scoped pages take the same `category_id`, so they share this.
-    """
-    return [
-        (c.name, {"category_id": c.pk})
-        for c in RawProductCategory.objects.order_by("name")
-    ]
 
 
 @page_meta(
@@ -126,21 +112,6 @@ def index(request):
             except Exception:
                 url = None
 
-        # A route that takes params can still be listed as real links if the
-        # view says what the params can be. Falls back to the "needs params"
-        # card when it doesn't, or when looking them up fails — the site map is
-        # a directory and must never be the thing that 500s.
-        param_urls = []
-        if needs_params and entry.name and meta.get("param_links"):
-            try:
-                for label, kwargs in meta["param_links"]():
-                    param_urls.append({
-                        "label": label,
-                        "url": reverse(entry.name, kwargs=kwargs),
-                    })
-            except Exception:
-                param_urls = []
-
         item = {
             "title": meta["title"],
             "description": meta["description"],
@@ -148,9 +119,8 @@ def index(request):
             "name": entry.name or "—",
             "route": prefix + str(entry.pattern),
             "url": url,
-            "needs_params": needs_params and not param_urls,
+            "needs_params": needs_params,
             "params": params,
-            "param_urls": param_urls,
         }
         categories.setdefault(meta["category"], []).append(item)
 
@@ -294,11 +264,57 @@ def record_dye_bath(request, pk):
 
 
 @page_meta(
+    title="Raw Inventory",
+    description="Pick a category to see its raw products, with items below par "
+                "highlighted so you know what to order. Adjust stock inline.",
+    category="Inventory",
+)
+@login_required
+def raw_inventory_index(request):
+    """Category picker for the raw inventory pages.
+
+    Exists so `raw_inventory_view` is reachable by clicking rather than by
+    knowing a category id — which also keeps the param route off the site map,
+    where it could only ever have been a dead entry.
+
+    Carries the shortage counts rather than just naming the categories, so the
+    page answers "where do I need to look" without a click.
+    """
+    categories = (
+        RawProductCategory.objects.annotate(
+            product_count=Count(
+                "raw_products",
+                filter=Q(raw_products__is_active=True),
+                distinct=True,
+            ),
+            on_hand=Sum(
+                "raw_products__number_on_hand",
+                filter=Q(raw_products__is_active=True),
+            ),
+            below_par=Count(
+                "raw_products",
+                filter=Q(
+                    raw_products__is_active=True,
+                    raw_products__par_level__gt=0,
+                    raw_products__number_on_hand__lt=F("raw_products__par_level"),
+                ),
+                distinct=True,
+            ),
+        )
+        .filter(product_count__gt=0)
+        .order_by("name")
+    )
+    return render(request, "scarves/raw_inventory_index.html", {"categories": categories})
+
+
+@page_meta(
     title="Raw Inventory (by category)",
     description="Raw products for a single category, highlighting items below "
                 "par so you know what to order. Adjust stock inline.",
     category="Inventory",
-    param_links=lambda: _category_param_links(),
+    # Reached from the picker above, which is what the site map lists. A route
+    # needing a category id can only ever be a dead card there.
+    show_in_index=False,
 )
 @login_required
 def raw_inventory_view(request, category_id):
@@ -1114,7 +1130,9 @@ def _barcode_grid(items, usable_width, name_style, sku_style):
                 "Code128 barcode card for every item sharing that recipe.",
     category="Reference Sheets",
     note="Returns a PDF.",
-    param_links=lambda: _category_param_links(),
+    # Reached from the "Reference Sheets" picker, same reasoning as
+    # raw_inventory_view: a route needing a category id is a dead card here.
+    show_in_index=False,
 )
 def reference_sheet_pdf(request, category_id):
     from reportlab.lib import colors

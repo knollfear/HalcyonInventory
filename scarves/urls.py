@@ -14,6 +14,7 @@ urlpatterns = [
         views.record_dye_bath,
         name="record_dye_bath",
     ),
+    path("raw-inventory/", views.raw_inventory_index, name="raw_inventory_index"),
     path(
         "raw-inventory/<int:category_id>/",
         views.raw_inventory_view,
