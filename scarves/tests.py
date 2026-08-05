@@ -685,6 +685,46 @@ class ShrinkImageTests(TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(image_size(result[0]), (600, 800))
 
+    def test_heic_is_transcoded_to_jpeg(self):
+        """iPhones shoot HEIC. Chrome and Firefox won't render it, and without
+        pillow-heif PIL can't even open it — so the barcode decode and the
+        downscale both fail and a 3MB unviewable file lands in the bucket under
+        a .jpg name."""
+        from io import BytesIO
+        from PIL import Image
+        from .views import _shrink_image
+
+        buf = BytesIO()
+        Image.new("RGB", (4032, 3024), (200, 80, 40)).save(buf, format="HEIF")
+
+        body, content_type = _shrink_image(buf.getvalue())
+        self.assertEqual(content_type, "image/jpeg")
+        self.assertEqual(Image.open(BytesIO(body)).format, "JPEG")
+        self.assertEqual(image_size(body), (1200, 900))
+
+    def test_a_small_heic_is_still_transcoded(self):
+        """Size isn't the only reason to rewrite. Left alone, a small HEIC sits
+        in the bucket under a .jpg key that no browser can open."""
+        from io import BytesIO
+        from PIL import Image
+        from .views import _shrink_image
+
+        buf = BytesIO()
+        Image.new("RGB", (800, 600), (30, 60, 120)).save(buf, format="HEIF")
+
+        result = _shrink_image(buf.getvalue())
+        self.assertIsNotNone(result)
+        self.assertEqual(result[1], "image/jpeg")
+        self.assertEqual(image_size(result[0]), (800, 600))
+
+    def test_heic_content_types_are_named_jpg(self):
+        """The key's extension has to describe what ends up in the bucket after
+        the transcode, not what the phone sent."""
+        from .views import _CONTENT_TYPE_EXT
+
+        self.assertEqual(_CONTENT_TYPE_EXT["image/heic"], ".jpg")
+        self.assertEqual(_CONTENT_TYPE_EXT["image/heif"], ".jpg")
+
     def test_png_and_webp_keep_their_format(self):
         """The key's extension and the stored Content-Type were set at presign
         time; changing format here would leave both lying."""

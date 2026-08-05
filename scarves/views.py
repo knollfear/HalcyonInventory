@@ -1194,6 +1194,11 @@ _CONTENT_TYPE_EXT = {
     "image/jpg": ".jpg",
     "image/png": ".png",
     "image/webp": ".webp",
+    # iPhones shoot HEIC and Safari sometimes hands it over as-is. It lands as
+    # .jpg on purpose, not by accident: _shrink_image transcodes it to JPEG
+    # during processing, so the extension describes what ends up in the bucket.
+    "image/heic": ".jpg",
+    "image/heif": ".jpg",
 }
 
 
@@ -1310,19 +1315,26 @@ def _replace_upload_bytes(key, data, content_type):
 IMAGE_MAX_EDGE = 1200
 IMAGE_JPEG_QUALITY = 85
 
+# Formats a browser will actually render. Anything else has to be transcoded no
+# matter its size — an iPhone HEIC is the case that matters, and Chrome and
+# Firefox both refuse to display it.
+WEB_SAFE_FORMATS = {"JPEG", "MPO", "PNG", "WEBP", "GIF"}
+
 
 def _shrink_image(data, max_edge=IMAGE_MAX_EDGE):
     """Downscale an uploaded photo so its long edge is at most `max_edge`.
 
     Returns `(bytes, content_type)`, or None when the image is already small
-    enough and correctly oriented — an in-bounds upload is never re-encoded,
-    so it can't lose quality just by passing through here.
+    enough, correctly oriented, and in a format browsers can render — an
+    in-bounds upload is never re-encoded, so it can't lose quality just by
+    passing through here.
 
     Aspect ratio is preserved: a 4032x3024 phone photo becomes 1200x900, and a
     portrait one 900x1200. Nothing is cropped or squared off.
 
-    The format is kept as-is so the object still matches the extension in its
-    key and the Content-Type it was uploaded under.
+    A web-safe format is kept as-is so the object still matches the extension in
+    its key and the Content-Type it was uploaded under. HEIC becomes JPEG, which
+    is what `_CONTENT_TYPE_EXT` already assumes when it names the key.
     """
     from PIL import Image as PILImage, ImageOps
 
@@ -1335,8 +1347,11 @@ def _shrink_image(data, max_edge=IMAGE_MAX_EDGE):
     # photo that looked upright would come out sideways in the games and the
     # PDF. Baking the rotation in is what makes the resize safe.
     needs_rotation = im.getexif().get(0x0112, 1) != 1
+    # Size is not the only reason to rewrite: a small HEIC left alone would sit
+    # in the bucket under a .jpg key that no browser can open.
+    needs_transcode = fmt not in WEB_SAFE_FORMATS
 
-    if max(im.size) <= max_edge and not needs_rotation:
+    if max(im.size) <= max_edge and not needs_rotation and not needs_transcode:
         return None
 
     im = ImageOps.exif_transpose(im)
