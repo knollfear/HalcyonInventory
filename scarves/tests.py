@@ -978,6 +978,63 @@ class SiteMapTests(TestCase):
         self.assertIn(f'<a class="route" href="{reverse("quiz_page")}"', response)
 
 
+class PickerPageConventionTests(TestCase):
+    """Every GET-able page taking a URL param must have a picker at its parent.
+
+    The standing rule: if you add `foo/<int:some_id>/` as a page, add `foo/` as
+    a page that lists the choices. Without it the only way in is to already know
+    an id, and the site map is left with a card nobody can click — which is
+    exactly how the two dead entries got there.
+
+    Only applies to views carrying @page_meta. POST-only actions and HTMX
+    fragments take params freely; they aren't pages and were never listed.
+    """
+
+    def _parent_route(self, pattern):
+        """`raw-inventory/<int:category_id>/` -> `raw-inventory/`."""
+        segments = str(pattern).strip("/").split("/")
+        kept = []
+        for segment in segments:
+            if "<" in segment:
+                break
+            kept.append(segment)
+        return "/".join(kept) + "/" if kept else ""
+
+    def test_param_pages_have_a_picker_at_their_parent(self):
+        from scarves import urls as scarves_urls
+
+        routes = {
+            str(e.pattern): e
+            for e in scarves_urls.urlpatterns
+            if getattr(e, "callback", None)
+        }
+
+        checked = []
+        for route, entry in routes.items():
+            meta = getattr(entry.callback, "page_meta", None)
+            if not meta or not getattr(entry.pattern, "converters", None):
+                continue
+
+            parent = self._parent_route(entry.pattern)
+            with self.subTest(route=route):
+                self.assertIn(
+                    parent, routes,
+                    f"{route} takes URL params but there is no picker page at "
+                    f"/{parent} — add one, or drop @page_meta if it isn't a page.",
+                )
+                parent_meta = getattr(routes[parent].callback, "page_meta", None)
+                self.assertIsNotNone(
+                    parent_meta,
+                    f"/{parent} exists but has no @page_meta, so the site map "
+                    f"still can't offer a way in to {route}.",
+                )
+                self.assertTrue(parent_meta.get("show_in_index", True), parent)
+            checked.append(route)
+
+        # Guard against the loop silently matching nothing.
+        self.assertGreaterEqual(len(checked), 2, checked)
+
+
 class RawInventoryIndexTests(TestCase):
     """The picker that replaced the dead <int:category_id> card."""
 

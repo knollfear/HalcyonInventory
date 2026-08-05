@@ -46,9 +46,12 @@ The site map is for pages a user can GET and see. Omitting the decorator keeps
 those endpoints off the map automatically (no metadata = skipped). Use
 `show_in_index=False` only when a GET page should exist but stay hidden.
 
-**A view taking URL params (e.g. `<int:category_id>`) does not belong on the
-map.** It can only render as a card nobody can click. Give it a picker page
-instead, decorate the picker, and hide the parameterised view:
+### Rule: every `foo/<int:some_id>/` page needs a `foo/` picker
+
+If you add a GET-able page at `foo/<int:some_id>/`, **always** add `foo/` as a
+page that lists the choices. Otherwise the only way in is to already know an id,
+and the site map is left with a card nobody can click. Decorate the picker with
+`@page_meta` and hide the parameterised view with `show_in_index=False`:
 
 ```python
 @page_meta(title="Raw Inventory", description="Pick a category…", category="Inventory")
@@ -63,7 +66,14 @@ def raw_inventory_view(request, category_id):   # reached from the picker
 ```
 
 `raw_inventory_index` and `reference_sheet_index` are the two worked examples.
-The map should have **zero** unclickable cards; `SiteMapTests` asserts it.
+The map should have **zero** unclickable cards.
+
+This is enforced, not just documented — `PickerPageConventionTests` walks the
+URLconf and fails if any `@page_meta` view takes URL params without a picker at
+its parent path. `SiteMapTests` separately asserts no card is unclickable. The
+rule only applies to pages: POST-only actions (`record_dye_bath`,
+`adjust_raw_stock`) and HTMX fragments take params freely, because they carry no
+`@page_meta` and were never listed.
 
 **Watch the decorator order when adding helpers near a view.** Defining a
 function between `@page_meta`/`@login_required` and the `def` they belong to
