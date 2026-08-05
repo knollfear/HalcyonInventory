@@ -10,6 +10,7 @@ Two things here are worth more than they look:
   Django page itself keeps working perfectly.
 """
 import random
+import re
 import shutil
 import tempfile
 from unittest import mock
@@ -917,6 +918,83 @@ class PurgeCommandTests(TestCase):
 
         remaining = FinishedProductImage.objects.all()
         self.assertEqual([i.image_url for i in remaining], ["https://example.test/keep.jpg"])
+
+
+class SiteMapTests(TestCase):
+    """The /scarves/ directory. Its job is to be clickable."""
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("map", "m@example.test", "pw")
+        self.client.force_login(self.user)
+        RawProductCategory.objects.get_or_create(name="Silk")
+        RawProductCategory.objects.get_or_create(name="Yarn")
+
+    def _items(self):
+        response = self.client.get(reverse("index"))
+        return [i for g in response.context["grouped"] for i in g["items"]]
+
+    def test_the_site_map_requires_login(self):
+        """It lists every internal page in the app. A decorator inserted in the
+        wrong place once left this view unauthenticated, which nothing caught
+        because the page still rendered perfectly."""
+        self.client.logout()
+        response = self.client.get(reverse("index"))
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/login", response["Location"])
+
+    def test_paramless_views_are_all_linked(self):
+        """The regression that made the page look inert: a card with somewhere
+        to go and no link to it."""
+        unlinked = [
+            i["title"] for i in self._items()
+            if not i["url"] and not i["param_urls"] and not i["needs_params"]
+        ]
+        self.assertEqual(unlinked, [])
+
+    def test_the_games_are_linked(self):
+        by_title = {i["title"]: i for i in self._items()}
+        self.assertEqual(by_title["Name That Scarf"]["url"], reverse("quiz_page"))
+        self.assertEqual(by_title["Scarf Matching Game"]["url"], reverse("game_page"))
+
+    def test_category_views_become_real_links(self):
+        """A route taking <int:category_id> used to render as a dead card. It
+        now lists one working link per category."""
+        by_title = {i["title"]: i for i in self._items()}
+        for title in ("Raw Inventory (by category)", "Reference Sheet PDF"):
+            item = by_title[title]
+            with self.subTest(title=title):
+                self.assertFalse(item["needs_params"])
+                self.assertEqual(
+                    [l["label"] for l in item["param_urls"]], ["Silk", "Yarn"]
+                )
+                for link in item["param_urls"]:
+                    self.assertEqual(self.client.get(link["url"]).status_code, 200)
+
+    def test_every_rendered_link_actually_resolves(self):
+        """A directory full of 404s would be worse than no directory."""
+        response = self.client.get(reverse("index"))
+        hrefs = set(re.findall(rb'href="(/scarves/[^"]*)"', response.content))
+        self.assertGreater(len(hrefs), 8, hrefs)
+        for href in hrefs:
+            url = href.decode()
+            with self.subTest(url=url):
+                self.assertLess(self.client.get(url).status_code, 400, url)
+
+    def test_the_route_path_is_clickable_when_there_is_somewhere_to_go(self):
+        """A monospace URL is the most link-looking thing on the card, and it
+        was the one part that wasn't a link — so that's what got clicked."""
+        response = self.client.get(reverse("index")).content.decode()
+        self.assertIn(f'<a class="route" href="{reverse("quiz_page")}"', response)
+
+    def test_a_broken_param_lookup_degrades_instead_of_erroring(self):
+        """The site map must never be the thing that 500s."""
+        from scarves import views
+
+        with mock.patch.object(
+            views, "_category_param_links", side_effect=RuntimeError("boom")
+        ):
+            response = self.client.get(reverse("index"))
+        self.assertEqual(response.status_code, 200)
 
 
 class TemplateHygieneTests(TestCase):

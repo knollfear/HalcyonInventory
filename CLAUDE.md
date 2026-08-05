@@ -46,5 +46,27 @@ The site map is for pages a user can GET and see. Omitting the decorator keeps
 those endpoints off the map automatically (no metadata = skipped). Use
 `show_in_index=False` only when a GET page should exist but stay hidden.
 
-Views that need URL params (e.g. `<int:category_id>`) are detected automatically
-and rendered as a non-clickable "needs params" card rather than a dead link.
+Views that need URL params (e.g. `<int:category_id>`) are detected automatically.
+Give them a `param_links` callable and the card lists one real link per value
+instead of a dead "needs params" badge:
+
+```python
+@page_meta(
+    title="Raw Inventory (by category)",
+    description="...",
+    category="Inventory",
+    param_links=lambda: _category_param_links(),
+)
+def raw_inventory_view(request, category_id):
+    ...
+```
+
+It takes no arguments, returns `[(label, reverse_kwargs), ...]`, and is called
+at request time so it sees current data. Without it the card falls back to the
+non-clickable "needs params" form. Failures are swallowed — the site map lists
+every other page and must never be the thing that 500s.
+
+**Watch the decorator order when adding helpers near a view.** Defining a
+function between `@page_meta`/`@login_required` and the `def` they belong to
+silently moves the decorators onto the helper — the page still renders, but
+unauthenticated and missing from the map. `SiteMapTests` guards this.

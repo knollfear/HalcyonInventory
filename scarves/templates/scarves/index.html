@@ -20,21 +20,40 @@
     .card {
       border: 1px solid #e1e5ea; border-radius: 10px; padding: 16px;
       background: #fff; display: flex; flex-direction: column; gap: 8px;
+      transition: border-color .15s ease, box-shadow .15s ease;
+    }
+    .card-link:hover {
+      border-color: #1558a0; box-shadow: 0 2px 10px rgba(21, 88, 160, .12);
     }
     .card-title { font-size: 16px; font-weight: 600; }
-    .card-title a { color: #1a3a5c; text-decoration: none; }
-    .card-title a:hover { text-decoration: underline; }
+    /* Links have to read as links. These were #1a3a5c with no underline
+       against #1a2230 body text — indistinguishable from plain text, so the
+       whole page looked inert even though most cards were clickable. */
+    .card-title a { color: #1558a0; text-decoration: underline; text-underline-offset: 2px; }
+    .card-title a:hover { color: #0d3d73; }
     .desc { font-size: 13px; color: #444; line-height: 1.45; margin: 0; }
     .note {
       font-size: 12px; color: #8a5a00; background: #fff6e0;
       border: 1px solid #f0e0b0; border-radius: 6px; padding: 5px 8px;
     }
     .meta { font-size: 11px; color: #888; margin-top: auto; }
+    /* A monospace URL is the most link-looking thing on the card, so when
+       there's somewhere to go it has to actually be one — that's what people
+       reach for first, ahead of the title. */
     .route {
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
       font-size: 11px; color: #555; background: #f1f3f6;
       border-radius: 4px; padding: 2px 6px; display: inline-block;
     }
+    a.route { color: #1558a0; text-decoration: none; border: 1px solid #d7e3f2; background: #f2f7fd; }
+    a.route:hover { background: #e3eefb; border-color: #1558a0; }
+    .param-links { display: flex; flex-wrap: wrap; gap: 6px; }
+    .param-links a {
+      font-size: 12px; color: #1558a0; text-decoration: none;
+      border: 1px solid #d7e3f2; background: #f2f7fd;
+      border-radius: 999px; padding: 3px 10px;
+    }
+    .param-links a:hover { background: #e3eefb; border-color: #1558a0; }
     .badge {
       display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px;
       border: 1px solid #ccc; color: #666; background: #fafafa;
@@ -53,7 +72,7 @@
     <h2>{{ group.name }}</h2>
     <div class="cards">
       {% for item in group.items %}
-        <div class="card">
+        <div class="card{% if item.url or item.param_urls %} card-link{% endif %}">
           <div class="card-title">
             {% if item.url %}
               <a href="{{ item.url }}">{{ item.title }}</a>
@@ -64,8 +83,17 @@
           </div>
           <p class="desc">{{ item.description }}</p>
           {% if item.note %}<div class="note">{{ item.note }}</div>{% endif %}
+          {% if item.param_urls %}
+            <div class="param-links">
+              {% for link in item.param_urls %}<a href="{{ link.url }}">{{ link.label }}</a>{% endfor %}
+            </div>
+          {% endif %}
           <div class="meta">
-            <span class="route">{{ item.route }}</span>
+            {% if item.url %}
+              <a class="route" href="{{ item.url }}">{{ item.route }}</a>
+            {% else %}
+              <span class="route">{{ item.route }}</span>
+            {% endif %}
             &nbsp;·&nbsp; name: <code>{{ item.name }}</code>
           </div>
         </div>
