@@ -1,0 +1,167 @@
+{% extends "scarves/base_internal.html" %}
+
+{% block title %}Colour Classification{% endblock %}
+{% block heading %}Colour Classification{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 1250px; }
+
+  td { vertical-align: top; }
+
+  .toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 14px 0; }
+  .pill {
+      border: 1px solid #cbd6e2; border-radius: 999px; padding: 4px 12px;
+      text-decoration: none; font-size: 14px; background: #fff;
+  }
+  .pill.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  .filterbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  #color-filter { width: 22rem; max-width: 100%; padding: 7px 10px; }
+  tr.filtered-out { display: none; }
+  .noresults { display: none; }
+  .noresults.on { display: table-row; }
+
+  .who { min-width: 12rem; }
+  .evidence { width: 190px; }
+  .thumb {
+      width: 76px; height: 76px; object-fit: cover;
+      border-radius: 6px; border: 1px solid #ddd; float: left; margin-right: 8px;
+  }
+  .swatches { display: flex; gap: 5px; flex-wrap: wrap; }
+  .swatch {
+      width: 18px; height: 18px; border-radius: 6px;
+      border: 1px solid rgba(0,0,0,0.25); display: inline-block;
+  }
+
+  /* The chips. --band is set per chip from the band's own colour, so the dot
+     and the selected state come from one custom property rather than nine
+     hand-written rules. */
+  .chiprow { display: flex; flex-wrap: wrap; gap: 6px; }
+  .bandchip {
+      display: inline-flex; align-items: center; gap: 6px;
+      border: 1px solid #cfd6de; border-radius: 999px;
+      padding: 4px 12px 4px 8px; font-size: 13px; background: #fff;
+      cursor: pointer; user-select: none;
+  }
+  .bandchip input { position: absolute; opacity: 0; pointer-events: none; }
+  .bandchip .dot {
+      width: 13px; height: 13px; border-radius: 50%;
+      background: var(--band); border: 1px solid rgba(0,0,0,.25);
+  }
+  .bandchip:hover { border-color: var(--band); }
+  .bandchip.on {
+      background: var(--band); border-color: var(--band); color: #fff;
+      font-weight: 600;
+  }
+  .bandchip.on .dot { background: #fff; border-color: rgba(255,255,255,.7); }
+  /* Dashed = a machine put this here and nobody has agreed to it yet.
+     An outline rather than a dashed border, because a ticked chip is filled
+     with its own band colour and a border the same colour as the fill shows
+     nothing — which hid the marker on precisely the chips that had one. */
+  .bandchip.guessed { outline: 2px dashed #97a1ae; outline-offset: 2px; }
+  .bandchip:focus-within { box-shadow: 0 0 0 3px rgba(21, 88, 160, .18); }
+
+  .tag {
+      font-size: 11px; border-radius: 999px;
+      padding: 1px 8px; margin-left: 6px; white-space: nowrap;
+  }
+  .ok-tag { color: #2e7d52; border: 1px solid #bcd8c6; background: #f1f8f3; }
+  .todo-tag { color: #8a5a00; border: 1px solid #f0e0b0; background: #fff6e0; }
+  .guess-tag { color: #8a5a00; border: 1px solid #f0e0b0; background: #fff6e0; }
+  tr.just-saved { background: #f1f8f3; }
+  tr.pending { background: #fffaf0; }
+
+  .rowactions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .htmx-request { opacity: .55; }
+
+  .lead code { background: #eef2f7; padding: 1px 5px; border-radius: 4px; }
+{% endblock %}
+
+{% block body_attrs %} hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'{% endblock %}
+
+{% block content %}
+  <p class="lead">
+    Which sections of the rainbow reference sheet each colorway prints in. A
+    red-and-orange scarf claims both and appears in both — that's the point, so
+    the obvious thing about a scarf is enough to find it.
+  </p>
+  <p class="lead">
+    Dashed chips are guesses read off the dyes; <strong>Read photo</strong> adds
+    what the product photo shows. Neither is saved until you hit Confirm, and
+    the sheet only prints recipes you've confirmed — an unchecked guess that
+    files a scarf under the wrong colour is worse than leaving it off, because
+    you'd look in orange, not find it, and get no hint why.
+  </p>
+
+  <div class="toolbar">
+    <a class="pill{% if not todo_only %} on{% endif %}"
+       href="{% url 'color_classify' %}">All {{ total_count }}</a>
+    <a class="pill{% if todo_only %} on{% endif %}"
+       href="{% url 'color_classify' %}?todo=true">Unconfirmed {{ todo_count }}</a>
+    <span class="stat">{{ confirmed_count }} of {{ total_count }} confirmed</span>
+  </div>
+
+  <div class="filterbar">
+    <input type="search" id="color-filter" placeholder="Filter by recipe or dye name…"
+           autocomplete="off">
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Recipe</th>
+        <th>Evidence</th>
+        <th>Sections it claims</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody id="color-rows">
+      {% for row in rows %}
+        {% include "scarves/partials/color_row.html" with recipe=row.recipe chips=row.chips photo=row.photo saved=row.saved pending=row.pending %}
+      {% empty %}
+        <tr><td colspan="4"><span class="empty">
+          {% if todo_only %}Everything is confirmed.{% else %}No active recipes.{% endif %}
+        </span></td></tr>
+      {% endfor %}
+      <tr class="noresults"><td colspan="4"><span class="empty">Nothing matches that.</span></td></tr>
+    </tbody>
+  </table>
+{% endblock %}
+
+{% block scripts %}
+  {{ block.super }}
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  <script>
+    // Chips are plain checkboxes; this only keeps the .on class in step with
+    // them so the fill follows a click. Delegated, so rows swapped in by htmx
+    // are covered without re-binding. Nothing here is load-bearing — the row
+    // posts its checked boxes correctly with scripting off.
+    document.addEventListener('change', function (e) {
+      var box = e.target.closest('.bandchip input');
+      if (!box) return;
+      var chip = box.closest('.bandchip');
+      chip.classList.toggle('on', box.checked);
+      // Once you've touched it, it's your decision, not the machine's.
+      chip.classList.remove('guessed');
+    });
+
+    // Same filter as the recipe showcase, matching the data-search each row
+    // carries so a row swapped in by htmx stays findable.
+    var filter = document.getElementById('color-filter');
+    function applyFilter() {
+      var q = (filter.value || '').trim().toLowerCase();
+      var shown = 0;
+      document.querySelectorAll('#color-rows tr[data-search]').forEach(function (tr) {
+        var hit = !q || tr.dataset.search.indexOf(q) !== -1;
+        tr.classList.toggle('filtered-out', !hit);
+        if (hit) shown++;
+      });
+      document.querySelector('.noresults').classList.toggle('on', !!q && !shown);
+    }
+    if (filter) {
+      filter.addEventListener('input', applyFilter);
+      document.body.addEventListener('htmx:afterSwap', applyFilter);
+    }
+  </script>
+{% endblock %}

@@ -4,6 +4,7 @@ import hmac
 import json
 import random
 import uuid
+from datetime import date, datetime, time
 from decimal import Decimal
 from io import BytesIO
 
@@ -18,6 +19,7 @@ from django.urls import reverse
 from django.db import transaction
 from django.db.models import F, Count, Sum, Max, Case, When, IntegerField, ExpressionWrapper, Q
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST, require_http_methods
 
@@ -35,6 +37,7 @@ from django.contrib import messages
 from django.shortcuts import render, redirect
 from django.template.response import TemplateResponse
 
+from . import colorbands
 from .colorutils import nearest_by_color, pick_color_cluster
 from .forms import QuickRecipeRowForm, RecipeDyesForm
 from .models import Dye, Recipe
@@ -46,7 +49,7 @@ def page_meta(title, description, category="General", note="", show_in_index=Tru
     """
     Attach human-readable metadata to a view so the site map (index) can
     describe it automatically. Add this decorator to any new view and it will
-    show up on the /scarves/ landing page with no extra wiring.
+    show up on the site map at /scarves/private/ with no extra wiring.
 
     note: optional caveat shown under the description (e.g. "POST only",
           "requires ?raw_ids=1,2,3").
@@ -67,24 +70,19 @@ def page_meta(title, description, category="General", note="", show_in_index=Tru
     return decorator
 
 
-@page_meta(
-    title="Site Map",
-    description="This page — an auto-generated index of every scarves view.",
-    category="Overview",
-    show_in_index=False,
-)
-@login_required
-def index(request):
-    """
-    Dynamically builds a directory of every URL in this app by introspecting
-    the URLconf and reading each view's @page_meta. Nothing here is hardcoded:
-    decorate a new view and it appears automatically.
+def _site_map(bucket=None):
+    """Build the site-map cards by introspecting the URLconf.
+
+    Nothing here is hardcoded: decorate a view with @page_meta and it appears.
+    Pass `bucket` ("public") to list only that half — which is what keeps the
+    public map from naming staff pages it would only be teasing visitors with.
     """
     from scarves import urls as scarves_urls
 
     prefix = "/scarves/"
     categories = {}
     seen = set()
+    counts = {"public": 0, "private": 0}
 
     for entry in scarves_urls.urlpatterns:
         callback = getattr(entry, "callback", None)
@@ -100,6 +98,14 @@ def index(request):
         if callback in seen:
             continue
         seen.add(callback)
+
+        # The URL's own first segment is the source of truth for exposure —
+        # the same string URLBucketTests checks the view's behaviour against,
+        # so a card can't claim to be public while the view demands a login.
+        route = str(entry.pattern)
+        entry_bucket = route.split("/")[0] or "private"
+        if bucket is not None and entry_bucket != bucket:
+            continue
 
         converters = getattr(entry.pattern, "converters", {}) or {}
         params = list(converters.keys())
@@ -117,11 +123,14 @@ def index(request):
             "description": meta["description"],
             "note": meta["note"],
             "name": entry.name or "—",
-            "route": prefix + str(entry.pattern),
+            "route": prefix + route,
             "url": url,
             "needs_params": needs_params,
             "params": params,
+            "bucket": entry_bucket,
         }
+        if entry_bucket in counts:
+            counts[entry_bucket] += 1
         categories.setdefault(meta["category"], []).append(item)
 
     # Stable, sorted output: categories alphabetical, items by title.
@@ -131,7 +140,43 @@ def index(request):
     ]
     total = sum(len(g["items"]) for g in grouped)
 
-    return render(request, "scarves/index.html", {"grouped": grouped, "total": total})
+    return {
+        "grouped": grouped,
+        "total": total,
+        "public_count": counts["public"],
+        "private_count": counts["private"],
+    }
+
+
+@page_meta(
+    title="Site Map",
+    description="This page — an auto-generated index of every scarves view.",
+    category="Overview",
+    show_in_index=False,
+)
+@login_required
+def index(request):
+    """The staff directory: every page, each badged with its exposure."""
+    context = _site_map()
+    context["public_map_url"] = reverse("public_index")
+    return render(request, "scarves/index.html", context)
+
+
+@page_meta(
+    title="Public Site Map",
+    description="This page — the directory of everything reachable without "
+                "logging in.",
+    category="Public",
+    show_in_index=False,
+)
+def public_index(request):
+    """The same directory, filtered to `public/`, and public itself.
+
+    Deliberately not just `index` with a filter argument: this one has to be
+    safe to hand to a stranger, so the filtering happens before anything
+    reaches the template rather than inside it.
+    """
+    return render(request, "scarves/public_index.html", _site_map(bucket="public"))
 
 @page_meta(
     title="Production Needed",
@@ -340,6 +385,9 @@ def raw_inventory_view(request, category_id):
         "category": category,
         "products": products,
         "all_categories": all_categories,
+        # The stock buttons on each row. Here rather than spelled out three
+        # times in the template, so changing the steps is a one-line edit.
+        "adjustments": [(-1, "-1"), (1, "+1"), (10, "+10")],
     }
     return render(request, "scarves/raw_inventory.html", context)
 
@@ -427,6 +475,181 @@ def quick_recipe_entry(request):
         return redirect("quick_recipe_entry")
 
     return render(request, "scarves/quick_recipe_entry.html", {"forms": forms, "dye_hex": dye_hex})
+
+# ---------------------------------------------------------------------------
+# Rainbow bands: which sections of the reference sheet a colorway claims.
+#
+# The whole point of this page is that the claim is *visible and editable*. The
+# alphabetical sheet fails silently — you look under orange, the scarf isn't
+# there, and nothing tells you it was filed under red. So the bands are stored,
+# shown as chips you can toggle, and never written by the classifier: it only
+# fills the form in. See `colorbands` for why its guesses can't be trusted
+# unreviewed.
+# ---------------------------------------------------------------------------
+
+
+def _band_chips(claimed, suggested=()):
+    """The nine toggles for one row, in rainbow order.
+
+    `claimed` is what's stored (or what a pending suggestion has proposed);
+    `suggested` marks which of them the classifier put there, so a row can show
+    the difference between "you decided this" and "a guess is waiting for you".
+    """
+    claimed = set(claimed)
+    suggested = set(suggested)
+    return [
+        {
+            "slug": slug,
+            "label": label,
+            "color": color,
+            "on": slug in claimed,
+            "guessed": slug in suggested,
+        }
+        for slug, label, color in colorbands.BANDS
+    ]
+
+
+def _first_photo(recipe):
+    """The first uploaded photo across a recipe's products, or None.
+
+    Only an uploaded file will do — an external `image_url` can't be sampled
+    without fetching someone else's server, same restriction the PDF has.
+    """
+    for fp in recipe.finished_products.all():
+        for img in fp.images.all():
+            if img.image:
+                return img
+    return None
+
+
+def _classify_row(recipe, suggested=None, saved=False):
+    """Context for one row of the classification page."""
+    from_dyes = colorbands.bands_from_dyes(recipe)
+    if suggested is None:
+        # Nothing pending: show what's stored, and offer the dye reading as a
+        # suggestion only while the recipe is still unconfirmed.
+        pending = None if recipe.bands_confirmed else from_dyes
+        chips = _band_chips(recipe.color_bands or (pending or []), pending or [])
+    else:
+        chips = _band_chips(suggested, suggested)
+
+    return {
+        "recipe": recipe,
+        "chips": chips,
+        "from_dyes": from_dyes,
+        "photo": _first_photo(recipe),
+        "saved": saved,
+        "pending": suggested is not None,
+    }
+
+
+@page_meta(
+    title="Colour Classification",
+    description="Say which sections of the rainbow each colorway belongs in, so "
+                "a scarf can be looked up by the obvious thing about it — that "
+                "it's red — instead of by name. Dyes and photos are read to "
+                "suggest bands; you confirm or correct them.",
+    category="Recipes",
+    note="Add ?todo=true for just the unconfirmed ones.",
+)
+@login_required
+def color_classify(request):
+    todo_only = request.GET.get("todo") == "true"
+
+    recipes = (
+        Recipe.objects.filter(is_active=True)
+        .prefetch_related("recipe_dyes__dye", "finished_products__images")
+        .order_by("name")
+    )
+    if todo_only:
+        recipes = recipes.filter(bands_confirmed_at__isnull=True)
+
+    rows = [_classify_row(recipe) for recipe in recipes]
+
+    total = Recipe.objects.filter(is_active=True).count()
+    confirmed = Recipe.objects.filter(
+        is_active=True, bands_confirmed_at__isnull=False
+    ).count()
+
+    return render(
+        request,
+        "scarves/color_classify.html",
+        {
+            "rows": rows,
+            "todo_only": todo_only,
+            "total_count": total,
+            "confirmed_count": confirmed,
+            "todo_count": total - confirmed,
+            "bands": colorbands.BANDS,
+        },
+    )
+
+
+@require_POST
+@login_required
+def color_bands_save(request, pk):
+    """Store one recipe's bands and stamp them as confirmed by a person.
+
+    Saving nothing is a legitimate answer — it's how you say "this colorway
+    doesn't belong in any section" — so an empty list still counts as
+    confirmed. What it must not do is leave the row looking unreviewed forever.
+    """
+    recipe = get_object_or_404(Recipe, pk=pk)
+
+    picked = colorbands.sort_bands(
+        b for b in request.POST.getlist("bands") if b in colorbands.BAND_SLUGS
+    )
+    recipe.color_bands = picked
+    recipe.bands_confirmed_at = timezone.now()
+    recipe.save(update_fields=["color_bands", "bands_confirmed_at"])
+
+    recipe = (
+        Recipe.objects.prefetch_related("recipe_dyes__dye", "finished_products__images")
+        .get(pk=pk)
+    )
+    return render(
+        request,
+        "scarves/partials/color_row.html",
+        _classify_row(recipe, saved=True),
+    )
+
+
+@require_POST
+@login_required
+def color_suggest_from_photo(request, pk):
+    """Read the product photo and tick the bands it seems to show.
+
+    Deliberately a per-row action rather than something the page does on load:
+    in production the photos live in the bucket, so sampling all of them would
+    mean dozens of downloads every time the page opened. Here it's one image,
+    when you ask for it.
+
+    Nothing is saved — the ticks land in the form for you to correct, exactly
+    like copying dyes from another recipe on the showcase.
+    """
+    recipe = get_object_or_404(
+        Recipe.objects.prefetch_related("recipe_dyes__dye", "finished_products__images"),
+        pk=pk,
+    )
+
+    photo = _first_photo(recipe)
+    suggested = []
+    if photo:
+        try:
+            with photo.image.open("rb") as f:
+                suggested = colorbands.bands_from_image(BytesIO(f.read()))
+        except Exception:
+            suggested = []
+
+    # Union with what's already ticked: the photo is evidence to add, not a
+    # verdict that overrides a band you'd already decided on.
+    merged = colorbands.sort_bands(list(recipe.color_bands or []) + suggested)
+    return render(
+        request,
+        "scarves/partials/color_row.html",
+        _classify_row(recipe, suggested=merged),
+    )
+
 
 def _showcase_recipes(missing_only=False):
     """Active recipes with their dyes and their finished products.
@@ -592,6 +815,382 @@ def recipe_dyes_save(request, pk):
     )
 
 
+#: How much of a recipe's inventory history to show at once. Long enough to
+#: cover a season of a busy recipe, short enough that the page stays a page.
+RECIPE_LOG_LIMIT = 200
+
+
+@page_meta(
+    title="Recipe",
+    description="Everything about one recipe: its dyes, every finished product "
+                "made from it, and the full inventory history behind those "
+                "products — production runs, sales and manual adjustments.",
+    category="Recipes",
+    # Reached from the showcase at private/recipes/, which is the picker.
+    show_in_index=False,
+)
+@login_required
+def recipe_detail(request, pk):
+    """One recipe, end to end.
+
+    The inventory history is the reason this page exists: on/hand counts say
+    where a recipe is now, and only the log says how it got there — whether a
+    low count means it sold or was never produced.
+    """
+    recipe = get_object_or_404(
+        Recipe.objects.prefetch_related("recipe_dyes__dye"), pk=pk
+    )
+
+    products = list(
+        recipe.finished_products
+        .select_related("raw_product", "raw_product__category")
+        .prefetch_related("images")
+        .order_by("-is_active", "name")
+    )
+
+    # One query for the whole history rather than one per product.
+    logs = (
+        InventoryLog.objects
+        .filter(finished_product__in=products)
+        .select_related("finished_product")
+        .order_by("-created_at")[: RECIPE_LOG_LIMIT + 1]
+    )
+    logs = list(logs)
+    truncated = len(logs) > RECIPE_LOG_LIMIT
+    logs = logs[:RECIPE_LOG_LIMIT]
+
+    # Lifetime movement, computed over every log rather than the page's slice —
+    # a truncated history would otherwise quietly understate the totals.
+    totals = (
+        InventoryLog.objects
+        .filter(finished_product__in=products)
+        .values("log_type")
+        .annotate(qty=Sum("quantity"), entries=Count("id"))
+    )
+    by_type = {row["log_type"]: row for row in totals}
+
+    def _qty(log_type):
+        return (by_type.get(log_type) or {}).get("qty") or 0
+
+    return render(request, "scarves/recipe_detail.html", {
+        "recipe": recipe,
+        "products": products,
+        "logs": logs,
+        "truncated": truncated,
+        "log_limit": RECIPE_LOG_LIMIT,
+        "on_hand": sum(p.number_on_hand for p in products),
+        "par_total": sum(p.par or 0 for p in products),
+        "produced": _qty(InventoryLog.PRODUCTION),
+        # Sales are recorded negative; show the count as a positive number.
+        "sold": -_qty(InventoryLog.SALE),
+        "adjusted": _qty(InventoryLog.ADJUSTMENT),
+        "log_count": sum(row["entries"] for row in totals),
+        # Caps the back-date picker; a dye session can't be in the future.
+        "today": timezone.localdate(),
+    })
+
+
+@require_POST
+@login_required
+def record_recipe_production(request, pk):
+    """Record a dye session for one recipe: N baths per finished product.
+
+    This is the batch form of `record_dye_bath`, and it exists because a
+    colorway — not a product — is the unit of work. A session is 2–3 bases of
+    one colour, entered afterwards from notes, so one submit per colour beats
+    one click per product.
+
+    Quantities are counted in baths rather than items: a bath is indivisible,
+    which is exactly why finishing slightly over par is normal.
+    """
+    recipe = get_object_or_404(Recipe, pk=pk)
+
+    # Optional back-date, for digitising sessions off paper. Blank means now,
+    # which is the everyday case — day-level precision doesn't matter here,
+    # the question is always which season something was dyed in.
+    dyed_on = None
+    dyed_on_raw = (request.POST.get("dyed_on") or "").strip()
+    if dyed_on_raw:
+        try:
+            dyed_on = datetime.strptime(dyed_on_raw, "%Y-%m-%d").date()
+        except ValueError:
+            messages.error(
+                request,
+                f"'{dyed_on_raw}' isn't a date I understand (YYYY-MM-DD) — "
+                "nothing was recorded.",
+            )
+            return redirect("recipe_detail", pk=pk)
+        if dyed_on > timezone.localdate():
+            messages.error(
+                request, "That date is in the future — nothing was recorded."
+            )
+            return redirect("recipe_detail", pk=pk)
+
+    # A back-dated session is history being typed up, not stock arriving: the
+    # yarn was sold or counted long ago. Adding it to number_on_hand would
+    # inflate current inventory by however many years get digitised, so a past
+    # date writes log rows only.
+    historical = dyed_on is not None and dyed_on < timezone.localdate()
+
+    # Read the form before touching anything, so a bad field can't leave a
+    # session half-recorded.
+    entries = []
+    for product in recipe.finished_products.filter(is_active=True):
+        raw_value = (request.POST.get(f"baths_{product.pk}") or "").strip()
+        if not raw_value:
+            continue
+        if not raw_value.isdigit():
+            messages.error(
+                request,
+                f"'{raw_value}' isn't a number of baths for {product.name} — "
+                "nothing was recorded.",
+            )
+            return redirect("recipe_detail", pk=pk)
+        baths = int(raw_value)
+        if baths:
+            entries.append((product, baths))
+
+    if not entries:
+        messages.info(request, "No baths entered, so nothing was recorded.")
+        return redirect("recipe_detail", pk=pk)
+
+    made = 0
+    with transaction.atomic():
+        for product, baths in entries:
+            # Locked and re-read per entry: two finished products of one
+            # recipe often share a raw base, and read-modify-write on stale
+            # copies would silently lose one of the two deductions.
+            raw_product = (
+                RawProduct.objects.select_for_update().get(pk=product.raw_product_id)
+            )
+            per_bath = raw_product.number_per_dye_bath or 1
+            quantity = baths * per_bath
+
+            if not historical:
+                raw_product.number_on_hand = max(
+                    raw_product.number_on_hand - quantity, 0
+                )
+                raw_product.save(update_fields=["number_on_hand"])
+
+                product.number_on_hand += quantity
+                product.save(update_fields=["number_on_hand"])
+
+            # One row per product per session, not one per bath: the bath
+            # count is recoverable from quantity, and a single deliberate
+            # entry reads better in the history than N identical rows.
+            log = InventoryLog.objects.create(
+                finished_product=product,
+                raw_product=raw_product,
+                log_type=InventoryLog.PRODUCTION,
+                quantity=quantity,
+                notes=(
+                    f"{baths} dye bath{'' if baths == 1 else 's'} × {per_bath}, "
+                    + (
+                        f"back-dated entry for {dyed_on:%d %b %Y}; "
+                        "stock left unchanged."
+                        if historical
+                        else f"recorded from the {recipe.name} recipe page."
+                    )
+                ),
+            )
+            if dyed_on is not None:
+                # created_at is auto_now_add, so it can only be set after the
+                # fact. Noon local, because a date carries no time and midnight
+                # is the value most likely to slide into the adjacent day.
+                InventoryLog.objects.filter(pk=log.pk).update(
+                    created_at=timezone.make_aware(
+                        datetime.combine(dyed_on, time(12, 0))
+                    )
+                )
+            made += quantity
+
+    if historical:
+        messages.success(
+            request,
+            f"Logged {made} item{'' if made == 1 else 's'} for {recipe.name} "
+            f"dyed on {dyed_on:%d %b %Y}. Current stock was left alone — "
+            "back-dated entries record history only.",
+        )
+    else:
+        messages.success(
+            request,
+            f"Recorded {made} item{'' if made == 1 else 's'} across "
+            f"{len(entries)} product{'' if len(entries) == 1 else 's'} "
+            f"for {recipe.name}.",
+        )
+    return redirect("recipe_detail", pk=pk)
+
+
+#: Blank rows offered per card. A card holds a handful of entries; you can
+#: always submit and come back for a long one.
+CARD_ROWS = 12
+
+
+def parse_card_date(text):
+    """Read a date off a kanban card, keeping track of how much is known.
+
+    Returns `(date, precision)`. A card saying "9/2024" gives back the 1st of
+    September with MONTH precision — the day is storage padding, and the
+    precision flag is what stops it ever being shown as though it were real.
+
+    Accepts what people actually write: `9/15/2024`, `9-15-24`, `2024-09-15`
+    for a day; `9/2024`, `2024-09` for a month. Four digits anywhere means a
+    year, so ISO and US order are told apart rather than guessed at.
+    """
+    parts = [p for p in text.strip().replace("/", "-").replace(".", "-").split("-") if p]
+    if not all(p.isdigit() for p in parts):
+        raise ValueError("not a date")
+
+    def _year(value):
+        # Cards are recent, so a two-digit year is 20xx.
+        return int(value) + 2000 if len(value) <= 2 else int(value)
+
+    if len(parts) == 3:
+        if len(parts[0]) == 4:
+            year, month, day = _year(parts[0]), int(parts[1]), int(parts[2])
+        else:
+            month, day, year = int(parts[0]), int(parts[1]), _year(parts[2])
+        return date(year, month, day), InventoryLog.DAY
+
+    if len(parts) == 2:
+        if len(parts[0]) == 4:
+            year, month = _year(parts[0]), int(parts[1])
+        else:
+            month, year = int(parts[0]), _year(parts[1])
+        return date(year, month, 1), InventoryLog.MONTH
+
+    raise ValueError("not a date")
+
+
+@page_meta(
+    title="Kanban Card Backfill",
+    description="Type up the handwritten production history from the old "
+                "kanban cards, one card per finished product. Records history "
+                "only — current stock is never touched.",
+    category="Production",
+)
+@login_required
+def card_backfill_index(request):
+    """Pick a card to type up, and see how far through the stack you are."""
+    products = (
+        FinishedProduct.objects.filter(is_active=True)
+        .select_related("recipe", "raw_product")
+        .annotate(
+            backfilled=Count(
+                "inventory_logs",
+                filter=Q(
+                    inventory_logs__date_precision__in=[
+                        InventoryLog.DAY, InventoryLog.MONTH
+                    ]
+                ),
+            )
+        )
+        .order_by("name")
+    )
+    products = list(products)
+    return render(request, "scarves/card_backfill_index.html", {
+        "products": products,
+        "done": sum(1 for p in products if p.backfilled),
+    })
+
+
+@page_meta(
+    title="Kanban Card",
+    description="Type up one card's handwritten production entries.",
+    category="Production",
+    show_in_index=False,
+)
+@require_http_methods(["GET", "POST"])
+@login_required
+def card_backfill(request, pk):
+    """One card: a column of dates and bath counts, submitted together.
+
+    Everything here is history — the yarn was counted or sold long ago — so
+    no entry on this page moves current stock. That's the difference between
+    this and the recipe page's production form.
+    """
+    product = get_object_or_404(
+        FinishedProduct.objects.select_related("recipe", "raw_product"), pk=pk
+    )
+    per_bath = product.raw_product.number_per_dye_bath or 1
+
+    if request.method == "POST":
+        # Parse every row before writing any of it: half a transcribed card
+        # is worse than none, because you can't tell which half.
+        entries, errors = [], []
+        for index in range(CARD_ROWS):
+            when = (request.POST.get(f"date_{index}") or "").strip()
+            baths = (request.POST.get(f"baths_{index}") or "").strip()
+            if not when and not baths:
+                continue
+            if not when:
+                errors.append(f"Row {index + 1}: baths but no date.")
+                continue
+            if not baths.isdigit() or int(baths) < 1:
+                errors.append(f"Row {index + 1}: '{baths}' isn't a bath count.")
+                continue
+            try:
+                when_date, precision = parse_card_date(when)
+            except ValueError:
+                errors.append(f"Row {index + 1}: can't read the date '{when}'.")
+                continue
+            if when_date > timezone.localdate():
+                errors.append(f"Row {index + 1}: {when} is in the future.")
+                continue
+            entries.append((when_date, precision, int(baths)))
+
+        if errors:
+            for error in errors:
+                messages.error(request, error)
+            messages.info(request, "Nothing was recorded — fix those and resubmit.")
+            return redirect("card_backfill", pk=pk)
+
+        if not entries:
+            messages.info(request, "Nothing entered, so nothing was recorded.")
+            return redirect("card_backfill", pk=pk)
+
+        with transaction.atomic():
+            for when_date, precision, baths in entries:
+                log = InventoryLog.objects.create(
+                    finished_product=product,
+                    raw_product=product.raw_product,
+                    log_type=InventoryLog.PRODUCTION,
+                    quantity=baths * per_bath,
+                    date_precision=precision,
+                    notes=(
+                        f"{baths} dye bath{'' if baths == 1 else 's'} × {per_bath}, "
+                        "from the kanban card. History only; stock unchanged."
+                    ),
+                )
+                # created_at is auto_now_add, so it can only be set afterwards.
+                # Noon local: a date carries no time, and midnight is the value
+                # most likely to slide into the neighbouring day — or month.
+                InventoryLog.objects.filter(pk=log.pk).update(
+                    created_at=timezone.make_aware(
+                        datetime.combine(when_date, time(12, 0))
+                    )
+                )
+
+        messages.success(
+            request,
+            f"Added {len(entries)} entr{'y' if len(entries) == 1 else 'ies'} "
+            f"from {product.name}'s card. Current stock is unchanged.",
+        )
+        return redirect("card_backfill", pk=pk)
+
+    return render(request, "scarves/card_backfill.html", {
+        "product": product,
+        "per_bath": per_bath,
+        "rows": range(CARD_ROWS),
+        "existing": (
+            product.inventory_logs
+            .filter(date_precision__in=[InventoryLog.DAY, InventoryLog.MONTH])
+            .order_by("-created_at")
+        ),
+        "today": timezone.localdate(),
+    })
+
+
 def _parse_raw_ids(raw_ids_param: str) -> list[int]:
     raw_ids = []
     for part in (raw_ids_param or "").split(","):
@@ -671,10 +1270,11 @@ def _matrix_picker_response(request):
     note="Add ?raw_ids=1,2,3 — or open with none to pick from a list.",
 )
 @require_http_methods(["GET", "POST"])
+@login_required
 def bulk_recipe_matrix_entry(request):
     """
     Usage:
-      /scarves/bulk-matrix/?raw_ids=1,2,3   (or open bare and pick from the list)
+      /scarves/private/bulk-matrix/?raw_ids=1,2,3   (or open bare and pick from a list)
 
     Each row = one recipe name and counts for each raw product.
     Creates/updates FinishedProduct for every (recipe, raw_product) cell provided.
@@ -1036,6 +1636,9 @@ def square_webhook(request):
 )
 def reference_sheet_index(request):
     """Category picker for the reference-sheet PDFs.
+
+    Public, like the sheets themselves: the contents are product photos,
+    names and barcodes — the same things printed on the stall table.
 
     Carries the same kind of at-a-glance counts as `raw_inventory_index`, so
     the page says what you'd get before you wait on a PDF build: one page per

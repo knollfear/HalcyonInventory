@@ -1,23 +1,34 @@
-<tr id="fp-{{ fp.id }}" {% if fp.number_on_hand == 0 %}style="background:#ffecec;"{% endif %}>
-  <td style="padding:0.4rem;">{{ fp.name }}</td>
-  <td style="padding:0.4rem;">{{ fp.raw_product.category.name }}</td>
-  <td style="padding:0.4rem;">{{ fp.raw_product.name }}</td>
-  <td style="padding:0.4rem; text-align:right;">{{ fp.number_on_hand }}</td>
-  <td style="padding:0.4rem; text-align:right;">{{ fp.par_level }}</td>
-  <td style="padding:0.4rem; text-align:right; font-weight:700;">{{ fp.shortage }}</td>
+{% comment %}
+One finished-product row. Rendered both by production_needed.html for the
+initial page and by record_dye_bath as the htmx swap target, so the markup
+lives here only — the two used to be copies of each other and drifted.
 
-  <td style="padding:0.4rem; white-space:nowrap;">
+Styling comes from the page, since this fragment is only ever swapped into
+a page that already extends base_internal.
+{% endcomment %}
+<tr id="fp-{{ fp.id }}"{% if fp.number_on_hand == 0 %} class="zero"{% endif %}>
+  <td>{{ fp.name }}</td>
+  <td>{{ fp.raw_product.category.name }}</td>
+  <td>{{ fp.raw_product.name }}</td>
+  <td class="num">{{ fp.number_on_hand }}</td>
+  {% comment %}
+  `par`, not `par_level` — par_level is RawProduct's field name. This column
+  rendered empty for as long as it existed: Django resolves a missing
+  attribute to the empty string rather than complaining.
+  {% endcomment %}
+  <td class="num">{{ fp.par }}</td>
+  <td class="num shortage">{{ fp.shortage }}</td>
+  <td class="actions">
     <form
       method="post"
       action="{% url 'record_dye_bath' fp.pk %}"
       hx-post="{% url 'record_dye_bath' fp.pk %}"
       hx-target="#fp-{{ fp.id }}"
       hx-swap="outerHTML"
-      style="display:inline;"
     >
       {% csrf_token %}
       <input type="hidden" name="next" value="{{ request.get_full_path }}">
-      <button type="submit" class="btn">
+      <button type="submit" class="btn-quiet">
         Dye bath (+{{ fp.raw_product.number_per_dye_bath }})
       </button>
     </form>

@@ -4,10 +4,20 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: django_app
+    # Dev only. Production is Railway, which runs start.sh (gunicorn) from the
+    # Dockerfile and never reads this file — so this side is free to optimise
+    # for the edit/refresh loop instead of prod parity.
+    #
+    # runserver, not gunicorn: it reloads on Python changes. Templates already
+    # reloaded (DEBUG + bind mount); views and models did not, and needed a
+    # `docker compose restart web` to take effect.
+    #
+    # The parens matter. `a && b || true && c` parses as `((a && b) || true) && c`,
+    # so a failed migrate would still have started the server.
     command: >
       sh -c "python manage.py migrate &&
-             python manage.py createsuperuser --noinput || true &&
-             gunicorn mysite.wsgi --bind 0.0.0.0:8000 --timeout 120"
+             (python manage.py createsuperuser --noinput || true) &&
+             python manage.py runserver 0.0.0.0:8000"
 
     volumes:
       - .:/home/app

@@ -1,0 +1,51 @@
+{% extends "scarves/base.html" %}
+{% comment %}
+The public pages — the matching game and the quiz. No login, and both are
+meant to be found from the storefront, so they deliberately don't look like
+the staff tooling: warmer accent, narrower column, no site-map chrome.
+
+htmx loads here rather than per-page because the whole point of both pages
+is a board fetched from an endpoint. The boards themselves
+(partials/game_board.html, partials/quiz_board.html) extend nothing — they
+are served raw into other people's pages, so they can't carry a shell.
+{% endcomment %}
+
+{% block style %}
+  {{ block.super }}
+
+  :root {
+      --font: -apple-system, system-ui, sans-serif;
+      --accent: #23466b;
+      --accent-dark: #16304a;
+      --ink: #1a1a1a;
+      --column: 820px;
+  }
+  body { padding: 1rem; }
+  h1 { font-size: 1.35rem; margin: 0; }
+  /* The heading shares its line with whatever the page puts in
+     heading_actions (a sign-in link, say) and stands alone otherwise. */
+  .pagehead {
+      display: flex; align-items: baseline; gap: 12px;
+      flex-wrap: wrap; margin-bottom: .25rem;
+  }
+  .pagehead h1 { flex: 1; min-width: 0; }
+  .muted { font-size: 0.85rem; }
+  details { margin-top: 2rem; font-size: .9rem; }
+  summary { cursor: pointer; color: var(--accent); }
+  pre {
+      background: #f6f8fa; border: 1px solid #e2e6ea; border-radius: 8px;
+      padding: .75rem; overflow-x: auto; font-size: .8rem;
+  }
+{% endblock %}
+
+{% block head %}
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+{% endblock %}
+
+{% block body %}
+  <div class="pagehead">
+    <h1>{% block heading %}{% endblock %}</h1>
+    {% block heading_actions %}{% endblock %}
+  </div>
+  {% block content %}{% endblock %}
+{% endblock %}

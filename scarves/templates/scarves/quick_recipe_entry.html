@@ -1,101 +1,77 @@
-<!-- templates/scarves/quick_recipe_entry.html -->
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>Quick Recipe Entry</title>
-  <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 24px; }
-    table { border-collapse: collapse; width: 100%; max-width: 1100px; }
-    th, td { border-bottom: 1px solid #ddd; padding: 10px; vertical-align: middle; }
-    input[type="text"] { width: 100%; padding: 8px; }
-    select { width: 100%; padding: 8px; }
-    .swatch { width: 22px; height: 22px; border-radius: 6px; border: 1px solid #bbb; display: inline-block; }
-    .colorcell { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
-    .actions { margin-top: 16px; }
-    button { padding: 10px 14px; border-radius: 10px; border: 1px solid #333; background: white; cursor: pointer; }
-    .errorlist { margin: 6px 0 0; color: #b00020; }
-    .messages { margin: 12px 0; padding-left: 18px; }
-  </style>
+{% extends "scarves/base_internal.html" %}
+
+{% block title %}Quick Recipe Entry{% endblock %}
+{% block heading %}Quick Recipe Entry{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 1100px; }
+
+  td { vertical-align: top; }
+  input[type="text"] { width: 100%; }
+  .colorcell { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
+  .swatch {
+      width: 22px; height: 22px; border-radius: 6px;
+      border: 1px solid #bbb; display: inline-block;
+  }
+  /* select2 swaps the <select> for its own markup, so it needs sizing of
+     its own rather than inheriting the plain-select rules. */
+  .select2-container { width: 100% !important; }
+{% endblock %}
+
+{% block head %}
     <link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
+{% endblock %}
 
-</head>
-<body>
-<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
-
-  <h1>Quick Recipe Entry</h1>
-  <p>Enter up to 5 recipes at a time. Each recipe can have up to 3 dyes. Rows save on submit.</p>
-
-  {% if messages %}
-    <ul class="messages">
-      {% for message in messages %}
-        <li>{{ message }}</li>
-      {% endfor %}
-    </ul>
-  {% endif %}
+{% block content %}
+  <p class="lead">Enter up to 5 recipes at a time. Each recipe can have up to 3 dyes. Rows save on submit.</p>
 
   <form method="post">
     {% csrf_token %}
-    <table>
-      <thead>
-        <tr>
-          <th style="width: 30%;">Recipe name</th>
-          <th>Dye 1</th>
-          <th>Dye 2</th>
-          <th>Dye 3</th>
-            <th>Dye 4</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for form in forms %}
+    <div class="card">
+      <table>
+        <thead>
           <tr>
-            <td>
-              {{ form.name }}
-              {{ form.name.errors }}
-              {% if form.non_field_errors %}{{ form.non_field_errors }}{% endif %}
-            </td>
-
-            <td>
-              <div class="colorcell">
-                {{ form.dye1 }}
-                <span class="swatch" data-for="{{ form.dye1.id_for_label }}"></span>
-              </div>
-              {{ form.dye1.errors }}
-            </td>
-
-            <td>
-              <div class="colorcell">
-                {{ form.dye2 }}
-                <span class="swatch" data-for="{{ form.dye2.id_for_label }}"></span>
-              </div>
-              {{ form.dye2.errors }}
-            </td>
-
-            <td>
-              <div class="colorcell">
-                {{ form.dye3 }}
-                <span class="swatch" data-for="{{ form.dye3.id_for_label }}"></span>
-              </div>
-              {{ form.dye3.errors }}
-            </td>
-            <td>
-              <div class="colorcell">
-                {{ form.dye4 }}
-                <span class="swatch" data-for="{{ form.dye4.id_for_label }}"></span>
-              </div>
-              {{ form.dye4.errors }}
-            </td>
+            <th style="width: 30%;">Recipe name</th>
+            <th>Dye 1</th>
+            <th>Dye 2</th>
+            <th>Dye 3</th>
+            <th>Dye 4</th>
           </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {% for form in forms %}
+            <tr>
+              <td>
+                {{ form.name }}
+                {{ form.name.errors }}
+                {% if form.non_field_errors %}{{ form.non_field_errors }}{% endif %}
+              </td>
+
+              {% for field in form.dye_fields %}
+                <td>
+                  <div class="colorcell">
+                    {{ field }}
+                    <span class="swatch" data-for="{{ field.id_for_label }}"></span>
+                  </div>
+                  {{ field.errors }}
+                </td>
+              {% endfor %}
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
 
     <div class="actions">
-      <button type="submit">Save filled rows</button>
+      <button type="submit" class="btn">Save filled rows</button>
     </div>
   </form>
+{% endblock %}
 
+{% block scripts %}
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
 <script>
   const dyeHex = {{ dye_hex|safe }};
 
@@ -124,6 +100,4 @@
     });
   });
 </script>
-
-</body>
-</html>
+{% endblock %}

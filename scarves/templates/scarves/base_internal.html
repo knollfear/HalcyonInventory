@@ -1,0 +1,124 @@
+{% extends "scarves/base.html" %}
+{% comment %}
+Staff pages — everything behind @login_required.
+
+Gives a page three things it no longer writes for itself: the house style,
+the messages block, and the "← Site map" link back. A page fills
+{% templatetag openblock %} block heading {% templatetag closeblock %} and
+{% templatetag openblock %} block content {% templatetag closeblock %}, and
+adds only the CSS that is genuinely its own.
+
+Page-specific style goes in a {% templatetag openblock %} block style
+{% templatetag closeblock %} that opens with {{ block.super }} — without
+that first line the whole house style vanishes and the page silently
+renders bare. BaseTemplateTests guards it.
+{% endcomment %}
+
+{% block style %}
+  {{ block.super }}
+
+  :root { --page-bg: #f7f8fa; }
+
+  h2 {
+      margin-top: 32px; font-size: 18px; color: #1a3a5c;
+      border-bottom: 2px solid #1a3a5c; padding-bottom: 6px;
+  }
+
+  /* Cards. The shell is the same everywhere; what changes is whether the
+     card is a container (bulk editors) or is itself the link (the category
+     pickers), which is why the flex row hangs off `a.card` rather than
+     being baked into `.card`. */
+  .cards { display: grid; gap: 12px; margin-top: 18px; }
+  .card {
+      border: 1px solid #e1e5ea; border-radius: 10px; padding: 16px;
+      background: #fff; margin-top: 14px;
+  }
+  .cards > .card { margin-top: 0; }
+  .card-title { font-size: 17px; font-weight: 600; margin: 0 0 12px; }
+  a.card {
+      text-decoration: none; color: inherit;
+      display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+      transition: border-color .15s ease, box-shadow .15s ease;
+  }
+  .card-link, a.card { transition: border-color .15s ease, box-shadow .15s ease; }
+  .card-link:hover, a.card:hover {
+      border-color: var(--accent); box-shadow: 0 2px 10px rgba(21, 88, 160, .12);
+  }
+  .name { font-size: 17px; font-weight: 600; color: var(--accent); }
+  .stat { font-size: 13px; color: #555; }
+  .empty { color: #666; font-size: 14px; }
+
+  /* Status pills. Inside a link-card they're pushed to the trailing edge;
+     in a table cell they sit where they land. */
+  .short, .ok {
+      display: inline-block; font-size: 12px;
+      border-radius: 999px; padding: 3px 10px;
+  }
+  .short { color: #8a2f2a; background: #fdf2f1; border: 1px solid #f0c8c4; }
+  .ok { color: #2e7d52; background: #f1f8f3; border: 1px solid #bcd8c6; }
+  a.card .short, a.card .ok { margin-left: auto; }
+
+  .messages { margin: 16px 0; }
+  .message { padding: 8px 12px; border-radius: 8px; margin-bottom: 6px; font-size: 14px; }
+  .message.success { background: #f1f8f3; border: 1px solid #bcd8c6; color: #2e7d52; }
+  .message.error { background: #fdf2f1; border: 1px solid #f0c8c4; color: #8a2f2a; }
+  .message.warning, .message.info { background: #fff6e0; border: 1px solid #f0e0b0; color: #8a5a00; }
+
+  table { border-collapse: collapse; width: 100%; }
+  th, td { padding: 8px 10px; border-bottom: 1px solid #eef1f4; vertical-align: middle; }
+  th {
+      text-align: left; font-size: 12px; color: #667;
+      border-bottom: 1px solid #e1e5ea;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+
+  input[type="text"], input[type="number"], select {
+      font: inherit; padding: 5px 8px; border: 1px solid #cfd6de;
+      border-radius: 6px; background: #fff;
+  }
+  input[type="number"] { width: 5.5rem; }
+  input:focus, select:focus {
+      outline: none; border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(21, 88, 160, .12);
+  }
+  .err, .errorlist { font-size: 12px; color: #8a2f2a; margin-top: 4px; }
+  .err ul, .errorlist { margin: 0; padding-left: 1.1rem; }
+
+  /* Two weights of button: .btn commits something, .btn-quiet is for the
+     many small repeated actions (±1 stock, one dye bath) where a row of
+     solid blue would drown the data it sits next to. */
+  .btn {
+      padding: 9px 16px; font: inherit; font-weight: 600;
+      border: 1px solid var(--accent); background: var(--accent); color: #fff;
+      border-radius: 8px; cursor: pointer;
+  }
+  .btn:hover { background: var(--accent-dark); border-color: var(--accent-dark); }
+  .btn:disabled {
+      background: #dfe4ea; border-color: #dfe4ea; color: #8b929b; cursor: not-allowed;
+  }
+  .btn-quiet {
+      padding: 5px 10px; font: inherit; font-size: .85rem;
+      border: 1px solid #cfd6de; background: #fff; color: var(--ink);
+      border-radius: 6px; cursor: pointer;
+  }
+  .btn-quiet:hover { background: #eef2f7; border-color: var(--accent); }
+  .actions { margin-top: 18px; display: flex; align-items: center; gap: 12px; }
+
+  .back { display: inline-block; margin-top: 22px; font-size: 13px; }
+{% endblock %}
+
+{% block body %}
+  <h1>{% block heading %}{% endblock %}</h1>
+
+  {% if messages %}
+    <div class="messages">
+      {% for message in messages %}
+        <div class="message {{ message.tags }}">{{ message }}</div>
+      {% endfor %}
+    </div>
+  {% endif %}
+
+  {% block content %}{% endblock %}
+
+  {% block back %}<a class="back" href="{% url 'index' %}">← Site map</a>{% endblock %}
+{% endblock %}

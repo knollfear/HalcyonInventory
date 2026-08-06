@@ -13,9 +13,11 @@ import random
 import re
 import shutil
 import tempfile
+from datetime import datetime, timedelta
 from unittest import mock
 
 from django.contrib.auth.models import User
+from django.utils import timezone
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.test import TestCase, override_settings
@@ -36,6 +38,7 @@ from .models import (
     DyeBrand,
     FinishedProduct,
     FinishedProductImage,
+    InventoryLog,
     ProductImageUpload,
     RawProduct,
     RawProductCategory,
@@ -1099,7 +1102,11 @@ class RawInventoryIndexTests(TestCase):
         self._raw("Wool", 4, 4, category=RawProductCategory.objects.create(name="Yarn"))
 
         response = self.client.get(reverse("raw_inventory_index"))
-        hrefs = re.findall(rb'href="(/scarves/raw-inventory/\d+/)"', response.content)
+        # Built from the reversed picker URL rather than a literal path, so
+        # moving the route (private/ vs public/) doesn't quietly turn this
+        # into a test that finds nothing and asserts nothing.
+        pattern = re.escape(reverse("raw_inventory_index")).encode() + rb"\d+/"
+        hrefs = re.findall(rb'href="(' + pattern + rb')"', response.content)
         self.assertEqual(len(hrefs), 2)
         for href in hrefs:
             self.assertEqual(self.client.get(href.decode()).status_code, 200)
@@ -1110,6 +1117,11 @@ class BulkRecipeMatrixTests(TestCase):
     visit was an error message and nothing else."""
 
     def setUp(self):
+        # These used to run anonymously and pass, which was the tell: the view
+        # had no @login_required and was creating recipes for whoever asked.
+        self.client.force_login(
+            User.objects.create_superuser("matrix", "m@example.test", "pw")
+        )
         self.silk, _ = RawProductCategory.objects.get_or_create(name="Silk")
         self.yarn = RawProductCategory.objects.create(name="Yarn")
         self.url = reverse("bulk_recipe_matrix_entry")
@@ -1213,6 +1225,8 @@ class ReferenceSheetIndexTests(TestCase):
     carries the same kind of counts."""
 
     def setUp(self):
+        # Deliberately anonymous: these sheets are public, and this is the
+        # test that would notice if they stopped being.
         self.silk, _ = RawProductCategory.objects.get_or_create(name="Silk")
         self.url = reverse("reference_sheet_index")
 
@@ -1287,7 +1301,8 @@ class ReferenceSheetIndexTests(TestCase):
         self._item("Wool", category=RawProductCategory.objects.create(name="Yarn"))
 
         response = self.client.get(self.url)
-        hrefs = re.findall(rb'href="(/scarves/reference-sheet/\d+/)"', response.content)
+        pattern = re.escape(reverse("reference_sheet_index")).encode() + rb"\d+/"
+        hrefs = re.findall(rb'href="(' + pattern + rb')"', response.content)
         self.assertEqual(len(hrefs), 2)
         for href in hrefs:
             pdf = self.client.get(href.decode())
@@ -1392,6 +1407,1001 @@ class TemplateHygieneTests(TestCase):
                 offenders.append(f"{path.relative_to(root)}:{line}")
 
         self.assertEqual(offenders, [], "use {% comment %} for multi-line comments")
+
+
+class RecipeDetailTests(TestCase):
+    """The recipe page. Its job is to answer "how did this get here?" — so
+    the arithmetic over the inventory log is what's worth pinning."""
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("detail", "d@example.test", "pw")
+        self.client.force_login(self.user)
+        self.recipe = make_recipe("Stormy Sea")
+        self.product = make_product(self.recipe, "Stormy Infinity")
+        self.url = reverse("recipe_detail", args=[self.recipe.pk])
+
+    def _log(self, log_type, quantity, product=None, **kwargs):
+        return InventoryLog.objects.create(
+            finished_product=product or self.product,
+            log_type=log_type, quantity=quantity, **kwargs
+        )
+
+    def test_it_requires_login(self):
+        self.client.logout()
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/login", response["Location"])
+
+    def test_it_shows_the_recipe_its_dyes_and_its_products(self):
+        brand = DyeBrand.objects.create(name="Jacquard")
+        dye = Dye.objects.create(name="Teal", brand=brand, hex_color="#008080")
+        RecipeDye.objects.create(recipe=self.recipe, dye=dye, order=1)
+
+        response = self.client.get(self.url)
+        self.assertContains(response, "Stormy Sea")
+        self.assertContains(response, "Teal")
+        self.assertContains(response, "#008080")
+        self.assertContains(response, "Stormy Infinity")
+
+    def test_totals_separate_production_from_sales(self):
+        self._log(InventoryLog.PRODUCTION, 12)
+        self._log(InventoryLog.PRODUCTION, 6)
+        self._log(InventoryLog.SALE, -5)          # sales are stored negative
+        self._log(InventoryLog.ADJUSTMENT, -1)
+
+        context = self.client.get(self.url).context
+        self.assertEqual(context["produced"], 18)
+        # Shown as a positive count even though the rows are negative.
+        self.assertEqual(context["sold"], 5)
+        self.assertEqual(context["adjusted"], -1)
+
+    def test_it_covers_every_product_of_the_recipe_not_just_one(self):
+        second = make_product(self.recipe, "Stormy Rectangle")
+        self._log(InventoryLog.PRODUCTION, 4)
+        self._log(InventoryLog.PRODUCTION, 7, product=second)
+
+        context = self.client.get(self.url).context
+        self.assertEqual(context["produced"], 11)
+        self.assertEqual(len(context["logs"]), 2)
+
+    def test_another_recipes_history_stays_out_of_it(self):
+        other = make_recipe("Sunset")
+        other_product = make_product(other, "Sunset Infinity")
+        InventoryLog.objects.create(
+            finished_product=other_product,
+            log_type=InventoryLog.PRODUCTION, quantity=99,
+        )
+        self._log(InventoryLog.PRODUCTION, 3)
+
+        context = self.client.get(self.url).context
+        self.assertEqual(context["produced"], 3)
+        self.assertNotContains(self.client.get(self.url), "Sunset Infinity")
+
+    def test_history_is_newest_first(self):
+        old = self._log(InventoryLog.PRODUCTION, 1)
+        new = self._log(InventoryLog.SALE, -1)
+        InventoryLog.objects.filter(pk=old.pk).update(
+            created_at=timezone.now() - timedelta(days=3)
+        )
+        logs = self.client.get(self.url).context["logs"]
+        self.assertEqual([l.pk for l in logs], [new.pk, old.pk])
+
+    def test_a_long_history_is_capped_but_the_totals_are_not(self):
+        """The cap is display-only. Totals summing just the visible slice
+        would understate a busy recipe exactly when it matters most."""
+        from scarves.views import RECIPE_LOG_LIMIT
+
+        InventoryLog.objects.bulk_create([
+            InventoryLog(
+                finished_product=self.product,
+                log_type=InventoryLog.PRODUCTION, quantity=1,
+            )
+            for _ in range(RECIPE_LOG_LIMIT + 25)
+        ])
+
+        context = self.client.get(self.url).context
+        self.assertEqual(len(context["logs"]), RECIPE_LOG_LIMIT)
+        self.assertTrue(context["truncated"])
+        self.assertEqual(context["produced"], RECIPE_LOG_LIMIT + 25)
+        self.assertEqual(context["log_count"], RECIPE_LOG_LIMIT + 25)
+
+    def test_a_short_history_is_not_flagged_as_truncated(self):
+        self._log(InventoryLog.PRODUCTION, 1)
+        self.assertFalse(self.client.get(self.url).context["truncated"])
+
+    def test_a_recipe_with_nothing_yet_still_renders(self):
+        bare = make_recipe("Untried", hexes=())  # no dyes, no products
+        response = self.client.get(reverse("recipe_detail", args=[bare.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "No dyes recorded yet")
+        self.assertContains(response, "Nothing is made from this recipe yet")
+
+    def test_retired_products_are_shown_rather_than_hidden(self):
+        """Their history is still part of how the recipe got where it is."""
+        retired = make_product(self.recipe, "Stormy Scarf", active=False)
+        retired.is_active = False
+        retired.save()
+        response = self.client.get(self.url)
+        self.assertContains(response, "Stormy Scarf")
+        self.assertContains(response, "retired")
+
+    def test_the_showcase_links_to_every_recipe(self):
+        """The showcase is this page's picker; without the link there's no
+        way in but guessing an id."""
+        response = self.client.get(reverse("recipe_showcase"))
+        self.assertContains(response, reverse("recipe_detail", args=[self.recipe.pk]))
+
+    def test_production_needed_links_its_recipe_headings_here(self):
+        """Seeing a shortage should be one click from its whole history."""
+        self.product.par = 10
+        self.product.number_on_hand = 0
+        self.product.save()
+
+        response = self.client.get(reverse("production_needed"))
+        self.assertContains(response, self.recipe.name)
+        self.assertContains(response, reverse("recipe_detail", args=[self.recipe.pk]))
+
+    def test_an_unknown_recipe_is_a_404_not_a_redirect_to_the_home_page(self):
+        """The catch-all only fires when no route matched; a real route with
+        a bad id must still say so."""
+        response = self.client.get(reverse("recipe_detail", args=[999999]))
+        self.assertEqual(response.status_code, 404)
+
+
+class RecordRecipeProductionTests(TestCase):
+    """Batch production entry from the recipe page.
+
+    A dye session is one colourway across two or three bases, entered
+    afterwards from notes — so the form takes bath counts and writes the
+    whole session at once.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("prod", "p@example.test", "pw")
+        self.client.force_login(self.user)
+        self.recipe = make_recipe("Sage")
+        self.category, _ = RawProductCategory.objects.get_or_create(name="Yarn")
+        self.url = reverse("record_recipe_production", args=[self.recipe.pk])
+
+    def _base(self, name, per_bath=5, on_hand=100):
+        return RawProduct.objects.create(
+            name=name, category=self.category, price="5.00",
+            number_per_dye_bath=per_bath, number_on_hand=on_hand,
+        )
+
+    def _product(self, base, name, on_hand=0, par=8):
+        return FinishedProduct.objects.create(
+            name=name, raw_product=base, recipe=self.recipe,
+            price="30.00", number_on_hand=on_hand, par=par, is_active=True,
+        )
+
+    def test_it_requires_login(self):
+        self.client.logout()
+        response = self.client.post(self.url, {})
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/login", response["Location"])
+
+    def test_it_refuses_a_get(self):
+        self.assertEqual(self.client.get(self.url).status_code, 405)
+
+    def test_one_bath_adds_the_batch_size_and_draws_down_raw_stock(self):
+        base = self._base("Heavenly - Angel", per_bath=5, on_hand=40)
+        product = self._product(base, "Heavenly - Angel - Sage")
+
+        self.client.post(self.url, {f"baths_{product.pk}": "1"})
+
+        product.refresh_from_db()
+        base.refresh_from_db()
+        self.assertEqual(product.number_on_hand, 5)
+        self.assertEqual(base.number_on_hand, 35)
+
+    def test_two_baths_are_one_entry_not_two(self):
+        """Her real sessions include two baths of one product. That's a
+        deliberate quantity, and reads better as a single row."""
+        base = self._base("Heavenly - Angel", per_bath=5)
+        product = self._product(base, "Heavenly - Angel - Grey")
+
+        self.client.post(self.url, {f"baths_{product.pk}": "2"})
+
+        logs = InventoryLog.objects.filter(finished_product=product)
+        self.assertEqual(logs.count(), 1)
+        self.assertEqual(logs.first().quantity, 10)
+        self.assertEqual(logs.first().log_type, InventoryLog.PRODUCTION)
+        self.assertIn("2 dye baths", logs.first().notes)
+
+    def test_a_whole_colourway_across_bases_is_one_submit(self):
+        heavenly = self._base("Heavenly - Angel", per_bath=5)
+        homespun = self._base("Homespun - Single & Stunning", per_bath=4)
+        noble = self._base("Noble - Diamond Extra", per_bath=5)
+        a = self._product(heavenly, "Heavenly - Angel - Sage")
+        b = self._product(homespun, "Homespun - Single & Stunning - Sage")
+        c = self._product(noble, "Noble - Diamond Extra - Sage")
+
+        self.client.post(self.url, {
+            f"baths_{a.pk}": "1", f"baths_{b.pk}": "1", f"baths_{c.pk}": "1",
+        })
+
+        for product, expected in ((a, 5), (b, 4), (c, 5)):
+            product.refresh_from_db()
+            self.assertEqual(product.number_on_hand, expected, product.name)
+        self.assertEqual(InventoryLog.objects.count(), 3)
+
+    def test_two_products_sharing_one_base_both_draw_it_down(self):
+        """The bug this guards: reading the raw product into two stale copies
+        and saving both leaves only one deduction applied."""
+        shared = self._base("Heavenly - Angel", per_bath=5, on_hand=40)
+        a = self._product(shared, "Heavenly - Angel - Sage")
+        b = self._product(shared, "Heavenly - Angel - Grey")
+
+        self.client.post(self.url, {f"baths_{a.pk}": "1", f"baths_{b.pk}": "2"})
+
+        shared.refresh_from_db()
+        self.assertEqual(shared.number_on_hand, 40 - 5 - 10)
+
+    def test_blank_and_zero_rows_are_left_alone(self):
+        base = self._base("Heavenly - Angel")
+        touched = self._product(base, "Heavenly - Angel - Sage")
+        skipped = self._product(base, "Heavenly - Angel - Grey", on_hand=3)
+
+        self.client.post(self.url, {
+            f"baths_{touched.pk}": "1",
+            f"baths_{skipped.pk}": "",
+        })
+
+        skipped.refresh_from_db()
+        self.assertEqual(skipped.number_on_hand, 3)
+        self.assertFalse(
+            InventoryLog.objects.filter(finished_product=skipped).exists()
+        )
+
+    def test_an_empty_submit_records_nothing_and_says_so(self):
+        base = self._base("Heavenly - Angel")
+        self._product(base, "Heavenly - Angel - Sage")
+
+        response = self.client.post(self.url, {}, follow=True)
+        self.assertEqual(InventoryLog.objects.count(), 0)
+        self.assertContains(response, "nothing was recorded")
+
+    def test_a_non_numeric_entry_records_nothing_at_all(self):
+        """Half a dye session in the log is worse than none of it."""
+        base = self._base("Heavenly - Angel", on_hand=40)
+        good = self._product(base, "Heavenly - Angel - Sage")
+        bad = self._product(base, "Heavenly - Angel - Grey")
+
+        response = self.client.post(self.url, {
+            f"baths_{good.pk}": "1", f"baths_{bad.pk}": "two",
+        }, follow=True)
+
+        good.refresh_from_db()
+        base.refresh_from_db()
+        self.assertEqual(good.number_on_hand, 0)
+        self.assertEqual(base.number_on_hand, 40)
+        self.assertEqual(InventoryLog.objects.count(), 0)
+        self.assertContains(response, "isn&#x27;t a number of baths")
+
+    def test_raw_stock_does_not_go_negative(self):
+        base = self._base("Heavenly - Angel", per_bath=5, on_hand=3)
+        product = self._product(base, "Heavenly - Angel - Sage")
+
+        self.client.post(self.url, {f"baths_{product.pk}": "2"})
+
+        base.refresh_from_db()
+        self.assertEqual(base.number_on_hand, 0)
+
+    def test_a_retired_product_is_not_recordable(self):
+        base = self._base("Heavenly - Angel")
+        retired = self._product(base, "Heavenly - Angel - Old")
+        retired.is_active = False
+        retired.save()
+
+        self.client.post(self.url, {f"baths_{retired.pk}": "1"})
+
+        retired.refresh_from_db()
+        self.assertEqual(retired.number_on_hand, 0)
+
+    def test_the_recipe_page_offers_the_form(self):
+        base = self._base("Heavenly - Angel", per_bath=5)
+        product = self._product(base, "Heavenly - Angel - Sage")
+
+        response = self.client.get(reverse("recipe_detail", args=[self.recipe.pk]))
+        self.assertContains(response, self.url)
+        self.assertContains(response, f'name="baths_{product.pk}"')
+        self.assertContains(response, "Record production")
+
+    def test_a_back_dated_session_records_history_without_moving_stock(self):
+        """Digitising old paper records must not inflate today's inventory —
+        that yarn was counted or sold years ago."""
+        base = self._base("Heavenly - Angel", per_bath=5, on_hand=40)
+        product = self._product(base, "Heavenly - Angel - Sage", on_hand=2)
+
+        self.client.post(self.url, {
+            f"baths_{product.pk}": "2",
+            "dyed_on": "2024-06-15",
+        })
+
+        product.refresh_from_db()
+        base.refresh_from_db()
+        self.assertEqual(product.number_on_hand, 2)   # untouched
+        self.assertEqual(base.number_on_hand, 40)     # untouched
+
+        log = InventoryLog.objects.get()
+        self.assertEqual(log.quantity, 10)
+        self.assertEqual(timezone.localtime(log.created_at).date().isoformat(),
+                         "2024-06-15")
+        self.assertIn("stock left unchanged", log.notes)
+
+    def test_todays_date_behaves_like_a_normal_entry(self):
+        """Only the *past* is history. Typing today's date explicitly should
+        still move stock, or the everyday path would depend on a blank box."""
+        base = self._base("Heavenly - Angel", per_bath=5, on_hand=40)
+        product = self._product(base, "Heavenly - Angel - Sage")
+
+        self.client.post(self.url, {
+            f"baths_{product.pk}": "1",
+            "dyed_on": timezone.localdate().isoformat(),
+        })
+
+        product.refresh_from_db()
+        base.refresh_from_db()
+        self.assertEqual(product.number_on_hand, 5)
+        self.assertEqual(base.number_on_hand, 35)
+
+    def test_a_future_date_is_refused(self):
+        base = self._base("Heavenly - Angel")
+        product = self._product(base, "Heavenly - Angel - Sage")
+        ahead = (timezone.localdate() + timedelta(days=1)).isoformat()
+
+        response = self.client.post(self.url, {
+            f"baths_{product.pk}": "1", "dyed_on": ahead,
+        }, follow=True)
+
+        self.assertEqual(InventoryLog.objects.count(), 0)
+        self.assertContains(response, "in the future")
+
+    def test_an_unparseable_date_records_nothing(self):
+        base = self._base("Heavenly - Angel")
+        product = self._product(base, "Heavenly - Angel - Sage")
+
+        response = self.client.post(self.url, {
+            f"baths_{product.pk}": "1", "dyed_on": "last summer",
+        }, follow=True)
+
+        product.refresh_from_db()
+        self.assertEqual(product.number_on_hand, 0)
+        self.assertEqual(InventoryLog.objects.count(), 0)
+        self.assertContains(response, "isn&#x27;t a date I understand")
+
+    def test_back_dated_entries_land_in_the_right_season_not_the_next_day(self):
+        """A date carries no time; midnight is the value most likely to slide
+        into the adjacent day once a timezone is applied."""
+        base = self._base("Heavenly - Angel")
+        product = self._product(base, "Heavenly - Angel - Sage")
+
+        self.client.post(self.url, {
+            f"baths_{product.pk}": "1", "dyed_on": "2025-01-01",
+        })
+
+        local = timezone.localtime(InventoryLog.objects.get().created_at)
+        self.assertEqual(local.date().isoformat(), "2025-01-01")
+        self.assertEqual(local.hour, 12)
+
+    def test_the_form_offers_back_dating_without_putting_it_in_the_way(self):
+        base = self._base("Heavenly - Angel")
+        self._product(base, "Heavenly - Angel - Sage")
+
+        response = self.client.get(reverse("recipe_detail", args=[self.recipe.pk]))
+        self.assertContains(response, 'name="dyed_on"')
+        # Behind a disclosure, so the everyday path is a number and a button.
+        self.assertContains(response, "<details")
+        self.assertContains(response, f'max="{timezone.localdate():%Y-%m-%d}"')
+
+    def test_the_new_stock_shows_up_in_the_recipes_own_history(self):
+        """End to end: record a session, then read it back off the page."""
+        base = self._base("Heavenly - Angel", per_bath=5)
+        product = self._product(base, "Heavenly - Angel - Sage")
+
+        self.client.post(self.url, {f"baths_{product.pk}": "2"})
+        context = self.client.get(
+            reverse("recipe_detail", args=[self.recipe.pk])
+        ).context
+        self.assertEqual(context["produced"], 10)
+        self.assertEqual(context["on_hand"], 10)
+        self.assertEqual(len(context["logs"]), 1)
+
+
+class ParseCardDateTests(TestCase):
+    """Reading dates off handwritten cards.
+
+    The rule that matters: never invent precision. "9/2024" is a month, and
+    saying it was the 1st would be making up a record nobody wrote.
+    """
+
+    def _parse(self, text):
+        from scarves.views import parse_card_date
+        return parse_card_date(text)
+
+    def test_us_order_is_a_day(self):
+        for text in ("9/15/2024", "09/15/2024", "9-15-2024", "9.15.2024"):
+            with self.subTest(text=text):
+                parsed, precision = self._parse(text)
+                self.assertEqual(parsed.isoformat(), "2024-09-15")
+                self.assertEqual(precision, InventoryLog.DAY)
+
+    def test_iso_order_is_a_day(self):
+        parsed, precision = self._parse("2024-09-15")
+        self.assertEqual(parsed.isoformat(), "2024-09-15")
+        self.assertEqual(precision, InventoryLog.DAY)
+
+    def test_a_two_digit_year_is_this_century(self):
+        parsed, _ = self._parse("9/15/24")
+        self.assertEqual(parsed.year, 2024)
+
+    def test_month_and_year_stays_a_month(self):
+        for text in ("9/2024", "09/2024", "2024-09", "9-24"):
+            with self.subTest(text=text):
+                parsed, precision = self._parse(text)
+                self.assertEqual((parsed.year, parsed.month), (2024, 9))
+                self.assertEqual(precision, InventoryLog.MONTH)
+                # Stored on the 1st so it sorts — but flagged, so the day is
+                # never shown as though it were recorded.
+                self.assertEqual(parsed.day, 1)
+
+    def test_four_digits_disambiguates_iso_from_us_order(self):
+        self.assertEqual(self._parse("2024-09")[0].month, 9)
+        self.assertEqual(self._parse("9-2024")[0].month, 9)
+
+    def test_nonsense_is_refused_rather_than_guessed_at(self):
+        for text in ("last summer", "", "9", "1/2/3/4", "sept 2024", "9//"):
+            with self.subTest(text=text):
+                with self.assertRaises(ValueError):
+                    self._parse(text)
+
+    def test_an_impossible_date_is_refused(self):
+        for text in ("13/40/2024", "2024-02-31"):
+            with self.subTest(text=text):
+                with self.assertRaises(ValueError):
+                    self._parse(text)
+
+
+class CardBackfillTests(TestCase):
+    """Typing up the old kanban cards — one card per finished product."""
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("card", "c@example.test", "pw")
+        self.client.force_login(self.user)
+        self.recipe = make_recipe("Sage")
+        category, _ = RawProductCategory.objects.get_or_create(name="Yarn")
+        self.base = RawProduct.objects.create(
+            name="Heavenly - Angel", category=category, price="5.00",
+            number_per_dye_bath=5, number_on_hand=40,
+        )
+        self.product = FinishedProduct.objects.create(
+            name="Heavenly - Angel - Sage", raw_product=self.base,
+            recipe=self.recipe, price="30.00", number_on_hand=7, par=8,
+        )
+        self.url = reverse("card_backfill", args=[self.product.pk])
+
+    def test_both_pages_require_login(self):
+        self.client.logout()
+        for url in (reverse("card_backfill_index"), self.url):
+            with self.subTest(url=url):
+                response = self.client.get(url)
+                self.assertEqual(response.status_code, 302)
+                self.assertIn("/login", response["Location"])
+
+    def test_the_index_lists_products_and_links_to_their_cards(self):
+        response = self.client.get(reverse("card_backfill_index"))
+        self.assertContains(response, self.product.name)
+        self.assertContains(response, self.url)
+
+    def test_a_typed_entry_records_history_and_leaves_stock_alone(self):
+        self.client.post(self.url, {"date_0": "9/15/2024", "baths_0": "2"})
+
+        self.product.refresh_from_db()
+        self.base.refresh_from_db()
+        self.assertEqual(self.product.number_on_hand, 7)   # untouched
+        self.assertEqual(self.base.number_on_hand, 40)     # untouched
+
+        log = InventoryLog.objects.get()
+        self.assertEqual(log.quantity, 10)
+        self.assertEqual(log.date_precision, InventoryLog.DAY)
+        self.assertEqual(timezone.localtime(log.created_at).date().isoformat(),
+                         "2024-09-15")
+
+    def test_a_month_only_entry_is_stored_as_a_month(self):
+        self.client.post(self.url, {"date_0": "9/2024", "baths_0": "1"})
+
+        log = InventoryLog.objects.get()
+        self.assertEqual(log.date_precision, InventoryLog.MONTH)
+        self.assertEqual(log.when, "Sep 2024")
+        # The stored day is padding and must never surface.
+        self.assertNotIn("01", log.when)
+
+    def test_a_whole_card_goes_in_at_once(self):
+        self.client.post(self.url, {
+            "date_0": "3/2024", "baths_0": "1",
+            "date_1": "6/12/2024", "baths_1": "2",
+            "date_2": "2024-11-03", "baths_2": "1",
+        })
+        self.assertEqual(InventoryLog.objects.count(), 3)
+        self.assertEqual(
+            sum(l.quantity for l in InventoryLog.objects.all()), 20
+        )
+
+    def test_one_bad_row_stops_the_whole_card(self):
+        """Half a transcribed card is worse than none — you can't tell which
+        half made it in."""
+        response = self.client.post(self.url, {
+            "date_0": "9/15/2024", "baths_0": "1",
+            "date_1": "sometime", "baths_1": "2",
+        }, follow=True)
+
+        self.assertEqual(InventoryLog.objects.count(), 0)
+        self.assertContains(response, "can&#x27;t read the date")
+        self.assertContains(response, "Nothing was recorded")
+
+    def test_baths_without_a_date_is_refused(self):
+        response = self.client.post(self.url, {"baths_0": "2"}, follow=True)
+        self.assertEqual(InventoryLog.objects.count(), 0)
+        self.assertContains(response, "baths but no date")
+
+    def test_a_future_date_is_refused(self):
+        ahead = timezone.localdate() + timedelta(days=400)
+        response = self.client.post(self.url, {
+            "date_0": ahead.strftime("%m/%d/%Y"), "baths_0": "1",
+        }, follow=True)
+        self.assertEqual(InventoryLog.objects.count(), 0)
+        self.assertContains(response, "in the future")
+
+    def test_blank_rows_are_ignored(self):
+        response = self.client.post(self.url, {
+            "date_0": "", "baths_0": "",
+            "date_5": "9/2024", "baths_5": "1",
+        }, follow=True)
+        self.assertEqual(InventoryLog.objects.count(), 1)
+        self.assertContains(response, "Added 1 entry")
+
+    def test_an_empty_submit_says_so(self):
+        response = self.client.post(self.url, {}, follow=True)
+        self.assertEqual(InventoryLog.objects.count(), 0)
+        self.assertContains(response, "Nothing entered")
+
+    def test_typed_entries_show_up_on_the_card_and_the_recipe(self):
+        self.client.post(self.url, {"date_0": "9/2024", "baths_0": "2"})
+
+        card = self.client.get(self.url)
+        self.assertContains(card, "Sep 2024")
+        self.assertContains(card, "month only")
+
+        recipe = self.client.get(reverse("recipe_detail", args=[self.recipe.pk]))
+        self.assertContains(recipe, "Sep 2024")
+        # The history counts it, but current stock still doesn't.
+        self.assertEqual(recipe.context["produced"], 10)
+        self.assertEqual(recipe.context["on_hand"], 7)
+
+    def test_the_index_counts_progress_through_the_stack(self):
+        self.assertEqual(
+            self.client.get(reverse("card_backfill_index")).context["done"], 0
+        )
+        self.client.post(self.url, {"date_0": "9/2024", "baths_0": "1"})
+        self.assertEqual(
+            self.client.get(reverse("card_backfill_index")).context["done"], 1
+        )
+
+
+class LogPrecisionDisplayTests(TestCase):
+    """`when` is the only thing templates should print for a log date."""
+
+    def setUp(self):
+        recipe = make_recipe("Sage")
+        self.product = make_product(recipe, "Heavenly - Angel - Sage")
+
+    def _log(self, precision, when):
+        log = InventoryLog.objects.create(
+            finished_product=self.product,
+            log_type=InventoryLog.PRODUCTION, quantity=5,
+            date_precision=precision,
+        )
+        InventoryLog.objects.filter(pk=log.pk).update(created_at=when)
+        return InventoryLog.objects.get(pk=log.pk)
+
+    def test_a_month_only_log_never_shows_a_day(self):
+        when = timezone.make_aware(datetime(2024, 9, 1, 12, 0))
+        self.assertEqual(self._log(InventoryLog.MONTH, when).when, "Sep 2024")
+
+    def test_a_day_log_shows_the_day_but_not_a_time(self):
+        when = timezone.make_aware(datetime(2024, 9, 15, 12, 0))
+        self.assertEqual(self._log(InventoryLog.DAY, when).when, "15 Sep 2024")
+
+    def test_a_live_entry_keeps_its_time(self):
+        when = timezone.make_aware(datetime(2026, 8, 1, 21, 36))
+        self.assertEqual(
+            self._log(InventoryLog.EXACT, when).when, "01 Aug 2026, 21:36"
+        )
+
+    def test_existing_rows_default_to_exact(self):
+        """The migration must not retroactively make old rows look vague."""
+        log = InventoryLog.objects.create(
+            finished_product=self.product,
+            log_type=InventoryLog.PRODUCTION, quantity=5,
+        )
+        self.assertEqual(log.date_precision, InventoryLog.EXACT)
+
+
+class RecipeShowcaseFilterTests(TestCase):
+    """The filter is client-side, so what's testable server-side is that
+    every row carries the haystack the script searches."""
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("filt", "f@example.test", "pw")
+        self.client.force_login(self.user)
+
+    def test_each_row_carries_a_search_key(self):
+        recipe = make_recipe("Burnt Orange")
+        make_product(recipe, "Heavenly - Angel - Burnt Orange")
+
+        response = self.client.get(reverse("recipe_showcase"))
+        self.assertContains(response, "data-search=")
+        self.assertContains(response, "burnt orange")
+        # Product names are searchable too — she thinks in bases as well.
+        self.assertContains(response, "heavenly - angel - burnt orange")
+
+    def test_a_swapped_row_is_still_searchable(self):
+        """A row re-rendered by htmx must keep its key, or it drops out of
+        every subsequent search."""
+        recipe = make_recipe("Twilight")
+        response = self.client.get(reverse("recipe_row", args=[recipe.pk]))
+        self.assertContains(response, "data-search=")
+        self.assertContains(response, "twilight")
+
+    def test_the_filter_box_is_on_the_page(self):
+        response = self.client.get(reverse("recipe_showcase"))
+        self.assertContains(response, 'id="recipe-filter"')
+
+
+class BaseTemplateTests(TestCase):
+    """The three-layer template chain: base → base_internal/base_public → page.
+
+    The failure this guards against is silent. A page that overrides
+    `{% block style %}` and forgets to open it with `{{ block.super }}`
+    still renders, still returns 200, still passes the smoke test — it just
+    loses the entire house style and comes out as unstyled HTML. Nothing
+    about the page looks wrong until you open it.
+    """
+
+    #: Only in base.html's style block, so its presence proves the whole
+    #: chain survived — a page that dropped block.super wouldn't have it.
+    BASE_MARKER = b"box-sizing: border-box"
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("layout", "l@example.test", "pw")
+        recipe = make_recipe("Layout Test Recipe")
+        make_product(recipe, "Layout Test Product")
+
+    def _page_templates(self):
+        """Every full-page template — partials and the bases themselves are
+        not pages and are expected to have no doctype of their own."""
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent / "templates" / "scarves"
+        return [p for p in sorted(root.glob("*.html")) if not p.name.startswith("base")]
+
+    def test_no_page_template_carries_its_own_doctype(self):
+        offenders = [
+            p.name
+            for p in self._page_templates()
+            if "<!doctype" in p.read_text().lower()
+        ]
+        self.assertEqual(
+            offenders, [],
+            "these build their own document instead of extending a base — "
+            "the point of the base layer is that the shell exists once",
+        )
+
+    def test_every_page_template_extends_a_base(self):
+        offenders = []
+        for path in self._page_templates():
+            first = path.read_text().lstrip().splitlines()[0].strip()
+            if not first.startswith("{% extends"):
+                offenders.append(f"{path.name}: {first!r}")
+        self.assertEqual(
+            offenders, [],
+            "{% extends %} must be the first tag in the file — Django ignores "
+            "everything before it",
+        )
+
+    def test_page_templates_extend_a_layer_not_the_bare_skeleton(self):
+        """base.html has no chrome and no house style; extending it directly
+        gets a blank page with a title. Pages pick a side instead."""
+        offenders = []
+        for path in self._page_templates():
+            first = path.read_text().lstrip().splitlines()[0]
+            if 'scarves/base.html' in first:
+                offenders.append(path.name)
+        self.assertEqual(
+            offenders, [],
+            "extend base_internal.html or base_public.html, not base.html",
+        )
+
+    def test_the_shared_style_layer_reaches_every_rendered_page(self):
+        """The block.super regression, checked against real responses."""
+        from scarves import urls as scarves_urls
+
+        self.client.force_login(self.user)
+        checked = []
+        for entry in scarves_urls.urlpatterns:
+            callback = getattr(entry, "callback", None)
+            if callback is None or not getattr(callback, "page_meta", None):
+                continue
+            if getattr(entry.pattern, "converters", None):
+                continue
+
+            url = reverse(entry.name)
+            response = self.client.get(url)
+            if response.status_code != 200 or b"<html" not in response.content:
+                continue  # PDFs and the like aren't HTML pages.
+            with self.subTest(url=url):
+                self.assertIn(
+                    self.BASE_MARKER, response.content,
+                    f"{url} lost the shared style layer — its "
+                    "{% block style %} is missing {{ block.super }}",
+                )
+            checked.append(url)
+
+        self.assertGreater(len(checked), 5, checked)
+
+    def test_the_two_layers_keep_their_own_accents(self):
+        """Internal and public are meant to look different. If one layer's
+        tokens bled into the other, this is where it shows."""
+        self.client.force_login(self.user)
+        internal = self.client.get(reverse("raw_inventory_index")).content
+        self.assertIn(b"--page-bg: #f7f8fa", internal)
+
+        self.client.logout()
+        public = self.client.get(reverse("game_page")).content
+        self.assertIn(b"--accent: #23466b", public)
+        self.assertNotIn(b"--page-bg: #f7f8fa", public)
+
+    def test_internal_pages_offer_a_way_back_to_the_site_map(self):
+        """base_internal supplies this, so it holds for pages that never
+        wrote the link themselves."""
+        self.client.force_login(self.user)
+        for name in ("raw_inventory_index", "image_upload", "recipe_showcase"):
+            with self.subTest(page=name):
+                response = self.client.get(reverse(name))
+                self.assertContains(response, f'href="{reverse("index")}"')
+
+    def test_the_site_map_does_not_link_to_itself(self):
+        self.client.force_login(self.user)
+        response = self.client.get(reverse("index"))
+        self.assertNotContains(response, 'class="back"')
+
+
+class URLBucketTests(TestCase):
+    """`private/` vs `public/` has to mean something, or it's just decoration.
+
+    The first path segment is the app's clearest statement about exposure,
+    so it's checked against what the views actually do rather than trusted.
+    """
+
+    KNOWN_BUCKETS = ("private/", "public/", "webhooks/")
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("bucket", "b@example.test", "pw")
+        recipe = make_recipe("Bucket Test Recipe")
+        make_product(recipe, "Bucket Test Product")
+
+    def _routes(self):
+        from scarves import urls as scarves_urls
+
+        return [e for e in scarves_urls.urlpatterns if getattr(e, "callback", None)]
+
+    def test_every_route_declares_a_bucket(self):
+        stray = [
+            str(e.pattern)
+            for e in self._routes()
+            if str(e.pattern) and not str(e.pattern).startswith(self.KNOWN_BUCKETS)
+        ]
+        self.assertEqual(
+            stray, [],
+            "a new route needs to say who it's for: put it under private/, "
+            "public/ or webhooks/",
+        )
+
+    def test_private_pages_turn_anonymous_visitors_away(self):
+        """Includes the routes that take an id.
+
+        Skipping those is how reference_sheet_pdf stayed open — it served a
+        full barcode/SKU sheet to anyone who guessed a category id. The
+        placeholder id below is never looked up: @login_required redirects
+        before the view body runs, which is the whole point.
+        """
+        checked = []
+        for entry in self._routes():
+            if not str(entry.pattern).startswith("private/"):
+                continue
+            if not getattr(entry.callback, "page_meta", None):
+                continue
+
+            converters = getattr(entry.pattern, "converters", None)
+            if converters:
+                url = reverse(entry.name, args=[1] * len(converters))
+            else:
+                url = reverse(entry.name)
+
+            with self.subTest(url=url):
+                response = self.client.get(url)
+                self.assertEqual(
+                    response.status_code, 302,
+                    f"{url} is under private/ but served an anonymous request",
+                )
+                self.assertIn("/login", response["Location"])
+            checked.append(url)
+
+        self.assertGreater(len(checked), 5, checked)
+
+    def test_public_pages_really_are_public(self):
+        checked = []
+        for entry in self._routes():
+            if not str(entry.pattern).startswith("public/"):
+                continue
+            if not entry.name or getattr(entry.pattern, "converters", None):
+                continue
+            url = reverse(entry.name)
+            with self.subTest(url=url):
+                response = self.client.get(url)
+                self.assertEqual(
+                    response.status_code, 200,
+                    f"{url} is under public/ but did not serve an anonymous "
+                    "request — either it needs login (move it to private/) or "
+                    "something else is wrong",
+                )
+            checked.append(url)
+
+        self.assertGreaterEqual(len(checked), 4, checked)
+
+    def test_the_public_map_names_no_private_page(self):
+        """The one thing this page must never do.
+
+        Checked against the private map's own contents rather than a hardcoded
+        list, so a new staff page is covered the day it's added.
+        """
+        public = self.client.get(reverse("public_index"))
+        self.assertEqual(public.status_code, 200)
+
+        self.client.force_login(self.user)
+        private = self.client.get(reverse("index"))
+
+        leaked = []
+        for entry in self._routes():
+            if not str(entry.pattern).startswith("private/"):
+                continue
+            meta = getattr(entry.callback, "page_meta", None)
+            if not meta or not meta.get("show_in_index", True):
+                continue
+            title = meta["title"].encode()
+            # Sanity: the title really is the string the private map prints,
+            # so a miss below means absence, not a bad needle.
+            self.assertIn(title, private.content, meta["title"])
+            if title in public.content:
+                leaked.append(meta["title"])
+
+        self.assertEqual(leaked, [], "private pages named on the public map")
+
+    def test_the_public_map_lists_the_public_pages(self):
+        response = self.client.get(reverse("public_index"))
+        for name in ("game_page", "quiz_page", "reference_sheet_index"):
+            with self.subTest(page=name):
+                self.assertContains(response, reverse(name))
+
+    def test_the_private_map_badges_every_card_with_its_bucket(self):
+        self.client.force_login(self.user)
+        response = self.client.get(reverse("index"))
+        # Both kinds are present, so neither badge is vacuously passing.
+        self.assertContains(response, 'class="badge public"')
+        self.assertContains(response, 'class="badge private"')
+
+    def test_the_badge_follows_the_url_not_a_hand_maintained_list(self):
+        """Move a view between buckets and the badge must move with it."""
+        from scarves.views import _site_map
+
+        by_name = {
+            item["name"]: item
+            for group in _site_map()["grouped"]
+            for item in group["items"]
+        }
+        self.assertEqual(by_name["game_page"]["bucket"], "public")
+        self.assertEqual(by_name["reference_sheet_index"]["bucket"], "public")
+        self.assertEqual(by_name["raw_inventory_index"]["bucket"], "private")
+
+    def test_the_bare_app_root_still_reaches_the_site_map(self):
+        """/scarves/ is what people type; it must not dead-end."""
+        self.client.force_login(self.user)
+        response = self.client.get("/scarves/")
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], reverse("index"))
+        self.assertEqual(self.client.get(response["Location"]).status_code, 200)
+
+    def test_the_public_map_offers_a_way_in_for_staff(self):
+        anon = self.client.get(reverse("public_index"))
+        self.assertContains(anon, "Staff sign in")
+        # The link has to land somewhere useful after the login, not on the
+        # admin index, which is not where any of this work happens.
+        self.assertContains(anon, f'?next={reverse("index")}')
+
+        self.client.force_login(self.user)
+        signed_in = self.client.get(reverse("public_index"))
+        self.assertNotContains(signed_in, "Staff sign in")
+        self.assertContains(signed_in, "Staff site map")
+
+
+class UnknownRouteTests(TestCase):
+    """Unknown URLs land on the public map — it's the de facto home page."""
+
+    def test_an_unknown_path_redirects_to_the_public_map(self):
+        for path in ("/nope/", "/scarves/typo/", "/scarves/private/nope/", "/deep/a/b/c"):
+            with self.subTest(path=path):
+                response = self.client.get(path)
+                self.assertEqual(response.status_code, 302, path)
+                self.assertEqual(response["Location"], reverse("public_index"))
+
+    def test_the_site_root_goes_to_the_public_map(self):
+        response = self.client.get("/")
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], reverse("public_index"))
+
+    def test_the_catch_all_does_not_swallow_real_routes(self):
+        """The regression this would cause is silent and total: every page
+        becomes the home page. Worth pinning explicitly."""
+        for name in ("public_index", "game_page", "quiz_page", "reference_sheet_index"):
+            with self.subTest(page=name):
+                self.assertEqual(self.client.get(reverse(name)).status_code, 200)
+
+        # And a private page still redirects to the login, not to the map.
+        response = self.client.get(reverse("raw_inventory_index"))
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/login", response["Location"])
+
+    def test_a_missing_trailing_slash_reaches_the_real_page(self):
+        """APPEND_SLASH is set, but it lives in CommonMiddleware and only fires
+        when the resolver *fails* — and the catch-all matches everything, so it
+        never failed and the setting was silently dead. /scarves/private/colors
+        landed on the home page, which reads as a working page, and the setting
+        meant to prevent that had no way to run."""
+        for name in ("color_classify", "reference_sheet_index", "game_page"):
+            slashed = reverse(name)
+            with self.subTest(page=name):
+                response = self.client.get(slashed.rstrip("/"))
+                self.assertEqual(response.status_code, 302)
+                self.assertEqual(response["Location"], slashed)
+
+    def test_appending_a_slash_keeps_the_query_string(self):
+        response = self.client.get(reverse("color_classify").rstrip("/"), {"todo": "true"})
+        self.assertEqual(response["Location"], reverse("color_classify") + "?todo=true")
+
+    def test_a_slashless_url_that_still_matches_nothing_goes_to_the_map(self):
+        """The append only helps when a real route is waiting behind it."""
+        for path in ("/deep/a/b/c", "/scarves/private/nope"):
+            with self.subTest(path=path):
+                response = self.client.get(path)
+                self.assertEqual(response["Location"], reverse("public_index"))
+
+    def test_a_slashless_post_is_not_bounced_to_the_slashed_route(self):
+        """A redirect drops the body, which is why Django's own APPEND_SLASH
+        leaves POSTs alone. The Square webhook registers both spellings itself
+        precisely because of this."""
+        response = self.client.post(reverse("color_classify").rstrip("/"))
+        self.assertEqual(response["Location"], reverse("public_index"))
+
+    def test_missing_assets_still_fail_as_assets(self):
+        """A broken <img> resolving to a page of HTML is a miserable debug."""
+        for path in ("/static/nope.css", "/media/nope.jpg"):
+            with self.subTest(path=path):
+                response = self.client.get(path)
+                self.assertNotEqual(
+                    response.status_code, 302,
+                    f"{path} redirected to a page instead of failing",
+                )
 
 
 class ColorUtilsTests(TestCase):
@@ -1514,3 +2524,394 @@ class ColorUtilsTests(TestCase):
         pool = list(Recipe.objects.prefetch_related("recipe_dyes__dye"))
         self.assertEqual(len(pick_color_cluster(pool, 6)), 1)
         self.assertEqual(pick_color_cluster([], 6), [])
+
+
+# ---------------------------------------------------------------------------
+# Rainbow bands
+# ---------------------------------------------------------------------------
+
+
+def make_band_image(size=(200, 200), patches=(), background=(128, 128, 128)):
+    """Bytes of a JPEG: a background with optional coloured patches on it.
+
+    `patches` are (colour, fraction) — each paints a horizontal stripe covering
+    that fraction of the *sampled crop*, not of the whole image, so a test can
+    say "15% of the visible cloth is blue" and mean it. PHOTO_CROP trims the
+    edges the way it does on a real product photo, and a test that ignored it
+    would be measuring shares against pixels the classifier never sees.
+    """
+    from io import BytesIO
+
+    from PIL import Image, ImageDraw
+
+    from .colorbands import PHOTO_CROP
+
+    w, h = size
+    left, top, right, bottom = PHOTO_CROP
+    crop_top, crop_bottom = int(h * top), int(h * bottom)
+    crop_h = crop_bottom - crop_top
+
+    img = Image.new("RGB", size, background)
+    draw = ImageDraw.Draw(img)
+    y = crop_top
+    for colour, fraction in patches:
+        band_h = int(crop_h * fraction)
+        draw.rectangle([0, y, w, y + band_h], fill=colour)
+        y += band_h
+
+    buf = BytesIO()
+    img.save(buf, "JPEG", quality=95)
+    return buf.getvalue()
+
+
+class BandClassifierTests(TestCase):
+    """The three axes, tested on the dyes that actually broke a one-axis rule.
+
+    Every hex here is a real dye from stock, not a made-up colour — these are
+    the specific cases where hue alone gives a confidently wrong answer.
+    """
+
+    def test_hue_alone_would_call_the_blacks_red_and_blue(self):
+        from .colorbands import band_for_hex
+
+        # #000000 has hue 0 and #000001 has hue 240. Lightness is what saves it.
+        self.assertEqual(band_for_hex("#000000"), "neutral")   # 639 Jet Black
+        self.assertEqual(band_for_hex("#000001"), "neutral")   # 413 True Black
+
+    def test_greys_are_caught_by_saturation_not_hue(self):
+        from .colorbands import band_for_hex
+
+        self.assertEqual(band_for_hex("#708090"), "neutral")   # Slate, hue 210
+        self.assertEqual(band_for_hex("#877c85"), "neutral")   # 638 Silver
+        self.assertEqual(band_for_hex("#2a3439"), "neutral")   # Gun
+
+    def test_creams_are_caught_by_lightness_not_hue(self):
+        from .colorbands import band_for_hex
+
+        self.assertEqual(band_for_hex("#f3ead7"), "neutral")   # 488 Ivory, hue 41
+        self.assertEqual(band_for_hex("#e9d6ba"), "neutral")   # 486 Champagne
+
+    def test_a_pale_pink_is_not_swept_up_as_white(self):
+        """The cream rule has to spare saturated tints, or pink loses its palest
+        members to neutral — `481 Ballerina Pink` is lighter than Ivory."""
+        from .colorbands import band_for_hex
+
+        self.assertEqual(band_for_hex("#facbca"), "pink")
+
+    def test_brown_needs_all_three_axes(self):
+        from .colorbands import band_for_hex
+
+        # 635 Brown: hue 8.6 says "red", and only dark + dull together say brown.
+        self.assertEqual(band_for_hex("#33211e"), "brown")
+        # A bright, saturated colour at a similar hue stays red.
+        self.assertEqual(band_for_hex("#b72026"), "red")       # 616 Russet
+
+    def test_forest_green_is_green_not_blue(self):
+        """Regression: at a 170-degree green/blue line this landed in blue, one
+        degree the wrong side. The teals must stay blue all the same."""
+        from .colorbands import band_for_hex
+
+        self.assertEqual(band_for_hex("#0b473e"), "green")     # 452 Forest Green, hue 171
+        self.assertEqual(band_for_hex("#00536b"), "blue")      # 631 Teal, hue 193
+        self.assertEqual(band_for_hex("#009fda"), "blue")      # 624 Turquoise
+
+    def test_light_reds_read_as_pink(self):
+        from .colorbands import band_for_hex
+
+        self.assertEqual(band_for_hex("#f37b70"), "pink")      # 607 Salmon
+        self.assertEqual(band_for_hex("#a12033"), "red")       # 440 Oxblood Red
+
+    def test_unparseable_hex_is_none_rather_than_a_guess(self):
+        from .colorbands import band_for_hex
+
+        self.assertIsNone(band_for_hex(""))
+        self.assertIsNone(band_for_hex("not a colour"))
+        self.assertIsNone(band_for_hex(None))
+
+    def test_bands_come_back_in_rainbow_order(self):
+        from .colorbands import sort_bands
+
+        self.assertEqual(
+            sort_bands(["blue", "red", "neutral", "green", "red"]),
+            ["red", "green", "blue", "neutral"],
+        )
+
+
+class BandsFromDyesTests(TestCase):
+    def test_each_dye_contributes_its_band(self):
+        from .colorbands import bands_from_dyes
+
+        recipe = make_recipe("Sunset", hexes=("#b72026", "#f78d1e"))
+        self.assertEqual(bands_from_dyes(recipe), ["red", "orange"])
+
+    def test_two_dyes_in_one_band_collapse_to_one(self):
+        from .colorbands import bands_from_dyes
+
+        recipe = make_recipe("Two Blues", hexes=("#0e2a5e", "#1e3277"))
+        self.assertEqual(bands_from_dyes(recipe), ["blue"])
+
+    def test_a_recipe_with_no_dyes_claims_nothing(self):
+        """Not 'neutral' — an unrecorded recipe is unknown, not colourless."""
+        from .colorbands import bands_from_dyes
+
+        self.assertEqual(bands_from_dyes(make_recipe("Blank", hexes=())), [])
+
+    def test_black_grounds_a_colourway_rather_than_claiming_it(self):
+        """Black, grey and cream are working dyes, not colorways — they shade
+        the colours beside them. Left in, neutral would have been the biggest
+        section on the sheet without one scarf in it anybody calls grey."""
+        from .colorbands import bands_from_dyes
+
+        recipe = make_recipe("Turquoise on Black", hexes=("#009fda", "#000000"))
+        self.assertEqual(bands_from_dyes(recipe), ["blue"])
+
+    def test_an_all_neutral_recipe_still_claims_neutral(self):
+        """Suppressing neutral only makes sense when there is something to
+        suppress it in favour of. A genuinely grey scarf keeps its section."""
+        from .colorbands import bands_from_dyes
+
+        recipe = make_recipe("Charcoal", hexes=("#000000", "#708090"))
+        self.assertEqual(bands_from_dyes(recipe), ["neutral"])
+
+    def test_a_minor_dye_still_gets_its_band(self):
+        """Ratio says how much cloth a dye covers, not whether you can see it.
+        Someone hunting for green will still spot the green stripe."""
+        from .colorbands import bands_from_dyes
+
+        recipe = make_recipe("Mostly Blue", hexes=("#1e3277", "#00833b"))
+        RecipeDye.objects.filter(recipe=recipe).update(ratio=None)
+        rd = recipe.recipe_dyes.order_by("order")
+        rd.filter(order=1).update(ratio="95.00")
+        rd.filter(order=2).update(ratio="5.00")
+        self.assertEqual(bands_from_dyes(recipe), ["green", "blue"])
+
+
+class BandsFromImageTests(TestCase):
+    """The photo path, which exists because 22 recipes have photos and no dyes.
+
+    Its accuracy on real cloth is middling by design of the problem, not of the
+    code — silk is specular, deep dyes crush toward black in the folds, and the
+    scarf shares the frame with a granite counter. What's tested here is the
+    behaviour that has to hold regardless: the background must not vote, and a
+    near-colourless scarf must not be talked into having colours.
+    """
+
+    def test_a_solid_colour_yields_that_band(self):
+        from io import BytesIO
+
+        from .colorbands import bands_from_image
+
+        data = make_band_image(background=(30, 60, 160))
+        self.assertEqual(bands_from_image(BytesIO(data)), ["blue"])
+
+    def test_two_colours_yield_both_bands(self):
+        from io import BytesIO
+
+        from .colorbands import bands_from_image
+
+        data = make_band_image(
+            patches=[((30, 60, 160), 0.5)], background=(20, 130, 70)
+        )
+        self.assertEqual(bands_from_image(BytesIO(data)), ["green", "blue"])
+
+    def test_the_background_cannot_dilute_the_scarf(self):
+        """The whole reason shares are measured against chromatic pixels only:
+        posterboard, barcode card and granite are all neutral, so a scarf that
+        fills a third of the frame still reports its colour at full strength."""
+        from io import BytesIO
+
+        from .colorbands import bands_from_image
+
+        data = make_band_image(
+            patches=[((30, 60, 160), 0.3)], background=(210, 210, 210)
+        )
+        self.assertIn("blue", bands_from_image(BytesIO(data)))
+
+    def test_a_genuinely_grey_scarf_reads_as_neutral(self):
+        from io import BytesIO
+
+        from .colorbands import bands_from_image
+
+        data = make_band_image(background=(130, 130, 132))
+        self.assertEqual(bands_from_image(BytesIO(data)), ["neutral"])
+
+    def test_a_speck_of_colour_does_not_earn_a_band(self):
+        """Regression: dividing by a tiny chromatic mass amplified sensor noise
+        into confident bands, and a grey scarf came back claiming orange, blue
+        and brown. A band has to cover real area, not just dominate the dregs."""
+        from io import BytesIO
+
+        from .colorbands import bands_from_image
+
+        data = make_band_image(
+            patches=[((30, 60, 160), 0.01)], background=(130, 130, 132)
+        )
+        self.assertEqual(bands_from_image(BytesIO(data)), ["neutral"])
+
+    def test_a_mostly_neutral_scarf_claims_neutral_as_well_as_its_colour(self):
+        """A muted colourway is both things at once, and which section it
+        belongs in is a judgement — so both are offered and a person picks."""
+        from io import BytesIO
+
+        from .colorbands import bands_from_image
+
+        data = make_band_image(
+            patches=[((30, 60, 160), 0.15)], background=(130, 130, 132)
+        )
+        self.assertEqual(bands_from_image(BytesIO(data)), ["blue", "neutral"])
+
+    def test_an_unreadable_file_leaves_the_row_unsuggested(self):
+        from io import BytesIO
+
+        from .colorbands import bands_from_image
+
+        self.assertEqual(bands_from_image(BytesIO(b"not an image")), [])
+
+
+@override_settings(MEDIA_ROOT=tempfile.mkdtemp())
+class ColorClassifyViewTests(TestCase):
+    """The page whose job is to make the claim visible.
+
+    The failure this exists to prevent is silent: you look in the orange
+    section, the scarf isn't there, and nothing tells you it was filed under
+    red. So the tests care most about what separates a confirmed answer from an
+    unreviewed guess.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("bands", "b@example.test", "pw")
+        self.client.force_login(self.user)
+        self.recipe = make_recipe("Sunset Silk", hexes=("#b72026", "#f78d1e"))
+
+    def test_the_page_and_its_row_actions_require_login(self):
+        self.client.logout()
+        for url in (
+            reverse("color_classify"),
+            reverse("color_bands_save", args=[self.recipe.pk]),
+            reverse("color_suggest_from_photo", args=[self.recipe.pk]),
+        ):
+            with self.subTest(url=url):
+                response = self.client.post(url)
+                self.assertEqual(response.status_code, 302)
+                self.assertIn("/login", response["Location"])
+
+    def test_an_unconfirmed_row_shows_the_dye_reading_as_a_guess(self):
+        response = self.client.get(reverse("color_classify"))
+        self.assertContains(response, 'value="red"')
+        self.assertContains(response, "guessed")
+        self.assertContains(response, "unconfirmed")
+        # Nothing has been written just by looking at the page.
+        self.recipe.refresh_from_db()
+        self.assertEqual(self.recipe.color_bands, [])
+        self.assertIsNone(self.recipe.bands_confirmed_at)
+
+    def test_confirming_stores_the_bands_in_rainbow_order(self):
+        response = self.client.post(
+            reverse("color_bands_save", args=[self.recipe.pk]),
+            {"bands": ["blue", "red"]},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.recipe.refresh_from_db()
+        self.assertEqual(self.recipe.color_bands, ["red", "blue"])
+        self.assertIsNotNone(self.recipe.bands_confirmed_at)
+
+    def test_confirming_nothing_still_counts_as_reviewed(self):
+        """"This colourway belongs in no section" is a real answer, and it must
+        not leave the row looking untouched forever."""
+        self.client.post(reverse("color_bands_save", args=[self.recipe.pk]), {})
+        self.recipe.refresh_from_db()
+        self.assertEqual(self.recipe.color_bands, [])
+        self.assertTrue(self.recipe.bands_confirmed)
+
+    def test_a_band_that_is_not_a_band_is_dropped(self):
+        self.client.post(
+            reverse("color_bands_save", args=[self.recipe.pk]),
+            {"bands": ["red", "chartreuse", "'; drop table"]},
+        )
+        self.recipe.refresh_from_db()
+        self.assertEqual(self.recipe.color_bands, ["red"])
+
+    def test_a_confirmed_row_stops_being_offered_a_guess(self):
+        self.recipe.color_bands = ["purple"]
+        self.recipe.bands_confirmed_at = timezone.now()
+        self.recipe.save()
+
+        response = self.client.get(reverse("color_classify"))
+        html = response.content.decode()
+        row = html[html.index("color-row-%d" % self.recipe.pk):]
+        row = row[: row.index("</tr>")]
+        # Your decision stands; the dye reading no longer overwrites or marks it.
+        self.assertIn('value="purple"\n                 checked', row)
+        self.assertNotIn("guessed", row)
+
+    def test_the_todo_filter_shows_only_unconfirmed_recipes(self):
+        done = make_recipe("Already Done", hexes=("#1e3277",))
+        done.bands_confirmed_at = timezone.now()
+        done.save()
+
+        response = self.client.get(reverse("color_classify"), {"todo": "true"})
+        self.assertContains(response, "Sunset Silk")
+        self.assertNotContains(response, "Already Done")
+
+    def test_counts_track_what_is_left_to_do(self):
+        make_recipe("Second", hexes=("#1e3277",))
+        response = self.client.get(reverse("color_classify"))
+        self.assertEqual(response.context["total_count"], 2)
+        self.assertEqual(response.context["todo_count"], 2)
+
+        self.client.post(
+            reverse("color_bands_save", args=[self.recipe.pk]), {"bands": ["red"]}
+        )
+        response = self.client.get(reverse("color_classify"))
+        self.assertEqual(response.context["confirmed_count"], 1)
+        self.assertEqual(response.context["todo_count"], 1)
+
+    def test_reading_the_photo_suggests_without_saving(self):
+        product = make_product(self.recipe, "Sunset Scarf", with_image=False)
+        image = FinishedProductImage.objects.create(finished_product=product)
+        image.image.save("blue.jpg", ContentFile(make_band_image(
+            background=(30, 60, 160))), save=True)
+
+        response = self.client.post(
+            reverse("color_suggest_from_photo", args=[self.recipe.pk])
+        )
+        self.assertContains(response, "not saved yet")
+        self.assertContains(response, 'value="blue"')
+        # The point of a suggestion: the database is untouched until you confirm.
+        self.recipe.refresh_from_db()
+        self.assertEqual(self.recipe.color_bands, [])
+        self.assertIsNone(self.recipe.bands_confirmed_at)
+
+    def test_the_photo_adds_to_what_you_already_decided(self):
+        """A photo is evidence to add, not a verdict that overrules a band you
+        already picked — a scarf can be red in the hand and blue in the shot."""
+        self.recipe.color_bands = ["red"]
+        self.recipe.bands_confirmed_at = timezone.now()
+        self.recipe.save()
+
+        product = make_product(self.recipe, "Sunset Scarf", with_image=False)
+        image = FinishedProductImage.objects.create(finished_product=product)
+        image.image.save("blue.jpg", ContentFile(make_band_image(
+            background=(30, 60, 160))), save=True)
+
+        response = self.client.post(
+            reverse("color_suggest_from_photo", args=[self.recipe.pk])
+        )
+        html = response.content.decode()
+        self.assertIn('value="red"\n                 checked', html)
+        self.assertIn('value="blue"\n                 checked', html)
+
+    def test_a_recipe_with_no_photo_is_not_offered_the_photo_button(self):
+        response = self.client.get(reverse("color_classify"))
+        self.assertNotContains(
+            response, reverse("color_suggest_from_photo", args=[self.recipe.pk])
+        )
+
+    def test_an_external_image_url_is_not_sampled(self):
+        """Only an uploaded file can be read; an image_url would mean fetching
+        someone else's server, the same limit the reference-sheet PDF has."""
+        make_product(self.recipe, "Linked Scarf", with_image=True)
+        response = self.client.get(reverse("color_classify"))
+        self.assertNotContains(
+            response, reverse("color_suggest_from_photo", args=[self.recipe.pk])
+        )

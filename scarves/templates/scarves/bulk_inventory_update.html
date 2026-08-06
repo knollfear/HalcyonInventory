@@ -1,90 +1,25 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Bulk Inventory Update</title>
-  <style>
-    /* Same shell as the site map and raw-inventory picker: tinted page,
-       centered column, white cards, #1558a0 for anything clickable. */
-    body {
-      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-      padding: 24px; max-width: 900px; margin: 0 auto;
-      color: #1a2230; background: #f7f8fa;
-    }
-    h1 { margin-bottom: 4px; }
-    a { color: #1558a0; text-underline-offset: 2px; }
-    .lead { color: #666; font-size: 14px; margin-top: 0; line-height: 1.5; }
-    .small { font-size: 13px; color: #444; }
-    .muted { color: #888; }
-    code {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-      font-size: 12px; background: #f1f3f6; border-radius: 4px; padding: 2px 6px;
-    }
+{% extends "scarves/base_internal.html" %}
 
-    .messages { margin: 16px 0; }
-    .message {
-      padding: 8px 12px; border-radius: 8px; margin-bottom: 6px; font-size: 14px;
-    }
-    .message.success { background: #f1f8f3; border: 1px solid #bcd8c6; color: #2e7d52; }
-    .message.error { background: #fdf2f1; border: 1px solid #f0c8c4; color: #8a2f2a; }
-    .message.info { background: #fff6e0; border: 1px solid #f0e0b0; color: #8a5a00; }
+{% block title %}Bulk Inventory Update{% endblock %}
+{% block heading %}Bulk Inventory Update{% endblock %}
 
-    .card {
-      border: 1px solid #e1e5ea; border-radius: 10px; padding: 16px;
-      background: #fff; margin-top: 14px;
-    }
-    .card-title { font-size: 17px; font-weight: 600; margin: 0 0 12px; }
-
-    table { border-collapse: collapse; width: 100%; }
-    th, td { padding: 8px 10px; border-bottom: 1px solid #eef1f4; vertical-align: middle; }
-    th {
-      text-align: left; font-size: 12px; text-transform: uppercase;
-      letter-spacing: .03em; color: #667; border-bottom: 1px solid #e1e5ea;
-    }
-    tbody tr:last-child td { border-bottom: none; }
-    input[type="number"] {
-      width: 5.5rem; padding: 5px 8px; font: inherit;
-      border: 1px solid #cfd6de; border-radius: 6px; background: #fff;
-    }
-    input[type="number"]:focus {
-      outline: none; border-color: #1558a0; box-shadow: 0 0 0 3px rgba(21, 88, 160, .12);
-    }
-
-    .btn {
-      padding: 9px 16px; font: inherit; font-weight: 600;
-      border: 1px solid #1558a0; background: #1558a0; color: #fff;
-      border-radius: 8px; cursor: pointer;
-    }
-    .btn:hover { background: #0d3d73; border-color: #0d3d73; }
-    .actions { margin-top: 18px; }
-
-    legend { font-weight: 600; color: #1a3a5c; padding: 0 4px; }
-    label.pick {
+{% block style %}
+  {{ block.super }}
+  legend { font-weight: 600; color: #1a3a5c; padding: 0 4px; }
+  label.pick {
       display: inline-flex; align-items: baseline; gap: 6px;
       margin: 3px 16px 3px 0; white-space: nowrap;
-    }
-    .back { display: inline-block; margin-top: 22px; font-size: 13px; }
-  </style>
-</head>
-<body>
-  <h1>Bulk Inventory Update</h1>
+  }
+{% endblock %}
 
-  {% if messages %}
-    <div class="messages">
-      {% for message in messages %}
-        <div class="message {{ message.tags }}">{{ message }}</div>
-      {% endfor %}
-    </div>
-  {% endif %}
-
+{% block content %}
   {% if show_picker %}
     {# ---- Picker: no raw_ids supplied ---- #}
     <p class="lead">
       Pick the raw products whose finished-product inventory you want to update,
       then load the editor. Only raw products that already have active finished
       products are listed — the rest have nothing to update. (Or open directly
-      with <code>/scarves/bulk-inventory/?raw_ids=1,2,3</code>.)
+      with <code>/scarves/private/bulk-inventory/?raw_ids=1,2,3</code>.)
     </p>
 
     {% if picker_products %}
@@ -150,7 +85,7 @@
                   <td>
                     {{ row.field }}
                     {% if row.field.errors %}
-                      <div class="small" style="color:#8a2f2a;">{{ row.field.errors }}</div>
+                      <div class="err">{{ row.field.errors }}</div>
                     {% endif %}
                   </td>
                   <td class="small muted">{{ row.fp.name }}</td>
@@ -166,7 +101,4 @@
       </div>
     </form>
   {% endif %}
-
-  <a class="back" href="{% url 'index' %}">← Site map</a>
-</body>
-</html>
+{% endblock %}

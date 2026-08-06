@@ -1,6 +1,10 @@
 from colorfield.fields import ColorField
+from django.contrib.postgres.fields import ArrayField
 from django.db import models
 from django.core.validators import MinValueValidator, MaxValueValidator
+from django.utils import timezone
+
+from .colorbands import BAND_CHOICES
 
 
 class DyeBrand(models.Model):
@@ -151,6 +155,27 @@ class Recipe(models.Model):
     )
     is_active = models.BooleanField(default=True)
 
+    color_bands = ArrayField(
+        models.CharField(max_length=12, choices=BAND_CHOICES),
+        default=list,
+        blank=True,
+        help_text=(
+            "Which sections of the rainbow reference sheet this colorway is "
+            "printed in. A red-and-orange scarf claims both and prints twice."
+        ),
+    )
+    bands_confirmed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=(
+            "When a person last confirmed the bands above. Null means nothing "
+            "has been confirmed yet, so the sheet must not print this recipe: "
+            "an unchecked guess that files a scarf under the wrong color is "
+            "worse than leaving it off, because the failure is silent — you "
+            "look in orange, it isn't there, and nothing says why."
+        ),
+    )
+
     class Meta:
         ordering = ["name"]
 
@@ -160,6 +185,10 @@ class Recipe(models.Model):
     @property
     def dye_count(self):
         return self.dyes.count()
+
+    @property
+    def bands_confirmed(self) -> bool:
+        return self.bands_confirmed_at is not None
 
 
 class RecipeDye(models.Model):
@@ -352,14 +381,48 @@ class InventoryLog(models.Model):
         blank=True,
         help_text="Square order ID for sale entries.",
     )
+    EXACT = "exact"
+    DAY = "day"
+    MONTH = "month"
+    DATE_PRECISION_CHOICES = [
+        (EXACT, "Exact time"),
+        (DAY, "Day only"),
+        (MONTH, "Month only"),
+    ]
+
     created_at = models.DateTimeField(auto_now_add=True)
+    date_precision = models.CharField(
+        max_length=10,
+        choices=DATE_PRECISION_CHOICES,
+        default=EXACT,
+        help_text=(
+            "How much of created_at is real. Back-filled entries from the "
+            "old kanban cards often record only a month — this stops the app "
+            "displaying a day nobody ever wrote down."
+        ),
+    )
     notes = models.TextField(blank=True)
 
     class Meta:
         ordering = ["-created_at"]
 
     def __str__(self):
-        return f"{self.log_type} {self.quantity:+d} × {self.finished_product.name} on {self.created_at:%Y-%m-%d %H:%M}"
+        return f"{self.log_type} {self.quantity:+d} × {self.finished_product.name} on {self.when}"
+
+    @property
+    def when(self) -> str:
+        """The date, said no more precisely than it is actually known.
+
+        A card reading "9/2024" gets stored on the 1st so it sorts, but that
+        day is an artefact of storage, not something anyone recorded — so it
+        is never shown.
+        """
+        local = timezone.localtime(self.created_at)
+        if self.date_precision == self.MONTH:
+            return local.strftime("%b %Y")
+        if self.date_precision == self.DAY:
+            return local.strftime("%d %b %Y")
+        return local.strftime("%d %b %Y, %H:%M")
 
 
 class ProductImageUpload(models.Model):

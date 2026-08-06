@@ -168,7 +168,13 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+# Display timezone. Storage is unaffected — USE_TZ keeps everything in UTC in
+# the database; this only changes what a human is shown.
+#
+# It was 'UTC', which made a dye-entry session at 9:36pm Saturday read as
+# 1:36am Sunday in the admin. One business, one place, so local time is what
+# every timestamp here should mean.
+TIME_ZONE = 'America/New_York'
 
 USE_I18N = True
 

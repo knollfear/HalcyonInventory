@@ -1,0 +1,66 @@
+<!doctype html>
+{% comment %}
+The one skeleton every page in this app inherits, directly or otherwise.
+
+Nothing extends this file straight off — pages pick a middle layer instead:
+
+    base.html
+    ├── base_internal.html   staff pages behind @login_required
+    └── base_public.html     the game and quiz, which strangers and embeds hit
+
+What lives here is only what both layers genuinely share: the document
+shell and a set of custom properties the layers re-point. Anything that
+holds for staff pages but not the public ones (cards, tables, the site-map
+back link) belongs in base_internal, not here.
+
+Styles are inline rather than a collected stylesheet on purpose. start.sh
+lets collectstatic fail and still boots — "an unstyled site beats an
+outage" — and that trade only holds while a missing static pipeline can't
+take the styling of every page down with it.
+{% endcomment %}
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Halcyon Silks{% endblock %}</title>
+    <style>
+      {% block style %}
+        /* Layers below re-point these; they don't restate the rules that use
+           them. --column is the one most pages touch, since the comfortable
+           width of a page is a per-page question (a picker list wants 760px,
+           the recipe matrix wants 1100px). */
+        :root {
+            --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+            --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            --accent: #1558a0;
+            --accent-dark: #0d3d73;
+            --ink: #1a2230;
+            --muted: #777;
+            --page-bg: #fff;
+            --column: 900px;
+        }
+        * { box-sizing: border-box; }
+        body {
+            font-family: var(--font);
+            color: var(--ink); background: var(--page-bg);
+            max-width: var(--column); margin: 0 auto; padding: 24px;
+        }
+        h1 { margin-bottom: 4px; }
+        a { color: var(--accent); text-underline-offset: 2px; }
+        a:hover { color: var(--accent-dark); }
+        .lead { color: #666; font-size: 14px; margin-top: 0; line-height: 1.5; }
+        .small { font-size: 13px; color: #444; }
+        .muted { color: var(--muted); }
+        code {
+            font-family: var(--mono); font-size: 12px;
+            background: #f1f3f6; border-radius: 4px; padding: 2px 6px;
+        }
+      {% endblock %}
+    </style>
+    {% block head %}{% endblock %}
+</head>
+<body{% block body_attrs %}{% endblock %}>
+{% block body %}{% endblock %}
+{% block scripts %}{% endblock %}
+</body>
+</html>

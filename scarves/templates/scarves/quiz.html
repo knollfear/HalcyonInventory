@@ -1,32 +1,9 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Name That Scarf</title>
-    <style>
-        :root { --accent: #23466b; }
-        * { box-sizing: border-box; }
-        body {
-            font-family: -apple-system, system-ui, sans-serif;
-            margin: 0; padding: 1rem;
-            max-width: 820px; margin-inline: auto;
-            color: #1a1a1a;
-        }
-        h1 { font-size: 1.35rem; margin-bottom: .25rem; }
-        .muted { color: #777; font-size: 0.85rem; }
-        a { color: var(--accent); }
-        details { margin-top: 2rem; font-size: .9rem; }
-        summary { cursor: pointer; color: var(--accent); }
-        pre {
-            background: #f6f8fa; border: 1px solid #e2e6ea; border-radius: 8px;
-            padding: .75rem; overflow-x: auto; font-size: .8rem;
-        }
-    </style>
-    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
-</head>
-<body>
-    <h1>Name That Scarf</h1>
+{% extends "scarves/base_public.html" %}
+
+{% block title %}Name That Scarf{% endblock %}
+{% block heading %}Name That Scarf{% endblock %}
+
+{% block content %}
     <p class="muted">
         Ten photos, four names each. Score depends on how many you get right and
         how quickly you answer. Prefer a memory game?
@@ -58,5 +35,4 @@
             only as good as the recipe/dye color data behind it.
         </p>
     </details>
-</body>
-</html>
+{% endblock %}
