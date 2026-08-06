@@ -1,30 +1,92 @@
 {% load form_extras %}
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Bulk Recipe Inventory Matrix</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bulk Recipe Matrix</title>
   <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; margin: 1.5rem; }
-    .messages { margin-bottom: 1rem; }
-    .message { padding: 0.5rem 0.75rem; border-radius: 6px; margin-bottom: 0.25rem; }
-    .message.success { background: #e6ffed; border: 1px solid #8fd19e; color: #245b31; }
-    .message.error { background: #ffe6e6; border: 1px solid #e09c9c; color: #7d2424; }
-    .message.info { background: #e6f3ff; border: 1px solid #9cbce0; color: #23466b; }
+    /* Same shell as the site map, raw-inventory and bulk-inventory pages. */
+    body {
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      padding: 24px; max-width: 1100px; margin: 0 auto;
+      color: #1a2230; background: #f7f8fa;
+    }
+    h1 { margin-bottom: 4px; }
+    a { color: #1558a0; text-underline-offset: 2px; }
+    .lead { color: #666; font-size: 14px; margin-top: 0; line-height: 1.5; }
+    .small { font-size: 13px; color: #444; }
+    .muted { color: #888; }
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12px; background: #f1f3f6; border-radius: 4px; padding: 2px 6px;
+    }
+
+    .messages { margin: 16px 0; }
+    .message { padding: 8px 12px; border-radius: 8px; margin-bottom: 6px; font-size: 14px; }
+    .message.success { background: #f1f8f3; border: 1px solid #bcd8c6; color: #2e7d52; }
+    .message.error { background: #fdf2f1; border: 1px solid #f0c8c4; color: #8a2f2a; }
+    .message.info { background: #fff6e0; border: 1px solid #f0e0b0; color: #8a5a00; }
+
+    .card {
+      border: 1px solid #e1e5ea; border-radius: 10px; padding: 16px;
+      background: #fff; margin-top: 14px;
+    }
+    .card-title {
+      font-size: 17px; font-weight: 600; margin: 0 0 12px;
+      display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+    }
+    .card-title .count { font-size: 13px; font-weight: 400; color: #888; }
+    .toggle {
+      font-size: 12px; margin-left: auto; background: none; border: 0;
+      color: #1558a0; cursor: pointer; padding: 0; text-decoration: underline;
+    }
 
     table { border-collapse: collapse; width: 100%; }
-    th, td { border-bottom: 1px solid #ddd; padding: 0.5rem; vertical-align: top; }
-    th { background: #f3f3f3; text-align: left; }
+    th, td { padding: 8px 10px; border-bottom: 1px solid #eef1f4; vertical-align: top; }
+    th {
+      text-align: left; font-size: 12px; color: #667;
+      border-bottom: 1px solid #e1e5ea; background: #fff;
+      position: sticky; top: 0; z-index: 1;
+    }
+    th .col-name { font-size: 13px; font-weight: 600; color: #1a2230; display: block; }
+    tbody tr:last-child td { border-bottom: none; }
+    tbody tr:hover { background: #fafbfc; }
+    .rownum { color: #b6bcc4; font-size: 12px; width: 1.5rem; text-align: right; }
+
+    input[type="text"], input[type="number"] {
+      font: inherit; padding: 5px 8px; border: 1px solid #cfd6de;
+      border-radius: 6px; background: #fff;
+    }
     input[type="text"] { width: 100%; }
-    input[type="number"] { width: 7rem; }
-    .btn { padding: 0.5rem 0.9rem; border: 1px solid #777; background: #f6f6f6; border-radius: 6px; cursor: pointer; }
-    .btn:hover { background: #eaeaea; }
-    .hint { color: #666; margin: 0.5rem 0 1rem; }
-    .small { font-size: 0.9rem; color: #444; }
+    input[type="number"] { width: 5.5rem; }
+    input:focus {
+      outline: none; border-color: #1558a0; box-shadow: 0 0 0 3px rgba(21, 88, 160, .12);
+    }
+    .err { font-size: 12px; color: #8a2f2a; margin-top: 4px; }
+    .err ul { margin: 0; padding-left: 1.1rem; }
+
+    .btn {
+      padding: 9px 16px; font: inherit; font-weight: 600;
+      border: 1px solid #1558a0; background: #1558a0; color: #fff;
+      border-radius: 8px; cursor: pointer;
+    }
+    .btn:hover { background: #0d3d73; border-color: #0d3d73; }
+    .btn:disabled {
+      background: #dfe4ea; border-color: #dfe4ea; color: #8b929b; cursor: not-allowed;
+    }
+    .actions { margin-top: 18px; display: flex; align-items: center; gap: 12px; }
+
+    label.pick {
+      display: inline-flex; align-items: baseline; gap: 6px;
+      margin: 3px 16px 3px 0; white-space: nowrap;
+    }
+    .scroller { overflow-x: auto; }
+    .back { display: inline-block; margin-top: 22px; font-size: 13px; }
   </style>
 </head>
 <body>
-  <h1>Bulk Inventory Entry (by Recipe)</h1>
+  <h1>Bulk Recipe Matrix</h1>
 
   {% if messages %}
     <div class="messages">
@@ -34,65 +96,145 @@
     </div>
   {% endif %}
 
-  <div class="hint">
-    Open with: <code>/scarves/bulk-matrix/?raw_ids=1,2,3</code><br>
-    Each row is a recipe name and counts for each raw product. Blank cells won’t change existing inventory.
-  </div>
+  {% if show_picker %}
+    {# ---- Picker: no raw_ids supplied ---- #}
+    <p class="lead">
+      Pick the raw products you want as columns — one or more — then build the
+      grid. Every active raw product is listed, including ones with no finished
+      products yet: this is the page that creates them. (Or open directly with
+      <code>/scarves/bulk-matrix/?raw_ids=1,2,3</code>.)
+    </p>
 
-  {% if raw_products %}
-    <div class="small" style="margin-bottom: 0.75rem;">
-      <strong>Columns:</strong>
-      {% for rp in raw_products %}
-        <span style="margin-right: 0.75rem;">{{ rp.category.name }} — {{ rp.name }} (id={{ rp.id }})</span>
-      {% endfor %}
-    </div>
-  {% endif %}
+    {% if picker_products %}
+      <form method="get" id="picker">
+        <input type="hidden" name="picked" value="1">
+        {% regroup picker_products by category as category_list %}
+        {% for cat in category_list %}
+          <div class="card">
+            <fieldset style="border: 0; margin: 0; padding: 0;">
+              <legend class="card-title">
+                {{ cat.grouper.name }}
+                <span class="count">{{ cat.list|length }} raw product{{ cat.list|length|pluralize }}</span>
+                <button type="button" class="toggle" data-toggle>Select all</button>
+              </legend>
+              {% for rp in cat.list %}
+                <label class="pick">
+                  <input type="checkbox" name="raw_ids" value="{{ rp.id }}">
+                  <span>
+                    {{ rp.name }}
+                    <span class="muted small">(id={{ rp.id }}, on&nbsp;hand&nbsp;{{ rp.number_on_hand }})</span>
+                  </span>
+                </label>
+              {% endfor %}
+            </fieldset>
+          </div>
+        {% endfor %}
+        <div class="actions">
+          <button class="btn" type="submit" id="build" disabled>Build grid →</button>
+          <span class="small muted" id="picked-count">Nothing picked yet</span>
+        </div>
+      </form>
 
-  {% if formset %}
+      <script>
+        // The grid needs at least one column to mean anything, so the button
+        // stays disabled until something is ticked (the view re-checks anyway).
+        (function () {
+          var form = document.getElementById('picker');
+          var build = document.getElementById('build');
+          var label = document.getElementById('picked-count');
+          var boxes = form.querySelectorAll('input[name="raw_ids"]');
+
+          function sync() {
+            var n = form.querySelectorAll('input[name="raw_ids"]:checked').length;
+            build.disabled = n === 0;
+            label.textContent = n === 0
+              ? 'Nothing picked yet'
+              : n + (n === 1 ? ' column' : ' columns');
+          }
+
+          boxes.forEach(function (box) { box.addEventListener('change', sync); });
+
+          form.querySelectorAll('[data-toggle]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+              var group = btn.closest('fieldset')
+                             .querySelectorAll('input[name="raw_ids"]');
+              var turnOn = Array.prototype.some.call(group, function (b) { return !b.checked; });
+              group.forEach(function (b) { b.checked = turnOn; });
+              btn.textContent = turnOn ? 'Clear' : 'Select all';
+              sync();
+            });
+          });
+
+          sync();
+        })();
+      </script>
+    {% else %}
+      <div class="card muted">No active raw products yet.</div>
+    {% endif %}
+
+  {% else %}
+    {# ---- Grid: raw_ids supplied ---- #}
+    <p class="lead">
+      Each row is one recipe; each column is a raw product. Fill in how many
+      finished items you have and they'll be created as
+      <code>&lt;Raw&gt; - &lt;Recipe&gt;</code> at the default price. Blank
+      cells are left alone.
+      <a href="{% url 'bulk_recipe_matrix_entry' %}">Pick different columns</a>.
+    </p>
+
     <form method="post">
       {% csrf_token %}
       {{ formset.management_form }}
 
-      <table>
-        <thead>
-          <tr>
-            <th style="width: 22%;">Recipe Name</th>
-            {% for rp, field_name in columns %}
-              <th>{{ rp.name }}<br><span class="small">(id={{ rp.id }})</span></th>
+      <div class="card scroller">
+        <table>
+          <thead>
+            <tr>
+              <th class="rownum"></th>
+              <th style="min-width: 14rem;"><span class="col-name">Recipe</span></th>
+              {% for rp, field_name in columns %}
+                <th>
+                  <span class="col-name">{{ rp.name }}</span>
+                  <span class="muted">{{ rp.category.name }} · id={{ rp.id }}</span>
+                </th>
+              {% endfor %}
+            </tr>
+          </thead>
+          <tbody>
+            {% for form in formset %}
+              <tr>
+                <td class="rownum">{{ forloop.counter }}</td>
+                <td>
+                  {{ form.recipe_name }}
+                  {% if form.recipe_name.errors %}
+                    <div class="err">{{ form.recipe_name.errors }}</div>
+                  {% endif %}
+                </td>
+                {% for rp, field_name in columns %}
+                  {% with field=form|get_item:field_name %}
+                    <td>
+                      {{ field }}
+                      {% if field.errors %}
+                        <div class="err">{{ field.errors }}</div>
+                      {% endif %}
+                    </td>
+                  {% endwith %}
+                {% endfor %}
+              </tr>
             {% endfor %}
-          </tr>
-        </thead>
-        <tbody>
-  {% for form in formset %}
-    <tr>
-      <td>
-        {{ form.recipe_name }}
-        {% if form.recipe_name.errors %}
-          <div class="small" style="color:#b00;">{{ form.recipe_name.errors }}</div>
-        {% endif %}
-      </td>
+          </tbody>
+        </table>
+      </div>
 
-      {% for rp, field_name in columns %}
-        {% with field=form|get_item:field_name %}
-          <td>
-            {{ field }}
-            {% if field.errors %}
-              <div class="small" style="color:#b00;">{{ field.errors }}</div>
-            {% endif %}
-          </td>
-        {% endwith %}
-      {% endfor %}
-    </tr>
-  {% endfor %}
-</tbody>
-      </table>
-
-      <div style="margin-top: 1rem;">
-        <button class="btn" type="submit">Save 10 recipes</button>
+      <div class="actions">
+        <button class="btn" type="submit">Save grid</button>
+        <span class="small muted">
+          {{ formset|length }} rows × {{ columns|length }} column{{ columns|length|pluralize }}
+        </span>
       </div>
     </form>
-  {% else %}
-    <p>Provide raw_ids to render the form.</p>
   {% endif %}
+
+  <a class="back" href="{% url 'index' %}">← Site map</a>
 </body>
 </html>

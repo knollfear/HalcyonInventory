@@ -1105,6 +1105,109 @@ class RawInventoryIndexTests(TestCase):
             self.assertEqual(self.client.get(href.decode()).status_code, 200)
 
 
+class BulkRecipeMatrixTests(TestCase):
+    """The grid used to be reachable only by typing ?raw_ids= yourself; a bare
+    visit was an error message and nothing else."""
+
+    def setUp(self):
+        self.silk, _ = RawProductCategory.objects.get_or_create(name="Silk")
+        self.yarn = RawProductCategory.objects.create(name="Yarn")
+        self.url = reverse("bulk_recipe_matrix_entry")
+
+    def _raw(self, name, category=None, active=True):
+        return RawProduct.objects.create(
+            name=name, category=category or self.silk, price="5.00",
+            suggested_price="30.00", is_active=active,
+        )
+
+    def test_a_bare_visit_shows_the_picker(self):
+        self._raw("Habotai")
+        response = self.client.get(self.url)
+        self.assertTrue(response.context["show_picker"])
+        self.assertNotIn("columns", response.context)
+
+    def test_raw_products_without_finished_products_are_still_offered(self):
+        """The opposite of the bulk-inventory picker: this page is where a raw
+        product's first finished products get made."""
+        self._raw("Never Dyed")
+        self._raw("Retired", active=False)
+
+        names = [rp.name for rp in self.client.get(self.url).context["picker_products"]]
+        self.assertEqual(names, ["Never Dyed"])
+
+    def test_the_picker_is_grouped_by_category(self):
+        self._raw("Wool", category=self.yarn)
+        self._raw("Habotai")
+
+        picked = self.client.get(self.url).context["picker_products"]
+        self.assertEqual(
+            [(rp.category.name, rp.name) for rp in picked],
+            [("Silk", "Habotai"), ("Yarn", "Wool")],
+        )
+
+    def test_submitting_the_picker_with_nothing_ticked_is_refused(self):
+        self._raw("Habotai")
+        response = self.client.get(self.url, {"picked": "1"})
+        self.assertTrue(response.context["show_picker"])
+        self.assertContains(response, "Pick at least one raw product")
+
+    def test_checkbox_style_raw_ids_build_the_grid(self):
+        """The picker posts repeated raw_ids=, not a comma-joined string."""
+        a, b = self._raw("Habotai"), self._raw("Wool", category=self.yarn)
+
+        response = self.client.get(self.url, {"raw_ids": [a.id, b.id]})
+        self.assertEqual(
+            [rp.name for rp, _ in response.context["columns"]], ["Habotai", "Wool"]
+        )
+        self.assertEqual(response.context["raw_ids_param"], f"{a.id},{b.id}")
+
+    def test_unknown_raw_ids_fall_back_to_the_picker(self):
+        self._raw("Habotai")
+        response = self.client.get(self.url, {"raw_ids": "9999"})
+        self.assertTrue(response.context["show_picker"])
+
+    def test_the_grid_saves_recipes_and_finished_products(self):
+        raw = self._raw("Habotai")
+        response = self.client.post(
+            f"{self.url}?raw_ids={raw.id}",
+            {
+                "form-TOTAL_FORMS": "10", "form-INITIAL_FORMS": "0",
+                "form-MIN_NUM_FORMS": "0", "form-MAX_NUM_FORMS": "1000",
+                "form-0-recipe_name": "Stormy Sea",
+                f"form-0-on_hand_{raw.id}": "4",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        product = FinishedProduct.objects.get(recipe__name="Stormy Sea")
+        self.assertEqual(product.name, "Habotai - Stormy Sea")
+        self.assertEqual(product.number_on_hand, 4)
+
+    def test_an_invalid_grid_redisplays_its_columns(self):
+        """Re-rendering without them dropped every cell — including the ones
+        holding the errors."""
+        raw = self._raw("Habotai")
+        response = self.client.post(
+            f"{self.url}?raw_ids={raw.id}",
+            {
+                "form-TOTAL_FORMS": "10", "form-INITIAL_FORMS": "0",
+                "form-MIN_NUM_FORMS": "0", "form-MAX_NUM_FORMS": "1000",
+                "form-0-recipe_name": "Stormy Sea",
+                f"form-0-on_hand_{raw.id}": "-3",   # min_value=0
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([rp.name for rp, _ in response.context["columns"]], ["Habotai"])
+        self.assertContains(response, f"on_hand_{raw.id}")
+        self.assertFalse(FinishedProduct.objects.exists())
+
+    def test_it_links_back_to_the_site_map(self):
+        raw = self._raw("Habotai")
+        self.assertContains(self.client.get(self.url), reverse("index"))
+        self.assertContains(
+            self.client.get(self.url, {"raw_ids": str(raw.id)}), reverse("index")
+        )
+
+
 class ReferenceSheetIndexTests(TestCase):
     """The PDF picker. Same card layout as the raw-inventory picker, so it
     carries the same kind of counts."""

@@ -639,30 +639,58 @@ def build_recipe_matrix_form_class(raw_products: list[RawProduct]):
     return type("RecipeMatrixRowForm", (forms.Form,), fields)
 
 
+def _matrix_picker_products():
+    """
+    Every active raw product, for the bulk-matrix picker.
+
+    Deliberately unfiltered, unlike `_bulk_inventory_picker_products`: this is
+    the page where a raw product's finished products get *created*, so the ones
+    with none yet are the point rather than a dead end.
+    """
+    return (
+        RawProduct.objects.filter(is_active=True)
+        .select_related("category")
+        .order_by("category__name", "name")
+    )
+
+
+def _matrix_picker_response(request):
+    return render(
+        request,
+        "scarves/bulk_recipe_matrix_entry.html",
+        {"show_picker": True, "picker_products": _matrix_picker_products()},
+    )
+
+
 @page_meta(
     title="Bulk Recipe Matrix",
     description="Spreadsheet-style grid: rows are recipes, columns are raw "
                 "products. Bulk-creates/updates FinishedProducts with auto-named "
                 '"<Raw> - <Recipe>" entries and default pricing.',
     category="Recipes",
-    note="Requires ?raw_ids=1,2,3 in the query string.",
+    note="Add ?raw_ids=1,2,3 — or open with none to pick from a list.",
 )
 @require_http_methods(["GET", "POST"])
 def bulk_recipe_matrix_entry(request):
     """
     Usage:
-      /scarves/bulk-matrix/?raw_ids=1,2,3
+      /scarves/bulk-matrix/?raw_ids=1,2,3   (or open bare and pick from the list)
 
     Each row = one recipe name and counts for each raw product.
     Creates/updates FinishedProduct for every (recipe, raw_product) cell provided.
     Finished product names are auto-generated as "<Raw> - <Recipe>".
     """
-    raw_ids_param = request.GET.get("raw_ids", "").strip()
+    # Accept either ?raw_ids=1,2,3 or repeated ?raw_ids=1&raw_ids=2 (picker form).
+    raw_ids_param = ",".join(v.strip() for v in request.GET.getlist("raw_ids") if v.strip())
     raw_ids = _parse_raw_ids(raw_ids_param)
 
+    # No selection yet: show the picker. The hidden `picked` marker is what
+    # tells a submitted-but-empty picker apart from a bare first visit — an
+    # unticked checkbox form submits no parameters at all.
     if not raw_ids:
-        messages.error(request, "Provide raw_ids in the query string, e.g. ?raw_ids=1,2,3")
-        return render(request, "scarves/bulk_recipe_matrix_entry.html", {"raw_ids_param": raw_ids_param})
+        if request.GET.get("picked"):
+            messages.error(request, "Pick at least one raw product to build the grid.")
+        return _matrix_picker_response(request)
 
     raw_products_qs = (
         RawProduct.objects.filter(id__in=raw_ids, is_active=True)
@@ -681,7 +709,7 @@ def bulk_recipe_matrix_entry(request):
 
     if not raw_products:
         messages.error(request, "No valid raw products found for the provided raw_ids.")
-        return render(request, "scarves/bulk_recipe_matrix_entry.html", {"raw_ids_param": raw_ids_param})
+        return _matrix_picker_response(request)
 
     RowForm = build_recipe_matrix_form_class(raw_products)
     RowFormSet = formset_factory(RowForm, extra=10)
@@ -697,6 +725,9 @@ def bulk_recipe_matrix_entry(request):
                     "formset": formset,
                     "raw_ids_param": raw_ids_param,
                     "raw_products": raw_products,
+                    # Without the columns the grid re-renders with no cells at
+                    # all, hiding the very errors this branch exists to show.
+                    "columns": columns,
                 },
             )
 
