@@ -1,0 +1,52 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+<h1>Bulk Update Finished Product Par</h1>
+
+<p>Set a new par for all <strong>active</strong> finished products belonging to
+the selected raw product(s):</p>
+
+<table style="margin-bottom:1em;">
+  <thead>
+    <tr>
+      <th style="text-align:left; padding-right:2em;">Raw product</th>
+      <th style="text-align:right; padding-right:2em;">Active finished products</th>
+      <th style="text-align:left;">Current par(s)</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in rows %}
+    <tr>
+      <td style="padding-right:2em;"><strong>{{ row.rp.name }}</strong></td>
+      <td style="text-align:right; padding-right:2em;">{{ row.active_count }}</td>
+      <td>{{ row.current_par }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<form method="post">
+  {% csrf_token %}
+  <input type="hidden" name="action" value="bulk_update_finished_par">
+  <input type="hidden" name="apply" value="1">
+  {% for row in rows %}
+    <input type="hidden" name="{{ action_checkbox_name }}" value="{{ row.rp.pk }}">
+  {% endfor %}
+
+  <p>
+    <label for="new_par"><strong>New par:</strong></label><br>
+    <input type="number" id="new_par" name="new_par" step="1" min="0"
+           style="font-size:1.2em; padding:6px; width:150px;" required autofocus>
+  </p>
+
+  <p style="color:#666; font-size:0.9em;">
+    Par is the production trigger: anything below it shows up on the production
+    page as needed. Raising par here asks for more of every colorway in these
+    blanks. Inactive finished products are left alone, and stock on hand is not
+    touched.
+  </p>
+
+  <input type="submit" value="Update Par" class="default" style="margin-right:8px;">
+  <a href="../" class="button cancel-link">Cancel</a>
+</form>
+{% endblock %}

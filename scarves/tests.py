@@ -2915,3 +2915,116 @@ class ColorClassifyViewTests(TestCase):
         self.assertNotContains(
             response, reverse("color_suggest_from_photo", args=[self.recipe.pk])
         )
+
+
+class BulkParActionTests(TestCase):
+    """Raising par is how you ask for more of a colorway, so the bulk action has
+    to reach every finished product in a blank — and stop at the edges of it.
+    Anything it touches by accident silently schedules production nobody asked
+    for; anything it misses is a par nobody notices is still at the old number.
+    """
+
+    def setUp(self):
+        self.category = RawProductCategory.objects.create(name="Habotai")
+        self.silk = RawProduct.objects.create(
+            name="8mm Habotai", category=self.category, price="5.00"
+        )
+        self.other = RawProduct.objects.create(
+            name="Bamboo", category=self.category, price="6.00"
+        )
+        self.products = [
+            FinishedProduct.objects.create(
+                name=f"Habotai {n}",
+                raw_product=self.silk,
+                recipe=make_recipe(f"habotai-{n}"),
+                price="30.00",
+                par=8,
+            )
+            for n in ("Red", "Blue")
+        ]
+        self.retired = FinishedProduct.objects.create(
+            name="Habotai Retired",
+            raw_product=self.silk,
+            recipe=make_recipe("habotai-retired"),
+            price="30.00",
+            par=8,
+            is_active=False,
+        )
+        self.untouched = FinishedProduct.objects.create(
+            name="Bamboo Green",
+            raw_product=self.other,
+            recipe=make_recipe("bamboo-green"),
+            price="30.00",
+            par=8,
+        )
+
+        User.objects.create_superuser("boss", "boss@example.test", "pw")
+        self.client.login(username="boss", password="pw")
+        self.url = reverse("admin:scarves_rawproduct_changelist")
+
+    def _post(self, extra=None, raws=None):
+        data = {
+            "action": "bulk_update_finished_par",
+            "_selected_action": [str(rp.pk) for rp in (raws or [self.silk])],
+        }
+        data.update(extra or {})
+        return self.client.post(self.url, data)
+
+    def test_the_confirmation_page_shows_what_is_about_to_change(self):
+        response = self._post()
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "8mm Habotai")
+        self.assertContains(response, "new_par")
+        # Two active products, not the retired third.
+        self.assertContains(response, ">2<")
+
+    def test_applying_sets_par_on_every_active_product_in_the_blank(self):
+        response = self._post({"apply": "1", "new_par": "20"})
+        self.assertEqual(response.status_code, 302)
+
+        for product in self.products:
+            product.refresh_from_db()
+            self.assertEqual(product.par, 20)
+
+    def test_other_raw_products_are_left_alone(self):
+        self._post({"apply": "1", "new_par": "20"})
+        self.untouched.refresh_from_db()
+        self.assertEqual(self.untouched.par, 8)
+
+    def test_inactive_products_keep_their_par(self):
+        """A retired colorway is not in production; giving it a par would put it
+        back on the production page."""
+        self._post({"apply": "1", "new_par": "20"})
+        self.retired.refresh_from_db()
+        self.assertEqual(self.retired.par, 8)
+
+    def test_several_raw_products_can_be_set_at_once(self):
+        self._post({"apply": "1", "new_par": "12"}, raws=[self.silk, self.other])
+        self.untouched.refresh_from_db()
+        self.assertEqual(self.untouched.par, 12)
+        for product in self.products:
+            product.refresh_from_db()
+            self.assertEqual(product.par, 12)
+
+    def test_par_of_zero_is_allowed(self):
+        """0 means 'stop making this', which is a real thing to want and is
+        distinct from leaving par alone."""
+        self._post({"apply": "1", "new_par": "0"})
+        self.products[0].refresh_from_db()
+        self.assertEqual(self.products[0].par, 0)
+
+    def test_a_nonsense_par_changes_nothing(self):
+        for bad in ("", "eight", "-3", "4.5"):
+            with self.subTest(bad=bad):
+                self._post({"apply": "1", "new_par": bad})
+                self.products[0].refresh_from_db()
+                self.assertEqual(self.products[0].par, 8)
+
+    def test_stock_on_hand_is_not_touched(self):
+        self.products[0].number_on_hand = 3
+        self.products[0].save()
+
+        self._post({"apply": "1", "new_par": "20"})
+        self.products[0].refresh_from_db()
+        self.assertEqual(self.products[0].number_on_hand, 3)
+        self.assertEqual(self.products[0].shortage, 17)

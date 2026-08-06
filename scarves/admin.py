@@ -4,6 +4,7 @@ from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
 from django.contrib import admin, messages
+from django.db.models import Count, Q
 from django.template.response import TemplateResponse
 
 logger = logging.getLogger(__name__)
@@ -175,6 +176,63 @@ def bulk_update_finished_price(modeladmin, request, queryset):
 bulk_update_finished_price.short_description = "Bulk update finished product prices"
 
 
+def bulk_update_finished_par(modeladmin, request, queryset):
+    """
+    Set `par` on every active finished product made from the selected raw
+    product(s). Par is the trigger for production, so raising it here is how
+    you ask for more of everything in a blank — see the recipe production page.
+    """
+    if "apply" in request.POST:
+        raw_par = request.POST.get("new_par", "").strip()
+        try:
+            new_par = int(raw_par)
+            if new_par < 0:
+                raise ValueError
+        except ValueError:
+            messages.error(request, f"Invalid par: '{raw_par}'")
+            return None
+
+        updated = FinishedProduct.objects.filter(
+            raw_product__in=queryset, is_active=True
+        ).update(par=new_par)
+
+        messages.success(
+            request,
+            f"Set par to {new_par} on {updated} finished product(s) across "
+            f"{queryset.count()} raw product(s).",
+        )
+        return None
+
+    rows = []
+    for rp in queryset.annotate(
+        active_count=Count(
+            "finished_products",
+            filter=Q(finished_products__is_active=True),
+        ),
+    ):
+        current = sorted(
+            set(
+                rp.finished_products.filter(is_active=True)
+                .values_list("par", flat=True)
+            )
+        )
+        rows.append({
+            "rp": rp,
+            "active_count": rp.active_count,
+            "current_par": ", ".join(str(p) for p in current) or "—",
+        })
+
+    return TemplateResponse(request, "admin/scarves/bulk_par.html", {
+        "rows": rows,
+        "queryset": queryset,
+        "action_checkbox_name": admin.helpers.ACTION_CHECKBOX_NAME,
+        "opts": modeladmin.model._meta,
+    })
+
+
+bulk_update_finished_par.short_description = "Bulk update finished product par"
+
+
 @admin.register(DyeBrand)
 class DyeBrandAdmin(admin.ModelAdmin):
     list_display = ("name", "website")
@@ -246,7 +304,11 @@ class RawProductAdmin(admin.ModelAdmin):
     list_filter = ("category", "is_active")
     search_fields = ("name", "category__name", "sku")
     ordering = ("category__name", "name")
-    actions = [preview_square_match, bulk_update_finished_price]
+    actions = [
+        preview_square_match,
+        bulk_update_finished_price,
+        bulk_update_finished_par,
+    ]
 
 
 class RecipeDyeInline(admin.TabularInline):
@@ -289,6 +351,7 @@ class FinishedProductAdmin(admin.ModelAdmin):
         "recipe",
         "price",
         "number_on_hand",
+        "par",
         "is_active",
         "created_at",
     )
