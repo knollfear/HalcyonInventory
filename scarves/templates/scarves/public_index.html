@@ -1,0 +1,83 @@
+{% extends "scarves/base_public.html" %}
+{% comment %}
+The public half of the site map. Its context comes from _site_map(bucket=
+"public"), so a staff page can't reach this template to be filtered out of
+it — there is nothing here to leak.
+{% endcomment %}
+
+{% block title %}Halcyon Silks — What's Public{% endblock %}
+{% block heading %}What's Public{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  .cards { display: grid; gap: 12px; margin-top: 18px; }
+  .card {
+      border: 1px solid #e2e6ea; border-radius: 10px; padding: 16px;
+      background: #fff; display: flex; flex-direction: column; gap: 8px;
+      transition: border-color .15s ease, box-shadow .15s ease;
+  }
+  .card:hover {
+      border-color: var(--accent); box-shadow: 0 2px 10px rgba(35, 70, 107, .12);
+  }
+  .card-title { font-size: 16px; font-weight: 600; }
+  .card-title a { text-decoration: underline; text-underline-offset: 2px; }
+  .desc { font-size: 13px; color: #444; line-height: 1.45; margin: 0; }
+  .note {
+      font-size: 12px; color: #8a5a00; background: #fff6e0;
+      border: 1px solid #f0e0b0; border-radius: 6px; padding: 5px 8px;
+  }
+  .route {
+      font-family: var(--mono); font-size: 11px; margin-top: auto;
+      color: var(--accent); background: #f6f8fa; border: 1px solid #e2e6ea;
+      border-radius: 4px; padding: 2px 6px; display: inline-block;
+      text-decoration: none; align-self: flex-start;
+  }
+  .route:hover { background: #eef2f6; border-color: var(--accent); }
+  h2 {
+      margin-top: 28px; font-size: 16px; color: var(--accent);
+      border-bottom: 2px solid var(--accent); padding-bottom: 6px;
+  }
+
+  /* This is the front page now, so the staff door has to be findable without
+     being the loudest thing on it. */
+  .signin {
+      font-size: 13px; white-space: nowrap; text-decoration: none;
+      border: 1px solid #cbd6e2; border-radius: 999px; padding: 5px 14px;
+      color: var(--accent); background: #fff;
+  }
+  .signin:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
+{% endblock %}
+
+{% block heading_actions %}
+  {% if user.is_authenticated %}
+    <a class="signin" href="{% url 'index' %}">Staff site map →</a>
+  {% else %}
+    <a class="signin" href="{% url 'admin:login' %}?next={% url 'index' %}">Staff sign in</a>
+  {% endif %}
+{% endblock %}
+
+{% block content %}
+  <p class="muted">
+    Everything here is open — no login, nothing to sign up for.
+    {{ total }} page{{ total|pluralize }}.
+  </p>
+
+  {% for group in grouped %}
+    <h2>{{ group.name }}</h2>
+    <div class="cards">
+      {% for item in group.items %}
+        <div class="card">
+          <div class="card-title">
+            {% if item.url %}<a href="{{ item.url }}">{{ item.title }}</a>
+            {% else %}{{ item.title }}{% endif %}
+          </div>
+          <p class="desc">{{ item.description }}</p>
+          {% if item.note %}<div class="note">{{ item.note }}</div>{% endif %}
+          {% if item.url %}<a class="route" href="{{ item.url }}">{{ item.route }}</a>{% endif %}
+        </div>
+      {% endfor %}
+    </div>
+  {% empty %}
+    <p class="muted">Nothing is public right now.</p>
+  {% endfor %}
+{% endblock %}

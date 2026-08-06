@@ -5,9 +5,20 @@ Rendered three ways, always from here so they can't drift: inline by the
 showcase page, by recipe_row (copy prefill / cancel) and by recipe_dyes_save.
 Swapped with hx-swap="outerHTML" targeting this <tr>.
 {% endcomment %}
-<tr id="recipe-row-{{ recipe.pk }}"{% if saved %} class="just-saved"{% endif %}>
+{% comment %}
+data-search feeds the showcase's filter box. Built here so a row swapped in
+by htmx stays findable — a row without it would vanish from every search.
+{% endcomment %}
+<tr id="recipe-row-{{ recipe.pk }}"{% if saved %} class="just-saved"{% endif %}
+    data-search="{{ recipe.name|lower }}
+{% for rd in recipe.recipe_dyes.all %}{{ rd.dye.name|lower }} {% endfor %}
+{% for fp in recipe.finished_products.all %}{{ fp.name|lower }} {% endfor %}">
   <td>
-    <strong>{{ recipe.name }}</strong>
+    {% comment %}
+    The showcase is the picker for recipe_detail, so the name is the way in.
+    Reversed by name, so it works the same when this row arrives via htmx.
+    {% endcomment %}
+    <strong><a href="{% url 'recipe_detail' recipe.pk %}">{{ recipe.name }}</a></strong>
     {% if saved %}<span class="savedtag">saved</span>{% endif %}
   </td>
 
@@ -64,12 +75,12 @@ Swapped with hx-swap="outerHTML" targeting this <tr>.
       </div>
 
       <div class="rowactions">
-        <button type="button"
+        <button type="button" class="btn"
                 hx-post="{% url 'recipe_dyes_save' recipe.pk %}"
                 hx-include="closest tr"
                 hx-target="#recipe-row-{{ recipe.pk }}"
                 hx-swap="outerHTML">Save</button>
-        <button type="button" class="secondary"
+        <button type="button" class="btn-quiet"
                 hx-get="{% url 'recipe_row' recipe.pk %}"
                 hx-target="#recipe-row-{{ recipe.pk }}"
                 hx-swap="outerHTML">Reset</button>

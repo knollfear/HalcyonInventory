@@ -1,67 +1,64 @@
-<!-- templates/scarves/recipe_showcase.html -->
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>Recipes</title>
-  <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 24px; }
-    table { border-collapse: collapse; width: 100%; max-width: 1200px; }
-    th, td { border-bottom: 1px solid #ddd; padding: 10px; vertical-align: top; }
-    th { text-align: left; }
-    .dyes { display: flex; flex-wrap: wrap; gap: 6px; }
-    .chip {
+{% extends "scarves/base_internal.html" %}
+
+{% block title %}Recipes{% endblock %}
+{% block heading %}Recipe Showcase{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 1200px; }
+
+  td { vertical-align: top; }
+
+  .toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 14px 0; }
+  .pill {
+      border: 1px solid #cbd6e2; border-radius: 999px; padding: 4px 12px;
+      text-decoration: none; font-size: 14px; background: #fff;
+  }
+  .pill.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  .filterbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  #recipe-filter { width: 22rem; max-width: 100%; padding: 7px 10px; }
+  tr.filtered-out { display: none; }
+  .noresults { display: none; }
+  .noresults.on { display: table-row; }
+
+  .dyes { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
       border: 1px solid #ccc; border-radius: 999px;
       padding: 4px 10px; font-size: 13px; background: #fff;
       display: inline-flex; gap: 8px; align-items: center;
-    }
-    .swatches { display: flex; gap: 6px; flex-wrap: wrap; }
-    .swatch {
+  }
+  .swatches { display: flex; gap: 6px; flex-wrap: wrap; }
+  .swatch {
       width: 18px; height: 18px; border-radius: 6px;
-      border: 1px solid rgba(0,0,0,0.25);
-      display: inline-block;
-    }
-    .hex { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 12px; color: #444; }
-    .muted { color: #666; font-size: 13px; }
+      border: 1px solid rgba(0,0,0,0.25); display: inline-block;
+  }
 
-    /* --- edit mode --- */
-    .toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 14px; }
-    .toolbar a { color: #23466b; }
-    .pill {
-      border: 1px solid #cbd6e2; border-radius: 999px; padding: 4px 12px;
-      text-decoration: none; font-size: 14px; background: #fff;
-    }
-    .pill.on { background: #23466b; border-color: #23466b; color: #fff; }
-    .pickers { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
-    .colorcell { display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: center; }
-    .colorcell select { padding: 6px; min-width: 150px; }
-    .colorcell .swatch { width: 22px; height: 22px; }
-    .copyrow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-    .copyrow select { padding: 6px; }
-    .copied { color: #8a5a00; font-size: 13px; }
-    .rowactions { margin-top: 10px; display: flex; gap: 8px; }
-    button {
-      padding: 7px 14px; border-radius: 8px; border: 1px solid #23466b;
-      background: #23466b; color: #fff; cursor: pointer; font: inherit;
-    }
-    button.secondary { background: #fff; color: #23466b; }
-    .errorlist { color: #b00020; margin: 0 0 6px; }
-    .savedtag {
+  .pickers { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+  .colorcell { display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: center; }
+  .colorcell select { min-width: 150px; }
+  .colorcell .swatch { width: 22px; height: 22px; }
+  .copyrow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .copied { color: #8a5a00; font-size: 13px; }
+  .rowactions { margin-top: 10px; display: flex; gap: 8px; }
+
+  .savedtag {
       font-size: 11px; color: #2e7d52; border: 1px solid #bcd8c6;
       border-radius: 999px; padding: 1px 8px; margin-left: 6px;
-    }
-    tr.just-saved { background: #f1f8f3; }
-    .thumb {
+  }
+  tr.just-saved { background: #f1f8f3; }
+  .thumb {
       width: 68px; height: 68px; object-fit: cover;
       border-radius: 6px; border: 1px solid #ddd; margin-right: 4px;
-    }
-    .products .names { margin-top: 4px; }
-    .htmx-request { opacity: .55; }
-  </style>
-</head>
-<body hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
+  }
+  .products .names { margin-top: 4px; font-size: 13px; }
+  .htmx-request { opacity: .55; }
+{% endblock %}
+
+{% block body_attrs %} hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'{% endblock %}
+
+{% block content %}
   {% csrf_token %}
-  <h1>Recipe Showcase</h1>
 
   <div class="toolbar">
     {% if edit_mode %}
@@ -81,6 +78,19 @@
     <span class="muted">{{ missing_count }} of {{ total_count }} active recipes have no dyes recorded.</span>
   </div>
 
+  {% comment %}
+  Filtering is client-side rather than a round trip on purpose: in edit mode
+  every row holds unsaved dye pickers, and re-rendering the table from the
+  server would throw that away mid-edit. Every row is already on the page,
+  so hiding is both instant and safe.
+  {% endcomment %}
+  <div class="filterbar">
+    <input type="search" id="recipe-filter" autocomplete="off"
+           placeholder="Filter by recipe, dye or product name…"
+           aria-label="Filter recipes">
+    <span class="muted small" id="filter-count"></span>
+  </div>
+
   {% if edit_mode %}
     <p class="muted">
       Pick dyes directly, or copy them from a recipe that already has them and
@@ -90,27 +100,68 @@
     <p class="muted">Active recipes and their dyes.</p>
   {% endif %}
 
-  <table>
-    <thead>
-      <tr>
-        <th style="width: 20%;">Recipe</th>
-        <th style="width: 26%;">Products</th>
-        {% if edit_mode %}
-          <th colspan="2">Dyes</th>
-        {% else %}
-          <th style="width: 34%;">Dyes</th>
-          <th style="width: 20%;">Colors</th>
-        {% endif %}
-      </tr>
-    </thead>
-    <tbody>
-      {% for row in rows %}
-        {% include "scarves/partials/recipe_row.html" with recipe=row.recipe form=row.form edit_mode=row.edit_mode dye_sources=row.dye_sources %}
-      {% empty %}
-        <tr><td colspan="4" class="muted">Nothing to show.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
+  <div class="card">
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 20%;">Recipe</th>
+          <th style="width: 26%;">Products</th>
+          {% if edit_mode %}
+            <th colspan="2">Dyes</th>
+          {% else %}
+            <th style="width: 34%;">Dyes</th>
+            <th style="width: 20%;">Colors</th>
+          {% endif %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+          {% include "scarves/partials/recipe_row.html" with recipe=row.recipe form=row.form edit_mode=row.edit_mode dye_sources=row.dye_sources %}
+        {% empty %}
+          <tr><td colspan="4" class="muted">Nothing to show.</td></tr>
+        {% endfor %}
+        <tr class="noresults" id="noresults">
+          <td colspan="4" class="muted">No recipe matches that.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+{% endblock %}
+
+{% block scripts %}
+  <script>
+    // Filter the rows already on the page. Runs again after every htmx swap:
+    // a saved row comes back fresh from the server with no knowledge of what
+    // is currently typed in the box, and would otherwise reappear mid-search.
+    (function () {
+      var box = document.getElementById('recipe-filter');
+      var count = document.getElementById('filter-count');
+      var none = document.getElementById('noresults');
+
+      function rows() {
+        return document.querySelectorAll('tr[data-search]');
+      }
+
+      function apply() {
+        var needle = box.value.trim().toLowerCase();
+        var all = rows();
+        var shown = 0;
+        all.forEach(function (row) {
+          var hit = !needle || row.dataset.search.indexOf(needle) !== -1;
+          row.classList.toggle('filtered-out', !hit);
+          if (hit) shown++;
+        });
+        none.classList.toggle('on', all.length > 0 && shown === 0);
+        count.textContent = needle
+          ? shown + ' of ' + all.length + ' shown'
+          : '';
+      }
+
+      box.addEventListener('input', apply);
+      document.body.addEventListener('htmx:afterSwap', apply);
+      apply();
+    })();
+  </script>
 
   {% if edit_mode %}
     <script src="https://unpkg.com/htmx.org@1.9.12"></script>
@@ -137,5 +188,4 @@
       paintAll();
     </script>
   {% endif %}
-</body>
-</html>
+{% endblock %}

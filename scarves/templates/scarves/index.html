@@ -1,64 +1,61 @@
-<!-- templates/scarves/index.html -->
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>Scarves — Site Map</title>
-  <style>
-    body {
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-      padding: 24px; max-width: 1000px; margin: 0 auto; color: #1a2230;
-      background: #f7f8fa;
-    }
-    h1 { margin-bottom: 4px; }
-    .lead { color: #666; font-size: 14px; margin-top: 0; }
-    h2 {
-      margin-top: 32px; font-size: 18px;
-      border-bottom: 2px solid #1a3a5c; padding-bottom: 6px; color: #1a3a5c;
-    }
-    .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; margin-top: 14px; }
-    .card {
-      border: 1px solid #e1e5ea; border-radius: 10px; padding: 16px;
-      background: #fff; display: flex; flex-direction: column; gap: 8px;
-      transition: border-color .15s ease, box-shadow .15s ease;
-    }
-    .card-link:hover {
-      border-color: #1558a0; box-shadow: 0 2px 10px rgba(21, 88, 160, .12);
-    }
-    .card-title { font-size: 16px; font-weight: 600; }
-    /* Links have to read as links. These were #1a3a5c with no underline
-       against #1a2230 body text — indistinguishable from plain text, so the
-       whole page looked inert even though most cards were clickable. */
-    .card-title a { color: #1558a0; text-decoration: underline; text-underline-offset: 2px; }
-    .card-title a:hover { color: #0d3d73; }
-    .desc { font-size: 13px; color: #444; line-height: 1.45; margin: 0; }
-    .note {
+{% extends "scarves/base_internal.html" %}
+
+{% block title %}Scarves — Site Map{% endblock %}
+{% block heading %}Scarves — Site Map{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 1000px; }
+
+  .cards { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; margin-top: 14px; }
+  .card { display: flex; flex-direction: column; gap: 8px; }
+  .card-title { font-size: 16px; margin: 0; }
+  /* Links have to read as links. These were #1a3a5c with no underline
+     against #1a2230 body text — indistinguishable from plain text, so the
+     whole page looked inert even though most cards were clickable. */
+  .card-title a { text-decoration: underline; }
+  .desc { font-size: 13px; color: #444; line-height: 1.45; margin: 0; }
+  .note {
       font-size: 12px; color: #8a5a00; background: #fff6e0;
       border: 1px solid #f0e0b0; border-radius: 6px; padding: 5px 8px;
-    }
-    .meta { font-size: 11px; color: #888; margin-top: auto; }
-    /* A monospace URL is the most link-looking thing on the card, so when
-       there's somewhere to go it has to actually be one — that's what people
-       reach for first, ahead of the title. */
-    .route {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }
+  .meta { font-size: 11px; color: #888; margin-top: auto; }
+  /* A monospace URL is the most link-looking thing on the card, so when
+     there's somewhere to go it has to actually be one — that's what people
+     reach for first, ahead of the title. */
+  .route {
+      font-family: var(--mono);
       font-size: 11px; color: #555; background: #f1f3f6;
       border-radius: 4px; padding: 2px 6px; display: inline-block;
-    }
-    a.route { color: #1558a0; text-decoration: none; border: 1px solid #d7e3f2; background: #f2f7fd; }
-    a.route:hover { background: #e3eefb; border-color: #1558a0; }
-    .badge {
+  }
+  a.route { color: var(--accent); text-decoration: none; border: 1px solid #d7e3f2; background: #f2f7fd; }
+  a.route:hover { background: #e3eefb; border-color: var(--accent); }
+  .badge {
       display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px;
       border: 1px solid #ccc; color: #666; background: #fafafa;
-    }
-    .badge.params { color: #8a5a00; border-color: #f0e0b0; background: #fff6e0; }
-  </style>
-</head>
-<body>
-  <h1>Scarves — Site Map</h1>
+  }
+  .badge.params { color: #8a5a00; border-color: #f0e0b0; background: #fff6e0; }
+  /* Exposure is the thing most worth knowing at a glance on this page, so
+     it gets colour and its own column in the card rather than a footnote. */
+  .badge.public { color: #8a2f2a; border-color: #f0c8c4; background: #fdf2f1; }
+  .badge.private { color: #2e7d52; border-color: #bcd8c6; background: #f1f8f3; }
+  .card-head { display: flex; align-items: baseline; gap: 8px; }
+  .card-head .card-title { flex: 1; min-width: 0; }
+  .summary { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 10px 0 0; }
+{% endblock %}
+
+{% block content %}
   <p class="lead">
     Auto-generated from each view's <code>@page_meta</code>. {{ total }} view{{ total|pluralize }} registered.
     Add the decorator to a new view and it shows up here automatically.
+  </p>
+  <p class="summary">
+    <span class="badge private">{{ private_count }} private</span>
+    <span class="small muted">need a login</span>
+    <span class="badge public">{{ public_count }} public</span>
+    <span class="small muted">
+      open to anyone — <a href="{{ public_map_url }}">see the public site map</a>
+    </span>
   </p>
 
   {% for group in grouped %}
@@ -66,13 +63,16 @@
     <div class="cards">
       {% for item in group.items %}
         <div class="card{% if item.url %} card-link{% endif %}">
-          <div class="card-title">
-            {% if item.url %}
-              <a href="{{ item.url }}">{{ item.title }}</a>
-            {% else %}
-              {{ item.title }}
-              {% if item.needs_params %}<span class="badge params">needs&nbsp;params</span>{% endif %}
-            {% endif %}
+          <div class="card-head">
+            <div class="card-title">
+              {% if item.url %}
+                <a href="{{ item.url }}">{{ item.title }}</a>
+              {% else %}
+                {{ item.title }}
+                {% if item.needs_params %}<span class="badge params">needs&nbsp;params</span>{% endif %}
+              {% endif %}
+            </div>
+            <span class="badge {{ item.bucket }}">{{ item.bucket }}</span>
           </div>
           <p class="desc">{{ item.description }}</p>
           {% if item.note %}<div class="note">{{ item.note }}</div>{% endif %}
@@ -90,5 +90,9 @@
   {% empty %}
     <p>No views found.</p>
   {% endfor %}
-</body>
-</html>
+{% endblock %}
+
+{% comment %}
+This page is the site map — a link back to itself would be a loop.
+{% endcomment %}
+{% block back %}{% endblock %}

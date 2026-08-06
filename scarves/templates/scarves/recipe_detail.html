@@ -1,0 +1,273 @@
+{% extends "scarves/base_internal.html" %}
+
+{% block title %}{{ recipe.name }}{% endblock %}
+{% block heading %}{{ recipe.name }}{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 1100px; }
+
+  .subhead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin: 6px 0 0; }
+  .inactive {
+      font-size: 12px; border-radius: 999px; padding: 3px 10px;
+      color: #8a5a00; background: #fff6e0; border: 1px solid #f0e0b0;
+  }
+
+  /* The numbers people come here for, before any table. */
+  .figures { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+  .figure {
+      border: 1px solid #e1e5ea; border-radius: 10px; background: #fff;
+      padding: 12px 16px; min-width: 8.5rem;
+  }
+  .figure .value { font-size: 22px; font-weight: 700; }
+  .figure .label { font-size: 12px; color: #667; margin-top: 2px; }
+  .figure.sold .value { color: #8a2f2a; }
+  .figure.made .value { color: #2e7d52; }
+
+  .dyes { display: flex; flex-wrap: wrap; gap: 8px; }
+  .dye {
+      display: inline-flex; align-items: center; gap: 8px;
+      border: 1px solid #e1e5ea; border-radius: 999px;
+      padding: 4px 12px 4px 6px; background: #fff; font-size: 14px;
+  }
+  .swatch { width: 18px; height: 18px; border-radius: 50%; border: 1px solid rgba(0,0,0,.25); }
+  .dye .ratio { font-size: 12px; color: #888; }
+
+  .thumb {
+      width: 46px; height: 46px; object-fit: cover;
+      border-radius: 6px; border: 1px solid #ddd; vertical-align: middle;
+  }
+  .nothumb {
+      display: inline-block; width: 46px; height: 46px; border-radius: 6px;
+      border: 1px dashed #d5dae0; background: #fafbfc;
+  }
+  td.num, th.num { text-align: right; }
+  tr.retired td { color: #999; }
+
+  .backdate { margin-top: 14px; font-size: 13px; }
+  .backdate summary { cursor: pointer; color: var(--accent); }
+  .backdate p { max-width: 46rem; line-height: 1.5; }
+  .backdate input { margin-left: 6px; }
+
+  .baths-col { white-space: nowrap; text-align: right; width: 9rem; }
+  .baths-col input { width: 4rem; text-align: right; }
+  .perbath { font-size: 12px; color: #888; margin-left: 6px; }
+
+  /* Direction is the fastest thing to read in a log, so it carries the
+     colour and the sign rather than the type name. */
+  .qty { font-weight: 700; white-space: nowrap; }
+  .qty.up { color: #2e7d52; }
+  .qty.down { color: #8a2f2a; }
+  .type {
+      font-size: 11px; border-radius: 999px; padding: 2px 8px;
+      border: 1px solid #ccc; color: #666; background: #fafafa;
+  }
+  .type.production { color: #2e7d52; border-color: #bcd8c6; background: #f1f8f3; }
+  .type.sale { color: #8a2f2a; border-color: #f0c8c4; background: #fdf2f1; }
+  .when { white-space: nowrap; font-size: 13px; color: #555; }
+  .approx { font-size: 11px; color: #8a5a00; margin-left: 6px; }
+  .ref { font-family: var(--mono); font-size: 11px; color: #667; }
+  .truncated {
+      font-size: 13px; color: #8a5a00; background: #fff6e0;
+      border: 1px solid #f0e0b0; border-radius: 8px; padding: 8px 12px;
+      margin-top: 12px;
+  }
+{% endblock %}
+
+{% block content %}
+  <div class="subhead">
+    {% if not recipe.is_active %}<span class="inactive">Inactive recipe</span>{% endif %}
+    <span class="muted small">
+      <a href="{% url 'recipe_showcase' %}">All recipes</a>
+      · <a href="{% url 'recipe_showcase' %}?edit=true">Edit its dyes</a>
+    </span>
+  </div>
+
+  {% if recipe.description %}<p class="lead">{{ recipe.description }}</p>{% endif %}
+
+  <div class="figures">
+    <div class="figure">
+      <div class="value">{{ on_hand }}</div>
+      <div class="label">on hand{% if par_total %} · par {{ par_total }}{% endif %}</div>
+    </div>
+    <div class="figure made">
+      <div class="value">{{ produced }}</div>
+      <div class="label">produced, all time</div>
+    </div>
+    <div class="figure sold">
+      <div class="value">{{ sold }}</div>
+      <div class="label">sold, all time</div>
+    </div>
+    <div class="figure">
+      <div class="value">{{ products|length }}</div>
+      <div class="label">finished product{{ products|length|pluralize }}</div>
+    </div>
+  </div>
+
+  <h2>Dyes</h2>
+  {% if recipe.recipe_dyes.all %}
+    <div class="dyes">
+      {% for rd in recipe.recipe_dyes.all %}
+        <span class="dye">
+          <span class="swatch" style="background: {{ rd.dye.hex_color }};"
+                title="{{ rd.dye.hex_color }}"></span>
+          {{ rd.dye.name }}
+          {% if rd.dye.brand %}<span class="ratio">{{ rd.dye.brand.name }}</span>{% endif %}
+          {% if rd.ratio %}<span class="ratio">· {{ rd.ratio }}</span>{% endif %}
+          {% if not rd.dye.in_stock %}<span class="ratio">· out of stock</span>{% endif %}
+        </span>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="empty">
+      No dyes recorded yet.
+      <a href="{% url 'recipe_showcase' %}?edit=true">Add them on the showcase</a>.
+    </p>
+  {% endif %}
+
+  <h2>Finished products</h2>
+  {% if products %}
+    {% comment %}
+    The table doubles as the production form. A dye session is one colourway
+    across two or three bases, so the natural entry is a bath count per row
+    and a single submit — not a click per product.
+    {% endcomment %}
+    <form method="post" action="{% url 'record_recipe_production' recipe.pk %}">
+      {% csrf_token %}
+      <div class="card">
+        <table>
+          <thead>
+            <tr>
+              <th colspan="2">Product</th>
+              <th>Base (raw)</th>
+              <th class="num">On hand</th>
+              <th class="num">Par</th>
+              <th class="num">Shortage</th>
+              <th class="num">Price</th>
+              <th class="baths-col">Baths</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for p in products %}
+              <tr{% if not p.is_active %} class="retired"{% endif %}>
+                <td style="width: 46px;">
+                  {% for img in p.images.all %}{% if forloop.first %}
+                    <img class="thumb" src="{{ img.url }}" alt="{{ p.name }}" loading="lazy">
+                  {% endif %}{% empty %}
+                    <span class="nothumb"></span>
+                  {% endfor %}
+                </td>
+                <td>
+                  {{ p.name }}
+                  {% if not p.is_active %}<span class="muted small">· retired</span>{% endif %}
+                  {% if p.is_fancy %}<span class="muted small">· fancy</span>{% endif %}
+                  <div class="ref">{{ p.sku|default:"" }}</div>
+                </td>
+                <td>{{ p.raw_product.name }} <span class="muted small">{{ p.raw_product.category.name }}</span></td>
+                <td class="num">{{ p.number_on_hand }}</td>
+                <td class="num">{{ p.par }}</td>
+                <td class="num">
+                  {% if p.shortage %}<span class="short">{{ p.shortage }}</span>{% else %}—{% endif %}
+                </td>
+                <td class="num">${{ p.price }}</td>
+                <td class="baths-col">
+                  {% if p.is_active %}
+                    <input type="number" name="baths_{{ p.pk }}" min="0" step="1"
+                           inputmode="numeric" placeholder="0"
+                           aria-label="Dye baths of {{ p.name }}">
+                    <span class="perbath">×{{ p.raw_product.number_per_dye_bath|default:1 }}</span>
+                  {% else %}
+                    <span class="muted small">retired</span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="actions">
+        <button class="btn" type="submit">Record production</button>
+        <span class="small muted">
+          Enter how many baths of each you dyed. One bath makes the number
+          beside the box; raw stock is drawn down to match.
+        </span>
+      </div>
+
+      {% comment %}
+      Folded away because the everyday answer is "today" and nobody should
+      have to think about it. It's open only when digitising old sessions.
+      {% endcomment %}
+      <details class="backdate">
+        <summary>Recording an older session?</summary>
+        <p class="small muted">
+          Leave this blank for anything dyed recently — the date it's entered
+          is close enough. Set it only when typing up a session from the past.
+          A past date <strong>records history without changing current
+          stock</strong>, since that yarn has long since been counted or sold.
+        </p>
+        <label class="small">
+          Dyed on
+          <input type="date" name="dyed_on" max="{{ today|date:'Y-m-d' }}">
+        </label>
+      </details>
+    </form>
+  {% else %}
+    <p class="empty">
+      Nothing is made from this recipe yet.
+      <a href="{% url 'bulk_recipe_matrix_entry' %}">Create finished products</a>.
+    </p>
+  {% endif %}
+
+  <h2>Inventory history</h2>
+  {% if logs %}
+    <div class="card">
+      <table>
+        <thead>
+          <tr>
+            <th>When</th>
+            <th>Product</th>
+            <th>Type</th>
+            <th class="num">Change</th>
+            <th>Reference / notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for log in logs %}
+            <tr>
+              {% comment %}
+              `when`, not a date filter: a back-filled entry may only know its
+              month, and the day it's stored under is padding.
+              {% endcomment %}
+              <td class="when">
+                {{ log.when }}
+                {% if log.date_precision == "month" %}<span class="approx">month only</span>{% endif %}
+              </td>
+              <td>{{ log.finished_product.name }}</td>
+              <td><span class="type {{ log.log_type }}">{{ log.get_log_type_display }}</span></td>
+              <td class="num">
+                <span class="qty {% if log.quantity < 0 %}down{% else %}up{% endif %}">
+                  {% if log.quantity > 0 %}+{% endif %}{{ log.quantity }}
+                </span>
+              </td>
+              <td class="small">
+                {% if log.sale_reference %}<span class="ref">{{ log.sale_reference }}</span>{% endif %}
+                {% if log.notes %}<span class="muted">{{ log.notes }}</span>{% endif %}
+                {% if not log.sale_reference and not log.notes %}<span class="muted">—</span>{% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if truncated %}
+      <p class="truncated">
+        Showing the most recent {{ log_limit }} of {{ log_count }} entries.
+      </p>
+    {% endif %}
+  {% else %}
+    <p class="empty">
+      No inventory movement recorded for this recipe's products yet.
+    </p>
+  {% endif %}
+{% endblock %}

@@ -57,16 +57,26 @@ class RecipeDyesForm(forms.Form):
 
 
 class QuickRecipeRowForm(forms.Form):
+    # The slots a row offers. Named once so the template can loop over them
+    # and clean()/save() can read them in order — adding a fifth dye is a
+    # matter of adding the field and this name.
+    DYE_FIELDS = ("dye1", "dye2", "dye3", "dye4")
+
     name = forms.CharField(max_length=150, required=False)  # allow blank rows
     dye1 = forms.ModelChoiceField(queryset=Dye.objects.filter(in_stock=True), required=False)
     dye2 = forms.ModelChoiceField(queryset=Dye.objects.filter(in_stock=True), required=False)
     dye3 = forms.ModelChoiceField(queryset=Dye.objects.filter(in_stock=True), required=False)
     dye4 = forms.ModelChoiceField(queryset=Dye.objects.filter(in_stock=True), required=False)
 
+    @property
+    def dye_fields(self):
+        """The bound dye fields, in slot order, for the template to render."""
+        return [self[name] for name in self.DYE_FIELDS]
+
     def clean(self):
         cleaned = super().clean()
         name = (cleaned.get("name") or "").strip()
-        dyes = [cleaned.get("dye1"), cleaned.get("dye2"), cleaned.get("dye3"), cleaned.get("dye4")]
+        dyes = [cleaned.get(f) for f in self.DYE_FIELDS]
 
         # If totally empty row: OK (skip)
         if not name and not any(dyes):
@@ -95,7 +105,7 @@ class QuickRecipeRowForm(forms.Form):
         # Replace existing dyes each save (predictable + fast entry)
         RecipeDye.objects.filter(recipe=recipe).delete()
 
-        dyes = [self.cleaned_data.get("dye1"), self.cleaned_data.get("dye2"), self.cleaned_data.get("dye3"), self.cleaned_data.get("dye4")]
+        dyes = [self.cleaned_data.get(f) for f in self.DYE_FIELDS]
         order = 1
         for dye in dyes:
             if not dye:

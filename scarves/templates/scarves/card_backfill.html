@@ -1,0 +1,123 @@
+{% extends "scarves/base_internal.html" %}
+
+{% block title %}Card — {{ product.name }}{% endblock %}
+{% block heading %}{{ product.name }}{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 860px; }
+
+  .subhead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin: 6px 0 0; }
+
+  .rows td { padding: 5px 10px; }
+  .rownum { color: #b6bcc4; font-size: 12px; width: 1.5rem; text-align: right; }
+  .rows input[type="text"] { width: 9rem; }
+  .rows input[type="number"] { width: 4.5rem; text-align: right; }
+  .makes { font-size: 12px; color: #888; }
+
+  .formats { font-size: 13px; line-height: 1.6; }
+  .formats code { margin-right: 4px; }
+  .heads-up {
+      font-size: 13px; color: #8a5a00; background: #fff6e0;
+      border: 1px solid #f0e0b0; border-radius: 8px; padding: 10px 12px;
+      margin: 14px 0; line-height: 1.5;
+  }
+  td.when { white-space: nowrap; }
+  .approx { font-size: 11px; color: #8a5a00; margin-left: 6px; }
+{% endblock %}
+
+{% block content %}
+  <div class="subhead">
+    <span class="muted small">
+      {{ product.recipe.name }} · {{ product.raw_product.name }} ·
+      one bath makes {{ per_bath }}
+    </span>
+    <span class="muted small">
+      <a href="{% url 'card_backfill_index' %}">All cards</a>
+      · <a href="{% url 'recipe_detail' product.recipe.pk %}">This recipe</a>
+    </span>
+  </div>
+
+  <div class="heads-up">
+    Entries here <strong>record history only</strong> — current stock stays
+    where it is. This yarn was counted or sold long ago, so adding it to what's
+    on hand would inflate your inventory by however far back the cards go.
+  </div>
+
+  <form method="post">
+    {% csrf_token %}
+    <div class="card">
+      <table class="rows">
+        <thead>
+          <tr>
+            <th class="rownum"></th>
+            <th>Date on the card</th>
+            <th>Baths</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for i in rows %}
+            <tr>
+              <td class="rownum">{{ forloop.counter }}</td>
+              <td>
+                <input type="text" name="date_{{ i }}" autocomplete="off"
+                       placeholder="9/2024" aria-label="Date for row {{ forloop.counter }}">
+              </td>
+              <td>
+                <input type="number" name="baths_{{ i }}" min="1" step="1"
+                       inputmode="numeric" placeholder="1"
+                       aria-label="Baths for row {{ forloop.counter }}">
+              </td>
+              <td class="makes">×{{ per_bath }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="actions">
+      <button class="btn" type="submit">Add these entries</button>
+      <span class="small muted">Leave unused rows blank.</span>
+    </div>
+  </form>
+
+  {% comment %}
+  Spelled out because the whole point is not inventing precision: a card
+  saying "9/2024" must stay a month, not silently become the 1st.
+  {% endcomment %}
+  <p class="formats muted">
+    <strong>Dates:</strong> write what the card says.
+    <code>9/15/2024</code> <code>9-15-24</code> <code>2024-09-15</code>
+    all record a day.
+    <code>9/2024</code> <code>2024-09</code> record just the month, and the
+    page will only ever show the month back — no day gets invented.
+  </p>
+
+  {% if existing %}
+    <h2>Already typed up</h2>
+    <div class="card">
+      <table>
+        <thead>
+          <tr>
+            <th>When</th>
+            <th class="num">Made</th>
+            <th>Note</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for log in existing %}
+            <tr>
+              <td class="when">
+                {{ log.when }}
+                {% if log.date_precision == "month" %}<span class="approx">month only</span>{% endif %}
+              </td>
+              <td class="num">+{{ log.quantity }}</td>
+              <td class="small muted">{{ log.notes }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+{% endblock %}

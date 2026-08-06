@@ -1,0 +1,74 @@
+{% comment %}
+One row of the colour classification page.
+
+Rendered three ways, always from here so they can't drift: inline by
+color_classify, and by color_bands_save / color_suggest_from_photo as an htmx
+swap. Targets this <tr> with hx-swap="outerHTML".
+
+The chips are real checkboxes so the row posts without any JavaScript of its
+own — the label is the visible chip, the input is hidden behind it.
+{% endcomment %}
+<tr id="color-row-{{ recipe.pk }}"
+    class="{% if saved %}just-saved{% elif pending %}pending{% endif %}"
+    data-search="{{ recipe.name|lower }}
+{% for rd in recipe.recipe_dyes.all %}{{ rd.dye.name|lower }} {% endfor %}">
+
+  <td class="who">
+    <strong><a href="{% url 'recipe_detail' recipe.pk %}">{{ recipe.name }}</a></strong>
+    {% if saved %}<span class="tag ok-tag">confirmed</span>
+    {% elif pending %}<span class="tag guess-tag">not saved yet</span>
+    {% elif recipe.bands_confirmed %}<span class="tag ok-tag">confirmed</span>
+    {% else %}<span class="tag todo-tag">unconfirmed</span>{% endif %}
+  </td>
+
+  {% comment %}
+  The evidence, so the decision can be made from the row itself rather than by
+  opening the recipe: the dye swatches on one side, the photo on the other.
+  Most recipes have exactly one of the two.
+  {% endcomment %}
+  <td class="evidence">
+    {% if photo %}
+      <img class="thumb" src="{{ photo.url }}" alt="{{ recipe.name }}" loading="lazy">
+    {% endif %}
+    <div class="swatches">
+      {% for rd in recipe.recipe_dyes.all %}
+        <span class="swatch" title="{{ rd.dye.name }} — {{ rd.dye.hex_color }}"
+              style="background: {{ rd.dye.hex_color }};"></span>
+      {% empty %}
+        {% if not photo %}<span class="muted">No dyes or photo yet</span>{% endif %}
+      {% endfor %}
+    </div>
+  </td>
+
+  <td class="bands">
+    <div class="chiprow">
+      {% for chip in chips %}
+        {% comment %}
+        .guessed draws the dashed outline that says "a machine put this here" —
+        it stays dashed until you save, which is the moment it becomes yours.
+        {% endcomment %}
+        <label class="bandchip{% if chip.on %} on{% endif %}{% if chip.guessed %} guessed{% endif %}"
+               style="--band: {{ chip.color }};">
+          <input type="checkbox" name="bands" value="{{ chip.slug }}"
+                 {% if chip.on %}checked{% endif %}>
+          <span class="dot"></span>{{ chip.label }}
+        </label>
+      {% endfor %}
+    </div>
+  </td>
+
+  <td class="rowactions">
+    <button type="button" class="btn"
+            hx-post="{% url 'color_bands_save' recipe.pk %}"
+            hx-include="closest tr"
+            hx-target="#color-row-{{ recipe.pk }}"
+            hx-swap="outerHTML">Confirm</button>
+    {% if photo %}
+      <button type="button" class="btn-quiet"
+              hx-post="{% url 'color_suggest_from_photo' recipe.pk %}"
+              hx-target="#color-row-{{ recipe.pk }}"
+              hx-swap="outerHTML"
+              title="Sample the photo and tick what it seems to show. Nothing is saved until you confirm.">Read photo</button>
+    {% endif %}
+  </td>
+</tr>

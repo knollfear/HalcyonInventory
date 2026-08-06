@@ -1,0 +1,101 @@
+{% extends "scarves/base_internal.html" %}
+
+{% block title %}Kanban Card Backfill{% endblock %}
+{% block heading %}Kanban Card Backfill{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 1000px; }
+
+  .filterbar { display: flex; align-items: center; gap: 10px; margin: 14px 0 4px; }
+  #card-filter { width: 22rem; max-width: 100%; padding: 7px 10px; }
+  tr.filtered-out { display: none; }
+  .noresults { display: none; }
+  .noresults.on { display: table-row; }
+
+  td.num, th.num { text-align: right; }
+  .done { color: #2e7d52; font-weight: 600; }
+  .todo { color: #b6bcc4; }
+  .progress { font-size: 13px; color: #667; margin-top: 2px; }
+{% endblock %}
+
+{% block content %}
+  <p class="lead">
+    One card per finished product. Pick the card in your hand, type its
+    entries, move on. Nothing here changes current stock — these are records
+    of dyeing that already happened.
+  </p>
+  <p class="progress">
+    {{ done }} of {{ products|length }} product{{ products|length|pluralize }}
+    have entries typed up so far.
+  </p>
+
+  <div class="filterbar">
+    <input type="search" id="card-filter" autocomplete="off"
+           placeholder="Filter by product, recipe or base…"
+           aria-label="Filter products">
+    <span class="muted small" id="filter-count"></span>
+  </div>
+
+  <div class="card">
+    <table>
+      <thead>
+        <tr>
+          <th>Finished product</th>
+          <th>Recipe</th>
+          <th>Base (raw)</th>
+          <th class="num">Entries typed</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in products %}
+          <tr data-search="{{ p.name|lower }} {{ p.recipe.name|lower }} {{ p.raw_product.name|lower }}">
+            <td><a href="{% url 'card_backfill' p.pk %}">{{ p.name }}</a></td>
+            <td>{{ p.recipe.name }}</td>
+            <td>{{ p.raw_product.name }}</td>
+            <td class="num">
+              {% if p.backfilled %}
+                <span class="done">{{ p.backfilled }}</span>
+              {% else %}
+                <span class="todo">—</span>
+              {% endif %}
+            </td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="4" class="empty">No active finished products.</td></tr>
+        {% endfor %}
+        <tr class="noresults" id="noresults">
+          <td colspan="4" class="muted">No product matches that.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // Same client-side filter as the recipe showcase: every row is already
+  // here, so hiding beats a round trip.
+  (function () {
+    var box = document.getElementById('card-filter');
+    var count = document.getElementById('filter-count');
+    var none = document.getElementById('noresults');
+
+    function apply() {
+      var needle = box.value.trim().toLowerCase();
+      var all = document.querySelectorAll('tr[data-search]');
+      var shown = 0;
+      all.forEach(function (row) {
+        var hit = !needle || row.dataset.search.indexOf(needle) !== -1;
+        row.classList.toggle('filtered-out', !hit);
+        if (hit) shown++;
+      });
+      none.classList.toggle('on', all.length > 0 && shown === 0);
+      count.textContent = needle ? shown + ' of ' + all.length + ' shown' : '';
+    }
+
+    box.addEventListener('input', apply);
+    apply();
+  })();
+</script>
+{% endblock %}
