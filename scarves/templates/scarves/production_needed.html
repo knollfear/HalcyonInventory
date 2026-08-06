@@ -19,8 +19,10 @@
   .swatch { width: 14px; height: 14px; border-radius: 3px; border: 1px solid #ccc; }
   td.num, th.num { text-align: right; }
   .shortage { font-weight: 700; }
-  /* Nothing on the shelf — the one state worth spotting from across the room. */
-  tr.zero { background: #fdf2f1; }
+  /* A whole dye bath still lands at or under par — the one state worth
+     spotting from across the room. Anything less than that is inside the
+     rounding a fixed bath size causes anyway. */
+  tr.behind { background: #fdf2f1; }
   td.actions { white-space: nowrap; margin: 0; display: table-cell; }
 {% endblock %}
 
@@ -48,8 +50,8 @@
           <span class="recipe-name">
             <a href="{% url 'recipe_detail' g.recipe_id %}">{{ g.recipe_name }}</a>
           </span>
-          {% if g.has_zero %}
-            <span class="warn">⚠ Has at least one product with zero on-hand</span>
+          {% if g.has_behind %}
+            <span class="warn">⚠ A full dye bath still lands at or under par</span>
           {% endif %}
         </div>
 

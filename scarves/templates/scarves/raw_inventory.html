@@ -9,6 +9,8 @@
   .category-nav .current { font-weight: 600; color: var(--ink); text-decoration: none; }
   td.actions { white-space: nowrap; margin: 0; display: table-cell; }
   td.actions form { display: inline; }
+  td.actions form.set-to { margin-left: 10px; }
+  .set-to-input { width: 5em; padding: 2px 4px; font: inherit; }
   .order-link { font-size: 13px; }
 {% endblock %}
 
@@ -72,6 +74,16 @@
                     <button type="submit" class="btn-quiet">{{ label }}</button>
                   </form>
                 {% endfor %}
+                <form method="post" action="{% url 'adjust_raw_stock' p.pk %}"
+                      class="set-to">
+                  {% csrf_token %}
+                  <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                  <input type="number" name="set_to" min="0" step="1"
+                         placeholder="{{ p.number_on_hand }}"
+                         aria-label="Set {{ p.name }} count to"
+                         class="set-to-input">
+                  <button type="submit" class="btn-quiet">Set</button>
+                </form>
               </td>
             </tr>
             {% endwith %}

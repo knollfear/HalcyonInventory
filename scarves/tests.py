@@ -2575,25 +2575,25 @@ class BandClassifierTests(TestCase):
         from .colorbands import band_for_hex
 
         # #000000 has hue 0 and #000001 has hue 240. Lightness is what saves it.
-        self.assertEqual(band_for_hex("#000000"), "neutral")   # 639 Jet Black
-        self.assertEqual(band_for_hex("#000001"), "neutral")   # 413 True Black
+        self.assertEqual(band_for_hex("#000000"), "black")     # 639 Jet Black
+        self.assertEqual(band_for_hex("#000001"), "black")     # 413 True Black
 
     def test_greys_are_caught_by_saturation_not_hue(self):
         from .colorbands import band_for_hex
 
-        self.assertEqual(band_for_hex("#708090"), "neutral")   # Slate, hue 210
-        self.assertEqual(band_for_hex("#877c85"), "neutral")   # 638 Silver
-        self.assertEqual(band_for_hex("#2a3439"), "neutral")   # Gun
+        self.assertEqual(band_for_hex("#708090"), "grey")      # Slate, hue 210
+        self.assertEqual(band_for_hex("#877c85"), "grey")      # 638 Silver
+        self.assertEqual(band_for_hex("#2a3439"), "grey")      # Gun
 
     def test_creams_are_caught_by_lightness_not_hue(self):
         from .colorbands import band_for_hex
 
-        self.assertEqual(band_for_hex("#f3ead7"), "neutral")   # 488 Ivory, hue 41
-        self.assertEqual(band_for_hex("#e9d6ba"), "neutral")   # 486 Champagne
+        self.assertEqual(band_for_hex("#f3ead7"), "grey")      # 488 Ivory, hue 41
+        self.assertEqual(band_for_hex("#e9d6ba"), "grey")      # 486 Champagne
 
     def test_a_pale_pink_is_not_swept_up_as_white(self):
         """The cream rule has to spare saturated tints, or pink loses its palest
-        members to neutral — `481 Ballerina Pink` is lighter than Ivory."""
+        members to grey — `481 Ballerina Pink` is lighter than Ivory."""
         from .colorbands import band_for_hex
 
         self.assertEqual(band_for_hex("#facbca"), "pink")
@@ -2632,8 +2632,8 @@ class BandClassifierTests(TestCase):
         from .colorbands import sort_bands
 
         self.assertEqual(
-            sort_bands(["blue", "red", "neutral", "green", "red"]),
-            ["red", "green", "blue", "neutral"],
+            sort_bands(["blue", "red", "grey", "green", "red"]),
+            ["red", "green", "blue", "grey"],
         )
 
 
@@ -2651,27 +2651,35 @@ class BandsFromDyesTests(TestCase):
         self.assertEqual(bands_from_dyes(recipe), ["blue"])
 
     def test_a_recipe_with_no_dyes_claims_nothing(self):
-        """Not 'neutral' — an unrecorded recipe is unknown, not colourless."""
+        """Not 'grey' — an unrecorded recipe is unknown, not colourless."""
         from .colorbands import bands_from_dyes
 
         self.assertEqual(bands_from_dyes(make_recipe("Blank", hexes=())), [])
 
     def test_black_grounds_a_colourway_rather_than_claiming_it(self):
         """Black, grey and cream are working dyes, not colorways — they shade
-        the colours beside them. Left in, neutral would have been the biggest
-        section on the sheet without one scarf in it anybody calls grey."""
+        the colours beside them. Left in, they would have been the biggest
+        section on the sheet without one scarf in them anybody calls grey."""
         from .colorbands import bands_from_dyes
 
         recipe = make_recipe("Turquoise on Black", hexes=("#009fda", "#000000"))
         self.assertEqual(bands_from_dyes(recipe), ["blue"])
 
-    def test_an_all_neutral_recipe_still_claims_neutral(self):
-        """Suppressing neutral only makes sense when there is something to
-        suppress it in favour of. A genuinely grey scarf keeps its section."""
+    def test_an_all_achromatic_recipe_still_claims_its_section(self):
+        """Suppressing grey and black only makes sense when there is something
+        to suppress them in favour of. A genuinely grey scarf keeps its
+        section — and a black-and-slate one claims both, because the split is
+        the point: someone holding a black scarf looks under black."""
         from .colorbands import bands_from_dyes
 
         recipe = make_recipe("Charcoal", hexes=("#000000", "#708090"))
-        self.assertEqual(bands_from_dyes(recipe), ["neutral"])
+        self.assertEqual(bands_from_dyes(recipe), ["grey", "black"])
+
+    def test_black_is_its_own_section_not_a_shade_of_grey(self):
+        from .colorbands import bands_from_dyes
+
+        recipe = make_recipe("Jet", hexes=("#000000",))
+        self.assertEqual(bands_from_dyes(recipe), ["black"])
 
     def test_a_minor_dye_still_gets_its_band(self):
         """Ratio says how much cloth a dye covers, not whether you can see it.
@@ -2727,13 +2735,24 @@ class BandsFromImageTests(TestCase):
         )
         self.assertIn("blue", bands_from_image(BytesIO(data)))
 
-    def test_a_genuinely_grey_scarf_reads_as_neutral(self):
+    def test_a_genuinely_grey_scarf_reads_as_grey(self):
         from io import BytesIO
 
         from .colorbands import bands_from_image
 
         data = make_band_image(background=(130, 130, 132))
-        self.assertEqual(bands_from_image(BytesIO(data)), ["neutral"])
+        self.assertEqual(bands_from_image(BytesIO(data)), ["grey"])
+
+    def test_a_genuinely_black_scarf_reads_as_black_not_grey(self):
+        """The whole reason the band was split: these two used to come back
+        with the same answer, and the black scarf was findable only under a
+        heading nobody would look for it under."""
+        from io import BytesIO
+
+        from .colorbands import bands_from_image
+
+        data = make_band_image(background=(8, 8, 10))
+        self.assertEqual(bands_from_image(BytesIO(data)), ["black"])
 
     def test_a_speck_of_colour_does_not_earn_a_band(self):
         """Regression: dividing by a tiny chromatic mass amplified sensor noise
@@ -2746,9 +2765,9 @@ class BandsFromImageTests(TestCase):
         data = make_band_image(
             patches=[((30, 60, 160), 0.01)], background=(130, 130, 132)
         )
-        self.assertEqual(bands_from_image(BytesIO(data)), ["neutral"])
+        self.assertEqual(bands_from_image(BytesIO(data)), ["grey"])
 
-    def test_a_mostly_neutral_scarf_claims_neutral_as_well_as_its_colour(self):
+    def test_a_mostly_grey_scarf_claims_grey_as_well_as_its_colour(self):
         """A muted colourway is both things at once, and which section it
         belongs in is a judgement — so both are offered and a person picks."""
         from io import BytesIO
@@ -2758,7 +2777,7 @@ class BandsFromImageTests(TestCase):
         data = make_band_image(
             patches=[((30, 60, 160), 0.15)], background=(130, 130, 132)
         )
-        self.assertEqual(bands_from_image(BytesIO(data)), ["blue", "neutral"])
+        self.assertEqual(bands_from_image(BytesIO(data)), ["blue", "grey"])
 
     def test_an_unreadable_file_leaves_the_row_unsuggested(self):
         from io import BytesIO
@@ -3028,3 +3047,252 @@ class BulkParActionTests(TestCase):
         self.products[0].refresh_from_db()
         self.assertEqual(self.products[0].number_on_hand, 3)
         self.assertEqual(self.products[0].shortage, 17)
+
+
+class FinishedParDefaultTests(TestCase):
+    """Par used to be 8 for everything, because 8 was the field default and
+    nothing ever overrode it. It belongs to the blank: a silk scarf and a
+    bamboo shawl don't sell at the same rate, so they shouldn't ask production
+    for the same number.
+    """
+
+    def setUp(self):
+        self.category = RawProductCategory.objects.create(name="Silk")
+        self.raw = RawProduct.objects.create(
+            name="8mm Habotai",
+            category=self.category,
+            price="5.00",
+            finished_par_default=15,
+        )
+        User.objects.create_user("staff", "s@example.test", "pw")
+        self.client.login(username="staff", password="pw")
+
+    def _post_matrix(self, recipe_name, on_hand):
+        url = reverse("bulk_recipe_matrix_entry")
+        return self.client.post(
+            f"{url}?raw_ids={self.raw.id}",
+            {
+                "form-TOTAL_FORMS": "1",
+                "form-INITIAL_FORMS": "0",
+                "form-MIN_NUM_FORMS": "0",
+                "form-MAX_NUM_FORMS": "1000",
+                "form-0-recipe_name": recipe_name,
+                f"form-0-on_hand_{self.raw.id}": str(on_hand),
+            },
+        )
+
+    def test_a_new_finished_product_takes_the_blanks_par(self):
+        self._post_matrix("Sunrise", 3)
+        fp = FinishedProduct.objects.get(recipe__name="Sunrise")
+        self.assertEqual(fp.par, 15)
+
+    def test_the_default_default_is_still_eight(self):
+        """Blanks nobody has set a number on keep the old behaviour."""
+        plain = RawProduct.objects.create(
+            name="Plain", category=self.category, price="5.00"
+        )
+        self.assertEqual(plain.finished_par_default, 8)
+
+    def test_changing_the_blanks_default_never_rewrites_an_existing_par(self):
+        """An existing par is someone's decision; the matrix form is about
+        counts and never asked. Rewriting it here would quietly re-schedule
+        production for every colorway in the blank."""
+        self._post_matrix("Sunrise", 3)
+        fp = FinishedProduct.objects.get(recipe__name="Sunrise")
+        fp.par = 40
+        fp.save()
+
+        self.raw.finished_par_default = 2
+        self.raw.save()
+        self._post_matrix("Sunrise", 9)
+
+        fp.refresh_from_db()
+        self.assertEqual(fp.par, 40)
+        self.assertEqual(fp.number_on_hand, 9)
+
+
+class SetRawStockTests(TestCase):
+    """Counting the shelf and nudging a number are different questions, and
+    the page only answered the second one. `set_to` answers the first, the way
+    the bulk inventory page already does for finished products.
+    """
+
+    def setUp(self):
+        self.category = RawProductCategory.objects.create(name="Silk")
+        self.raw = RawProduct.objects.create(
+            name="8mm Habotai", category=self.category, price="5.00",
+            number_on_hand=12,
+        )
+        User.objects.create_user("staff", "s@example.test", "pw")
+        self.client.login(username="staff", password="pw")
+        self.url = reverse("adjust_raw_stock", args=[self.raw.pk])
+        self.next = reverse("raw_inventory", args=[self.category.pk])
+
+    def _post(self, data):
+        data.setdefault("next", self.next)
+        return self.client.post(self.url, data)
+
+    def test_setting_an_absolute_count_replaces_what_was_there(self):
+        self._post({"set_to": "5"})
+        self.raw.refresh_from_db()
+        self.assertEqual(self.raw.number_on_hand, 5)
+
+    def test_setting_a_higher_count_works_too(self):
+        self._post({"set_to": "30"})
+        self.raw.refresh_from_db()
+        self.assertEqual(self.raw.number_on_hand, 30)
+
+    def test_setting_zero_empties_the_shelf(self):
+        """0 is a real count, and the falsy-string trap would read it as 'blank'
+        and fall through to the delta path, which changes nothing."""
+        self._post({"set_to": "0"})
+        self.raw.refresh_from_db()
+        self.assertEqual(self.raw.number_on_hand, 0)
+
+    def test_the_delta_buttons_still_work(self):
+        self._post({"delta": "-3"})
+        self.raw.refresh_from_db()
+        self.assertEqual(self.raw.number_on_hand, 9)
+
+    def test_an_empty_box_falls_through_to_the_delta(self):
+        """Both forms post to the same endpoint; a blank number field must not
+        stop the +1 button next to it from working."""
+        self._post({"set_to": "", "delta": "1"})
+        self.raw.refresh_from_db()
+        self.assertEqual(self.raw.number_on_hand, 13)
+
+    def test_a_count_wins_over_a_delta(self):
+        self._post({"set_to": "4", "delta": "100"})
+        self.raw.refresh_from_db()
+        self.assertEqual(self.raw.number_on_hand, 4)
+
+    def test_nonsense_leaves_the_count_alone(self):
+        for bad in ("twelve", "-2", "3.5"):
+            with self.subTest(bad=bad):
+                self._post({"set_to": bad})
+                self.raw.refresh_from_db()
+                self.assertEqual(self.raw.number_on_hand, 12)
+
+    def test_setting_it_to_what_it_already_is_is_not_an_error(self):
+        response = self._post({"set_to": "12"})
+        self.assertEqual(response.status_code, 302)
+        self.raw.refresh_from_db()
+        self.assertEqual(self.raw.number_on_hand, 12)
+
+    def test_the_page_offers_a_box_to_type_in(self):
+        response = self.client.get(self.next)
+        self.assertContains(response, 'name="set_to"')
+
+
+class BehindABathTests(TestCase):
+    """The production page's red highlight asks about the *next dye bath*, not
+    about the shelf being empty.
+
+    A bath is a fixed size, so overshooting par is normal — which means "below
+    par" marks nearly every row and therefore points at nothing. The rows worth
+    walking to are the ones where a whole bath still lands at or under par: a
+    session's work there is fully used, and nothing is wasted rounding up.
+    """
+
+    def setUp(self):
+        self.category = RawProductCategory.objects.create(name="Silk")
+        self.raw = RawProduct.objects.create(
+            name="8mm Habotai",
+            category=self.category,
+            price="5.00",
+            number_per_dye_bath=4,
+        )
+        User.objects.create_user("staff", "s@example.test", "pw")
+        self.client.login(username="staff", password="pw")
+
+    def _product(self, name, on_hand, par=8):
+        return FinishedProduct.objects.create(
+            name=name,
+            raw_product=self.raw,
+            recipe=make_recipe(name.lower().replace(" ", "-")),
+            price="30.00",
+            par=par,
+            number_on_hand=on_hand,
+        )
+
+    def test_the_worked_example(self):
+        """Par 8, bath 4: 5 is inside the rounding, 4 is not."""
+        self.assertFalse(self._product("Five", 5).behind_a_bath)
+        self.assertTrue(self._product("Four", 4).behind_a_bath)
+
+    def test_a_bath_landing_exactly_on_par_still_counts(self):
+        """4 + 4 = 8 exactly. 'At or below par' includes at."""
+        self.assertTrue(self._product("Exact", 4).behind_a_bath)
+
+    def test_one_short_of_a_full_bath_does_not(self):
+        self.assertFalse(self._product("Nearly", 5).behind_a_bath)
+
+    def test_an_empty_shelf_still_counts(self):
+        """The old rule's only case has to survive the new one."""
+        self.assertTrue(self._product("Empty", 0).behind_a_bath)
+
+    def test_a_bigger_bath_moves_the_line(self):
+        """The threshold is the bath, so the same shortage reads differently on
+        a blank that dyes 8 at a time."""
+        self.raw.number_per_dye_bath = 8
+        self.raw.save()
+        self.assertFalse(self._product("Four", 4, par=8).behind_a_bath)
+        self.assertTrue(self._product("Zero", 0, par=8).behind_a_bath)
+
+    def test_a_missing_bath_size_is_treated_as_one(self):
+        """`record_dye_bath` already reads 0 as 1; disagreeing here would paint
+        every below-par row red."""
+        self.raw.number_per_dye_bath = 0
+        self.raw.save()
+        self.assertTrue(self._product("Short", 7, par=8).behind_a_bath)
+        self.assertFalse(self._product("AtPar", 8, par=8).behind_a_bath)
+
+    def test_at_or_over_par_is_never_behind(self):
+        self.assertFalse(self._product("AtPar", 8).behind_a_bath)
+        self.assertFalse(self._product("Over", 12).behind_a_bath)
+
+    def _rows(self, html, name):
+        """The <tr> for one product, as rendered."""
+        import re
+        match = re.search(
+            r'<tr id="fp-\d+"[^>]*>\s*<td>' + re.escape(name) + r'</td>', html
+        )
+        return match.group(0) if match else ""
+
+    def test_the_page_paints_only_the_rows_a_bath_would_not_fix(self):
+        self._product("Five On Hand", 5)
+        self._product("Four On Hand", 4)
+
+        html = self.client.get(reverse("production_needed")).content.decode()
+        self.assertIn('class="behind"', self._rows(html, "Four On Hand"))
+        self.assertNotIn('class="behind"', self._rows(html, "Five On Hand"))
+
+    def test_the_htmx_swap_agrees_with_the_page(self):
+        """The row partial is shared, but the swap re-renders one row after a
+        bath — the highlight has to clear itself when the bath fixes it."""
+        fp = self._product("Four On Hand", 4)
+        response = self.client.post(
+            reverse("record_dye_bath", args=[fp.pk]),
+            {"next": reverse("production_needed")},
+            HTTP_HX_REQUEST="true",
+        )
+        fp.refresh_from_db()
+        self.assertEqual(fp.number_on_hand, 8)
+        self.assertNotIn('class="behind"', response.content.decode())
+
+    def test_a_recipe_with_a_behind_row_sorts_above_one_without(self):
+        """Farthest-from-goal first, which is the whole point of the ordering."""
+        self._product("Rounding Only", 5)
+        self._product("Bath Short", 1)
+
+        html = self.client.get(reverse("production_needed")).content.decode()
+        self.assertLess(html.index("bath-short"), html.index("rounding-only"))
+
+    def test_the_group_banner_follows_the_same_rule(self):
+        self._product("Rounding Only", 5)
+        html = self.client.get(reverse("production_needed")).content.decode()
+        self.assertNotIn('class="warn"', html)
+
+        self._product("Bath Short", 1)
+        html = self.client.get(reverse("production_needed")).content.decode()
+        self.assertIn('class="warn"', html)

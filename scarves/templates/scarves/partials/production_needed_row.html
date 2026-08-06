@@ -6,7 +6,7 @@ lives here only — the two used to be copies of each other and drifted.
 Styling comes from the page, since this fragment is only ever swapped into
 a page that already extends base_internal.
 {% endcomment %}
-<tr id="fp-{{ fp.id }}"{% if fp.number_on_hand == 0 %} class="zero"{% endif %}>
+<tr id="fp-{{ fp.id }}"{% if fp.behind_a_bath %} class="behind"{% endif %}>
   <td>{{ fp.name }}</td>
   <td>{{ fp.raw_product.category.name }}</td>
   <td>{{ fp.raw_product.name }}</td>

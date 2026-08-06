@@ -298,9 +298,12 @@ class RawProductAdmin(admin.ModelAdmin):
         "category",
         "price",
         "number_on_hand",
+        "par_level",
+        "finished_par_default",
         "is_active",
         "square_item_id",
     )
+    list_editable = ("par_level", "finished_par_default")
     list_filter = ("category", "is_active")
     search_fields = ("name", "category__name", "sku")
     ordering = ("category__name", "name")

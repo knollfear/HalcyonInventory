@@ -120,6 +120,16 @@ class RawProduct(models.Model):
         default=100,
         help_text="Target undyed quantity to keep on hand. 0 = no par set.",
     )
+    finished_par_default = models.PositiveIntegerField(
+        default=8,
+        help_text=(
+            "Par given to a new finished product made from this blank. Only "
+            "applies at creation — changing it never rewrites the par of a "
+            "product that already exists, because that would silently "
+            "re-schedule production. Use the raw-product admin action "
+            "'Bulk update finished product par' to change existing ones."
+        ),
+    )
     square_item_id = models.CharField(
         max_length=100,
         blank=True,
@@ -295,6 +305,31 @@ class FinishedProduct(models.Model):
         if self.par is None:
             return 0
         return max(self.par - self.number_on_hand, 0)
+
+    @property
+    def bath_size(self) -> int:
+        """How many of this come out of one dye bath. Never 0 — `record_dye_bath`
+        already treats a missing bath size as 1, and this has to agree with it."""
+        return self.raw_product.number_per_dye_bath or 1
+
+    @property
+    def behind_a_bath(self) -> bool:
+        """True when a whole dye bath still lands at or under par.
+
+        This is the production page's red highlight, and it is a question about
+        the *next bath*, not about the shelf being empty. With par 8 and a bath
+        of 4: at 5 on hand a bath overshoots to 9, so the shortage of 3 is going
+        to be rounded away whenever this recipe next gets dyed anyway — nothing
+        to plan around. At 4 on hand a bath lands exactly on 8, and every step
+        below that ends the bath still short. Those are the ones worth walking
+        to, because they're where a session's work is fully used.
+
+        Overshoot is normal and expected (a bath is a fixed size), so 'below par'
+        on its own marks nearly everything and picks out nothing.
+        """
+        if self.par is None:
+            return False
+        return self.shortage >= self.bath_size
 
 
 class FinishedProductImage(models.Model):

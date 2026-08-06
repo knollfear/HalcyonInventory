@@ -33,7 +33,7 @@ Measured against the 41 dyes actually used in recipes, the hex path gets about
 times in 5, and finds every band on a multi-color scarf far less often than
 that. Magenta (`412 Pink Orchid`, `425 Amethyst`) is genuinely undecidable
 between pink and purple at these thresholds, and dark greens shot in shadow
-read as neutral.
+read as black.
 
 Which is why nothing here writes to the database. `Recipe.color_bands` is set
 by a human on the classification page; these functions only fill the form in.
@@ -62,7 +62,8 @@ BANDS = (
     ("purple", "Purple", "#6a3d9a"),
     ("pink", "Pink", "#e07aa8"),
     ("brown", "Brown", "#7a4b2a"),
-    ("neutral", "Neutral", "#8a8f96"),
+    ("grey", "Grey", "#8a8f96"),
+    ("black", "Black", "#2b2b2b"),
 )
 
 BAND_CHOICES = [(slug, label) for slug, label, _ in BANDS]
@@ -70,12 +71,18 @@ BAND_SLUGS = [slug for slug, _, _ in BANDS]
 BAND_LABELS = {slug: label for slug, label, _ in BANDS}
 BAND_COLORS = {slug: color for slug, _, color in BANDS}
 
-#: Grey/black/white/cream. Kept as its own band rather than dropped, because a
-#: genuinely grey scarf still has to be findable — it just isn't on the rainbow.
-NEUTRAL = "neutral"
+#: The two achromatic sections. They were one band, `neutral`, which was the
+#: wrong shape for the shelf: "neutral" is a category name, not a thing anyone
+#: says about a scarf, and it filed jet black next to ivory. Someone holding a
+#: black scarf looks under black. Grey keeps the rest — silver, slate, cream,
+#: ivory — because those do read as one family to the eye, and none of them is
+#: a section on its own.
+GREY = "grey"
+BLACK = "black"
+NEUTRALS = (GREY, BLACK)
 
-#: The chromatic bands, in print order. Everything except `neutral`.
-CHROMATIC = tuple(s for s in BAND_SLUGS if s != NEUTRAL)
+#: The chromatic bands, in print order. Everything except grey and black.
+CHROMATIC = tuple(s for s in BAND_SLUGS if s not in NEUTRALS)
 
 
 def band_for_hsl(h, s, ll, *, black=0.12, grey=0.18, brown_l=0.60):
@@ -89,13 +96,13 @@ def band_for_hsl(h, s, ll, *, black=0.12, grey=0.18, brown_l=0.60):
     """
     # --- axis 2 and 3 first: is this a color at all? ---
     if ll <= black:
-        return NEUTRAL                       # black, whatever its nominal hue
+        return BLACK                         # black, whatever its nominal hue
     if ll >= 0.88 and s < 0.50:
-        return NEUTRAL                       # white; a pale *pink* stays pink
+        return GREY                          # white; a pale *pink* stays pink
     if s < grey:
-        return NEUTRAL                       # grey, ditto
+        return GREY                          # grey, ditto
     if ll >= 0.78 and s < 0.65 and h < 70:
-        return NEUTRAL                       # cream / ivory / champagne
+        return GREY                          # cream / ivory / champagne
 
     # --- brown: dark, dull, and warm. The only band needing all three axes ---
     if ll < 0.35 and s < 0.55 and (h < 45 or h > 340):
@@ -152,14 +159,14 @@ def bands_from_dyes(recipe):
     it. The 10% accent dye still gets its own band, because someone looking for
     that color will still spot it on the scarf.
 
-    Neutral is the exception, and only claims the recipe when it is the *only*
-    thing there. Black, grey and cream are working dyes here, not colorways:
-    they ground and shade the colors beside them. Every recipe in stock that
-    reads as neutral reads as something else too — `turq-mid-black`,
+    Grey and black are the exception, and only claim the recipe when one of
+    them is the *only* thing there. Black, grey and cream are working dyes
+    here, not colorways: they ground and shade the colors beside them. Every
+    recipe in stock that reads as achromatic reads as something else too — `turq-mid-black`,
     `russet-cab-black`, `grey-forest-navy` — and nobody hunting for any of
-    those looks in the neutral section. Left in, neutral would have been the
-    largest section on the sheet, at 21 of 38, without one scarf in it that
-    anybody would call grey.
+    those looks in the grey or black section. Left in, they would have been
+    the largest section on the sheet between them, at 21 of 38, without one
+    scarf in either that anybody would call grey or black.
     """
     bands = []
     for rd in recipe.recipe_dyes.all():
@@ -167,7 +174,7 @@ def bands_from_dyes(recipe):
         if band:
             bands.append(band)
 
-    chromatic = [b for b in bands if b != NEUTRAL]
+    chromatic = [b for b in bands if b not in NEUTRALS]
     return sort_bands(chromatic or bands)
 
 
@@ -195,8 +202,9 @@ PHOTO_BAND_FLOOR = 0.04
 #: that survives is grey and drops out as neutral anyway.
 PHOTO_CROP = (0.08, 0.04, 0.92, 0.72)
 
-#: When this much of a photo has no nameable hue, `neutral` is suggested *as
-#: well as* whatever colors cleared the bar — not instead of them.
+#: When this much of a photo has no nameable hue, grey or black is suggested
+#: *as well as* whatever colors cleared the bar — not instead of them. Which of
+#: the two is whichever covers more of the crop.
 #:
 #: The alternative was a floor: below some share of color, call the whole scarf
 #: grey. It doesn't survive the actual photos. The two shots of RECTAN-FURIOS
@@ -214,8 +222,9 @@ PHOTO_NEUTRAL_SHARE = 0.70
 def bands_from_image(fp, *, share=PHOTO_BAND_SHARE):
     """The bands visible in a product photo. `fp` is anything PIL can open.
 
-    Neutral pixels are counted but never suggested, and the share each band
-    needs is measured against the *chromatic* pixels only. That's what makes
+    Grey and black pixels are counted but never suggested on their own merits,
+    and the share each band needs is measured against the *chromatic* pixels
+    only. That's what makes
     the background self-cancelling: posterboard, barcode card and granite are
     all neutral, so however much of the frame they take, they don't dilute the
     scarf's own colors.
@@ -260,10 +269,12 @@ def bands_from_image(fp, *, share=PHOTO_BAND_SHARE):
         for px in im.getdata()
     )
     total = sum(counts.values())
-    chromatic = total - counts.get(NEUTRAL, 0)
+    neutral_total = sum(counts.get(b, 0) for b in NEUTRALS)
+    chromatic = total - neutral_total
     if not chromatic:
-        # A genuinely colorless scarf — the greys are the scarf, not the counter.
-        return [NEUTRAL]
+        # A genuinely colorless scarf — the greys are the scarf, not the
+        # counter. Which of the two it is comes from which one it actually is.
+        return [max(NEUTRALS, key=lambda b: counts.get(b, 0))]
 
     # Each band's share is measured against the *chromatic* pixels only, which
     # is what makes the background self-cancelling: posterboard, barcode card
@@ -272,10 +283,10 @@ def bands_from_image(fp, *, share=PHOTO_BAND_SHARE):
     found = [
         band
         for band, n in counts.items()
-        if band != NEUTRAL
+        if band not in NEUTRALS
         and n / chromatic >= share
         and n / total >= PHOTO_BAND_FLOOR
     ]
-    if counts.get(NEUTRAL, 0) / total >= PHOTO_NEUTRAL_SHARE:
-        found.append(NEUTRAL)
+    if neutral_total / total >= PHOTO_NEUTRAL_SHARE:
+        found.append(max(NEUTRALS, key=lambda b: counts.get(b, 0)))
     return sort_bands(found)

@@ -17,7 +17,8 @@ from django import forms
 from django.http import HttpResponse, JsonResponse
 from django.urls import reverse
 from django.db import transaction
-from django.db.models import F, Count, Sum, Max, Case, When, IntegerField, ExpressionWrapper, Q
+from django.db.models import F, Count, Sum, Max, Case, When, IntegerField, ExpressionWrapper, Q, Value
+from django.db.models.functions import Greatest
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
@@ -194,6 +195,21 @@ def production_needed_view(request):
         output_field=IntegerField(),
     )
 
+    # The SQL half of `FinishedProduct.behind_a_bath` — shortage >= bath size,
+    # rearranged so it doesn't have to reference the annotation above. Greatest
+    # keeps a bath size of 0 from making the test vacuously true, matching the
+    # `or 1` the property and `record_dye_bath` both use.
+    behind_a_bath_expr = Case(
+        When(
+            par__gte=F("number_on_hand") + Greatest(
+                F("raw_product__number_per_dye_bath"), Value(1)
+            ),
+            then=1,
+        ),
+        default=0,
+        output_field=IntegerField(),
+    )
+
     base_qs = (
         FinishedProduct.objects.filter(
             is_active=True,
@@ -213,15 +229,9 @@ def production_needed_view(request):
         base_qs.values("recipe_id", "recipe__name")
         .annotate(
             total_shortage=Sum("shortage_value"),
-            has_zero=Max(
-                Case(
-                    When(number_on_hand=0, then=1),
-                    default=0,
-                    output_field=IntegerField(),
-                )
-            ),
+            has_behind=Max(behind_a_bath_expr),
         )
-        .order_by("-has_zero", "-total_shortage", "recipe__name")
+        .order_by("-has_behind", "-total_shortage", "recipe__name")
     )
 
     # Group finished products by recipe id
@@ -240,7 +250,7 @@ def production_needed_view(request):
             {
                 "recipe_id": rid,
                 "recipe_name": row["recipe__name"],
-                "has_zero": bool(row["has_zero"]),
+                "has_behind": bool(row["has_behind"]),
                 "total_shortage": row["total_shortage"] or 0,
                 "items": fps,
                 "recipe_obj": fps[0].recipe,  # already select_related
@@ -396,27 +406,49 @@ def raw_inventory_view(request, category_id):
 def adjust_raw_stock(request, pk):
     """
     Adjust number_on_hand for a raw product.
-    `delta` is posted as an integer (e.g. +1, -1, +10).
+
+    Two ways in, because they answer different questions. `delta` is a nudge
+    (+1, -1, +10) for when you know what just happened — a box arrived. `set_to`
+    is an absolute count for when you've just counted the shelf and know what is
+    there, which is the same thing the bulk inventory page does for finished
+    products. `set_to` wins if both are posted.
     """
     raw_product = get_object_or_404(RawProduct, pk=pk, is_active=True)
 
-    try:
-        delta = int(request.POST.get("delta", "0"))
-    except ValueError:
-        delta = 0
-
     next_url = request.POST.get("next") or request.META.get("HTTP_REFERER") or "/"
+
+    old_on_hand = raw_product.number_on_hand
+    raw_set_to = (request.POST.get("set_to") or "").strip()
+
+    if raw_set_to:
+        try:
+            new_on_hand = int(raw_set_to)
+            if new_on_hand < 0:
+                raise ValueError
+        except ValueError:
+            messages.error(
+                request,
+                f"'{raw_set_to}' isn't a count, so '{raw_product.name}' was left alone.",
+            )
+            return redirect(next_url)
+        delta = new_on_hand - old_on_hand
+    else:
+        try:
+            delta = int(request.POST.get("delta", "0"))
+        except ValueError:
+            delta = 0
+        new_on_hand = max(old_on_hand + delta, 0)
 
     if delta == 0:
         messages.info(request, f"No change applied to '{raw_product.name}'.")
         return redirect(next_url)
 
-    old_on_hand = raw_product.number_on_hand
-    new_on_hand = max(old_on_hand + delta, 0)
     raw_product.number_on_hand = new_on_hand
     raw_product.save()
 
-    if delta > 0:
+    if raw_set_to:
+        action = f"Counted {new_on_hand} units"
+    elif delta > 0:
         action = f"Received {delta} units"
     else:
         action = f"Removed {abs(delta)} units"
@@ -1378,6 +1410,11 @@ def bulk_recipe_matrix_entry(request):
 
                     touched_cells += 1
                     if created:
+                        # Par comes from the blank, not the field default, and
+                        # only on creation — an existing product's par is
+                        # someone's decision and this form never asked about it.
+                        fp.par = rp.finished_par_default
+                        fp.save(update_fields=["par"])
                         created_fp += 1
                     else:
                         updated_fp += 1
