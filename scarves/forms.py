@@ -1,8 +1,12 @@
 # scarves/forms.py
+from datetime import timedelta
+from decimal import Decimal
+
 from django import forms
 from django.db import transaction
+from django.utils import timezone
 
-from .models import Dye, Recipe, RecipeDye, RawProduct  # RecipeDye is your through model
+from .models import Dye, Employee, Recipe, RecipeDye, RawProduct  # RecipeDye is your through model
 
 class RecipeDyesForm(forms.Form):
     """Edit just the dye assignments of one existing recipe.
@@ -124,3 +128,149 @@ class QuickRecipeRowForm(forms.Form):
 
 
 
+
+class HoursForm(forms.Form):
+    """The public hours form: who you are, your PIN, how long, which day.
+
+    Four fields, one screen, no login. Everything it rejects, it rejects for
+    a reason it can state — a form that silently accepts 96 hours or a shift
+    next Tuesday costs more to unpick later than it saves now.
+
+    Booth hours only. There is deliberately no "what kind of work" field: see
+    TimeEntry for why adding one is a payroll decision before it is a schema
+    decision.
+    """
+
+    #: The picker runs in quarter-hours, which is how payroll rounds anyway
+    #: and how people already describe a shift ("half nine to six, half hour
+    #: for lunch"). Fine enough to be honest, coarse enough to stay one tap.
+    STEP = Decimal("0.25")
+    MIN_HOURS = Decimal("0.25")
+    MAX_HOURS = Decimal("14")
+
+    #: How far back the form will take a day. Long enough to catch up after a
+    #: weekend that got away, short enough that a month-old figure has to come
+    #: through a person instead of being typed from memory.
+    MAX_BACKDATE_DAYS = 21
+
+    employee = forms.ModelChoiceField(
+        queryset=Employee.objects.none(),   # set in __init__, see below
+        empty_label="— choose your name —",
+        label="Your name",
+    )
+    pin = forms.CharField(
+        max_length=4,
+        label="Your PIN",
+        widget=forms.TextInput(attrs={
+            # inputmode + pattern get the numeric keypad on a phone without
+            # type="number", which brings spinner arrows and strips leading
+            # zeros — and half these PINs start with one.
+            "inputmode": "numeric",
+            "pattern": "[0-9]*",
+            "autocomplete": "off",
+            "placeholder": "····",
+        }),
+    )
+    # A decimal validated against the rule, rendered as a picker — not a
+    # ChoiceField. A ChoiceField compares the submitted *string* to the option
+    # strings, so "9.5" and "9.50" are different answers and only one of them
+    # validates. The constraint is "a quarter-hour between 15 minutes and 14
+    # hours"; the dropdown is how it's asked, not what it means.
+    hours = forms.DecimalField(
+        max_digits=4,
+        decimal_places=2,
+        label="Hours worked",
+        widget=forms.Select(),   # choices set in __init__
+    )
+    work_date = forms.DateField(
+        label="Day worked",
+        widget=forms.DateInput(attrs={"type": "date"}),
+    )
+
+    def __init__(self, *args, **kwargs):
+        # Popped before super(), which would otherwise reject the kwarg. Passing
+        # `today` in is what lets the tests pin a date instead of racing one.
+        self.today = kwargs.pop("today", None) or timezone.localdate()
+        super().__init__(*args, **kwargs)
+
+        # Only active rows, and evaluated per-instance rather than at import
+        # time so somebody hired this morning is on the list without a redeploy.
+        self.fields["employee"].queryset = Employee.objects.filter(is_active=True)
+        self.fields["hours"].widget.choices = self.hour_choices()
+        self.fields["work_date"].widget.attrs.update({
+            "min": (self.today - timedelta(days=self.MAX_BACKDATE_DAYS)).isoformat(),
+            "max": self.today.isoformat(),
+        })
+
+    @classmethod
+    def hour_choices(cls):
+        """Quarter-hour options from 15 minutes to a very long day."""
+        choices = [("", "— how long? —")]
+        value = cls.MIN_HOURS
+        while value <= cls.MAX_HOURS:
+            choices.append((cls.canonical(value), cls.describe_hours(value)))
+            value += cls.STEP
+        return choices
+
+    @staticmethod
+    def canonical(value: Decimal) -> str:
+        """`Decimal('9.50')` -> `'9.5'`; `Decimal('1.00')` -> `'1'`.
+
+        `:f` rather than plain `str()` on the normalised value, which would
+        render 10 as `1E+1` and put a hole in the middle of the picker.
+        """
+        return f"{value.normalize():f}"
+
+    @classmethod
+    def describe_hours(cls, value: Decimal) -> str:
+        """`Decimal('9.50')` -> `'9.5 hours'`; `Decimal('1.00')` -> `'1 hour'`."""
+        return f"{cls.canonical(value)} hour{'' if value == 1 else 's'}"
+
+    def clean_hours(self):
+        """The rule the picker is a rendering of.
+
+        Checked here rather than trusted to the dropdown, because a hand-built
+        POST doesn't go near the dropdown.
+        """
+        hours = self.cleaned_data["hours"]
+        if hours < self.MIN_HOURS or hours > self.MAX_HOURS:
+            raise forms.ValidationError(
+                f"Hours have to be between {self.canonical(self.MIN_HOURS)} and "
+                f"{self.canonical(self.MAX_HOURS)}. If that's really the shift, "
+                f"ask a manager to enter it."
+            )
+        if hours % self.STEP != 0:
+            raise forms.ValidationError("Round to the nearest quarter hour.")
+        return hours
+
+    def clean_pin(self):
+        pin = (self.cleaned_data.get("pin") or "").strip()
+        if not pin.isdigit() or len(pin) != 4:
+            raise forms.ValidationError("Your PIN is four digits.")
+        return pin
+
+    def clean_work_date(self):
+        work_date = self.cleaned_data["work_date"]
+        if work_date > self.today:
+            raise forms.ValidationError(
+                "That day hasn't happened yet — hours go in after the shift."
+            )
+        oldest = self.today - timedelta(days=self.MAX_BACKDATE_DAYS)
+        if work_date < oldest:
+            raise forms.ValidationError(
+                f"That's more than {self.MAX_BACKDATE_DAYS} days ago. Ask a "
+                f"manager to add it for you."
+            )
+        return work_date
+
+    def clean(self):
+        cleaned = super().clean()
+        employee = cleaned.get("employee")
+        pin = cleaned.get("pin")
+
+        # Only checked when both arrived intact; otherwise the field errors
+        # already say what's wrong and a PIN error on top is just noise.
+        if employee and pin and pin != employee.pin:
+            self.add_error("pin", "That PIN doesn't match the name you picked.")
+
+        return cleaned

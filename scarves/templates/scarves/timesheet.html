@@ -1,0 +1,178 @@
+{% extends "scarves/base_internal.html" %}
+{% comment %}
+One pay week, Saturday to Friday, added up.
+
+The table is the deliverable: read down it, fix what's wrong in the admin,
+and type the totals into payroll. Flags don't mean an entry is wrong — they
+mean it's the row to look at first.
+
+Every figure here is booth hours. Nothing on this page distinguishes kinds
+of work, so nothing on it should imply it does.
+{% endcomment %}
+
+{% block title %}Timesheet{% endblock %}
+{% block heading %}Timesheet{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 1000px; }
+
+  .weeknav {
+      display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+      margin: 14px 0 6px;
+  }
+  .weeknav .range { font-size: 17px; font-weight: 600; }
+  .weeknav form { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+  .weeknav input[type="date"] {
+      font: inherit; padding: 5px 8px;
+      border: 1px solid #cfd6de; border-radius: 6px;
+  }
+
+  /* The grid is seven days wide and can't shrink below legibility, so it
+     scrolls inside itself rather than squeezing the page. */
+  .sheet { overflow-x: auto; margin-top: 8px; }
+  .sheet table { min-width: 760px; }
+  .sheet th, .sheet td { white-space: nowrap; }
+  .sheet th.day { text-align: right; }
+  .sheet td.num, .sheet th.num {
+      text-align: right; font-variant-numeric: tabular-nums;
+  }
+  .sheet td.empty { color: #c3c9d1; text-align: right; }
+  .sheet .who { font-weight: 600; }
+  .sheet tfoot td {
+      border-top: 2px solid #1a3a5c; border-bottom: none;
+      font-weight: 600; padding-top: 10px;
+  }
+  .sheet td.total, .sheet th.total {
+      border-left: 2px solid #e1e5ea; font-weight: 600;
+  }
+
+  /* A flagged figure is marked where it sits — a legend at the bottom of a
+     scrolling table is a footnote nobody follows. */
+  .flagged { position: relative; color: #8a5a00; }
+  .flagged::after {
+      content: "•"; margin-left: 3px; font-weight: 700;
+  }
+  .flaglist { margin: 18px 0 0; padding: 0; list-style: none; font-size: 13px; }
+  .flaglist li { padding: 4px 0; color: #555; }
+  .flaglist .who { color: var(--ink); }
+  .flaglist .why { color: #8a5a00; }
+
+  .share {
+      margin-top: 26px; font-size: 13px; color: #555;
+      border-top: 1px solid #eef1f4; padding-top: 14px;
+  }
+  .share code { word-break: break-all; }
+
+  /* The one number this page exists to produce, so it does not sit in a
+     table footer looking like every other subtotal. */
+  .grand {
+      margin: 14px 0 0; padding: 10px 14px; font-size: 15px;
+      background: #f1f8f3; border: 1px solid #bcd8c6; border-radius: 8px;
+  }
+{% endblock %}
+
+{% block content %}
+
+  <div class="weeknav">
+    <a href="?week={{ previous_week|date:'Y-m-d' }}">← previous</a>
+    <span class="range">
+      {{ summary.start|date:"j M Y" }} – {{ summary.end|date:"j M Y" }}
+      {% if is_current_week %}<span class="muted">(this week)</span>{% endif %}
+    </span>
+    <a href="?week={{ next_week|date:'Y-m-d' }}">next →</a>
+
+    <form method="get">
+      <label class="small" for="week">Jump to</label>
+      {# Any day is accepted and snapped back to its Saturday. #}
+      <input type="date" id="week" name="week" value="{{ summary.start|date:'Y-m-d' }}">
+      <button class="btn-quiet" type="submit">Go</button>
+    </form>
+  </div>
+
+  {% if summary.rows %}
+    <div class="sheet">
+      <table>
+        <thead>
+          <tr>
+            <th>Employee</th>
+            {% for day in summary.days %}
+              <th class="day">{{ day|date:"D" }}<br><span class="muted">{{ day|date:"j M" }}</span></th>
+            {% endfor %}
+            <th class="num total">Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in summary.rows %}
+            <tr>
+              <td class="who">{{ row.employee.name }}</td>
+              {% for cell in row.cells %}
+                {% if cell.entry %}
+                  <td class="num{% if cell.flags %} flagged{% endif %}"
+                      {% if cell.flags %}title="{{ cell.flags|join:', ' }}"{% endif %}>
+                    {{ cell.entry.hours|floatformat:"-2" }}
+                  </td>
+                {% else %}
+                  <td class="empty">·</td>
+                {% endif %}
+              {% endfor %}
+              <td class="num total{% if row.flags %} flagged{% endif %}">
+                {{ row.total|floatformat:"-2" }}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td>All staff</td>
+            {% for day_total in summary.day_totals %}
+              <td class="num">{{ day_total|floatformat:"-2" }}</td>
+            {% endfor %}
+            <td class="num total">{{ summary.total|floatformat:"-2" }}</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+
+    <p class="grand">
+      Booth hours this week:
+      <strong>{{ summary.total|floatformat:"-2" }}</strong>
+    </p>
+
+    {% comment %}
+    Every flag, spelled out. The dots in the table say *where* to look; this
+    says what for, without needing a hover on a touchscreen.
+    {% endcomment %}
+    <ul class="flaglist">
+      {% for row in summary.rows %}
+        {% for cell in row.cells %}
+          {% if cell.flags %}
+            <li>
+              <span class="who">{{ row.employee.name }}</span>,
+              {{ cell.day|date:"D j M" }} —
+              <span class="why">{{ cell.flags|join:", " }}</span>
+            </li>
+          {% endif %}
+        {% endfor %}
+        {% if row.flags %}
+          <li>
+            <span class="who">{{ row.employee.name }}</span>, whole week —
+            <span class="why">{{ row.flags|join:", " }}</span>
+          </li>
+        {% endif %}
+      {% endfor %}
+    </ul>
+
+  {% else %}
+    <p class="empty">
+      Nobody reported hours for this week.
+    </p>
+  {% endif %}
+
+  <p class="share">
+    Staff report their hours at <code>{{ hours_entry_url }}</code> — no login,
+    just their name and PIN. Names, PINs and any figure that needs correcting
+    are all in <a href="/admin/scarves/employee/">the admin</a>.
+  </p>
+
+{% endblock %}

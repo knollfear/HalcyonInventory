@@ -6,6 +6,10 @@ thing exposed?" is readable straight off the URL:
     private/    staff only — every view behind @login_required
     public/     no login: the matching game and the quiz, plus the board
                 endpoints they and any embed fetch
+    secret/     no login either, but not advertised — the URL is the way in.
+                Listed on the staff site map so you can find the link to hand
+                out, and filtered off the public one so a customer never
+                stumbles into it.
     webhooks/   machine-to-machine, unauthenticated but not browsable
 
 The split mirrors the template layers (base_internal.html / base_public.html),
@@ -129,6 +133,15 @@ urlpatterns = [
         views.product_search,
         name="product_search",
     ),
+
+    # --- Timekeeping ---
+    # The two halves sit in different buckets on purpose. Reporting your own
+    # hours needs no account — that is the entire point — but it isn't for
+    # customers either, so it's secret/: reachable by anyone holding the URL,
+    # off the public map, and guarded by a four-digit PIN. The week, which
+    # shows what everyone worked, is staff-only.
+    path("secret/hours/", views.hours_entry, name="hours_entry"),
+    path("private/timesheet/", views.timesheet, name="timesheet"),
 
     # --- Public: the directory ---
     # The public half of the site map, safe to hand to a stranger. Filtered in

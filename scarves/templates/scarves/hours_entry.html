@@ -1,0 +1,168 @@
+{% extends "scarves/base_public.html" %}
+{% comment %}
+The hours form. Public shell because there is no login — but unlike the games
+this isn't for strangers, so it stays off the public site map and reaches
+people as a bookmark or a card at the stall.
+
+Big controls on purpose: this gets filled in on a phone, one-handed, at the
+end of a long day, quite possibly in the dark.
+{% endcomment %}
+
+{% block title %}Report Hours{% endblock %}
+{% block heading %}Report your hours{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 460px; }
+
+  .field { margin-bottom: 18px; }
+  .field label {
+      display: block; font-weight: 600; font-size: .95rem; margin-bottom: 6px;
+  }
+  /* 16px minimum on the controls — anything smaller and iOS zooms the page
+     in on focus, which on a form this short is jarring every single time. */
+  .field select, .field input {
+      font: inherit; font-size: 16px; width: 100%;
+      padding: 12px; border: 1px solid #c8cfd8; border-radius: 8px;
+      background: #fff; color: var(--ink);
+  }
+  .field input:focus, .field select:focus {
+      outline: none; border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(35, 70, 107, .14);
+  }
+  .field .errorlist {
+      margin: 6px 0 0; padding-left: 1.1rem;
+      font-size: .85rem; color: #8a2f2a;
+  }
+
+  .btn {
+      width: 100%; padding: 14px; font: inherit; font-size: 1rem;
+      font-weight: 600; border: 1px solid var(--accent);
+      background: var(--accent); color: #fff; border-radius: 8px;
+      cursor: pointer;
+  }
+  .btn:hover { background: var(--accent-dark); border-color: var(--accent-dark); }
+
+  .panel {
+      border: 1px solid #e2e6ea; border-radius: 10px;
+      padding: 16px; margin-bottom: 22px; background: #f8fafc;
+  }
+  .panel.good { background: #f1f8f3; border-color: #bcd8c6; }
+  .panel.warn { background: #fff6e0; border-color: #f0e0b0; }
+  .panel.stop { background: #fdf2f1; border-color: #f0c8c4; }
+  .panel h2 { margin: 0 0 8px; font-size: 1rem; }
+  .panel p { margin: 0 0 8px; font-size: .9rem; line-height: 1.5; }
+  .panel p:last-child { margin-bottom: 0; }
+
+  .recap { width: 100%; border-collapse: collapse; margin-top: 10px; }
+  .recap td { padding: 5px 0; font-size: .9rem; border-bottom: 1px solid #dde4ea; }
+  .recap td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .recap tr:last-child td { border-bottom: none; font-weight: 600; }
+{% endblock %}
+
+{% block content %}
+
+  {% if locked %}
+    {% comment %}
+    The PIN throttle tripped. Deliberately a dead end with a human on the
+    other side of it, rather than a countdown somebody can wait out.
+    {% endcomment %}
+    <div class="panel stop">
+      <h2>Too many wrong PINs</h2>
+      <p>
+        Close this page and open it again to have another go. If you can't
+        remember your PIN, ask and it'll be read back to you.
+      </p>
+    </div>
+
+  {% else %}
+
+    {% if saved %}
+      <div class="panel good">
+        <h2>Got it — thank you</h2>
+        <p>
+          <strong>{{ saved.employee.name }}</strong>,
+          {{ saved.hours|floatformat:"-2" }} hour{{ saved.hours|floatformat:"-2"|pluralize }}
+          on {{ saved.work_date|date:"l j F" }}.
+        </p>
+
+        {% if saved_week %}
+          <p class="muted">
+            Your week so far ({{ saved_week.start|date:"j M" }} –
+            {{ saved_week.end|date:"j M" }}) — worth a glance before you go:
+          </p>
+          <table class="recap">
+            {% for entry in saved_week.entries %}
+              <tr>
+                <td>{{ entry.work_date|date:"D j M" }}</td>
+                <td class="num">{{ entry.hours|floatformat:"-2" }}</td>
+              </tr>
+            {% endfor %}
+            <tr>
+              <td>Total</td>
+              <td class="num">{{ saved_week.total|floatformat:"-2" }}</td>
+            </tr>
+          </table>
+        {% endif %}
+
+        <p class="muted">
+          Something wrong? Report the same day again and it'll replace this.
+        </p>
+      </div>
+    {% endif %}
+
+    {% if existing %}
+      {% comment %}
+      The overwrite confirmation. The old figure is stated in full: this is
+      the one screen where a wrong tap silently loses a day's pay.
+      {% endcomment %}
+      <div class="panel warn">
+        <h2>You already reported that day</h2>
+        <p>
+          <strong>{{ existing.employee.name }}</strong> has
+          {{ existing.hours|floatformat:"-2" }} hour{{ existing.hours|floatformat:"-2"|pluralize }}
+          down for {{ existing.work_date|date:"l j F" }}.
+        </p>
+        <p>
+          Submitting again replaces that figure — it doesn't add to it. If you
+          worked two shifts that day, report the total.
+        </p>
+      </div>
+    {% endif %}
+
+    <form method="post" novalidate>
+      {% csrf_token %}
+
+      {% if form.non_field_errors %}
+        <div class="panel stop">{{ form.non_field_errors }}</div>
+      {% endif %}
+
+      {% for field in form %}
+        <div class="field">
+          <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+          {{ field }}
+          {{ field.errors }}
+        </div>
+      {% endfor %}
+
+      {% if existing %}
+        {% comment %}
+        Carries the figure being replaced, so a form left open in another
+        tab can't confirm away a number it never showed.
+        {% endcomment %}
+        <input type="hidden" name="confirm_replace" value="{{ existing.hours }}">
+      {% endif %}
+
+      <button class="btn" type="submit">
+        {% if existing %}Yes — replace it{% else %}Submit{% endif %}
+      </button>
+    </form>
+
+    <p class="muted" style="margin-top:18px">
+      Booth hours only, one entry per day, after the shift. Round to the
+      nearest quarter hour and don't count your break.
+    </p>
+
+  {% endif %}
+
+{% endblock %}

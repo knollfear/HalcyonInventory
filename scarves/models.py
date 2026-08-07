@@ -1,7 +1,13 @@
+from decimal import Decimal
+
 from colorfield.fields import ColorField
 from django.contrib.postgres.fields import ArrayField
 from django.db import models
-from django.core.validators import MinValueValidator, MaxValueValidator
+from django.core.validators import (
+    MinValueValidator,
+    MaxValueValidator,
+    RegexValidator,
+)
 from django.utils import timezone
 
 from .colorbands import BAND_CHOICES
@@ -531,4 +537,119 @@ class ProductImageUpload(models.Model):
 
     def __str__(self):
         return f"{self.key} ({self.status})"
+
+
+class Employee(models.Model):
+    """Someone who works the booth during festival hours and reports their own.
+
+    "Works the booth" is the whole roster this covers — it is not a list of
+    everyone who helps out. See TimeEntry for why the boundary matters.
+
+    Deliberately not a `django.contrib.auth` User. A seasonal crew would mean
+    an account, a password and a reset request per person, all to protect a
+    number they tell you anyway — so identity on the hours form is a name off
+    a list plus a four-digit PIN.
+
+    Be clear about what the PIN is for: it stops somebody tapping the wrong
+    name, and it stops idle mischief from whoever finds the URL. It is not a
+    secret and does not pretend to be one. The real control is that a person
+    reads the week before it goes to payroll.
+    """
+    name = models.CharField(max_length=100, unique=True)
+    pin = models.CharField(
+        max_length=4,
+        validators=[RegexValidator(r"^\d{4}$", "The PIN must be exactly four digits.")],
+        help_text=(
+            "Four digits, handed to the employee. Stored as typed so it can be "
+            "read back to whoever forgets theirs — it guards a timesheet entry "
+            "a person reviews, not an account."
+        ),
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text=(
+            "Unticked takes them off the hours form without touching the hours "
+            "they already reported."
+        ),
+    )
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
+
+
+class TimeEntry(models.Model):
+    """One person's hours for one day, as they reported them.
+
+    Hours are a self-reported decimal rather than a clock-in and a clock-out.
+    That is a deliberate trade: the arithmetic nobody wants to do at the end
+    of a fair day disappears, and in exchange there is no start time to check
+    a claim against. What replaces it is review — the weekly sheet flags the
+    rows worth questioning, and a person signs the week off.
+
+    Scope is deliberately narrow: **hours running the booth during festival
+    days**. Production help — dyeing, prep, anything back at the shop — is
+    not recorded here and must not be added later without deciding what it
+    means for payroll first. A field that quietly starts collecting a second
+    kind of work turns every total on the timesheet into a number whose
+    meaning depends on who typed it.
+
+    One row per employee per day, enforced in the database. A double-tapped
+    Submit is the likeliest mistake this form will ever see, and without the
+    constraint it books the day twice.
+    """
+    employee = models.ForeignKey(
+        Employee,
+        on_delete=models.PROTECT,
+        related_name="time_entries",
+    )
+    work_date = models.DateField(
+        help_text="The day worked — not the day it was reported.",
+    )
+    hours = models.DecimalField(
+        max_digits=4,
+        decimal_places=2,
+        validators=[
+            MinValueValidator(Decimal("0.25")),
+            MaxValueValidator(Decimal("16")),
+        ],
+    )
+    notes = models.CharField(max_length=200, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-work_date", "employee__name"]
+        verbose_name_plural = "time entries"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["employee", "work_date"],
+                name="one_time_entry_per_employee_per_day",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.employee.name} — {self.hours}h on {self.work_date:%d %b %Y}"
+
+    @property
+    def was_revised(self) -> bool:
+        """True once the day has been reported a second time.
+
+        `auto_now` and `auto_now_add` fire microseconds apart on a fresh row,
+        so a plain inequality would call everything revised — hence the
+        one-second slack.
+        """
+        return (self.updated_at - self.created_at).total_seconds() > 1
+
+    @property
+    def reported_late_by(self) -> int:
+        """Days between working the shift and reporting it; 0 for same day.
+
+        A figure typed a fortnight later is a memory, not a record. The
+        timesheet says so rather than presenting it like the rest.
+        """
+        return (timezone.localtime(self.created_at).date() - self.work_date).days
 

@@ -4,7 +4,7 @@ import hmac
 import json
 import random
 import uuid
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from io import BytesIO
 
@@ -32,15 +32,16 @@ from .models import (
     RawProduct,
     RawProductCategory,
     RecipeDye,
+    TimeEntry,
 )
 
 from django.contrib import messages
 from django.shortcuts import render, redirect
 from django.template.response import TemplateResponse
 
-from . import colorbands
+from . import colorbands, timesheets
 from .colorutils import nearest_by_color, pick_color_cluster
-from .forms import QuickRecipeRowForm, RecipeDyesForm
+from .forms import HoursForm, QuickRecipeRowForm, RecipeDyesForm
 from .models import Dye, Recipe
 from .s3utils import download_object, presigned_post, upload_object
 from django.db.models import Prefetch
@@ -83,7 +84,7 @@ def _site_map(bucket=None):
     prefix = "/scarves/"
     categories = {}
     seen = set()
-    counts = {"public": 0, "private": 0}
+    counts = {"public": 0, "private": 0, "secret": 0}
 
     for entry in scarves_urls.urlpatterns:
         callback = getattr(entry, "callback", None)
@@ -146,6 +147,7 @@ def _site_map(bucket=None):
         "total": total,
         "public_count": counts["public"],
         "private_count": counts["private"],
+        "secret_count": counts["secret"],
     }
 
 
@@ -2626,4 +2628,159 @@ def quiz_page(request):
         "default_questions": QUIZ_DEFAULT_QUESTIONS,
         "game_url": reverse("game_page"),
         "embed_origin": request.build_absolute_uri("/").rstrip("/"),
+    })
+
+
+# --- Timekeeping -----------------------------------------------------------
+#
+# Two pages that between them replace a paper bag and a lot of mental
+# arithmetic: a public form where somebody reports a day's hours, and a staff
+# page that adds a Saturday–Friday week up.
+#
+# The form is under public/ because the whole point is that nobody needs an
+# account. What guards it is a four-digit PIN, which is enough to stop the
+# wrong name being tapped and not much more — see Employee's docstring. The
+# weekly sheet, which shows everyone's hours at once, is staff-only.
+
+#: Wrong PINs tolerated per browser session before the form stops answering.
+#: A speed bump, not a lock: sessions are cheap to discard. It costs a casual
+#: guesser their patience, and the honest case never sees it.
+HOURS_PIN_ATTEMPT_LIMIT = 8
+
+
+@page_meta(
+    title="Report Hours",
+    description=(
+        "Where staff report the hours they worked: name, PIN, how long, which "
+        "day. No login — the URL is the whole way in, so it's meant to be "
+        "bookmarked or put on a card at the stall, not linked publicly."
+    ),
+    category="Payroll",
+)
+@require_http_methods(["GET", "POST"])
+def hours_entry(request):
+    """Report one day's hours.
+
+    Reporting the same day twice is a correction, not a second shift — the
+    database won't take two rows for a person and a date, so the second
+    submission asks before it overwrites the first. Getting that wrong in the
+    other direction is the expensive mistake: a double-tapped Submit that
+    quietly books sixteen hours is exactly the kind of thing that survives
+    all the way to payroll.
+    """
+    today = timezone.localdate()
+
+    # Post/redirect/get. The success state is carried in the session rather
+    # than the URL so a refresh can't re-submit and a shared screen doesn't
+    # leave somebody's name in the address bar.
+    saved_pk = request.session.pop("hours_entry_saved", None)
+    saved = None
+    if saved_pk:
+        saved = TimeEntry.objects.filter(pk=saved_pk).select_related("employee").first()
+
+    if request.method == "POST":
+        attempts = request.session.get("hours_pin_attempts", 0)
+        if attempts >= HOURS_PIN_ATTEMPT_LIMIT:
+            return render(request, "scarves/hours_entry.html", {
+                "form": HoursForm(today=today),
+                "locked": True,
+                "today": today,
+            })
+
+        form = HoursForm(request.POST, today=today)
+        if form.is_valid():
+            request.session["hours_pin_attempts"] = 0
+            employee = form.cleaned_data["employee"]
+            work_date = form.cleaned_data["work_date"]
+            hours = form.cleaned_data["hours"]
+
+            existing = TimeEntry.objects.filter(
+                employee=employee, work_date=work_date
+            ).first()
+
+            # An unconfirmed overwrite bounces back with the old figure shown.
+            # The confirm token is the previous hours value, so a stale form
+            # left open in another tab can't confirm away a number it never
+            # displayed.
+            if existing and request.POST.get("confirm_replace") != str(existing.hours):
+                return render(request, "scarves/hours_entry.html", {
+                    "form": form,
+                    "existing": existing,
+                    "today": today,
+                })
+
+            entry, _created = TimeEntry.objects.update_or_create(
+                employee=employee,
+                work_date=work_date,
+                defaults={"hours": hours},
+            )
+            request.session["hours_entry_saved"] = entry.pk
+            return redirect("hours_entry")
+
+        if form.has_error("pin"):
+            request.session["hours_pin_attempts"] = attempts + 1
+    else:
+        form = HoursForm(today=today, initial={"work_date": today})
+
+    return render(request, "scarves/hours_entry.html", {
+        "form": form,
+        "saved": saved,
+        "saved_week": _employee_week(saved) if saved else None,
+        "today": today,
+    })
+
+
+def _employee_week(entry):
+    """One employee's pay week around a just-saved entry, for the receipt.
+
+    Showing the week back is the cheapest error check there is: the person
+    who worked the days is the only one who can look at Saturday through
+    Friday and say "that's not right" while it's still easy to fix.
+    """
+    start = timesheets.week_start(entry.work_date)
+    entries = list(
+        TimeEntry.objects
+        .filter(
+            employee=entry.employee,
+            work_date__gte=start,
+            work_date__lte=timesheets.week_end(start),
+        )
+        .order_by("work_date")
+    )
+    return {
+        "start": start,
+        "end": timesheets.week_end(start),
+        "entries": entries,
+        "total": sum((e.hours for e in entries), Decimal("0")),
+    }
+
+
+@page_meta(
+    title="Timesheet",
+    description=(
+        "Everyone's booth hours for one Saturday–Friday week, totalled per "
+        "person and per day, with the rows worth a second look flagged."
+    ),
+    category="Payroll",
+    note="Defaults to this week; ?week=YYYY-MM-DD picks another.",
+)
+@login_required
+def timesheet(request):
+    """The week, added up.
+
+    Takes its week from the query string rather than a URL parameter, which
+    is what keeps it a single page with no picker to maintain — every week
+    that has ever existed is one link away from this one.
+    """
+    today = timezone.localdate()
+    start = timesheets.parse_week(request.GET.get("week"), today)
+    summary = timesheets.week_summary(start)
+
+    return render(request, "scarves/timesheet.html", {
+        "summary": summary,
+        "previous_week": start - timedelta(days=7),
+        "next_week": start + timedelta(days=7),
+        "is_current_week": start == timesheets.week_start(today),
+        "today": today,
+        "hours_entry_url": request.build_absolute_uri(reverse("hours_entry")),
     })

@@ -15,24 +15,45 @@ container, so edits are picked up live.
 - Don't try to run `manage.py` on the host — settings require PG env vars and
   psycopg, neither of which is available locally.
 
-## URL layout: `private/`, `public/`, `webhooks/`
+## URL layout: `private/`, `public/`, `secret/`, `webhooks/`
 
 The first path segment under `/scarves/` says who a route is for, so exposure
 is readable straight off the URL:
 
-| Prefix      | Means                              | Example                            |
-|-------------|------------------------------------|------------------------------------|
-| `private/`  | staff — every view `@login_required`| `/scarves/private/raw-inventory/`  |
-| `public/`   | no login                           | `/scarves/public/games/match/`     |
-| `webhooks/` | machine-to-machine, unauthenticated| `/scarves/webhooks/square`         |
+| Prefix      | Means                                | Example                            |
+|-------------|--------------------------------------|------------------------------------|
+| `private/`  | staff — every view `@login_required` | `/scarves/private/raw-inventory/`  |
+| `public/`   | no login, and advertised             | `/scarves/public/games/match/`     |
+| `secret/`   | no login, but unlisted               | `/scarves/secret/hours/`           |
+| `webhooks/` | machine-to-machine, unauthenticated  | `/scarves/webhooks/square`         |
 
-**Every new route goes in one of the three.** `URLBucketTests` fails on a route
+**Every new route goes in one of the four.** `URLBucketTests` fails on a route
 that doesn't, and — more importantly — checks the prefix against what the view
 actually does: anything `@page_meta` under `private/` must redirect an anonymous
-GET, and anything under `public/` must serve one. That check is what caught
-`bulk_recipe_matrix_entry` accepting anonymous POSTs that created recipes.
+GET, and anything under `public/` or `secret/` must serve one. That check is
+what caught `bulk_recipe_matrix_entry` accepting anonymous POSTs that created
+recipes.
 
-Two deliberate exceptions to "unauthenticated ⇒ `public/`":
+### `secret/` — no login, no advertising
+
+`secret/` is for a page real people use without an account, that customers
+should never trip over: the hours form is the worked example. Concretely it
+means **listed on the staff site map, filtered off the public one**, so the
+person handing the URL out can always find it and a visitor browsing the shop
+never sees it.
+
+The obvious mistake is reading `secret/` as a security boundary. It isn't —
+anyone with the URL is in, and the URL will end up in browser histories, on a
+card at the stall, in a text message. Whatever actually guards the page has to
+live *in the page* (the hours form uses a per-employee PIN). `secret/` only
+promises that the app doesn't publish the link.
+
+Because it isn't gated, `URLBucketTests` asserts a `secret/` route serves an
+anonymous GET — a login redirect here locks out exactly the people it was
+built for, and the only symptom is silence. The same test treats `secret/` as
+private when checking the public map: its titles must not appear there.
+
+Two deliberate exceptions to "unauthenticated ⇒ `public/` or `secret/`":
 
 - `webhooks/square` stays put. Its URL is registered in the Square dashboard,
   so moving it here without changing it there drops sale events silently.
@@ -67,8 +88,8 @@ generated at request time — nothing is hardcoded.
 There are **two** maps, both built by the shared `_site_map()` helper:
 
 - `/scarves/private/` — the staff directory. Lists everything, and badges each
-  card `public` or `private` from the route's own first path segment, so a card
-  can't claim an exposure the URL contradicts.
+  card `public`, `private` or `secret` from the route's own first path segment,
+  so a card can't claim an exposure the URL contradicts.
 - `/scarves/public/` — the same directory filtered to `public/`, and public
   itself. **Filtering happens in the view, not the template**, so a staff page
   never reaches that template to be hidden by it. `URLBucketTests` checks every
@@ -192,6 +213,45 @@ read rather than guessing, and never promotes a month to a day.
 the whole card-backfill flow write log rows only when the date is in the past —
 that yarn was counted or sold long ago, and adding it to `number_on_hand` would
 inflate current inventory by however far back the records go.
+
+## Timekeeping: the pay week, and the two totals
+
+The hours form (`secret/hours/`) and the timesheet (`private/timesheet/`)
+replace a paper bag and a lot of mental arithmetic. Three things are load-
+bearing and none of them are obvious from the models.
+
+**The pay week runs Saturday to Friday.** No date library assumes that, so
+every "which week is this?" question goes through `timesheets.week_start()`
+rather than being worked out at the call site. Getting it wrong is invisible:
+the page still renders seven columns, they're just the wrong seven, and the
+totals belong to a week nobody is paying for. `PayWeekTests` pins it.
+
+**Hours are self-reported, not clocked.** Nobody enters a start and end time;
+they pick a decimal off a quarter-hour dropdown. That's a deliberate trade —
+the arithmetic disappears, and in exchange there's no start time to check a
+claim against. What replaces it is review: the sheet flags long days, long
+weeks, revised figures and anything reported more than a week late, and a
+person signs the week off. Those flags aren't errors and must not be styled
+as errors; a 13-hour day at a festival is entirely normal.
+
+The picker is a *rendering* of the rule, not the rule itself. `hours` is a
+`DecimalField` validated against "a quarter-hour between 0.25 and 14" —
+originally a `ChoiceField`, which compares submitted strings and so decided
+`9.5` and `9.50` were different answers and only accepted one.
+
+**Scope is booth hours during festival days — nothing else.** Production
+help (dyeing, prep, anything back at the shop) is deliberately not tracked
+here. There is no employer field, no work-type field, and no "kind of work"
+dimension anywhere in `TimeEntry`, `HoursForm` or `timesheets.py`; an earlier
+draft had one and it was removed on purpose.
+
+**Don't add one back as a schema change.** Whether a second kind of work
+belongs in these totals is a payroll question, and it has to be answered
+before the field exists — a column that quietly starts collecting a second
+kind of work makes every total on the timesheet mean something different
+depending on who typed it, with nothing on the page to say so. Until then a
+single unqualified total is the honest output, and the page says "booth
+hours" rather than "hours" so it can't be misread later.
 
 ## Templates: three layers, and the `block.super` trap
 

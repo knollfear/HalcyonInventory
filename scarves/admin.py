@@ -4,7 +4,7 @@ from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
 from django.contrib import admin, messages
-from django.db.models import Count, Q
+from django.db.models import Count, Max, Q
 from django.template.response import TemplateResponse
 
 logger = logging.getLogger(__name__)
@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 from .models import (
     DyeBrand,
     Dye,
+    Employee,
     RawProductCategory,
     RawProduct,
     Recipe,
@@ -20,6 +21,7 @@ from .models import (
     FinishedProductImage,
     InventoryLog,
     ProductImageUpload,
+    TimeEntry,
 )
 
 
@@ -376,3 +378,53 @@ class InventoryLogAdmin(admin.ModelAdmin):
     list_filter = ("log_type", "raw_product__category", "created_at")
     search_fields = ("finished_product__name", "raw_product__name", "sale_reference")
     ordering = ("-created_at",)
+
+
+@admin.register(Employee)
+class EmployeeAdmin(admin.ModelAdmin):
+    """The roster, and the PIN recovery mechanism.
+
+    PINs are shown in the list and editable there. That's the point: when
+    somebody forgets theirs you read it off this screen and tell them, and
+    when you want to change one you type over it. It works because the PIN
+    guards a timesheet figure that a person reviews, not an account — see
+    Employee's docstring for where that line is drawn.
+    """
+    list_display = ("name", "pin", "is_active", "entry_count", "last_reported")
+    list_editable = ("pin", "is_active")
+    list_filter = ("is_active",)
+    search_fields = ("name",)
+    ordering = ("name",)
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).annotate(
+            _entries=Count("time_entries"),
+            _last=Max("time_entries__work_date"),
+        )
+
+    @admin.display(description="Days reported", ordering="_entries")
+    def entry_count(self, obj):
+        return obj._entries
+
+    @admin.display(description="Last reported", ordering="_last")
+    def last_reported(self, obj):
+        return obj._last or "—"
+
+
+@admin.register(TimeEntry)
+class TimeEntryAdmin(admin.ModelAdmin):
+    """Where a reported figure gets corrected.
+
+    The hours form only reaches back three weeks and only lets somebody edit
+    their own day. Anything older, or anyone else's, is fixed here — which is
+    also the only way an entry gets deleted.
+    """
+    list_display = ("employee", "work_date", "hours", "created_at", "was_revised")
+    list_filter = ("employee", "work_date")
+    search_fields = ("employee__name", "notes")
+    date_hierarchy = "work_date"
+    ordering = ("-work_date", "employee__name")
+
+    @admin.display(description="Revised", boolean=True)
+    def was_revised(self, obj):
+        return obj.was_revised

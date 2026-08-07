@@ -39,6 +39,7 @@
      it gets colour and its own column in the card rather than a footnote. */
   .badge.public { color: #8a2f2a; border-color: #f0c8c4; background: #fdf2f1; }
   .badge.private { color: #2e7d52; border-color: #bcd8c6; background: #f1f8f3; }
+  .badge.secret { color: #8a5a00; border-color: #f0e0b0; background: #fff6e0; }
   .card-head { display: flex; align-items: baseline; gap: 8px; }
   .card-head .card-title { flex: 1; min-width: 0; }
   .summary { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 10px 0 0; }
@@ -56,6 +57,13 @@
     <span class="small muted">
       open to anyone — <a href="{{ public_map_url }}">see the public site map</a>
     </span>
+    {% if secret_count %}
+      <span class="badge secret">{{ secret_count }} secret</span>
+      <span class="small muted">
+        no login, but unlisted — the URL is the way in, so hand it out rather
+        than linking it
+      </span>
+    {% endif %}
   </p>
 
   {% for group in grouped %}

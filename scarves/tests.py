@@ -13,7 +13,8 @@ import random
 import re
 import shutil
 import tempfile
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+from decimal import Decimal
 from unittest import mock
 
 from django.contrib.auth.models import User
@@ -23,6 +24,7 @@ from django.core.files.storage import default_storage
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
+from . import timesheets
 from .colorutils import (
     delta_e,
     hex_to_lab,
@@ -32,10 +34,11 @@ from .colorutils import (
     pick_color_cluster,
     recipe_palette,
 )
-from .forms import RecipeDyesForm
+from .forms import HoursForm, RecipeDyesForm
 from .models import (
     Dye,
     DyeBrand,
+    Employee,
     FinishedProduct,
     FinishedProductImage,
     InventoryLog,
@@ -44,7 +47,9 @@ from .models import (
     RawProductCategory,
     Recipe,
     RecipeDye,
+    TimeEntry,
 )
+from .views import HOURS_PIN_ATTEMPT_LIMIT
 
 
 def make_recipe(name, hexes=("#3355cc",), active=True):
@@ -2184,7 +2189,7 @@ class URLBucketTests(TestCase):
     so it's checked against what the views actually do rather than trusted.
     """
 
-    KNOWN_BUCKETS = ("private/", "public/", "webhooks/")
+    KNOWN_BUCKETS = ("private/", "public/", "secret/", "webhooks/")
 
     def setUp(self):
         self.user = User.objects.create_superuser("bucket", "b@example.test", "pw")
@@ -2260,11 +2265,38 @@ class URLBucketTests(TestCase):
 
         self.assertGreaterEqual(len(checked), 4, checked)
 
+    def test_secret_pages_serve_an_anonymous_visitor(self):
+        """secret/ is unlisted, not gated — a login here would be a bug.
+
+        The whole reason the bucket exists is a page nobody logs in to and
+        nobody advertises. If one of these starts redirecting, the people it
+        was built for are locked out and the only symptom is silence.
+        """
+        checked = []
+        for entry in self._routes():
+            if not str(entry.pattern).startswith("secret/"):
+                continue
+            if not entry.name or getattr(entry.pattern, "converters", None):
+                continue
+            url = reverse(entry.name)
+            with self.subTest(url=url):
+                response = self.client.get(url)
+                self.assertEqual(
+                    response.status_code, 200,
+                    f"{url} is under secret/ but did not serve an anonymous "
+                    "request — secret means unlisted, not logged in",
+                )
+            checked.append(url)
+
+        self.assertGreaterEqual(len(checked), 1, checked)
+
     def test_the_public_map_names_no_private_page(self):
         """The one thing this page must never do.
 
         Checked against the private map's own contents rather than a hardcoded
-        list, so a new staff page is covered the day it's added.
+        list, so a new staff page is covered the day it's added. secret/ counts
+        as private for this purpose: it is reachable without a login, but a
+        customer reading the public map must never be handed the URL.
         """
         public = self.client.get(reverse("public_index"))
         self.assertEqual(public.status_code, 200)
@@ -2274,7 +2306,7 @@ class URLBucketTests(TestCase):
 
         leaked = []
         for entry in self._routes():
-            if not str(entry.pattern).startswith("private/"):
+            if not str(entry.pattern).startswith(("private/", "secret/")):
                 continue
             meta = getattr(entry.callback, "page_meta", None)
             if not meta or not meta.get("show_in_index", True):
@@ -2286,7 +2318,9 @@ class URLBucketTests(TestCase):
             if title in public.content:
                 leaked.append(meta["title"])
 
-        self.assertEqual(leaked, [], "private pages named on the public map")
+        self.assertEqual(
+            leaked, [], "private or secret pages named on the public map"
+        )
 
     def test_the_public_map_lists_the_public_pages(self):
         response = self.client.get(reverse("public_index"))
@@ -2300,6 +2334,7 @@ class URLBucketTests(TestCase):
         # Both kinds are present, so neither badge is vacuously passing.
         self.assertContains(response, 'class="badge public"')
         self.assertContains(response, 'class="badge private"')
+        self.assertContains(response, 'class="badge secret"')
 
     def test_the_badge_follows_the_url_not_a_hand_maintained_list(self):
         """Move a view between buckets and the badge must move with it."""
@@ -2313,6 +2348,7 @@ class URLBucketTests(TestCase):
         self.assertEqual(by_name["game_page"]["bucket"], "public")
         self.assertEqual(by_name["reference_sheet_index"]["bucket"], "public")
         self.assertEqual(by_name["raw_inventory_index"]["bucket"], "private")
+        self.assertEqual(by_name["hours_entry"]["bucket"], "secret")
 
     def test_the_bare_app_root_still_reaches_the_site_map(self):
         """/scarves/ is what people type; it must not dead-end."""
@@ -3296,3 +3332,434 @@ class BehindABathTests(TestCase):
         self._product("Bath Short", 1)
         html = self.client.get(reverse("production_needed")).content.decode()
         self.assertIn('class="warn"', html)
+
+
+# --- Timekeeping ------------------------------------------------------------
+
+
+def make_employee(name, pin="1234", active=True):
+    return Employee.objects.create(name=name, pin=pin, is_active=active)
+
+
+
+class PayWeekTests(TestCase):
+    """Saturday-to-Friday, which no date library assumes for you.
+
+    Worth pinning hard: getting it wrong still renders seven columns, they're
+    just the wrong seven, and the totals belong to a week nobody is paying for.
+    """
+
+    def test_a_saturday_is_its_own_week_start(self):
+        saturday = date(2026, 8, 1)
+        self.assertEqual(saturday.weekday(), 5)
+        self.assertEqual(timesheets.week_start(saturday), saturday)
+
+    def test_every_day_of_a_week_maps_to_the_same_saturday(self):
+        saturday = date(2026, 8, 1)
+        for offset in range(7):
+            day = saturday + timedelta(days=offset)
+            with self.subTest(day=day):
+                self.assertEqual(timesheets.week_start(day), saturday)
+
+    def test_the_next_saturday_starts_a_new_week(self):
+        self.assertEqual(
+            timesheets.week_start(date(2026, 8, 8)), date(2026, 8, 8)
+        )
+
+    def test_a_friday_closes_the_week_it_belongs_to(self):
+        self.assertEqual(timesheets.week_end(date(2026, 8, 1)), date(2026, 8, 7))
+
+    def test_the_week_runs_saturday_to_friday(self):
+        days = timesheets.week_days(date(2026, 8, 1))
+        self.assertEqual(len(days), 7)
+        self.assertEqual(days[0].strftime("%A"), "Saturday")
+        self.assertEqual(days[-1].strftime("%A"), "Friday")
+
+    def test_a_week_param_is_snapped_to_its_saturday(self):
+        """Any day inside the week is a valid way to ask for it."""
+        self.assertEqual(
+            timesheets.parse_week("2026-08-05", date(2026, 8, 7)), date(2026, 8, 1)
+        )
+
+    def test_an_unreadable_week_param_falls_back_to_this_week(self):
+        for bad in ["", "not-a-date", "2026-13-45", "08/01/2026", None]:
+            with self.subTest(value=bad):
+                self.assertEqual(
+                    timesheets.parse_week(bad, date(2026, 8, 7)), date(2026, 8, 1)
+                )
+
+
+class HoursFormTests(TestCase):
+    """What the public form will and won't accept."""
+
+    def setUp(self):
+        self.today = date(2026, 8, 7)
+        self.sam = make_employee("Sam", pin="4821")
+
+    def _data(self, **overrides):
+        data = {
+            "employee": self.sam.pk,
+            "pin": "4821",
+            "hours": "9.5",
+            "work_date": "2026-08-07",
+        }
+        data.update(overrides)
+        return data
+
+    def test_a_good_submission_validates(self):
+        form = HoursForm(self._data(), today=self.today)
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["hours"], Decimal("9.5"))
+
+    def test_the_wrong_pin_is_rejected(self):
+        form = HoursForm(self._data(pin="0000"), today=self.today)
+        self.assertFalse(form.is_valid())
+        self.assertIn("pin", form.errors)
+
+    def test_another_persons_pin_does_not_work(self):
+        """The PIN is checked against the name picked, not against every PIN."""
+        make_employee("Alex", pin="1111")
+        form = HoursForm(self._data(pin="1111"), today=self.today)
+        self.assertFalse(form.is_valid())
+        self.assertIn("pin", form.errors)
+
+    def test_a_pin_that_is_not_four_digits_is_rejected(self):
+        for bad in ["123", "12345", "abcd", "12 4", ""]:
+            with self.subTest(pin=bad):
+                form = HoursForm(self._data(pin=bad), today=self.today)
+                self.assertFalse(form.is_valid())
+                self.assertIn("pin", form.errors)
+
+    def test_an_inactive_employee_is_not_on_the_list(self):
+        gone = make_employee("Gone", pin="9999", active=False)
+        form = HoursForm(self._data(employee=gone.pk, pin="9999"), today=self.today)
+        self.assertFalse(form.is_valid())
+        self.assertIn("employee", form.errors)
+
+    def test_a_future_day_is_rejected(self):
+        form = HoursForm(self._data(work_date="2026-08-08"), today=self.today)
+        self.assertFalse(form.is_valid())
+        self.assertIn("work_date", form.errors)
+
+    def test_today_is_accepted(self):
+        form = HoursForm(self._data(work_date="2026-08-07"), today=self.today)
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_a_day_beyond_the_backdate_window_is_rejected(self):
+        old = self.today - timedelta(days=HoursForm.MAX_BACKDATE_DAYS + 1)
+        form = HoursForm(self._data(work_date=old.isoformat()), today=self.today)
+        self.assertFalse(form.is_valid())
+        self.assertIn("work_date", form.errors)
+
+    def test_the_edge_of_the_backdate_window_is_accepted(self):
+        edge = self.today - timedelta(days=HoursForm.MAX_BACKDATE_DAYS)
+        form = HoursForm(self._data(work_date=edge.isoformat()), today=self.today)
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_hours_outside_the_picker_are_rejected(self):
+        """The picker is a whitelist, so a hand-crafted POST can't beat it."""
+        for bad in ["0", "-4", "24", "9.33", "999"]:
+            with self.subTest(hours=bad):
+                form = HoursForm(self._data(hours=bad), today=self.today)
+                self.assertFalse(form.is_valid())
+                self.assertIn("hours", form.errors)
+
+    def test_the_picker_runs_in_quarter_hours(self):
+        values = [v for v, _ in HoursForm.hour_choices() if v]
+        self.assertIn("0.25", values)
+        self.assertIn("9.5", values)
+        self.assertNotIn("9.1", values)
+
+    def test_one_hour_is_not_labelled_hours(self):
+        labels = dict(HoursForm.hour_choices())
+        self.assertEqual(labels["1"], "1 hour")
+        self.assertEqual(labels["9.5"], "9.5 hours")
+        # 10 must not come out as "1E+1" and put a hole in the picker.
+        self.assertEqual(labels["10"], "10 hours")
+
+
+class HoursEntryViewTests(TestCase):
+    """The public form end to end — no login anywhere in here on purpose."""
+
+    def setUp(self):
+        self.sam = make_employee("Sam", pin="4821")
+        self.url = reverse("hours_entry")
+
+    def _post(self, **overrides):
+        data = {
+            "employee": self.sam.pk,
+            "pin": "4821",
+            "hours": "9.5",
+            "work_date": timezone.localdate().isoformat(),
+        }
+        data.update(overrides)
+        return self.client.post(self.url, data)
+
+    def test_the_form_serves_an_anonymous_visitor(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Report your hours")
+
+    def test_a_submission_records_the_hours(self):
+        response = self._post()
+        self.assertEqual(response.status_code, 302)
+        entry = TimeEntry.objects.get()
+        self.assertEqual(entry.employee, self.sam)
+        self.assertEqual(entry.hours, Decimal("9.5"))
+
+    def test_the_receipt_shows_after_the_redirect(self):
+        """Post/redirect/get: the confirmation survives, a refresh doesn't resubmit."""
+        response = self.client.post(
+            self.url,
+            {
+                "employee": self.sam.pk,
+                "pin": "4821",
+                "hours": "9.5",
+                "work_date": timezone.localdate().isoformat(),
+            },
+            follow=True,
+        )
+        self.assertContains(response, "Got it")
+        self.assertContains(response, "Sam")
+
+        # Second GET: the receipt was popped, so a refresh is a clean form.
+        again = self.client.get(self.url)
+        self.assertNotContains(again, "Got it")
+        self.assertEqual(TimeEntry.objects.count(), 1)
+
+    def test_a_wrong_pin_records_nothing(self):
+        response = self._post(pin="0000")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(TimeEntry.objects.count(), 0)
+
+    def test_reporting_the_same_day_twice_asks_before_replacing(self):
+        """The double-tapped Submit. Without this it books the day twice."""
+        self._post(hours="9.5")
+        self.assertEqual(TimeEntry.objects.count(), 1)
+
+        response = self._post(hours="6")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "already reported that day")
+
+        # Still the original figure — nothing was overwritten by the ask.
+        self.assertEqual(TimeEntry.objects.get().hours, Decimal("9.5"))
+
+    def test_a_confirmed_replacement_overwrites_rather_than_adding(self):
+        self._post(hours="9.5")
+        response = self._post(hours="6", confirm_replace="9.50")
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(TimeEntry.objects.count(), 1)
+        self.assertEqual(TimeEntry.objects.get().hours, Decimal("6"))
+
+    def test_a_stale_confirmation_does_not_overwrite(self):
+        """The token is the figure being replaced, so a form left open in
+        another tab can't confirm away a number it never showed."""
+        self._post(hours="9.5")
+        response = self._post(hours="6", confirm_replace="3.00")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(TimeEntry.objects.get().hours, Decimal("9.5"))
+
+    def test_two_people_can_report_the_same_day(self):
+        alex = make_employee("Alex", pin="1111")
+        self._post()
+        self.client.post(self.url, {
+            "employee": alex.pk,
+            "pin": "1111",
+            "hours": "7",
+            "work_date": timezone.localdate().isoformat(),
+        })
+        self.assertEqual(TimeEntry.objects.count(), 2)
+
+    def test_repeated_wrong_pins_stop_being_answered(self):
+        for _ in range(HOURS_PIN_ATTEMPT_LIMIT):
+            self._post(pin="0000")
+
+        # Even the right PIN gets nowhere now: the throttle is checked first.
+        response = self._post()
+        self.assertContains(response, "Too many wrong PINs")
+        self.assertEqual(TimeEntry.objects.count(), 0)
+
+    def test_a_correct_pin_clears_the_attempt_count(self):
+        for _ in range(HOURS_PIN_ATTEMPT_LIMIT - 1):
+            self._post(pin="0000")
+        self._post()
+        self.assertEqual(self.client.session["hours_pin_attempts"], 0)
+
+    def test_the_form_never_shows_anybody_a_pin(self):
+        """It lists names — it must not list the numbers that go with them."""
+        html = self.client.get(self.url).content.decode()
+        self.assertIn("Sam", html)
+        self.assertNotIn("4821", html)
+
+
+class TimesheetViewTests(TestCase):
+    """The weekly sheet: staff-only, and the thing that replaces the mental math."""
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("boss", "b@example.test", "pw")
+        self.client.force_login(self.user)
+        self.sam = make_employee("Sam", pin="4821")
+        self.alex = make_employee("Alex", pin="1111")
+        self.url = reverse("timesheet")
+        # The week of Sat 1 Aug – Fri 7 Aug 2026.
+        self.week = date(2026, 8, 1)
+
+    def _entry(self, employee, day, hours, created=None):
+        entry = TimeEntry.objects.create(
+            employee=employee, work_date=day, hours=Decimal(str(hours))
+        )
+        if created is not None:
+            TimeEntry.objects.filter(pk=entry.pk).update(created_at=created)
+            entry.refresh_from_db()
+        return entry
+
+    def test_it_needs_a_login(self):
+        self.client.logout()
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/login", response["Location"])
+
+    def test_an_empty_week_says_so_rather_than_erroring(self):
+        response = self.client.get(self.url, {"week": "2026-08-01"})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Nobody reported hours")
+
+    def test_a_week_totals_each_person(self):
+        self._entry(self.sam, date(2026, 8, 1), "9.5")
+        self._entry(self.sam, date(2026, 8, 2), "6")
+        self._entry(self.alex, date(2026, 8, 1), "4.25")
+
+        summary = self.client.get(
+            self.url, {"week": "2026-08-01"}
+        ).context["summary"]
+
+        totals = {r["employee"].name: r["total"] for r in summary["rows"]}
+        self.assertEqual(totals, {"Sam": Decimal("15.5"), "Alex": Decimal("4.25")})
+        self.assertEqual(summary["total"], Decimal("19.75"))
+
+    def test_the_neighbouring_weeks_are_excluded(self):
+        """The Friday before and the Saturday after both belong elsewhere."""
+        self._entry(self.sam, date(2026, 7, 31), "8")   # previous week's Friday
+        self._entry(self.sam, date(2026, 8, 1), "5")    # this week's Saturday
+        self._entry(self.sam, date(2026, 8, 8), "8")    # next week's Saturday
+
+        summary = self.client.get(
+            self.url, {"week": "2026-08-01"}
+        ).context["summary"]
+        self.assertEqual(summary["total"], Decimal("5"))
+
+    def test_any_day_in_the_week_lands_on_the_same_sheet(self):
+        self._entry(self.sam, date(2026, 8, 1), "5")
+        for day in ["2026-08-01", "2026-08-04", "2026-08-07"]:
+            with self.subTest(week=day):
+                summary = self.client.get(self.url, {"week": day}).context["summary"]
+                self.assertEqual(summary["start"], date(2026, 8, 1))
+
+    def test_it_defaults_to_the_current_week(self):
+        summary = self.client.get(self.url).context["summary"]
+        self.assertEqual(
+            summary["start"], timesheets.week_start(timezone.localdate())
+        )
+
+    def test_every_day_gets_a_column_even_when_nobody_worked_it(self):
+        self._entry(self.sam, date(2026, 8, 1), "5")
+        summary = self.client.get(
+            self.url, {"week": "2026-08-01"}
+        ).context["summary"]
+        cells = summary["rows"][0]["cells"]
+        self.assertEqual(len(cells), 7)
+        self.assertEqual(sum(1 for c in cells if c["entry"]), 1)
+
+    def test_a_long_day_is_flagged(self):
+        self._entry(self.sam, date(2026, 8, 1), "13")
+        summary = self.client.get(
+            self.url, {"week": "2026-08-01"}
+        ).context["summary"]
+        flags = [f for c in summary["rows"][0]["cells"] for f in c["flags"]]
+        self.assertIn("long day", flags)
+
+    def test_an_ordinary_day_is_not_flagged(self):
+        self._entry(self.sam, date(2026, 8, 1), "9.5")
+        summary = self.client.get(
+            self.url, {"week": "2026-08-01"}
+        ).context["summary"]
+        self.assertEqual(
+            [f for c in summary["rows"][0]["cells"] for f in c["flags"]], []
+        )
+
+    def test_a_long_week_is_flagged(self):
+        for offset in range(6):
+            self._entry(self.sam, date(2026, 8, 1) + timedelta(days=offset), "10")
+        summary = self.client.get(
+            self.url, {"week": "2026-08-01"}
+        ).context["summary"]
+        self.assertIn("long week", summary["rows"][0]["flags"])
+
+    def test_a_figure_reported_long_after_the_fact_is_flagged(self):
+        self._entry(
+            self.sam, date(2026, 8, 1), "8",
+            created=timezone.make_aware(datetime(2026, 8, 20, 12, 0)),
+        )
+        summary = self.client.get(
+            self.url, {"week": "2026-08-01"}
+        ).context["summary"]
+        flags = [f for c in summary["rows"][0]["cells"] for f in c["flags"]]
+        self.assertTrue(any("later" in f for f in flags), flags)
+
+    def test_a_revised_figure_is_flagged(self):
+        entry = self._entry(self.sam, date(2026, 8, 1), "8")
+        TimeEntry.objects.filter(pk=entry.pk).update(
+            updated_at=entry.created_at + timedelta(minutes=5)
+        )
+        summary = self.client.get(
+            self.url, {"week": "2026-08-01"}
+        ).context["summary"]
+        flags = [f for c in summary["rows"][0]["cells"] for f in c["flags"]]
+        self.assertIn("revised", flags)
+
+    def test_a_fresh_entry_is_not_called_revised(self):
+        """auto_now and auto_now_add land microseconds apart on create."""
+        entry = self._entry(self.sam, date(2026, 8, 1), "8")
+        self.assertFalse(entry.was_revised)
+
+    def test_the_sheet_tells_you_where_staff_report_their_hours(self):
+        response = self.client.get(self.url)
+        self.assertContains(response, reverse("hours_entry"))
+
+
+class TimeEntryModelTests(TestCase):
+    def setUp(self):
+        self.sam = make_employee("Sam", pin="4821")
+
+    def test_one_entry_per_person_per_day_is_enforced_by_the_database(self):
+        from django.db import IntegrityError
+
+        TimeEntry.objects.create(
+            employee=self.sam, work_date=date(2026, 8, 1), hours=Decimal("8")
+        )
+        with self.assertRaises(IntegrityError):
+            TimeEntry.objects.create(
+                employee=self.sam, work_date=date(2026, 8, 1), hours=Decimal("6")
+            )
+
+    def test_an_employee_with_hours_cannot_be_deleted_out_from_under_them(self):
+        from django.db.models import ProtectedError
+
+        TimeEntry.objects.create(
+            employee=self.sam, work_date=date(2026, 8, 1), hours=Decimal("8")
+        )
+        with self.assertRaises(ProtectedError):
+            self.sam.delete()
+
+    def test_reported_late_by_counts_from_the_day_worked(self):
+        entry = TimeEntry.objects.create(
+            employee=self.sam, work_date=timezone.localdate() - timedelta(days=3),
+            hours=Decimal("8"),
+        )
+        self.assertEqual(entry.reported_late_by, 3)
+
+    def test_same_day_reporting_is_not_late(self):
+        entry = TimeEntry.objects.create(
+            employee=self.sam, work_date=timezone.localdate(), hours=Decimal("8")
+        )
+        self.assertEqual(entry.reported_late_by, 0)
