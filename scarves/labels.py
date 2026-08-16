@@ -633,11 +633,20 @@ def _draw_vernier(pdf, stock):
             pdf.drawCentredString(ox + d, oy + 2 + length + 1.5, f"{mm // 2:+d}")
             pdf.drawRightString(ox - 2 - length - 1.5, oy + d - 1.5, f"{mm // 2:+d}")
 
+    # Which scale is which axis has to be on the sheet. Working it out from
+    # the geometry is possible and takes a moment nobody has at a print
+    # counter, and guessing the sign doubles the error being corrected.
+    pdf.setFont("Helvetica-Bold", 5.5)
+    pdf.drawString(
+        ox + _mm_pt(4), oy + 14,
+        "Lay over a label sheet against a light; read the die-cut corner off "
+        "these scales.",
+    )
     pdf.setFont("Helvetica", 5.5)
     pdf.drawString(
-        ox + _mm_pt(4), oy + 10,
-        "lay this over a label sheet against a light; read the die-cut corner "
-        "off these scales and enter those two numbers as the nudge",
+        ox + _mm_pt(4), oy + 7,
+        "TOP scale = \"nudge right\" mm.   LEFT scale = \"nudge up\" mm.   "
+        "Type both in exactly as read — no sign to flip.",
     )
 
 

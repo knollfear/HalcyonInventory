@@ -184,9 +184,12 @@ labels get used, and what the marker sticker will say.
           <label for="{{ form.x_offset_mm.id_for_label }}">Nudge (mm)</label>
           {{ form.x_offset_mm }} right &nbsp; {{ form.y_offset_mm }} up
           <div class="help">
-            Only if the print lands off the die-cuts. Every sheet prints a
-            one-inch ruler at the bottom — measure it before peeling anything;
-            if it's short the job was scaled and no nudge will fix it.
+            Only if the print lands off the die-cuts. Read them off the
+            calibration sheet's corner scales — <strong>top scale is
+            &ldquo;right&rdquo;, left scale is &ldquo;up&rdquo;</strong>, typed
+            in exactly as read. If the registration ticks beside the rows drift
+            further off toward the bottom, the job was scaled instead and no
+            nudge will fix it.
           </div>
           {{ form.x_offset_mm.errors }}{{ form.y_offset_mm.errors }}
         </div>

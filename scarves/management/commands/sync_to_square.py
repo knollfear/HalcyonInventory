@@ -2,15 +2,34 @@ import uuid
 from datetime import datetime, timezone
 
 from django.conf import settings
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 
 from scarves.models import RawProduct, FinishedProduct
 
 
 class Command(BaseCommand):
+    """Push the catalogue and stock counts to Square.
+
+    Every failure path here raises `CommandError` rather than printing and
+    returning. That matters because this is meant to run on a schedule: a
+    bare `return` exits 0, so cron records a successful run, and a catalogue
+    that silently stopped syncing looks exactly like one that never needed to.
+    The most likely real failure — an expired access token — is precisely the
+    kind that would sit unnoticed until someone can't ring up a sale.
+    """
+
     help = "Sync active finished products to Square as catalog items/variations, then push inventory counts."
 
     def add_arguments(self, parser):
+        parser.add_argument(
+            "--check",
+            action="store_true",
+            help=(
+                "Verify the credentials and location, then stop. Changes "
+                "nothing — run it before a festival to find out the token "
+                "expired while there's still time to do something."
+            ),
+        )
         parser.add_argument(
             "--inventory-only",
             action="store_true",
@@ -22,6 +41,45 @@ class Command(BaseCommand):
             help="Push updated prices and SKUs to existing Square variations, then sync inventory.",
         )
 
+    def _fail(self, label, result):
+        detail = "; ".join(
+            f"{e.get('category')}: {e.get('detail')}"
+            for e in (result.errors or [])
+        ) or "no detail given"
+        raise CommandError(f"{label}: {detail}")
+
+    def _preflight(self, client):
+        """Confirm the credentials work before changing anything.
+
+        One cheap read. Without it an expired token surfaces partway through
+        a batch upsert, where the message is about catalogue objects and the
+        actual cause — nobody refreshed the token — is three levels down.
+        """
+        if not settings.SQUARE_ACCESS_TOKEN:
+            raise CommandError("SQUARE_ACCESS_TOKEN is not set.")
+        if not settings.SQUARE_LOCATION_ID:
+            raise CommandError("SQUARE_LOCATION_ID is not set.")
+
+        result = client.locations.list_locations()
+        if result.is_error():
+            self._fail(
+                "Square rejected the credentials (expired or revoked token?)",
+                result,
+            )
+
+        locations = result.body.get("locations", []) or []
+        known = {loc.get("id") for loc in locations}
+        if known and settings.SQUARE_LOCATION_ID not in known:
+            raise CommandError(
+                f"SQUARE_LOCATION_ID {settings.SQUARE_LOCATION_ID} is not one "
+                f"of this account's locations ({', '.join(sorted(known))}). "
+                f"Inventory would be pushed nowhere."
+            )
+        self.stdout.write(self.style.SUCCESS(
+            f"Credentials OK — {len(known)} location(s), "
+            f"using {settings.SQUARE_LOCATION_ID}."
+        ))
+
     def handle(self, *args, **options):
         from square.client import Client
 
@@ -29,6 +87,10 @@ class Command(BaseCommand):
             access_token=settings.SQUARE_ACCESS_TOKEN,
             environment=settings.SQUARE_ENVIRONMENT,
         )
+
+        self._preflight(client)
+        if options["check"]:
+            return
 
         if options["inventory_only"]:
             self._push_inventory(client)
@@ -126,9 +188,7 @@ class Command(BaseCommand):
                 "batches": [{"objects": chunk}],
             })
             if result.is_error():
-                for error in result.errors:
-                    self.stderr.write(self.style.ERROR(f"{error['category']}: {error['detail']}"))
-                return
+                self._fail("Catalog upsert failed", result)
             id_mappings.update({
                 m["client_object_id"]: m["object_id"]
                 for m in result.body.get("id_mappings", [])
@@ -171,12 +231,23 @@ class Command(BaseCommand):
             result = client.catalog.batch_retrieve_catalog_objects(body={
                 "object_ids": var_ids[i:i + 100],
             })
-            if result.is_success():
-                for obj in result.body.get("objects", []):
-                    versions[obj["id"]] = obj["version"]
+            # Swallowing this used to mean `versions` stayed empty and every
+            # variation went back up with "version": None, which Square either
+            # rejects or treats as something other than the update intended.
+            if result.is_error():
+                self._fail("Could not read current variation versions", result)
+            for obj in result.body.get("objects", []):
+                versions[obj["id"]] = obj["version"]
 
         objects = []
+        stale = []
         for fp in synced_fps:
+            if versions.get(fp.square_variation_id) is None:
+                # Square doesn't know this ID any more — deleted or moved
+                # accounts. Sending it without a version would create a
+                # duplicate rather than update anything.
+                stale.append(fp)
+                continue
             variation = {
                 "type": "ITEM_VARIATION",
                 "id": fp.square_variation_id,
@@ -195,6 +266,13 @@ class Command(BaseCommand):
             }
             objects.append(variation)
 
+        if stale:
+            self.stdout.write(self.style.WARNING(
+                f"{len(stale)} variation(s) have a Square ID that Square "
+                f"doesn't recognise and were skipped: "
+                f"{', '.join(fp.sku or fp.name for fp in stale[:5])}"
+            ))
+
         self.stdout.write(f"Updating {len(objects)} variations in Square...")
         updated = 0
         for i in range(0, len(objects), 100):
@@ -204,9 +282,7 @@ class Command(BaseCommand):
                 "batches": [{"objects": chunk}],
             })
             if result.is_error():
-                for error in result.errors:
-                    self.stderr.write(self.style.ERROR(f"{error['category']}: {error['detail']}"))
-                return
+                self._fail("Variation update failed", result)
             updated += len(chunk)
 
         self.stdout.write(self.style.SUCCESS(f"Updated {updated} variations with current prices and SKUs."))
@@ -247,9 +323,7 @@ class Command(BaseCommand):
                 "changes": chunk,
             })
             if inv_result.is_error():
-                for error in inv_result.errors:
-                    self.stderr.write(self.style.ERROR(f"{error['category']}: {error['detail']}"))
-                return
+                self._fail("Inventory push failed", inv_result)
             total_pushed += len(chunk)
 
         self.stdout.write(self.style.SUCCESS(

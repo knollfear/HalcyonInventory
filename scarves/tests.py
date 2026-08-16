@@ -20,6 +20,7 @@ from unittest import mock
 
 from django.contrib.auth.models import User
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.utils import timezone
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
@@ -4455,6 +4456,50 @@ class CalibrationSheetTests(TestCase):
         for label in ("+1", "-1", "+3", "-3"):
             self.assertIn(label, text)
 
+    def test_it_says_which_scale_is_which_axis(self):
+        """Inferring it from the geometry is possible and takes a moment
+        nobody has at a print counter; guessing the sign doubles the error."""
+        text = _pdf_text(self._pdf())
+        self.assertIn('TOP scale = "nudge right" mm', text)
+        self.assertIn('LEFT scale = "nudge up" mm', text)
+        self.assertIn("no sign to flip", text)
+
+    def test_the_horizontal_scale_is_above_and_the_vertical_one_left(self):
+        """What the caption claims has to match where the ink actually is."""
+        corner = labelmod.slot_for(self.stock, 0)
+        ox = corner.x
+        oy = corner.y + labelmod._pt(self.stock.label_height_in)
+
+        numbered = [i for i in _pdf_text_items(self._pdf())
+                    if i[2] in ("+1", "-1", "+2", "-2", "+3", "-3")]
+        self.assertEqual(len(numbered), 12, "six labels on each of two scales")
+
+        # Tell the scales apart by which axis they hold constant, not by
+        # position — the left scale's positive labels also sit above the
+        # corner, so a position filter catches both.
+        from collections import Counter
+
+        # The horizontal scale is centred on each tick, so all six share one
+        # baseline exactly. Group on that; the vertical scale's x values are
+        # *not* uniform, because it's right-aligned and Helvetica's "+" is
+        # wider than its "-".
+        rows = Counter(round(i[1]) for i in numbered)
+        row_y, row_n = rows.most_common(1)[0]
+        self.assertEqual(row_n, 6, "six labels sharing one baseline")
+
+        across = [i for i in numbered if round(i[1]) == row_y]
+        down = [i for i in numbered if round(i[1]) != row_y]
+        self.assertEqual(len(down), 6)
+
+        # Swapped, the sheet would be perfectly readable and wrong.
+        self.assertGreater(row_y, oy, "the 'nudge right' scale sits above")
+        self.assertEqual(len({round(i[0]) for i in across}), 6,
+                         "the top scale steps sideways")
+        self.assertEqual(len({round(i[1]) for i in down}), 6,
+                         "the left scale steps vertically")
+        for x, _, _ in down:
+            self.assertLess(x, ox, "the 'nudge up' scale sits to the left")
+
     def test_every_label_position_is_numbered(self):
         """So a marker sticker reading 57 can be found on the sheet."""
         text = _pdf_text(self._pdf())
@@ -4922,3 +4967,326 @@ class FixtureSkuTests(TestCase):
 
         product.refresh_from_db()
         self.assertEqual(product.sku, "", "loaddata must not generate one")
+
+
+class FakeSquareResult:
+    """Stands in for the SDK's ApiResponse."""
+
+    def __init__(self, body=None, errors=None):
+        self.body = body or {}
+        self.errors = errors or []
+
+    def is_error(self):
+        return bool(self.errors)
+
+    def is_success(self):
+        return not self.errors
+
+
+class FakeSquareClient:
+    """Records what the command would send, and replays canned responses.
+
+    Deliberately dumb: the point is to exercise our payload building and our
+    write-back, not to reimplement Square. Anything it can't answer honestly
+    it refuses to answer at all.
+    """
+
+    def __init__(self, upsert_results=None, retrieve_result=None,
+                 inventory_result=None, locations_result=None):
+        self.upserts = []
+        self.retrieves = []
+        self.inventory_changes = []
+        self._upsert_results = list(upsert_results or [])
+        self._retrieve_result = retrieve_result or FakeSquareResult({"objects": []})
+        self._inventory_result = inventory_result or FakeSquareResult()
+        self._locations_result = locations_result or FakeSquareResult(
+            {"locations": [{"id": "LOC123"}]}
+        )
+        self.catalog = self._Catalog(self)
+        self.inventory = self._Inventory(self)
+        self.locations = self._Locations(self)
+
+    class _Catalog:
+        def __init__(self, outer):
+            self.outer = outer
+
+        def batch_upsert_catalog_objects(self, body):
+            self.outer.upserts.append(body)
+            if self.outer._upsert_results:
+                return self.outer._upsert_results.pop(0)
+            return FakeSquareResult({"id_mappings": []})
+
+        def batch_retrieve_catalog_objects(self, body):
+            self.outer.retrieves.append(body)
+            return self.outer._retrieve_result
+
+    class _Inventory:
+        def __init__(self, outer):
+            self.outer = outer
+
+        def batch_change_inventory(self, body):
+            self.outer.inventory_changes.append(body)
+            return self.outer._inventory_result
+
+    class _Locations:
+        def __init__(self, outer):
+            self.outer = outer
+
+        def list_locations(self):
+            return self.outer._locations_result
+
+
+@override_settings(
+    SQUARE_ACCESS_TOKEN="test-token",
+    SQUARE_LOCATION_ID="LOC123",
+    SQUARE_ENVIRONMENT="sandbox",
+)
+class SyncToSquareTests(TestCase):
+    """`sync_to_square` had no test coverage at all.
+
+    It can't be exercised against the real Square API from here, so these
+    drive the command with a stand-in client: what matters is that the payload
+    we build is the payload we meant, and that IDs coming back get written to
+    the right rows. A wrong payload is not a crash — it's a catalogue that
+    quietly disagrees with the shop.
+    """
+
+    def setUp(self):
+        self.recipe = make_recipe("Stormy Sea")
+        self.product = make_product(self.recipe, "Stormy Silk", with_image=False)
+        self.product.number_on_hand = 6
+        self.product.price = Decimal("32.00")
+        self.product.save()
+        self.raw = self.product.raw_product
+
+    def _run(self, client, **kwargs):
+        out, err = StringIO(), StringIO()
+        with mock.patch("square.client.Client", return_value=client):
+            call_command("sync_to_square", stdout=out, stderr=err, **kwargs)
+        return out.getvalue() + err.getvalue()
+
+    # --- new catalogue ---------------------------------------------------
+
+    def test_a_new_raw_product_is_sent_as_an_item_with_its_variations(self):
+        client = FakeSquareClient()
+        self._run(client)
+
+        self.assertEqual(len(client.upserts), 1)
+        objects = client.upserts[0]["batches"][0]["objects"]
+        self.assertEqual(len(objects), 1)
+
+        item = objects[0]
+        self.assertEqual(item["type"], "ITEM")
+        self.assertEqual(item["id"], f"#rp_{self.raw.pk}")
+        self.assertEqual(item["item_data"]["name"], self.raw.name)
+
+        variation = item["item_data"]["variations"][0]
+        self.assertEqual(variation["id"], f"#fp_{self.product.pk}")
+        self.assertEqual(variation["item_variation_data"]["name"], self.recipe.name)
+        self.assertEqual(
+            variation["item_variation_data"]["price_money"],
+            {"amount": 3200, "currency": "USD"},
+        )
+
+    def test_the_sku_now_always_rides_along(self):
+        """Since SKUs are assigned at creation, a variation can no longer
+        reach Square with nothing to scan."""
+        client = FakeSquareClient()
+        self._run(client)
+        variation = client.upserts[0]["batches"][0]["objects"][0]["item_data"]["variations"][0]
+        self.assertEqual(
+            variation["item_variation_data"]["sku"], self.product.sku
+        )
+        self.assertTrue(self.product.sku)
+
+    def test_returned_ids_are_written_back(self):
+        """Without this the next run creates everything a second time."""
+        client = FakeSquareClient(upsert_results=[FakeSquareResult({
+            "id_mappings": [
+                {"client_object_id": f"#rp_{self.raw.pk}", "object_id": "SQ_ITEM"},
+                {"client_object_id": f"#fp_{self.product.pk}", "object_id": "SQ_VAR"},
+            ],
+        })])
+        self._run(client)
+
+        self.raw.refresh_from_db()
+        self.product.refresh_from_db()
+        self.assertEqual(self.raw.square_item_id, "SQ_ITEM")
+        self.assertEqual(self.product.square_variation_id, "SQ_VAR")
+
+    def test_an_already_linked_item_sends_only_the_new_variation(self):
+        RawProduct.objects.filter(pk=self.raw.pk).update(square_item_id="SQ_ITEM")
+        client = FakeSquareClient()
+        self._run(client)
+
+        obj = client.upserts[0]["batches"][0]["objects"][0]
+        self.assertEqual(obj["type"], "ITEM_VARIATION")
+        self.assertEqual(obj["item_variation_data"]["item_id"], "SQ_ITEM")
+
+    def test_a_fully_linked_catalogue_skips_the_upsert(self):
+        RawProduct.objects.filter(pk=self.raw.pk).update(square_item_id="SQ_ITEM")
+        FinishedProduct.objects.filter(pk=self.product.pk).update(
+            square_variation_id="SQ_VAR"
+        )
+        client = FakeSquareClient()
+        output = self._run(client)
+        self.assertEqual(client.upserts, [])
+        self.assertIn("Nothing new to sync", output)
+        self.assertEqual(len(client.inventory_changes), 1, "still pushes stock")
+
+    # --- inventory -------------------------------------------------------
+
+    def test_inventory_is_pushed_for_linked_variations(self):
+        FinishedProduct.objects.filter(pk=self.product.pk).update(
+            square_variation_id="SQ_VAR"
+        )
+        client = FakeSquareClient()
+        self._run(client, inventory_only=True)
+
+        self.assertEqual(client.upserts, [], "--inventory-only skips catalogue")
+        change = client.inventory_changes[0]["changes"][0]
+        self.assertEqual(change["type"], "PHYSICAL_COUNT")
+        self.assertEqual(change["physical_count"]["catalog_object_id"], "SQ_VAR")
+        self.assertEqual(change["physical_count"]["location_id"], "LOC123")
+        self.assertEqual(change["physical_count"]["quantity"], "6")
+
+    def test_unlinked_products_are_left_out_of_the_inventory_push(self):
+        client = FakeSquareClient()
+        output = self._run(client, inventory_only=True)
+        self.assertEqual(client.inventory_changes, [])
+        self.assertIn("No variations with Square IDs", output)
+
+    # --- failure ---------------------------------------------------------
+
+    def test_a_catalogue_error_stops_before_writing_ids_or_stock(self):
+        client = FakeSquareClient(upsert_results=[FakeSquareResult(
+            errors=[{"category": "API_ERROR", "detail": "boom"}]
+        )])
+        with self.assertRaises(CommandError) as caught:
+            self._run(client)
+
+        self.raw.refresh_from_db()
+        self.assertEqual(self.raw.square_item_id, "")
+        self.assertEqual(client.inventory_changes, [],
+                         "a failed catalogue must not be followed by a stock push")
+        self.assertIn("boom", str(caught.exception))
+
+    def test_an_inventory_error_is_reported(self):
+        FinishedProduct.objects.filter(pk=self.product.pk).update(
+            square_variation_id="SQ_VAR"
+        )
+        client = FakeSquareClient(inventory_result=FakeSquareResult(
+            errors=[{"category": "API_ERROR", "detail": "stock boom"}]
+        ))
+        with self.assertRaises(CommandError) as caught:
+            self._run(client, inventory_only=True)
+        self.assertIn("stock boom", str(caught.exception))
+
+    # --- --update --------------------------------------------------------
+
+    def test_update_sends_current_price_and_the_version_square_gave_us(self):
+        FinishedProduct.objects.filter(pk=self.product.pk).update(
+            square_variation_id="SQ_VAR"
+        )
+        RawProduct.objects.filter(pk=self.raw.pk).update(square_item_id="SQ_ITEM")
+        client = FakeSquareClient(retrieve_result=FakeSquareResult({
+            "objects": [{"id": "SQ_VAR", "version": 42}],
+        }))
+        self._run(client, update=True)
+
+        self.assertEqual(client.retrieves[0]["object_ids"], ["SQ_VAR"])
+        sent = client.upserts[0]["batches"][0]["objects"][0]
+        self.assertEqual(sent["version"], 42)
+        self.assertEqual(sent["item_variation_data"]["price_money"]["amount"], 3200)
+        self.assertEqual(sent["item_variation_data"]["sku"], self.product.sku)
+
+
+@override_settings(
+    SQUARE_ACCESS_TOKEN="test-token",
+    SQUARE_LOCATION_ID="LOC123",
+    SQUARE_ENVIRONMENT="sandbox",
+)
+class SquareFailsLoudlyTests(TestCase):
+    """The likely real failure is an expired token, and it must not be quiet.
+
+    Every error path used to print to stderr and `return`, which exits 0. On a
+    schedule that reads as a successful run, and a catalogue that stopped
+    syncing looks identical to one that had nothing to do — until somebody
+    can't ring up a sale.
+    """
+
+    def setUp(self):
+        recipe = make_recipe("Loud Recipe")
+        self.product = make_product(recipe, "Loud Product", with_image=False)
+
+    def _run(self, client, **kwargs):
+        out = StringIO()
+        with mock.patch("square.client.Client", return_value=client):
+            call_command("sync_to_square", stdout=out, stderr=out, **kwargs)
+        return out.getvalue()
+
+    def test_a_rejected_token_fails_the_command(self):
+        client = FakeSquareClient(locations_result=FakeSquareResult(
+            errors=[{"category": "AUTHENTICATION_ERROR",
+                     "detail": "This request could not be authorized."}]
+        ))
+        with self.assertRaises(CommandError) as caught:
+            self._run(client)
+        message = str(caught.exception)
+        self.assertIn("expired or revoked", message,
+                      "the message has to name the likely cause")
+        self.assertEqual(client.upserts, [], "nothing was sent")
+
+    def test_check_verifies_credentials_and_changes_nothing(self):
+        client = FakeSquareClient()
+        output = self._run(client, check=True)
+        self.assertIn("Credentials OK", output)
+        self.assertEqual(client.upserts, [])
+        self.assertEqual(client.inventory_changes, [])
+
+    @override_settings(SQUARE_ACCESS_TOKEN="")
+    def test_a_missing_token_is_caught_before_any_call(self):
+        with self.assertRaises(CommandError) as caught:
+            self._run(FakeSquareClient())
+        self.assertIn("SQUARE_ACCESS_TOKEN", str(caught.exception))
+
+    @override_settings(SQUARE_LOCATION_ID="")
+    def test_a_missing_location_is_caught_before_any_call(self):
+        with self.assertRaises(CommandError) as caught:
+            self._run(FakeSquareClient())
+        self.assertIn("SQUARE_LOCATION_ID", str(caught.exception))
+
+    def test_a_location_from_another_account_is_refused(self):
+        """Inventory would be pushed nowhere, successfully."""
+        client = FakeSquareClient(locations_result=FakeSquareResult(
+            {"locations": [{"id": "SOMEONE_ELSE"}]}
+        ))
+        with self.assertRaises(CommandError) as caught:
+            self._run(client)
+        self.assertIn("not one of this account's locations", str(caught.exception))
+
+    def test_a_failed_version_read_does_not_send_null_versions(self):
+        """Swallowing it meant every variation went back up with
+        version: None, which is not the update anyone intended."""
+        FinishedProduct.objects.filter(pk=self.product.pk).update(
+            square_variation_id="SQ_VAR"
+        )
+        client = FakeSquareClient(retrieve_result=FakeSquareResult(
+            errors=[{"category": "AUTHENTICATION_ERROR", "detail": "nope"}]
+        ))
+        with self.assertRaises(CommandError) as caught:
+            self._run(client, update=True)
+        self.assertIn("current variation versions", str(caught.exception))
+        self.assertEqual(client.upserts, [])
+
+    def test_a_variation_square_has_forgotten_is_skipped_not_duplicated(self):
+        """No version means Square doesn't know the ID; sending it anyway
+        creates a second variation rather than updating the first."""
+        FinishedProduct.objects.filter(pk=self.product.pk).update(
+            square_variation_id="GONE"
+        )
+        client = FakeSquareClient(retrieve_result=FakeSquareResult({"objects": []}))
+        output = self._run(client, update=True)
+        self.assertIn("doesn't recognise", output)
+        sent = client.upserts[0]["batches"][0]["objects"] if client.upserts else []
+        self.assertEqual(sent, [], "nothing with a null version went up")
