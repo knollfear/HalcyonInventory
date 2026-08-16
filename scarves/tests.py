@@ -4424,7 +4424,7 @@ class CalibrationSheetTests(TestCase):
         180° error reads as a plausible offset and sends you chasing a nudge
         that never converges, so this has to be settled first."""
         text = _pdf_text(self._pdf())
-        self.assertIn("TOP OF SHEET", text)
+        self.assertIn("TOP OF PRINT", text)
         self.assertIn("Write TOP and a feed arrow", text)
 
     def test_the_top_banner_is_actually_at_the_top(self):
@@ -4437,7 +4437,7 @@ class CalibrationSheetTests(TestCase):
         page_w = labelmod._pt(self.stock.page_width_in)
         page_h = labelmod._pt(self.stock.page_height_in)
 
-        banner = [i for i in _pdf_text_items(self._pdf()) if "TOP OF SHEET" in i[2]]
+        banner = [i for i in _pdf_text_items(self._pdf()) if "TOP OF PRINT" in i[2]]
         self.assertEqual(len(banner), 1)
         x, y, _ = banner[0]
         self.assertGreater(y, first_row_top, "banner sits in the top margin")
@@ -4463,4 +4463,64 @@ class CalibrationSheetTests(TestCase):
             columns=1, rows=1, margin_left_in=Decimal("0"), margin_top_in=Decimal("0"),
             pitch_x_in=Decimal("2.25"), pitch_y_in=Decimal("1.25"),
         )
-        self.assertNotIn("TOP OF SHEET", _pdf_text(self._pdf(roll)))
+        self.assertNotIn("TOP OF PRINT", _pdf_text(self._pdf(roll)))
+
+
+class LabelFormFieldVisibilityTests(TestCase):
+    """Controls the chosen dataset doesn't read are hidden client-side.
+
+    A date box that changes nothing is worse than no date box — it looks like
+    it's filtering and quietly isn't. The toggling itself is JS, so what's
+    checked here is the markup it hangs off: if a field loses its `data-when`
+    in a refactor, it silently becomes a dead control again.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("vis", "v@example.test", "pw")
+        self.client.force_login(self.user)
+
+    def test_each_dataset_only_field_is_tagged(self):
+        html = self.client.get(reverse("label_index")).content.decode()
+
+        for field, dataset in (
+            ("since", "since"),
+            ("category", "inventory"),
+            ("raw_product", "inventory"),
+            ("include_zero", "inventory"),
+        ):
+            with self.subTest(field=field):
+                block = re.search(
+                    r'<div class="field" data-when="(\w+)">(?:(?!</div>).)*?'
+                    r'id_' + field,
+                    html, re.S,
+                )
+                self.assertIsNotNone(block, f"{field} is not tagged data-when")
+                self.assertEqual(block.group(1), dataset)
+
+    def test_fields_both_datasets_read_are_not_tagged(self):
+        """extra, stock and start_at apply either way and must always show."""
+        html = self.client.get(reverse("label_index")).content.decode()
+        for field in ("extra", "stock", "start_at"):
+            with self.subTest(field=field):
+                block = re.search(
+                    r'<div class="field"( data-when="\w+")?>'
+                    r'(?:(?!</div>).)*?id_' + field,
+                    html, re.S,
+                )
+                self.assertIsNotNone(block)
+                self.assertIsNone(block.group(1), f"{field} must not be hidden")
+
+    def test_hidden_fields_still_submit_and_are_ignored(self):
+        """They stay in the DOM, so the view has to tolerate values the
+        dataset doesn't use rather than erroring on them."""
+        response = self.client.get(reverse("label_index"), {
+            "dataset": "since",
+            "since": (timezone.localdate() - timedelta(days=7)).isoformat(),
+            "extra": "0",
+            "stock": str(LabelStock.objects.first().pk),
+            "start_at": "1",
+            "include_zero": "on",      # inventory-only, sent anyway
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context["form"].is_valid(),
+                        response.context["form"].errors)

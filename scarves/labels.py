@@ -571,7 +571,11 @@ def _draw_orientation_banner(pdf, stock):
         pdf.drawPath(path, fill=1, stroke=0)
 
     pdf.setFont("Helvetica-Bold", 11)
-    pdf.drawCentredString(page_w / 2, y - 4, "TOP OF SHEET")
+    # "of print", not "of sheet": a sheet has no top until someone puts it in
+    # a tray. What this marks is where the printer put the top of its output,
+    # which is the thing you compare your pen mark against to work out which
+    # way the tray wants it.
+    pdf.drawCentredString(page_w / 2, y - 4, "TOP OF PRINT")
     pdf.setFont("Helvetica", 6)
     pdf.drawCentredString(
         page_w / 2, y - 13,

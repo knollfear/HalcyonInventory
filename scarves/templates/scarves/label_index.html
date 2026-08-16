@@ -80,21 +80,21 @@ labels get used, and what the marker sticker will say.
           {{ form.dataset }}
           {{ form.dataset.errors }}
         </div>
-        <div class="field">
+        <div class="field" data-when="since">
           <label for="{{ form.since.id_for_label }}">{{ form.since.label }}</label>
           {{ form.since }}
           <div class="help" id="since-help">{{ form.since.help_text }}</div>
           {{ form.since.errors }}
         </div>
-        <div class="field">
+        <div class="field" data-when="inventory">
           <label for="{{ form.category.id_for_label }}">Category</label>
           {{ form.category }}
         </div>
-        <div class="field">
+        <div class="field" data-when="inventory">
           <label for="{{ form.raw_product.id_for_label }}">{{ form.raw_product.label }}</label>
           {{ form.raw_product }}
         </div>
-        <div class="field">
+        <div class="field" data-when="inventory">
           <label>{{ form.include_zero }} {{ form.include_zero.label }}</label>
           <div class="help">{{ form.include_zero.help_text }}</div>
         </div>
@@ -309,6 +309,23 @@ labels get used, and what the marker sticker will say.
                              ". The sticker on the sheet is the real answer — if they " +
                              "disagree, trust the sheet.");
       }
+    }
+
+    // Only show the controls the chosen dataset actually reads. A date box
+    // that changes nothing is worse than no date box: it looks like it's
+    // filtering and quietly isn't. Same the other way — category and blank
+    // don't touch "produced since". Fields stay in the DOM and keep
+    // submitting; the view ignores what the dataset doesn't use.
+    var dataset = document.getElementById("{{ form.dataset.auto_id }}");
+    if (dataset) {
+      var conditional = document.querySelectorAll("#label-form .field[data-when]");
+      var sync = function () {
+        conditional.forEach(function (el) {
+          el.hidden = el.dataset.when !== dataset.value;
+        });
+      };
+      dataset.addEventListener("change", sync);
+      sync();   // the form comes back server-rendered after a preview
     }
 
     var printLink = document.getElementById("print-link");
