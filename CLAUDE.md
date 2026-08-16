@@ -191,37 +191,46 @@ Two judgements are baked in and are not bugs:
   recipe in stock reads as something else too (`turq-mid-black`,
   `grey-forest-navy`), and nobody looks for those under grey.
 
-### The two reference sheets answer different questions
+### One category, two orderings
 
-`public/reference-sheet/` is **by category**: a page per colorway, carrying the
-barcodes of every style dyed in it. It answers "what does this colorway look
-like, and what can I scan it as?".
+A category builds two sheets off **one picker** — `public/reference-sheet/` —
+because Yarn and Silk is how the stall is laid out, and a sheet is printed per
+table. The card carries a button each, not a second directory:
 
-`public/reference-sheet/by-color/` is **by style**, ordered by the rainbow: a
-page per colorway, printed once in *every* band it claims, with one barcode.
-It answers the question a customer actually asks — "what have you got in red?"
-— which is why the style is chosen up front rather than being a column: a
-sheet mixing shawls and sash belts under `RED` can't be handed to someone
-asking for a red shawl.
+- `<id>/` — **by colorway**. A page per colorway, carrying the barcodes of
+  every style dyed in it. Answers "what does this colorway look like, and what
+  can I scan it as?".
+- `<id>/by-color/` — **by colour**. The same pages, ordered by the rainbow and
+  repeated once in *every* band the colorway claims. Answers the question a
+  customer actually asks: "what have you got in red?".
+
+The category comes ahead of the ordering in the path on purpose: it puts the
+by-colour route under the existing picker, which is what
+`PickerPageConventionTests` checks and what keeps the pair one card on the site
+map instead of two.
 
 Duplication is the feature, not waste. A red-and-blue scarf that printed once
 would be *missing* from one of the two sections it is genuinely in, and the
 absence is silent (see above). The cost is bounded by how many bands a recipe
-claims — the picker prints both numbers (pages, and colorways) so the ratio is
+claims — the picker prints the page count of each sheet, so the ratio is
 visible before you build the PDF.
+
+The picker also **says how many colorways the colour sheet will leave out**,
+rather than quietly printing a shorter sheet. Unclassified means printed in no
+section at all, and the only symptom on paper is a scarf nobody can find.
 
 **Each page carries its band twice**: named under the title, and as a colored
 tab in a fixed slot down the right edge. The tab is what makes a printed stack
 usable — fan it and the sections show from the edge, which is how someone at
 the stall finds red without reading. Slots are keyed to the band, not to the
-page, so a gap means "this style has nothing in green" rather than "the tabs
+page, so a gap means "this category has nothing in green" rather than "the tabs
 shifted". Tab text flips black or white by luminance, because the sheet gets
 photocopied.
 
-A style with nothing confirmed is listed **disabled rather than hidden**, same
-reasoning as a product with no SKU on the labels page: filtering it out means
-someone looks for the sheet, doesn't find it, and never learns it was one
-click of confirmation away.
+Printed tabs replaced buying physical index tabs. They cost nothing (the sheets
+already print in colour), and they can't be lost, misapplied, or forgotten by
+whoever reprints the sheet — the same reasoning that puts `NEXT RUN: START AT
+n` on the label sheet instead of in `localStorage`.
 
 ## Inventory log dates: print `log.when`, never `log.created_at`
 

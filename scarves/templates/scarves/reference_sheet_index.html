@@ -6,25 +6,60 @@
 {% block style %}
   {{ block.super }}
   :root { --column: 760px; }
+  /* The card stopped being the link when the second sheet arrived: one
+     category now builds two PDFs, so the choice is on the buttons and the
+     card is back to being a container. */
+  .card-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .card-head .short, .card-head .ok { margin-left: auto; }
+  .sheets { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+  .sheets a { text-decoration: none; }
+  .sheets .why { font-size: 12px; color: #667; align-self: center; }
 {% endblock %}
 
 {% block content %}
-  <p class="lead">Pick a category to build its printable barcode sheet (PDF).</p>
+  <p class="lead">
+    Pick a category, then how it should be ordered — by colorway, or by colour.
+  </p>
 
   <div class="cards">
     {% for category in categories %}
-      <a class="card" href="{% url 'reference_sheet_pdf' category.pk %}">
-        <span class="name">{{ category.name }}</span>
-        <span class="stat">
-          {{ category.recipe_count }} page{{ category.recipe_count|pluralize }}
-          · {{ category.item_count }} barcode{{ category.item_count|pluralize }}
-        </span>
-        {% if category.photoless %}
-          <span class="short">{{ category.photoless }} without photos</span>
-        {% else %}
-          <span class="ok">all have photos</span>
-        {% endif %}
-      </a>
+      <div class="card">
+        <div class="card-head">
+          <span class="name">{{ category.name }}</span>
+          <span class="stat">
+            {{ category.recipe_count }} colorway{{ category.recipe_count|pluralize }}
+            · {{ category.item_count }} barcode{{ category.item_count|pluralize }}
+          </span>
+          {% if category.photoless %}
+            <span class="short">{{ category.photoless }} without photos</span>
+          {% else %}
+            <span class="ok">all have photos</span>
+          {% endif %}
+        </div>
+
+        <div class="sheets">
+          <a class="btn-quiet" href="{% url 'reference_sheet_pdf' category.pk %}">
+            By colorway · {{ category.recipe_count }} page{{ category.recipe_count|pluralize }}
+          </a>
+          {% if category.band_pages %}
+            <a class="btn-quiet" href="{% url 'reference_sheet_by_color_pdf' category.pk %}">
+              By colour · {{ category.band_pages }} page{{ category.band_pages|pluralize }}
+            </a>
+          {% endif %}
+          {% if category.unclassified %}
+            {% comment %}
+              Said out loud rather than silently shortening the sheet: an
+              unclassified colorway prints in no section at all, and the only
+              symptom on paper is a scarf you can't find.
+            {% endcomment %}
+            <span class="why">
+              {{ category.unclassified }} colorway{{ category.unclassified|pluralize }}
+              not classified yet, so {{ category.unclassified|pluralize:"it,they" }}
+              won't appear on the colour sheet
+            </span>
+          {% endif %}
+        </div>
+      </div>
     {% empty %}
       <p class="empty">No categories have printable items yet.</p>
     {% endfor %}

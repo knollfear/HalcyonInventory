@@ -1321,7 +1321,7 @@ class ReferenceSheetIndexTests(TestCase):
 
 
 class ByColorSheetTests(TestCase):
-    """The by-colour sheet: one style, ordered by the rainbow.
+    """The same category, ordered by the rainbow.
 
     Two things carry the whole feature and neither is visible in a rendered
     PDF: a colorway claiming two bands has to print twice (or it's missing
@@ -1331,13 +1331,13 @@ class ByColorSheetTests(TestCase):
     """
 
     def setUp(self):
-        # Anonymous on purpose, like the category sheets: photos, names and
+        # Anonymous on purpose, like the by-name sheet: photos, names and
         # barcodes, the same things laid on the stall table.
         self.silk, _ = RawProductCategory.objects.get_or_create(name="Silk")
         self.style = RawProduct.objects.create(
             name="Infinity", category=self.silk, price="5.00"
         )
-        self.url = reverse("reference_sheet_by_color_index")
+        self.url = reverse("reference_sheet_index")
 
     def _colorway(self, name, bands, confirmed=True, style=None, active=True):
         recipe = make_recipe(name)
@@ -1346,30 +1346,45 @@ class ByColorSheetTests(TestCase):
         recipe.color_bands = bands
         recipe.save()
         return FinishedProduct.objects.create(
-            name=f"{name} {self.style.name}",
+            name=f"{name} scarf",
             raw_product=style or self.style,
             recipe=recipe,
             price="30.00",
             is_active=active,
         )
 
-    def _pages(self, style=None):
+    def _pages(self, category=None):
         from .views import _by_color_pages
-        return _by_color_pages(style or self.style)
+        return _by_color_pages(category or self.silk)
 
     def test_a_two_band_colorway_prints_in_both_sections(self):
         self._colorway("Sunset", ["red", "blue"])
 
-        bands = [slug for slug, _, _, _ in self._pages()]
-        self.assertEqual(bands, ["red", "blue"])
+        self.assertEqual([slug for slug, _, _, _, _ in self._pages()], ["red", "blue"])
 
     def test_pages_come_out_in_rainbow_order_not_by_name(self):
         self._colorway("Aardvark", ["blue"])
         self._colorway("Zebra", ["red"])
 
         self.assertEqual(
-            [(slug, fp.recipe.name) for slug, _, _, fp in self._pages()],
+            [(slug, recipe.name) for slug, _, _, recipe, _ in self._pages()],
             [("red", "Zebra"), ("blue", "Aardvark")],
+        )
+
+    def test_a_page_carries_every_style_dyed_in_that_colorway(self):
+        """Same page contents as the by-name sheet — one colorway, and a
+        barcode for each style in the category wearing it."""
+        belt = RawProduct.objects.create(
+            name="Sash Belt", category=self.silk, price="5.00"
+        )
+        product = self._colorway("Sunset", ["red"])
+        FinishedProduct.objects.create(
+            name="Sunset belt", raw_product=belt, recipe=product.recipe, price="20.00"
+        )
+
+        (_, _, _, _, items), = self._pages()
+        self.assertEqual(
+            sorted(fp.raw_product.name for fp in items), ["Infinity", "Sash Belt"]
         )
 
     def test_an_unconfirmed_colorway_does_not_print(self):
@@ -1378,7 +1393,7 @@ class ByColorSheetTests(TestCase):
         self._colorway("Checked", ["red"])
 
         self.assertEqual(
-            [fp.recipe.name for _, _, _, fp in self._pages()], ["Checked"]
+            [recipe.name for _, _, _, recipe, _ in self._pages()], ["Checked"]
         )
 
     def test_a_confirmed_colorway_claiming_nothing_prints_nowhere(self):
@@ -1387,15 +1402,14 @@ class ByColorSheetTests(TestCase):
 
         self.assertEqual(self._pages(), [])
 
-    def test_only_the_chosen_style_prints(self):
-        other = RawProduct.objects.create(
-            name="Sash Belt", category=self.silk, price="5.00"
-        )
+    def test_only_the_chosen_category_prints(self):
+        yarn = RawProductCategory.objects.create(name="Yarn")
+        skein = RawProduct.objects.create(name="Halo", category=yarn, price="5.00")
         self._colorway("Shared", ["red"])
-        self._colorway("Elsewhere", ["red"], style=other)
+        self._colorway("Elsewhere", ["red"], style=skein)
 
         self.assertEqual(
-            [fp.recipe.name for _, _, _, fp in self._pages()], ["Shared"]
+            [recipe.name for _, _, _, recipe, _ in self._pages()], ["Shared"]
         )
 
     def test_an_inactive_product_does_not_print(self):
@@ -1407,64 +1421,67 @@ class ByColorSheetTests(TestCase):
         self._colorway("Sunset", ["red", "orange"])
         self._colorway("Storm", ["blue"])
 
-        row = self.client.get(self.url).context["rows"][0]
-        self.assertEqual(row["pages"], 3)
-        self.assertEqual(row["colorways"], 2)
+        category = self.client.get(self.url).context["categories"][0]
+        self.assertEqual(category.band_pages, 3)
+        self.assertEqual(category.recipe_count, 2)
 
-    def test_the_picker_separates_unclassified_from_unclaimed(self):
+    def test_the_picker_says_what_the_colour_sheet_will_leave_out(self):
         """Work still to do, versus a decision already taken."""
         self._colorway("Waiting", ["red"], confirmed=False)
         self._colorway("Deliberate", [])
 
-        row = self.client.get(self.url).context["rows"][0]
-        self.assertEqual(row["unconfirmed"], 1)
-        self.assertEqual(row["pages"], 0)
+        category = self.client.get(self.url).context["categories"][0]
+        self.assertEqual(category.unclassified, 1)
+        self.assertEqual(category.band_pages, 0)
+        self.assertContains(self.client.get(self.url), "not classified yet")
 
-    def test_a_style_with_nothing_to_print_is_shown_disabled_not_hidden(self):
-        self._colorway("Waiting", ["red"], confirmed=False)
-
-        response = self.client.get(self.url)
-        self.assertContains(response, "Infinity")
-        self.assertNotContains(
-            response, reverse("reference_sheet_by_color_pdf", args=[self.style.pk])
-        )
-
-    def test_every_linked_style_actually_builds_a_pdf(self):
+    def test_the_picker_offers_both_sheets_for_one_category(self):
         self._colorway("Sunset", ["red", "blue"])
 
         response = self.client.get(self.url)
-        pattern = re.escape(reverse("reference_sheet_by_color_index")).encode() + rb"\d+/"
-        hrefs = re.findall(rb'href="(' + pattern + rb')"', response.content)
-        self.assertEqual(len(hrefs), 1)
-        for href in hrefs:
-            pdf = self.client.get(href.decode())
-            self.assertEqual(pdf.status_code, 200)
-            self.assertEqual(pdf["Content-Type"], "application/pdf")
+        self.assertContains(
+            response, reverse("reference_sheet_pdf", args=[self.silk.pk])
+        )
+        self.assertContains(
+            response, reverse("reference_sheet_by_color_pdf", args=[self.silk.pk])
+        )
+
+    def test_the_colour_sheet_is_not_offered_when_it_would_be_empty(self):
+        self._colorway("Waiting", ["red"], confirmed=False)
+
+        response = self.client.get(self.url)
+        self.assertContains(
+            response, reverse("reference_sheet_pdf", args=[self.silk.pk])
+        )
+        self.assertNotContains(
+            response, reverse("reference_sheet_by_color_pdf", args=[self.silk.pk])
+        )
 
     def test_the_pdf_has_one_page_per_band_claimed(self):
         self._colorway("Sunset", ["red", "blue"])
         self._colorway("Storm", ["blue"])
 
         pdf = self.client.get(
-            reverse("reference_sheet_by_color_pdf", args=[self.style.pk])
+            reverse("reference_sheet_by_color_pdf", args=[self.silk.pk])
         )
+        self.assertEqual(pdf["Content-Type"], "application/pdf")
         # No PDF parser in the deps; the page count is in the trailer.
         self.assertEqual(pdf.content.count(b"/Type /Page\n"), 3)
 
-    def test_a_style_with_nothing_confirmed_still_returns_a_pdf(self):
+    def test_a_category_with_nothing_confirmed_still_returns_a_pdf(self):
         """Reachable by URL even when the picker won't link it — it has to say
         why rather than 500."""
         self._colorway("Waiting", ["red"], confirmed=False)
 
         pdf = self.client.get(
-            reverse("reference_sheet_by_color_pdf", args=[self.style.pk])
+            reverse("reference_sheet_by_color_pdf", args=[self.silk.pk])
         )
         self.assertEqual(pdf.status_code, 200)
         self.assertEqual(pdf["Content-Type"], "application/pdf")
 
     def test_the_tab_slot_is_the_band_not_the_page(self):
-        """Fixed slots are what make a gap in a printed stack mean 'this style
-        has nothing in green' rather than 'the tabs shifted up'."""
+        """Fixed slots are what make a gap in a printed stack mean 'this
+        category has nothing in green' rather than 'the tabs shifted up'."""
         from .views import _band_tab_painter
         from scarves import colorbands
 

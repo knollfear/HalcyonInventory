@@ -172,16 +172,11 @@ urlpatterns = [
         views.reference_sheet_pdf,
         name="reference_sheet_pdf",
     ),
-    # The same photos and barcodes, ordered by the rainbow instead of by
-    # colorway, one style at a time. `by-color` can't collide with the
-    # <int:category_id> route above — that converter only matches digits.
+    # The same category, ordered by the rainbow instead of by colorway. The
+    # category stays ahead of the ordering in the path so both sheets hang off
+    # the one picker, which is also what keeps them one card on the site map.
     path(
-        "public/reference-sheet/by-color/",
-        views.reference_sheet_by_color_index,
-        name="reference_sheet_by_color_index",
-    ),
-    path(
-        "public/reference-sheet/by-color/<int:raw_product_id>/",
+        "public/reference-sheet/<int:category_id>/by-color/",
         views.reference_sheet_by_color_pdf,
         name="reference_sheet_by_color_pdf",
     ),

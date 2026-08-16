@@ -1721,6 +1721,11 @@ def reference_sheet_index(request):
     )
     for category in categories:
         category.photoless = photoless.get(category.pk, 0)
+        # The same category, two orderings. Counted here rather than left to
+        # the click because the by-colour sheet is longer than the by-name one
+        # (a colorway prints once per section it claims) and skips whatever
+        # nobody has classified — both are things to know before printing.
+        category.band_pages, category.unclassified = _by_color_counts(category)
 
     return render(request, "scarves/reference_sheet_index.html", {"categories": categories})
 
@@ -1974,131 +1979,74 @@ def reference_sheet_pdf(request, category_id):
 
 
 # ---------------------------------------------------------------------------
-# The by-colour sheet: one style, filed under every colour it shows.
+# The same category, ordered by the rainbow instead of by colorway.
 #
-# The category sheet answers "what does this colorway look like?". This one
-# answers the question a customer actually asks, which is "what have you got in
-# red?" — so it's ordered by the rainbow rather than by name, and a colorway
-# claiming two bands prints in both.
+# The sheet above answers "what does this colorway look like?". This one
+# answers the question a customer actually asks — "what have you got in red?"
+# — off the same category and the same picker, because Yarn and Silk is how
+# the stall is laid out and a sheet is printed per table, not per style.
 # ---------------------------------------------------------------------------
 
 
-def _by_color_pages(raw_product):
-    """`(slug, label, color, product)` for one style, rainbow order then name.
+def _by_color_pages(category):
+    """`(slug, label, color, recipe, items)` for one category, rainbow order.
 
-    One entry is one page. A colorway claiming red and blue yields two, which
-    is the entire point: the dyes aren't blended, so a red-and-blue scarf is
-    genuinely in both sections and printing it once means it's missing from
-    one of them (same reasoning as `colorbands`).
+    One entry is one page, and it holds the same thing a page of the by-name
+    sheet holds: a colorway, its photos, and a barcode for every style dyed in
+    it. What changes is the order and the repetition.
+
+    A colorway claiming red and blue yields two entries, which is the entire
+    point: the dyes aren't blended, so a red-and-blue scarf is genuinely in
+    both sections, and printing it once leaves it missing from one of them
+    (same reasoning as `colorbands`).
 
     Unconfirmed recipes are left out rather than guessed at. `colorbands` gets
     roughly 85% of these right, and the 15% is silent — you look under orange,
     the scarf isn't there, and nothing tells you it was filed under red.
     """
-    products = list(
+    items_by_recipe = {}
+    for fp in (
         FinishedProduct.objects.filter(
-            raw_product=raw_product,
+            raw_product__category=category,
             is_active=True,
+            raw_product__is_active=True,
             recipe__is_active=True,
             recipe__bands_confirmed_at__isnull=False,
         )
-        .select_related("recipe", "raw_product__category")
+        .select_related("recipe", "raw_product")
         .prefetch_related("images")
-        .order_by("recipe__name")
-    )
+        .order_by("raw_product__name")
+    ):
+        items_by_recipe.setdefault(fp.recipe, []).append(fp)
+
+    recipes = sorted(items_by_recipe, key=lambda r: r.name)
     return [
-        (slug, label, color, fp)
+        (slug, label, color, recipe, items_by_recipe[recipe])
         for slug, label, color in colorbands.BANDS
-        for fp in products
-        if slug in (fp.recipe.color_bands or [])
+        for recipe in recipes
+        if slug in (recipe.color_bands or [])
     ]
 
 
-def _by_color_style_rows():
-    """One card per style, with what its sheet would contain.
-
-    Counted in Python rather than SQL because "how many pages" is the length of
-    an array field summed per recipe, and the numbers are 15 styles against a
-    few hundred products.
-    """
-    styles = (
-        RawProduct.objects.filter(is_active=True)
-        .select_related("category")
-        .prefetch_related(
-            Prefetch(
-                "finished_products",
-                queryset=FinishedProduct.objects.filter(
-                    is_active=True, recipe__is_active=True
-                ).select_related("recipe").prefetch_related("images"),
-            )
+def _by_color_counts(category):
+    """What the by-colour link on the picker promises: pages, and what's
+    missing. Two different silences, kept apart — an unconfirmed colorway is
+    work someone still has to do, while a confirmed one claiming no band is a
+    decision already taken, and merging them would keep re-raising the settled
+    one."""
+    recipes = (
+        Recipe.objects.filter(
+            finished_products__raw_product__category=category,
+            finished_products__is_active=True,
+            finished_products__raw_product__is_active=True,
+            is_active=True,
         )
-        .order_by("category__name", "name")
+        .distinct()
+        .values_list("color_bands", "bands_confirmed_at")
     )
-
-    rows = []
-    for style in styles:
-        products = list(style.finished_products.all())
-        if not products:
-            continue
-
-        printed = [
-            fp for fp in products
-            if fp.recipe.bands_confirmed and fp.recipe.color_bands
-        ]
-        rows.append({
-            "style": style,
-            "pages": sum(len(fp.recipe.color_bands) for fp in printed),
-            "colorways": len({fp.recipe_id for fp in printed}),
-            # Two different silences, kept apart. An unconfirmed recipe is work
-            # someone still has to do; a confirmed recipe with no bands is a
-            # decision already taken ("this belongs in no section"), and
-            # rolling them into one number would keep re-raising the settled one.
-            "unconfirmed": len({
-                fp.recipe_id for fp in products if not fp.recipe.bands_confirmed
-            }),
-            "photoless": sum(
-                1 for fp in printed if not any(img.image for img in fp.images.all())
-            ),
-        })
-    return rows
-
-
-@page_meta(
-    title="Reference Sheets by Colour",
-    description="Pick a style to build a printable sheet ordered by the "
-                "rainbow: one page per colorway, in every section it claims, "
-                "so a red-and-blue scarf prints in both.",
-    category="Reference Sheets",
-    # Deliberately doesn't name the staff page that does the confirming: this
-    # card is printed on the public map too, where a private page's title must
-    # never appear (URLBucketTests).
-    note="Only colorways whose sections have been confirmed are printed.",
-)
-def reference_sheet_by_color_index(request):
-    """Style picker for the by-colour sheets. Public, like the sheets."""
-    return render(
-        request,
-        "scarves/reference_sheet_by_color_index.html",
-        {"rows": _by_color_style_rows()},
-    )
-
-
-def _barcode_solo(fp, usable_width, name_style, sku_style):
-    """A single centred barcode card, half the page wide.
-
-    Half, not full: the card is the same object the category sheet prints two
-    across, and a barcode stretched over 7.5in of paper reads as a different
-    thing to whoever is holding both sheets.
-    """
-    from reportlab.lib.units import inch
-    from reportlab.platypus import Table
-
-    card_w = (usable_width - 0.25 * inch) / 2
-    return Table(
-        [[_barcode_card(fp, card_w, name_style, sku_style)]],
-        colWidths=[card_w],
-        hAlign="CENTER",
-    )
+    pages = sum(len(bands or []) for bands, confirmed in recipes if confirmed)
+    unclassified = sum(1 for _, confirmed in recipes if not confirmed)
+    return pages, unclassified
 
 
 def _band_tab_painter(page_bands):
@@ -2108,7 +2056,7 @@ def _band_tab_painter(page_bands):
     stack usable: fan it and the sections are visible from the edge, which is
     how someone standing at the stall finds red without reading anything. Its
     slot is fixed per band, so the gaps in a stack tell you which sections that
-    style doesn't have.
+    category doesn't have.
 
     Keyed on page number, which holds because the story puts exactly one entry
     on each page (`KeepInFrame` shrinks rather than splitting).
@@ -2154,24 +2102,26 @@ def _band_tab_painter(page_bands):
 
 @page_meta(
     title="Reference Sheet by Colour (PDF)",
-    description="Builds the by-colour sheet for one style: a page per colorway "
-                "per rainbow section, with photos, a barcode and a colour tab "
-                "on the edge.",
+    description="The same category sheet ordered by the rainbow: a page per "
+                "colorway per section it claims, with a colour tab on the "
+                "edge, so a red scarf can be found by being red.",
     category="Reference Sheets",
-    note="Returns a PDF.",
+    note="Returns a PDF. Only colorways whose sections have been confirmed are printed.",
+    # Same picker as the by-name sheet — this is the other button on the card,
+    # not a second directory. The URL keeps the category ahead of the ordering
+    # for that reason, which also puts it under the existing picker for
+    # PickerPageConventionTests.
     show_in_index=False,
 )
-def reference_sheet_by_color_pdf(request, raw_product_id):
+def reference_sheet_by_color_pdf(request, category_id):
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import letter, portrait
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import inch
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, KeepInFrame
 
-    style_row = get_object_or_404(
-        RawProduct.objects.select_related("category"), pk=raw_product_id
-    )
-    pages = _by_color_pages(style_row)
+    category = get_object_or_404(RawProductCategory, pk=category_id)
+    pages = _by_color_pages(category)
 
     styles = getSampleStyleSheet()
     kicker_style = ParagraphStyle("kicker", parent=styles["Normal"], fontSize=11, leading=13, fontName="Helvetica-Bold", spaceBefore=0, spaceAfter=0)
@@ -2189,30 +2139,30 @@ def reference_sheet_by_color_pdf(request, raw_product_id):
     safety = 0.1 * inch
 
     story = []
-    for position, (slug, label, color, fp) in enumerate(pages):
+    for position, (slug, label, color, recipe, items) in enumerate(pages):
         if position:
             story.append(PageBreak())
 
         kicker_p = Paragraph(
             f'<font color="{color}">{label.upper()}</font>', kicker_style
         )
-        title_p = Paragraph(fp.recipe.name, title_style)
+        title_p = Paragraph(recipe.name, title_style)
         sub_p = Paragraph(
-            f"{style_row.name} · {style_row.category.name}", sub_style
+            f"{category.name} · {len(items)} item(s)", sub_style
         )
         _, kh = kicker_p.wrap(usable_width, usable_height)
         _, th = title_p.wrap(usable_width, usable_height)
         _, sh = sub_p.wrap(usable_width, usable_height)
-        card = _barcode_solo(fp, usable_width, name_style, sku_style)
-        _, card_h = card.wrap(usable_width, usable_height)
+        bc_grid = _barcode_grid(items, usable_width, name_style, sku_style)
+        _, bc_h = bc_grid.wrap(usable_width, usable_height)
 
         photo_area = (
-            usable_height - kh - th - sh - top_gap - mid_gap - card_h - safety
+            usable_height - kh - th - sh - top_gap - mid_gap - bc_h - safety
         )
         gallery = None
         if photo_area > 1.2 * inch:
             gallery = _photo_gallery(
-                _select_recipe_photos([fp], cap=4), usable_width, photo_area
+                _select_recipe_photos(items, cap=4), usable_width, photo_area
             )
 
         block = [kicker_p, title_p, sub_p, Spacer(1, top_gap)]
@@ -2220,14 +2170,13 @@ def reference_sheet_by_color_pdf(request, raw_product_id):
             block += [gallery, Spacer(1, mid_gap)]
         else:
             block.append(Spacer(1, max(photo_area + mid_gap, 0)))
-        block.append(card)
+        block.append(bc_grid)
 
         story.append(KeepInFrame(usable_width, usable_height, block, mode="shrink"))
 
     if not story:
         story = [Paragraph(
-            f"{style_row.name} — no colorways with confirmed colour bands. "
-            f"Confirm them on the Colour Classification page first.",
+            f"{category.name} — no colorways with confirmed colour sections yet.",
             styles["h1"],
         )]
 
@@ -2240,7 +2189,7 @@ def reference_sheet_by_color_pdf(request, raw_product_id):
         leftMargin=margin,
         rightMargin=margin,
     )
-    painter = _band_tab_painter([(slug, label, color) for slug, label, color, _ in pages])
+    painter = _band_tab_painter([p[:3] for p in pages])
     doc.build(story, onFirstPage=painter, onLaterPages=painter)
     buf.seek(0)
     return HttpResponse(buf, content_type="application/pdf")
