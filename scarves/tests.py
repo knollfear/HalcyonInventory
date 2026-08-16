@@ -13,7 +13,7 @@ import random
 import re
 import shutil
 import tempfile
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from unittest import mock
 
@@ -34,11 +34,13 @@ from .colorutils import (
     pick_color_cluster,
     recipe_palette,
 )
-from .forms import HoursForm, RecipeDyesForm
+from .forms import HoursForm, LabelRunForm, RecipeDyesForm
+from . import labels as labelmod
 from .models import (
     Dye,
     DyeBrand,
     Employee,
+    LabelStock,
     FinishedProduct,
     FinishedProductImage,
     InventoryLog,
@@ -3605,12 +3607,30 @@ class TimesheetViewTests(TestCase):
         self.week = date(2026, 8, 1)
 
     def _entry(self, employee, day, hours, created=None):
+        """An entry reported on the day it was worked, unless `created` says
+        otherwise.
+
+        Defaulting `created_at` matters: left on `auto_now_add` it takes the
+        real wall clock, which drifts away from this class's hardcoded August
+        2026 fixtures until every entry looks reported weeks late and picks up
+        a "reported Nd later" flag. That turned these tests into a time bomb
+        that went off a week after they were written — and only
+        `test_an_ordinary_day_is_not_flagged` noticed, because it's the one
+        asserting the flag list is *empty*. The rest use `assertIn` and would
+        have sailed on with a spurious flag.
+        """
         entry = TimeEntry.objects.create(
             employee=employee, work_date=day, hours=Decimal(str(hours))
         )
-        if created is not None:
-            TimeEntry.objects.filter(pk=entry.pk).update(created_at=created)
-            entry.refresh_from_db()
+        if created is None:
+            created = timezone.make_aware(datetime.combine(day, time(17, 0)))
+        # Both timestamps move together. `updated_at` is auto_now, so leaving
+        # it on the wall clock while created_at goes back to 2026 makes
+        # `was_revised` (updated_at - created_at > 1s) true for every entry.
+        TimeEntry.objects.filter(pk=entry.pk).update(
+            created_at=created, updated_at=created
+        )
+        entry.refresh_from_db()
         return entry
 
     def test_it_needs_a_login(self):
@@ -3763,3 +3783,684 @@ class TimeEntryModelTests(TestCase):
             employee=self.sam, work_date=timezone.localdate(), hours=Decimal("8")
         )
         self.assertEqual(entry.reported_late_by, 0)
+
+
+def make_stock(**overrides):
+    """The stock we actually buy: OL25WX / Avery 5167, 4 × 20."""
+    fields = {
+        "name": "Test 1.75 x 0.5",
+        "page_width_in": Decimal("8.5"),
+        "page_height_in": Decimal("11"),
+        "label_width_in": Decimal("1.75"),
+        "label_height_in": Decimal("0.5"),
+        "columns": 4,
+        "rows": 20,
+        "margin_left_in": Decimal("0.32812"),
+        "margin_top_in": Decimal("0.5"),
+        "pitch_x_in": Decimal("2.03125"),
+        "pitch_y_in": Decimal("0.5"),
+    }
+    fields.update(overrides)
+    return LabelStock.objects.create(**fields)
+
+
+def _pdf_text(pdf_bytes):
+    """Visible text from a reportlab PDF, for asserting on rendered output.
+
+    reportlab writes content streams as ASCII85 + Flate, so this inflates them
+    and pulls out the `(...) Tj` operands. Worth the few lines: without it the
+    only thing a PDF test can check is that bytes came back, which passes just
+    as happily when the page is blank.
+    """
+    import base64 as _b64, zlib as _zlib
+
+    out = []
+    for m in re.finditer(rb"stream\n(.*?)endstream", pdf_bytes, re.S):
+        blob = m.group(1).strip()
+        try:
+            blob = _zlib.decompress(_b64.a85decode(blob, adobe=True))
+        except Exception:
+            try:
+                blob = _zlib.decompress(blob)
+            except Exception:
+                continue
+        out.append(blob.decode("latin-1"))
+    content = "\n".join(out)
+    return "".join(re.findall(r"\((.*?)\)\s*Tj", content, re.S))
+
+
+def _pdf_streams(pdf_bytes):
+    import base64 as _b64, zlib as _zlib
+
+    out = []
+    for m in re.finditer(rb"stream\n(.*?)endstream", pdf_bytes, re.S):
+        blob = m.group(1).strip()
+        try:
+            blob = _zlib.decompress(_b64.a85decode(blob, adobe=True))
+        except Exception:
+            continue
+        out.append(blob.decode("latin-1"))
+    return "\n".join(out)
+
+
+def _pdf_text_items(pdf_bytes):
+    """(x, y, text) for each positioned string reportlab wrote.
+
+    Matches the `Tm ... Tj` operators directly rather than carving the stream
+    into `BT ... ET` blocks first. The obvious block regex is non-greedy, and
+    "SHEET" ends in "ET" — so it truncates mid-string on exactly the banner
+    this is used to locate, and reports nothing rather than reporting wrong.
+    """
+    return [
+        (float(x), float(y), text)
+        for x, y, text in re.findall(
+            r"1 0 0 1 ([-\d.]+) ([-\d.]+) Tm \((.*?)\) Tj",
+            _pdf_streams(pdf_bytes),
+            re.S,
+        )
+    ]
+
+
+def _pdf_lines(pdf_bytes, x_max=None):
+    """Both endpoints of every stroked line segment, in page coordinates.
+
+    reportlab emits `canvas.line()` as `n x1 y1 m x2 y2 l S` on one line —
+    enough to assert where the registration ticks landed without pulling in a
+    PDF library.
+    """
+    content = _pdf_streams(pdf_bytes)
+    pts = []
+    for x1, y1, x2, y2 in re.findall(
+        r"([\d.]+) ([\d.]+) m ([\d.]+) ([\d.]+) l S", content
+    ):
+        pts.append((float(x1), float(y1)))
+        pts.append((float(x2), float(y2)))
+    if x_max is not None:
+        pts = [p for p in pts if p[0] <= x_max]
+    return pts
+
+
+class LabelStockGeometryTests(TestCase):
+    """The eight numbers are transcribed by hand off a vendor page, and a
+    transposed digit prints one ruined sheet before anyone notices. These are
+    the checks that make that a test failure instead."""
+
+    def test_seeded_stock_fits_its_sheet(self):
+        """Every stock shipped in a migration closes to the page size."""
+        for stock in LabelStock.objects.all():
+            with self.subTest(stock=stock.name):
+                over_x, over_y = stock.overflow_in()
+                self.assertLessEqual(over_x, Decimal("0.01"), "runs off the right edge")
+                self.assertLessEqual(over_y, Decimal("0.01"), "runs off the bottom")
+
+    def test_the_migration_seeded_the_stock_we_buy(self):
+        stock = LabelStock.objects.get(name__startswith="Avery 5167")
+        self.assertEqual(stock.labels_per_sheet, 80)
+        self.assertEqual((stock.columns, stock.rows), (4, 20))
+        self.assertTrue(stock.purchase_url, "the page offers a 'buy more' link")
+
+    def test_bad_geometry_is_refused(self):
+        from django.core.exceptions import ValidationError
+
+        stock = LabelStock(
+            name="Transposed pitch",
+            page_width_in=Decimal("8.5"), page_height_in=Decimal("11"),
+            label_width_in=Decimal("1.75"), label_height_in=Decimal("0.5"),
+            columns=4, rows=20,
+            margin_left_in=Decimal("0.32812"), margin_top_in=Decimal("0.5"),
+            pitch_x_in=Decimal("3.20125"),  # digits swapped
+            pitch_y_in=Decimal("0.5"),
+        )
+        with self.assertRaises(ValidationError):
+            stock.full_clean()
+
+    def test_every_label_lands_inside_the_page(self):
+        stock = make_stock()
+        page_w = labelmod._pt(stock.page_width_in)
+        page_h = labelmod._pt(stock.page_height_in)
+        label_w = labelmod._pt(stock.label_width_in)
+        label_h = labelmod._pt(stock.label_height_in)
+
+        for index in range(stock.labels_per_sheet):
+            slot = labelmod.slot_for(stock, index)
+            with self.subTest(index=index):
+                self.assertGreaterEqual(slot.x, 0)
+                self.assertGreaterEqual(slot.y, 0)
+                self.assertLessEqual(slot.x + label_w, page_w + 0.5)
+                self.assertLessEqual(slot.y + label_h, page_h + 0.5)
+
+    def test_labels_do_not_overlap(self):
+        stock = make_stock()
+        label_w = labelmod._pt(stock.label_width_in)
+        label_h = labelmod._pt(stock.label_height_in)
+
+        boxes = [labelmod.slot_for(stock, i) for i in range(stock.labels_per_sheet)]
+        for i, a in enumerate(boxes):
+            for b in boxes[i + 1:]:
+                overlap = (
+                    a.x < b.x + label_w and b.x < a.x + label_w
+                    and a.y < b.y + label_h and b.y < a.y + label_h
+                )
+                self.assertFalse(overlap, f"{a} overlaps {b}")
+
+    def test_labels_run_left_to_right_then_down(self):
+        stock = make_stock()
+        first, second, fifth = (labelmod.slot_for(stock, i) for i in (0, 1, 4))
+        self.assertGreater(second.x, first.x, "label 2 is to the right of label 1")
+        self.assertAlmostEqual(second.y, first.y, places=6, msg="still row 1")
+        self.assertLess(fifth.y, first.y, "label 5 has dropped to row 2")
+        self.assertAlmostEqual(fifth.x, first.x, places=6)
+
+    def test_offsets_move_every_label_together(self):
+        plain = make_stock()
+        nudged = make_stock(name="Nudged", x_offset_mm=Decimal("2"), y_offset_mm=Decimal("-1"))
+        for index in (0, 7, 79):
+            a, b = labelmod.slot_for(plain, index), labelmod.slot_for(nudged, index)
+            self.assertAlmostEqual(b.x - a.x, labelmod._mm_pt(2), places=6)
+            self.assertAlmostEqual(b.y - a.y, labelmod._mm_pt(-1), places=6)
+
+
+class LabelMarkerTests(TestCase):
+    """Resuming a part-used sheet is the whole reason the marker exists.
+
+    A weekly run leaves a part-used sheet nearly every time. If the next run
+    can't find where to start, that sheet gets binned — and 19 wasted rows
+    reads as waste no matter what it cost. The marker puts the answer on the
+    paper, so it survives a cleared cache and a different laptop.
+    """
+
+    def setUp(self):
+        self.stock = make_stock()
+
+    def test_marker_goes_straight_after_the_last_label(self):
+        self.assertEqual(labelmod.marker_index_for(self.stock, 63, start_at=0), 63)
+
+    def test_marker_says_the_label_after_itself(self):
+        plan = labelmod.plan_sheets(self.stock, 63, start_at=0)
+        self.assertEqual(plan.marker_index, 63)
+        self.assertEqual(plan.resume_at, 65, "64 is the marker; the next run starts at 65")
+        self.assertEqual(plan.free_after, 16)
+
+    def test_resuming_where_the_marker_said_reuses_the_sheet(self):
+        """Print 63, resume at 65, and the second run continues the same sheet
+        rather than starting a fresh one."""
+        first = labelmod.plan_sheets(self.stock, 63, start_at=0)
+        second = labelmod.plan_sheets(self.stock, 10, start_at=first.resume_at - 1)
+        self.assertEqual(second.sheets[0]["number"], 1)
+        self.assertEqual(
+            [c["state"] for c in second.sheets[0]["cells"]][:64],
+            ["used"] * 64,
+            "everything up to and including the old marker is already peeled",
+        )
+        self.assertEqual(second.sheets[0]["cells"][64]["state"], "printing")
+
+    def test_no_marker_when_the_run_ends_the_sheet_exactly(self):
+        """There'd be nowhere to put it but a fresh sheet, and a fresh sheet
+        needs no marker."""
+        plan = labelmod.plan_sheets(self.stock, 80, start_at=0)
+        self.assertIsNone(plan.marker_index)
+        self.assertTrue(plan.finishes_sheet)
+        self.assertEqual(plan.resume_at, 1)
+        self.assertEqual(plan.sheet_count, 1, "the marker must not spill a second sheet")
+
+    def test_marker_can_start_the_next_sheet(self):
+        """81 labels fill sheet one and put one on sheet two; the marker
+        follows it there."""
+        plan = labelmod.plan_sheets(self.stock, 81, start_at=0)
+        self.assertEqual(plan.sheet_count, 2)
+        self.assertEqual(plan.marker_index, 81)
+        self.assertEqual(plan.resume_at, 3)
+
+    def test_partial_sheet_start_marks_earlier_labels_used(self):
+        plan = labelmod.plan_sheets(self.stock, 4, start_at=64)
+        states = [c["state"] for c in plan.sheets[0]["cells"]]
+        self.assertEqual(states[:64], ["used"] * 64)
+        self.assertEqual(states[64:68], ["printing"] * 4)
+        self.assertEqual(states[68], "marker")
+
+
+class LabelRunSelectionTests(TestCase):
+    """Which products get stickers, and how many."""
+
+    def setUp(self):
+        self.recipe = make_recipe("Label Recipe")
+        self.a = make_product(self.recipe, "Label A", with_image=False)
+        self.b = make_product(self.recipe, "Label B", with_image=False)
+        self.a.sku, self.a.number_on_hand = "AAA-ONE", 3
+        self.a.save()
+        self.b.sku, self.b.number_on_hand = "BBB-TWO", 0
+        self.b.save()
+
+    def _log(self, product, qty, when, precision=InventoryLog.EXACT):
+        log = InventoryLog.objects.create(
+            finished_product=product,
+            log_type=InventoryLog.PRODUCTION,
+            quantity=qty,
+            date_precision=precision,
+        )
+        InventoryLog.objects.filter(pk=log.pk).update(created_at=when)
+        return log
+
+    def test_extra_is_added_per_product(self):
+        """The user's arithmetic: base 2 with +2 prints 4, with +1 prints 3."""
+        self.a.number_on_hand = 2
+        self.a.save()
+        for extra, expected in ((0, 2), (1, 3), (2, 4)):
+            run = labelmod.inventory_run(extra=extra)
+            row = next(r for r in run.rows if r.product.sku == "AAA-ONE")
+            self.assertEqual(row.quantity, expected, f"+{extra}")
+            self.assertEqual(row.base, 2, "the underlying count is reported unchanged")
+
+    def test_zero_on_hand_is_skipped_by_default(self):
+        run = labelmod.inventory_run(extra=2)
+        self.assertNotIn("BBB-TWO", [r.product.sku for r in run.rows])
+
+    def test_zero_on_hand_can_be_included(self):
+        run = labelmod.inventory_run(extra=2, include_zero=True)
+        row = next(r for r in run.rows if r.product.sku == "BBB-TWO")
+        self.assertEqual(row.quantity, 2, "just the extras")
+
+    def test_products_without_a_sku_are_reported_not_dropped(self):
+        """A silently missing sticker is a scarf that won't scan at the till."""
+        self.b.sku, self.b.number_on_hand = "", 5
+        self.b.save()
+        run = labelmod.inventory_run()
+        self.assertEqual([p.name for p in run.skipped_no_sku], ["Label B"])
+        self.assertNotIn("", [r.product.sku for r in run.rows])
+
+    def test_rows_are_sorted_by_sku(self):
+        """A dye bath yields 3–5 of one SKU, so sorting by SKU is what puts
+        each bath's stickers together on the sheet."""
+        self.b.number_on_hand = 4
+        self.b.save()
+        run = labelmod.inventory_run()
+        self.assertEqual([r.product.sku for r in run.rows], ["AAA-ONE", "BBB-TWO"])
+        self.assertEqual(
+            [p.sku for p in run.flat()],
+            ["AAA-ONE"] * 3 + ["BBB-TWO"] * 4,
+            "all copies of a SKU are contiguous",
+        )
+
+    def test_produced_since_counts_production_logs(self):
+        now = timezone.now()
+        self._log(self.a, 4, now - timedelta(days=2))
+        self._log(self.a, 3, now - timedelta(days=30))
+        run = labelmod.produced_since((now - timedelta(days=7)).date())
+        row = next(r for r in run.rows if r.product.sku == "AAA-ONE")
+        self.assertEqual(row.quantity, 4, "only the recent bath")
+
+    def test_produced_since_ignores_sales(self):
+        """Stickers are for what was made, not for what's left on the shelf."""
+        now = timezone.now()
+        self._log(self.a, 5, now - timedelta(days=1))
+        InventoryLog.objects.create(
+            finished_product=self.a, log_type=InventoryLog.SALE, quantity=-3,
+        )
+        run = labelmod.produced_since((now - timedelta(days=7)).date())
+        row = next(r for r in run.rows if r.product.sku == "AAA-ONE")
+        self.assertEqual(row.quantity, 5)
+
+    def test_backdated_cards_do_not_ask_for_stickers(self):
+        """A 2024 kanban card entered today carries created_at of 2024, so it
+        correctly falls outside a recent cutoff — those scarves are long gone."""
+        self._log(self.a, 6, timezone.make_aware(datetime(2024, 9, 1)),
+                  precision=InventoryLog.MONTH)
+        run = labelmod.produced_since(timezone.localdate() - timedelta(days=7))
+        self.assertEqual(run.rows, [])
+
+    def test_month_precision_rows_near_the_cutoff_are_counted_not_dropped(self):
+        """A month-only row is stored on the 1st as sort padding, so a
+        mid-month cutoff excludes it even though its real date is unknown.
+        The page has to say so rather than quietly losing production."""
+        today = timezone.localdate()
+        first = today.replace(day=1)
+        self._log(self.a, 4, timezone.make_aware(datetime(first.year, first.month, 1)),
+                  precision=InventoryLog.MONTH)
+
+        cutoff = first + timedelta(days=14)
+        run = labelmod.produced_since(cutoff)
+        self.assertEqual(run.ambiguous_month_logs, 1)
+
+        from_the_first = labelmod.produced_since(first)
+        self.assertEqual(from_the_first.ambiguous_month_logs, 0,
+                         "no ambiguity when the cutoff is the 1st")
+        self.assertEqual(from_the_first.total, 4)
+
+
+class LabelDensityTests(TestCase):
+    """A barcode too dense to scan is a silent failure — it looks like a
+    sticker and fails at the till with a queue behind you."""
+
+    def setUp(self):
+        self.stock = make_stock()
+        self.recipe = make_recipe("Density Recipe")
+
+    def test_the_stock_we_buy_prints_a_full_length_sku_readably(self):
+        """SKUs are SLUG6-SLUG6, so 13 characters is the normal maximum."""
+        _, mil = labelmod.barcode_for("SILKSC-STORMY", self.stock)
+        self.assertGreater(mil, labelmod.MIN_MODULE_MIL)
+        self.assertGreater(mil, 7.0, "comfortably scannable, not just legal")
+
+    def test_shorter_skus_get_fatter_bars(self):
+        """Sizing per label rather than per run is what buys this."""
+        _, short = labelmod.barcode_for("SILK-TEAL", self.stock)
+        _, long = labelmod.barcode_for("SILKSC-STORMY", self.stock)
+        self.assertGreater(short, long)
+
+    def test_a_narrow_stock_is_reported_as_a_problem(self):
+        """The 1in stock we nearly bought, with a normal SKU."""
+        narrow = make_stock(
+            name="1in", label_width_in=Decimal("1.0"), columns=7,
+            margin_left_in=Decimal("0.45"), pitch_x_in=Decimal("1.1"),
+        )
+        product = make_product(self.recipe, "Dense", with_image=False)
+        product.sku, product.number_on_hand = "SILKSC-STORMY", 1
+        product.save()
+
+        run = labelmod.inventory_run()
+        problems = labelmod.density_problems(run, narrow)
+        self.assertEqual([sku for sku, _ in problems], ["SILKSC-STORMY"])
+        self.assertEqual(labelmod.density_problems(run, self.stock), [],
+                         "the stock we actually buy is fine")
+
+
+class LabelViewTests(TestCase):
+    """The page and the two PDFs."""
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("labels", "l@example.test", "pw")
+        self.client.force_login(self.user)
+        self.stock = LabelStock.objects.get(name__startswith="Avery 5167")
+        self.recipe = make_recipe("View Recipe")
+        self.product = make_product(self.recipe, "View Product", with_image=False)
+        self.product.sku, self.product.number_on_hand = "VIEW-ONE", 3
+        self.product.save()
+
+    def _params(self, **overrides):
+        params = {
+            "dataset": "inventory", "extra": "0",
+            "stock": str(self.stock.pk), "start_at": "1",
+        }
+        params.update(overrides)
+        return params
+
+    def test_empty_page_renders_the_form(self):
+        response = self.client.get(reverse("label_index"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Start at label")
+
+    def test_preview_reports_counts_before_anything_prints(self):
+        response = self.client.get(reverse("label_index"), self._params(extra="2"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "VIEW-ONE")
+        self.assertContains(response, "5 labels")   # 3 on hand + 2 extra
+
+    def test_preview_shows_what_the_marker_will_say(self):
+        response = self.client.get(reverse("label_index"), self._params())
+        self.assertContains(response, "START AT 5")  # 3 labels, marker at 4
+
+    def test_pdf_renders(self):
+        response = self.client.get(reverse("label_pdf"), self._params())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/pdf")
+        self.assertTrue(response.content.startswith(b"%PDF"))
+
+    def test_pdf_refuses_an_unreadable_run_instead_of_printing_it(self):
+        narrow = make_stock(
+            name="Too narrow", label_width_in=Decimal("1.0"), columns=7,
+            margin_left_in=Decimal("0.45"), pitch_x_in=Decimal("1.1"),
+        )
+        self.product.sku = "SILKSC-STORMY"
+        self.product.save()
+        response = self.client.get(
+            reverse("label_pdf"), self._params(stock=str(narrow.pk)), follow=True
+        )
+        self.assertContains(response, "too long for")
+        self.assertNotEqual(response["Content-Type"], "application/pdf")
+
+    def test_pdf_redirects_when_there_is_nothing_to_print(self):
+        self.product.number_on_hand = 0
+        self.product.save()
+        response = self.client.get(reverse("label_pdf"), self._params(), follow=True)
+        self.assertContains(response, "Nothing to print")
+
+    def test_start_at_beyond_the_sheet_is_rejected(self):
+        form = LabelRunForm(self._params(start_at="200"))
+        self.assertFalse(form.is_valid())
+        self.assertIn("start_at", form.errors)
+
+    def test_since_dataset_needs_a_date(self):
+        form = LabelRunForm(self._params(dataset="since", since=""))
+        self.assertFalse(form.is_valid())
+        self.assertIn("since", form.errors)
+
+    def test_calibration_sheet_renders(self):
+        response = self.client.get(
+            reverse("label_calibration_pdf"), {"stock": self.stock.pk}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.content.startswith(b"%PDF"))
+
+
+class ContinuousRollTests(TestCase):
+    """A thermal label printer is the same table with a 1 × 1 grid.
+
+    Worth pinning because the sheet-oriented behaviours are actively wrong on
+    a roll: a marker sticker would print after every run, cost a label, and be
+    read by nobody.
+    """
+
+    def setUp(self):
+        self.roll = make_stock(
+            name="Rollo 2.25 x 1.25 roll",
+            page_width_in=Decimal("2.25"), page_height_in=Decimal("1.25"),
+            label_width_in=Decimal("2.25"), label_height_in=Decimal("1.25"),
+            columns=1, rows=1,
+            margin_left_in=Decimal("0"), margin_top_in=Decimal("0"),
+            pitch_x_in=Decimal("2.25"), pitch_y_in=Decimal("1.25"),
+        )
+        recipe = make_recipe("Roll Recipe")
+        self.product = make_product(recipe, "Roll Product", with_image=False)
+        self.product.sku, self.product.number_on_hand = "ROLL-ONE", 5
+        self.product.save()
+
+    def test_a_one_by_one_stock_is_a_roll(self):
+        self.assertTrue(self.roll.is_continuous)
+        self.assertFalse(make_stock(name="Sheet").is_continuous)
+
+    def test_no_marker_is_printed_on_a_roll(self):
+        plan = labelmod.plan_sheets(self.roll, 5)
+        self.assertIsNone(plan.marker_index)
+        self.assertEqual(plan.sheet_count, 5, "one label per page")
+
+    def test_one_label_per_page_at_the_media_size(self):
+        run = labelmod.inventory_run()
+        pdf = labelmod.render_run(run, self.roll)
+        self.assertTrue(pdf.startswith(b"%PDF"))
+        self.assertEqual(pdf.count(b"/Type /Page\n"), 5, "five labels, five pages")
+
+    def test_a_roll_has_room_for_a_full_length_sku(self):
+        _, mil = labelmod.barcode_for("SILKSC-STORMY", self.roll)
+        self.assertGreater(mil, labelmod.MIN_MODULE_MIL)
+
+    def test_geometry_still_has_to_close(self):
+        self.assertEqual(self.roll.overflow_in(), (Decimal("0"), Decimal("0")))
+
+
+class PrintShopTests(TestCase):
+    """Printing at a shop rather than on a printer you own.
+
+    Two assumptions break: you can't calibrate the machine beforehand, and you
+    have no computer with you when the first sheet comes out wrong. So the
+    offset has to be adjustable from the URL, and every sheet has to carry its
+    own proof it wasn't scaled.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("shop", "s@example.test", "pw")
+        self.client.force_login(self.user)
+        self.stock = LabelStock.objects.get(name__startswith="Avery 5167")
+        recipe = make_recipe("Shop Recipe")
+        self.product = make_product(recipe, "Shop Product", with_image=False)
+        self.product.sku, self.product.number_on_hand = "SHOP-ONE", 3
+        self.product.save()
+
+    def _params(self, **overrides):
+        params = {
+            "dataset": "inventory", "extra": "0",
+            "stock": str(self.stock.pk), "start_at": "1",
+        }
+        params.update(overrides)
+        return params
+
+    def test_offset_can_be_overridden_from_the_query_string(self):
+        form = LabelRunForm(self._params(x_offset_mm="1.5", y_offset_mm="-2"))
+        self.assertTrue(form.is_valid(), form.errors)
+
+        from scarves.views import _label_stock_from
+        stock = _label_stock_from(form)
+        self.assertEqual(stock.x_offset_mm, Decimal("1.5"))
+        self.assertEqual(stock.y_offset_mm, Decimal("-2"))
+
+    def test_an_override_is_never_written_back_to_the_stock(self):
+        """A correction for one shop's machine on one day is not a property
+        of the paper."""
+        form = LabelRunForm(self._params(x_offset_mm="3"))
+        self.assertTrue(form.is_valid(), form.errors)
+
+        from scarves.views import _label_stock_from
+        _label_stock_from(form)
+        self.stock.refresh_from_db()
+        self.assertEqual(self.stock.x_offset_mm, Decimal("0"))
+
+    def test_a_blank_override_keeps_the_saved_offset(self):
+        LabelStock.objects.filter(pk=self.stock.pk).update(x_offset_mm=Decimal("1"))
+        form = LabelRunForm(self._params(x_offset_mm="", y_offset_mm=""))
+        self.assertTrue(form.is_valid(), form.errors)
+
+        from scarves.views import _label_stock_from
+        self.assertEqual(_label_stock_from(form).x_offset_mm, Decimal("1"))
+
+    def test_the_override_actually_moves_the_labels(self):
+        plain = self.client.get(reverse("label_pdf"), self._params())
+        nudged = self.client.get(reverse("label_pdf"), self._params(x_offset_mm="2"))
+        self.assertEqual(plain.status_code, 200)
+        self.assertEqual(nudged.status_code, 200)
+        self.assertNotEqual(plain.content, nudged.content)
+
+    def test_absurd_offsets_are_refused(self):
+        self.assertFalse(LabelRunForm(self._params(x_offset_mm="50")).is_valid())
+
+    def test_every_sheet_carries_a_scale_check(self):
+        """Catches a print dialog left on 'fit to page' — the failure that
+        looks fine at the top of the sheet and cuts through labels at the
+        bottom."""
+        self.product.number_on_hand = 100   # spills onto a second sheet
+        self.product.save()
+        pdf = self.client.get(reverse("label_pdf"), self._params()).content
+        text = _pdf_text(pdf)
+        self.assertEqual(pdf.count(b"/Type /Page\n"), 2)
+        self.assertEqual(text.count("must line up with a row of die-cuts"), 2,
+                         "one check per sheet, not just the last")
+
+    def test_the_check_spans_the_whole_sheet_not_one_inch(self):
+        """The point of using the die-cuts: a 1in reference at 98% scale is
+        out by half a millimetre and unreadable, while the same error over the
+        full column stack is five and obvious. One tick per row, top to
+        bottom, in the left margin."""
+        pdf = self.client.get(reverse("label_pdf"), self._params()).content
+        ticks = _pdf_lines(pdf, x_max=20)
+        ys = sorted({round(y, 1) for _, y in ticks})
+        self.assertGreaterEqual(len(ys), self.stock.rows,
+                                "a tick for every row of die-cuts")
+
+        expected_top = labelmod.slot_for(self.stock, 0).y + labelmod._pt(
+            self.stock.label_height_in)
+        expected_bottom = labelmod.slot_for(
+            self.stock, (self.stock.rows - 1) * self.stock.columns).y
+        self.assertAlmostEqual(max(ys), expected_top, delta=0.5)
+        self.assertAlmostEqual(min(ys), expected_bottom, delta=0.5)
+
+    def test_the_scale_check_stays_off_the_labels(self):
+        """It's diagnostics, not product — it belongs on the liner."""
+        pdf = self.client.get(reverse("label_pdf"), self._params()).content
+        first_column_x = labelmod._pt(self.stock.margin_left_in)
+        for x, _ in _pdf_lines(pdf, x_max=20):
+            self.assertLess(x, first_column_x,
+                            "ticks must stay left of the first label column")
+
+    def test_the_scale_check_names_the_offset_in_use(self):
+        """So a reprint at a different nudge is tellable from the one before."""
+        pdf = self.client.get(reverse("label_pdf"), self._params(x_offset_mm="1.5")).content
+        self.assertIn("nudge 1.5/0", _pdf_text(pdf))
+
+    def test_a_roll_gets_no_ruler(self):
+        """The page is the label; there's no margin to put one in."""
+        roll = make_stock(
+            name="Roll", page_width_in=Decimal("2.25"), page_height_in=Decimal("1.25"),
+            label_width_in=Decimal("2.25"), label_height_in=Decimal("1.25"),
+            columns=1, rows=1, margin_left_in=Decimal("0"), margin_top_in=Decimal("0"),
+            pitch_x_in=Decimal("2.25"), pitch_y_in=Decimal("1.25"),
+        )
+        pdf = self.client.get(reverse("label_pdf"), self._params(stock=str(roll.pk))).content
+        self.assertNotIn("must measure exactly 1 inch", _pdf_text(pdf))
+
+
+class CalibrationSheetTests(TestCase):
+    """The plain-paper sheet that makes a first trip to the print shop enough."""
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("cal", "c@example.test", "pw")
+        self.client.force_login(self.user)
+        self.stock = LabelStock.objects.get(name__startswith="Avery 5167")
+
+    def _pdf(self, stock=None):
+        return self.client.get(
+            reverse("label_calibration_pdf"), {"stock": (stock or self.stock).pk}
+        ).content
+
+    def test_it_answers_orientation_before_millimetres(self):
+        """Four ways a sheet goes into a bypass tray, three of them wrong. A
+        180° error reads as a plausible offset and sends you chasing a nudge
+        that never converges, so this has to be settled first."""
+        text = _pdf_text(self._pdf())
+        self.assertIn("TOP OF SHEET", text)
+        self.assertIn("Write TOP and a feed arrow", text)
+
+    def test_the_top_banner_is_actually_at_the_top(self):
+        """Stating the top edge somewhere other than the top would be worse
+        than not stating it."""
+        first_row_top = (
+            labelmod.slot_for(self.stock, 0).y
+            + labelmod._pt(self.stock.label_height_in)
+        )
+        page_w = labelmod._pt(self.stock.page_width_in)
+        page_h = labelmod._pt(self.stock.page_height_in)
+
+        banner = [i for i in _pdf_text_items(self._pdf()) if "TOP OF SHEET" in i[2]]
+        self.assertEqual(len(banner), 1)
+        x, y, _ = banner[0]
+        self.assertGreater(y, first_row_top, "banner sits in the top margin")
+        self.assertLess(y, page_h)
+        self.assertAlmostEqual(x, page_w / 2, delta=60, msg="roughly centred")
+
+    def test_it_carries_a_millimetre_vernier(self):
+        text = _pdf_text(self._pdf())
+        self.assertIn("read the die-cut corner", text)
+        for label in ("+1", "-1", "+3", "-3"):
+            self.assertIn(label, text)
+
+    def test_every_label_position_is_numbered(self):
+        """So a marker sticker reading 57 can be found on the sheet."""
+        text = _pdf_text(self._pdf())
+        for n in ("1", "40", "80"):
+            self.assertIn(n, text)
+
+    def test_a_stock_with_no_top_margin_skips_the_banner(self):
+        roll = make_stock(
+            name="Roll", page_width_in=Decimal("2.25"), page_height_in=Decimal("1.25"),
+            label_width_in=Decimal("2.25"), label_height_in=Decimal("1.25"),
+            columns=1, rows=1, margin_left_in=Decimal("0"), margin_top_in=Decimal("0"),
+            pitch_x_in=Decimal("2.25"), pitch_y_in=Decimal("1.25"),
+        )
+        self.assertNotIn("TOP OF SHEET", _pdf_text(self._pdf(roll)))

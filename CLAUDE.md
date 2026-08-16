@@ -293,3 +293,72 @@ from whatever page they land in. When a page renders the same row markup that
 a fragment endpoint returns, `{% include %}` the partial rather than copying
 it — `production_needed.html` and `recipe_showcase.html` both do this, after
 both had drifted from their partials.
+
+## Barcode labels: the sheet is the state
+
+`private/labels/` prints Code128 stickers for stock going onto the shelf —
+"everything produced since a date" (the weekly job) or "everything on hand"
+(bulk re-label). `scarves/labels.py` picks the items and draws the PDF;
+`LabelStock` holds the paper.
+
+**A dye bath is one blank plus one recipe**, so it yields 3–5 units of a
+*single* SKU. That's why the sheet is sorted by SKU and nothing cleverer: the
+stickers come off in the same clumps the scarves come off the rack. A run is
+~20 products × 3–5 ≈ 60–100 labels, against 80 per sheet.
+
+**The run prints its own "start here next time" sticker.** A weekly run leaves
+a part-used sheet nearly every time, and a sheet nobody can confidently resume
+gets binned — which reads as waste whatever it cost. So the last label of every
+run is a dated marker reading `NEXT RUN: START AT n`. It costs one label and it
+puts the state on the paper, where it survives a cleared cache, a second laptop
+and a week in a drawer. The browser's `localStorage` pre-fills the same number
+as a convenience, and the page says so: **if the two disagree, the sheet wins.**
+
+Two cases print no marker, both on purpose: a run ending exactly on a sheet
+boundary (nowhere to put it but a fresh sheet, which starts at 1 anyway), and a
+continuous roll (`LabelStock.is_continuous`, a 1 × 1 grid — no sheet to resume,
+so a marker would cost a label per run and be read by nobody).
+
+**Never print a barcode below `MIN_MODULE_MIL`.** Bars too dense to scan are a
+*silent* failure: the sticker looks right and fails at the till with a queue
+behind it. `density_problems()` runs before rendering and the view refuses the
+whole job, naming the SKUs. This is also why the stock is 1.75in wide — a
+13-character `SLUG6-SLUG6` SKU comes out at 7.7 mil there, where the 1in stock
+first considered would have printed 4.5 mil. Barcodes are sized **per label**,
+not per run, so a short SKU gets fat bars instead of matching the longest one.
+
+**Nobody here owns a printer.** Sheets get printed at a copy shop from a PDF
+emailed off a phone, which breaks two assumptions the offsets were built on:
+you can't calibrate the machine beforehand, and you have no computer with you
+when a sheet comes out 2mm high. So `x_offset_mm`/`y_offset_mm` can be
+overridden from the query string (`_label_stock_from`) — adjust on the phone,
+re-download, reprint — and an override is **never** written back, because a
+correction for one store's machine on one day is not a property of the paper.
+
+For the same reason every sheet prints **registration ticks down the left
+margin, one per row of die-cuts**. A dialog left on "fit to page" takes a few
+percent off, and that failure is progressive — at 98% the first row is out by
+a twentieth of a millimetre and the twentieth is out by five, cut clean
+through. A short ruler cannot catch it (98% of an inch is half a millimetre,
+unreadable); twenty die-cuts spread over ten inches can, and the two faults
+separate by eye: ticks drifting further off toward the bottom means scaling,
+ticks all off by the same amount means registration and a nudge fixes it.
+Ticks stay left of the first column and the caption sits on the liner, so this
+costs no labels. Rolls and stocks without the margin skip it.
+
+The calibration sheet carries a **millimetre vernier through the first
+label's corner** so dialling the nudge in is one measurement rather than a
+loop — lay it over a label sheet against a light, read the corner off the
+scales, type those numbers in. The scales are labelled with the nudge to
+*enter*, not the error observed, because a sign error there doubles the
+problem it was meant to fix.
+
+**`LabelStock` is eight numbers, not an uploaded template.** Vendors ship
+templates as .docx/.pdf, and recovering die geometry from one means
+reverse-engineering Word's cell rounding — with 2mm of error costing a sheet to
+discover. Instead the numbers are transcribed off the vendor's spec page into
+the admin. `overflow_in()` and `clean()` reject geometry that runs off the
+sheet (what a transposed pitch digit looks like), `LabelStockGeometryTests`
+re-checks every seeded stock, and the calibration route prints outlines plus a
+one-inch ruler on plain paper to catch printer registration and a print dialog
+left on "fit to page".

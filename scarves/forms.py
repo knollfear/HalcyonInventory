@@ -274,3 +274,106 @@ class HoursForm(forms.Form):
             self.add_error("pin", "That PIN doesn't match the name you picked.")
 
         return cleaned
+
+
+class LabelRunForm(forms.Form):
+    """What to print, how many, and where on the sheet to start.
+
+    A GET form: the picker and the preview are the same page, so a run is a
+    URL you can re-open, bookmark or hand to someone. Nothing here is
+    remembered server-side — see the note in `scarves.labels` about why the
+    browser holds the last cutoff rather than a table of past runs.
+    """
+
+    SINCE = "since"
+    INVENTORY = "inventory"
+    DATASET_CHOICES = [
+        (SINCE, "Produced since a date"),
+        (INVENTORY, "Everything on hand"),
+    ]
+
+    dataset = forms.ChoiceField(
+        choices=DATASET_CHOICES,
+        initial=SINCE,
+        label="What to print",
+    )
+    since = forms.DateField(
+        required=False,
+        widget=forms.DateInput(attrs={"type": "date"}),
+        label="Produced on or after",
+        help_text="Defaults to the last time you printed from this browser.",
+    )
+    category = forms.ModelChoiceField(
+        queryset=None, required=False, empty_label="All categories",
+    )
+    raw_product = forms.ModelChoiceField(
+        queryset=None, required=False, empty_label="All blanks", label="Blank",
+    )
+    include_zero = forms.BooleanField(
+        required=False,
+        label="Include products with none on hand",
+        help_text="Off by default: with extras switched on, every dormant SKU "
+                  "would otherwise use labels.",
+    )
+    extra = forms.IntegerField(
+        min_value=0, max_value=20, initial=0, required=False,
+        label="Extra labels per product",
+        help_text="Added to each product's count — 3 produced with 2 extra "
+                  "prints 5. Leave at 0 for exact.",
+    )
+    stock = forms.ModelChoiceField(queryset=None, label="Label stock")
+    x_offset_mm = forms.DecimalField(
+        required=False, max_digits=5, decimal_places=2,
+        min_value=Decimal("-10"), max_value=Decimal("10"),
+        label="Nudge right (mm)",
+        help_text="Overrides the stock's saved offset for this print only. "
+                  "Blank uses the saved one.",
+    )
+    y_offset_mm = forms.DecimalField(
+        required=False, max_digits=5, decimal_places=2,
+        min_value=Decimal("-10"), max_value=Decimal("10"),
+        label="Nudge up (mm)",
+    )
+    start_at = forms.IntegerField(
+        min_value=1, initial=1,
+        label="Start at label",
+        help_text="Read it off the marker sticker on the part-used sheet. "
+                  "A fresh sheet is 1.",
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        from .models import LabelStock, RawProduct, RawProductCategory
+
+        self.fields["category"].queryset = RawProductCategory.objects.order_by("name")
+        self.fields["raw_product"].queryset = RawProduct.objects.filter(
+            is_active=True
+        ).order_by("name")
+
+        stocks = LabelStock.objects.filter(is_active=True)
+        self.fields["stock"].queryset = stocks
+        self.fields["stock"].empty_label = None
+        first = stocks.first()
+        if first:
+            self.fields["stock"].initial = first.pk
+
+    def clean_extra(self):
+        return self.cleaned_data.get("extra") or 0
+
+    def clean(self):
+        cleaned = super().clean()
+
+        if cleaned.get("dataset") == self.SINCE and not cleaned.get("since"):
+            self.add_error("since", "Pick the date to count production from.")
+
+        stock, start_at = cleaned.get("stock"), cleaned.get("start_at")
+        if stock and start_at and start_at > stock.labels_per_sheet:
+            self.add_error(
+                "start_at",
+                f"{stock.name} has {stock.labels_per_sheet} labels per sheet — "
+                f"there is no label {start_at}. A used-up sheet is a fresh one "
+                f"starting at 1.",
+            )
+
+        return cleaned

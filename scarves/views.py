@@ -39,9 +39,9 @@ from django.contrib import messages
 from django.shortcuts import render, redirect
 from django.template.response import TemplateResponse
 
-from . import colorbands, timesheets
+from . import colorbands, labels, timesheets
 from .colorutils import nearest_by_color, pick_color_cluster
-from .forms import HoursForm, QuickRecipeRowForm, RecipeDyesForm
+from .forms import HoursForm, LabelRunForm, QuickRecipeRowForm, RecipeDyesForm
 from .models import Dye, Recipe
 from .s3utils import download_object, presigned_post, upload_object
 from django.db.models import Prefetch
@@ -2784,3 +2784,143 @@ def timesheet(request):
         "today": today,
         "hours_entry_url": request.build_absolute_uri(reverse("hours_entry")),
     })
+
+
+# ---------------------------------------------------------------------------
+# Barcode labels: pick a dataset, see exactly what it will use up, print.
+#
+# The picker and the preview are one page on purpose. Labels cost a sheet at a
+# time and a run can't be un-printed, so every number that matters — how many
+# stickers, how many sheets, which rows, what to write on the sheet afterwards
+# — is on screen before the PDF is ever built.
+# ---------------------------------------------------------------------------
+
+
+def _label_stock_from(form):
+    """The chosen stock, with any per-print offset override applied in memory.
+
+    The offsets live on the model as a printer's saved registration, which
+    assumes you print on a printer you own. Printing at a shop inverts that: a
+    different machine every time, no chance to calibrate first, and no
+    computer to hand when the first sheet comes out 2mm high. So the override
+    rides in the query string — adjust it on a phone, re-download, print
+    again, without going near the admin. Never saved: a correction for one
+    store's machine on one day is not a property of the paper.
+    """
+    stock = form.cleaned_data["stock"]
+    for field in ("x_offset_mm", "y_offset_mm"):
+        override = form.cleaned_data.get(field)
+        if override is not None:
+            setattr(stock, field, override)
+    return stock
+
+
+def _label_run_from(form):
+    """Build the run described by a valid LabelRunForm."""
+    data = form.cleaned_data
+    if data["dataset"] == LabelRunForm.SINCE:
+        return labels.produced_since(data["since"], extra=data["extra"])
+    return labels.inventory_run(
+        extra=data["extra"],
+        category=data.get("category"),
+        raw_product=data.get("raw_product"),
+        include_zero=data.get("include_zero", False),
+    )
+
+
+@page_meta(
+    title="Barcode Labels",
+    description="Print Code128 stickers for stock you're adding to inventory "
+                "— everything produced since a date, or everything on hand. "
+                "Shows the sheet layout and which rows it uses before you "
+                "print.",
+    category="Reference Sheets",
+)
+@login_required
+def label_index(request):
+    """Picker and preview in one. Submits to itself by GET, so a run is a URL."""
+    submitted = bool(request.GET)
+    form = LabelRunForm(request.GET or None)
+
+    context = {"form": form, "submitted": submitted}
+
+    if submitted and form.is_valid():
+        stock = _label_stock_from(form)
+        start_at = form.cleaned_data["start_at"] - 1  # UI is 1-indexed
+        run = _label_run_from(form)
+
+        context.update({
+            "run": run,
+            "stock": stock,
+            "plan": labels.plan_sheets(stock, run.total, start_at),
+            "density_problems": labels.density_problems(run, stock),
+            "pdf_url": f"{reverse('label_pdf')}?{request.GET.urlencode()}",
+            "calibration_url": (
+                f"{reverse('label_calibration_pdf')}?stock={stock.pk}"
+            ),
+        })
+
+    return render(request, "scarves/label_index.html", context)
+
+
+@page_meta(
+    title="Barcode Labels PDF",
+    description="Renders the label sheet described by the query string.",
+    category="Reference Sheets",
+    note="Returns a PDF. Reached from the Barcode Labels page.",
+    show_in_index=False,
+)
+@login_required
+def label_pdf(request):
+    form = LabelRunForm(request.GET or None)
+    if not form.is_valid():
+        messages.error(request, "That label run isn't valid — check the form.")
+        return redirect("label_index")
+
+    stock = _label_stock_from(form)
+    start_at = form.cleaned_data["start_at"] - 1
+    run = _label_run_from(form)
+
+    if not run.rows:
+        messages.warning(request, "Nothing to print for those settings.")
+        return redirect(f"{reverse('label_index')}?{request.GET.urlencode()}")
+
+    # Refuse rather than hand over a sheet of stickers no scanner will read.
+    # The failure is otherwise silent until someone is at the till with a
+    # queue behind them.
+    problems = labels.density_problems(run, stock)
+    if problems:
+        listed = ", ".join(f"{sku} ({mil:.1f} mil)" for sku, mil in problems[:5])
+        messages.error(
+            request,
+            f"{len(problems)} SKU(s) are too long for {stock.name} and would "
+            f"print bars under {labels.MIN_MODULE_MIL} mil: {listed}. Shorten "
+            f"the SKU or use wider stock.",
+        )
+        return redirect(f"{reverse('label_index')}?{request.GET.urlencode()}")
+
+    pdf = labels.render_run(run, stock, start_at)
+    response = HttpResponse(pdf, content_type="application/pdf")
+    response["Content-Disposition"] = (
+        f'inline; filename="labels-{timezone.localdate():%Y%m%d}.pdf"'
+    )
+    return response
+
+
+@page_meta(
+    title="Label Calibration Sheet",
+    description="Outlines at every label position and a one-inch ruler. Print "
+                "on plain paper and hold it against a label sheet to check "
+                "the geometry and the printer's registration.",
+    category="Reference Sheets",
+    note="Returns a PDF. Reached from the Barcode Labels page.",
+    show_in_index=False,
+)
+@login_required
+def label_calibration_pdf(request):
+    from .models import LabelStock
+
+    stock = get_object_or_404(LabelStock, pk=request.GET.get("stock"))
+    response = HttpResponse(labels.render_calibration(stock), content_type="application/pdf")
+    response["Content-Disposition"] = 'inline; filename="label-calibration.pdf"'
+    return response

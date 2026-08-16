@@ -173,6 +173,19 @@ urlpatterns = [
         name="reference_sheet_pdf",
     ),
 
+    # --- Barcode labels ---
+    # Staff: the page carries production quantities and drives a printer.
+    # The two PDF routes take their arguments from the query string rather
+    # than the path, so a run stays a re-openable URL and neither needs a
+    # picker of its own beyond the page they're both reached from.
+    path("private/labels/", views.label_index, name="label_index"),
+    path("private/labels/pdf/", views.label_pdf, name="label_pdf"),
+    path(
+        "private/labels/calibrate/",
+        views.label_calibration_pdf,
+        name="label_calibration_pdf",
+    ),
+
     # --- Webhooks ---
     # Deliberately left outside private/ and public/: the URL is registered in
     # the Square dashboard, so moving it here without changing it there would

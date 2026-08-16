@@ -2,6 +2,7 @@ from decimal import Decimal
 
 from colorfield.fields import ColorField
 from django.contrib.postgres.fields import ArrayField
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.core.validators import (
     MinValueValidator,
@@ -653,3 +654,132 @@ class TimeEntry(models.Model):
         """
         return (timezone.localtime(self.created_at).date() - self.work_date).days
 
+
+
+class LabelStock(models.Model):
+    """One kind of die-cut label sheet, described by the numbers a PDF needs
+    to put ink where the die-cuts are.
+
+    A laser label sheet is plain paper with cuts in it; the printer knows
+    nothing about the cuts. So a "template" is not a file — it's the eight
+    measurements below, all of which every vendor publishes on the product
+    page. That's why this is a table you type into rather than a template
+    you upload: recovering die geometry from a vendor's .docx means
+    reverse-engineering Word's cell rounding, and being 2mm out is only
+    discoverable by wasting a sheet.
+
+    Geometry is in **inches**, because that's the unit the vendor spec sheets
+    use and it should be transcribable straight across. The two offsets are in
+    **millimetres**, because they exist to correct a printer's feed
+    registration and that's what you measure with a ruler. Both units are in
+    the field names so they can't be misread.
+    """
+
+    name = models.CharField(max_length=150, unique=True)
+    purchase_url = models.URLField(
+        blank=True,
+        help_text="Where to buy more of this stock. Shown on the label page.",
+    )
+
+    page_width_in = models.DecimalField(max_digits=6, decimal_places=4, default=Decimal("8.5"))
+    page_height_in = models.DecimalField(max_digits=6, decimal_places=4, default=Decimal("11"))
+
+    label_width_in = models.DecimalField(max_digits=6, decimal_places=4)
+    label_height_in = models.DecimalField(max_digits=6, decimal_places=4)
+
+    columns = models.PositiveSmallIntegerField()
+    rows = models.PositiveSmallIntegerField()
+
+    margin_left_in = models.DecimalField(
+        max_digits=6, decimal_places=4,
+        help_text="Sheet edge to the left edge of the first column.",
+    )
+    margin_top_in = models.DecimalField(
+        max_digits=6, decimal_places=4,
+        help_text="Sheet edge to the top edge of the first row.",
+    )
+    pitch_x_in = models.DecimalField(
+        max_digits=6, decimal_places=4,
+        help_text="Left edge of one column to the left edge of the next "
+                  "(label width + the gap, not the gap on its own).",
+    )
+    pitch_y_in = models.DecimalField(
+        max_digits=6, decimal_places=4,
+        help_text="Top edge of one row to the top edge of the next.",
+    )
+
+    x_offset_mm = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal("0"),
+        help_text="Nudge every label right (+) or left (−) to correct this "
+                  "printer's registration. Print the calibration sheet first.",
+    )
+    y_offset_mm = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal("0"),
+        help_text="Nudge every label up (+) or down (−).",
+    )
+
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
+
+    @property
+    def labels_per_sheet(self) -> int:
+        return self.columns * self.rows
+
+    @property
+    def is_continuous(self) -> bool:
+        """True for a thermal roll: one label per 'sheet'.
+
+        A roll is the degenerate case of this table — a 1 × 1 grid whose page
+        size *is* the label, with no margins, no pitch and no registration to
+        get wrong. Only two of the eight numbers matter, which is why adding a
+        label printer needs no new model.
+
+        Two behaviours have to know the difference. There is no part-used
+        sheet to resume, so `start_at` is always 1; and a marker sticker would
+        print after every single run for no one to read, doubling the label
+        count on short runs instead of saving anything.
+        """
+        return self.labels_per_sheet == 1
+
+    def overflow_in(self):
+        """How far the last column/row runs past the sheet, in inches.
+
+        Positive on either axis means the numbers are wrong — a transposed
+        digit in a pitch is the likeliest typo when adding a stock, and it
+        prints a whole ruined sheet before anyone notices. `LabelStockTests`
+        asserts this is clear for every seeded stock, and `clean()` refuses
+        to save one that isn't.
+        """
+        right = (
+            self.margin_left_in
+            + (self.columns - 1) * self.pitch_x_in
+            + self.label_width_in
+        )
+        bottom = (
+            self.margin_top_in
+            + (self.rows - 1) * self.pitch_y_in
+            + self.label_height_in
+        )
+        return right - self.page_width_in, bottom - self.page_height_in
+
+    def clean(self):
+        super().clean()
+        tolerance = Decimal("0.01")
+        over_x, over_y = self.overflow_in()
+        if over_x > tolerance:
+            raise ValidationError(
+                f"{self.columns} columns at {self.pitch_x_in}in pitch run "
+                f"{over_x:.4f}in off the right edge of a "
+                f"{self.page_width_in}in sheet."
+            )
+        if over_y > tolerance:
+            raise ValidationError(
+                f"{self.rows} rows at {self.pitch_y_in}in pitch run "
+                f"{over_y:.4f}in off the bottom of a "
+                f"{self.page_height_in}in sheet."
+            )

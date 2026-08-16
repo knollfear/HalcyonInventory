@@ -1,0 +1,323 @@
+{% extends "scarves/base_internal.html" %}
+{% comment %}
+Picker and preview in one page. Everything that costs a sheet is on screen
+before the PDF exists: the sticker count, the sheet count, a map of which
+labels get used, and what the marker sticker will say.
+{% endcomment %}
+
+{% block title %}Barcode Labels{% endblock %}
+{% block heading %}Barcode Labels{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 980px; }
+
+  .field { margin-bottom: 14px; }
+  .field label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+  .field .help { font-size: 12px; color: #667; margin-top: 4px; }
+  .field input[type="date"], .field select {
+      font: inherit; padding: 5px 8px; border: 1px solid #cfd6de;
+      border-radius: 6px; background: #fff;
+  }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; }
+  @media (max-width: 640px) { .grid2 { grid-template-columns: 1fr; } }
+
+  .headline { font-size: 26px; font-weight: 700; color: var(--accent); }
+  .headline small { font-size: 14px; font-weight: 400; color: #555; }
+
+  /* A scale drawing of the sheet: 4 across, 20 down, one cell per label. It
+     is shaped like the thing in your hand, so "what does this use up?" is a
+     glance rather than arithmetic. */
+  .sheets { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 6px; }
+  .sheet { border: 1px solid #e1e5ea; border-radius: 8px; padding: 10px; background: #fff; }
+  .sheet-name { font-size: 12px; color: #667; margin-bottom: 6px; }
+  .labelmap { display: grid; gap: 2px; }
+  .cell {
+      height: 12px; border-radius: 2px; font-size: 8px; line-height: 12px;
+      color: #8b929b; text-align: right; padding-right: 3px;
+  }
+  .cell.free { background: #eef1f4; }
+  .cell.used { background: #fff; border: 1px dashed #d6dbe1; line-height: 10px; }
+  .cell.printing { background: var(--accent); color: #fff; }
+  .cell.marker { background: #6b4700; color: #fff; font-weight: 700; }
+  .legend { margin-top: 8px; font-size: 12px; color: #667; display: flex; gap: 14px; flex-wrap: wrap; }
+  .legend span::before {
+      content: ""; display: inline-block; width: 10px; height: 10px;
+      border-radius: 2px; margin-right: 5px; vertical-align: -1px;
+  }
+  .legend .k-printing::before { background: var(--accent); }
+  .legend .k-marker::before { background: #6b4700; }
+  .legend .k-used::before { background: #fff; border: 1px dashed #d6dbe1; }
+  .legend .k-free::before { background: #eef1f4; }
+
+  /* How a part-used sheet gets resumed next week. The run prints its own
+     marker sticker, so this is telling you what's about to be on the paper
+     rather than asking you to remember anything. */
+  .resume {
+      margin-top: 18px; padding: 14px 16px; border-radius: 10px;
+      background: #fff6e0; border: 1px solid #f0e0b0; color: #6b4700;
+  }
+  .resume strong { font-size: 20px; }
+
+  .warn { margin-top: 14px; padding: 10px 14px; border-radius: 8px;
+          background: #fdf2f1; border: 1px solid #f0c8c4; color: #8a2f2a; font-size: 13px; }
+  .noteline { margin-top: 14px; font-size: 13px; color: #667; }
+  .buy { font-size: 12px; }
+  td.num, th.num { text-align: right; }
+{% endblock %}
+
+{% block content %}
+  <p class="lead">
+    One sticker per item, sorted by SKU so a dye bath's 3–5 identical items
+    come off the sheet in one clump.
+  </p>
+
+  <form method="get" class="card" id="label-form">
+    <div class="grid2">
+      <div>
+        <div class="field">
+          <label for="{{ form.dataset.id_for_label }}">{{ form.dataset.label }}</label>
+          {{ form.dataset }}
+          {{ form.dataset.errors }}
+        </div>
+        <div class="field">
+          <label for="{{ form.since.id_for_label }}">{{ form.since.label }}</label>
+          {{ form.since }}
+          <div class="help" id="since-help">{{ form.since.help_text }}</div>
+          {{ form.since.errors }}
+        </div>
+        <div class="field">
+          <label for="{{ form.category.id_for_label }}">Category</label>
+          {{ form.category }}
+        </div>
+        <div class="field">
+          <label for="{{ form.raw_product.id_for_label }}">{{ form.raw_product.label }}</label>
+          {{ form.raw_product }}
+        </div>
+        <div class="field">
+          <label>{{ form.include_zero }} {{ form.include_zero.label }}</label>
+          <div class="help">{{ form.include_zero.help_text }}</div>
+        </div>
+      </div>
+
+      <div>
+        <div class="field">
+          <label for="{{ form.extra.id_for_label }}">{{ form.extra.label }}</label>
+          {{ form.extra }}
+          <div class="help">{{ form.extra.help_text }}</div>
+          {{ form.extra.errors }}
+        </div>
+        <div class="field">
+          <label for="{{ form.stock.id_for_label }}">{{ form.stock.label }}</label>
+          {{ form.stock }}
+          {% for s in form.fields.stock.queryset %}
+            {% if s.purchase_url %}
+              <div class="help buy">
+                {{ s.name }} — <a href="{{ s.purchase_url }}" target="_blank" rel="noopener">buy more</a>
+              </div>
+            {% endif %}
+          {% endfor %}
+        </div>
+        <div class="field">
+          <label for="{{ form.x_offset_mm.id_for_label }}">Nudge (mm)</label>
+          {{ form.x_offset_mm }} right &nbsp; {{ form.y_offset_mm }} up
+          <div class="help">
+            Only if the print lands off the die-cuts. Every sheet prints a
+            one-inch ruler at the bottom — measure it before peeling anything;
+            if it's short the job was scaled and no nudge will fix it.
+          </div>
+          {{ form.x_offset_mm.errors }}{{ form.y_offset_mm.errors }}
+        </div>
+        <div class="field">
+          <label for="{{ form.start_at.id_for_label }}">{{ form.start_at.label }}</label>
+          {{ form.start_at }}
+          <div class="help" id="startat-help">{{ form.start_at.help_text }}</div>
+          {{ form.start_at.errors }}
+        </div>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button class="btn" type="submit">Preview</button>
+      {% if stock %}
+        <a class="btn-quiet" href="{{ calibration_url }}" target="_blank" rel="noopener">
+          Calibration sheet
+        </a>
+        <span class="help">
+          Plain paper, first trip only. Write TOP and a feed arrow on a blank
+          sheet first — orientation before millimetres.
+        </span>
+      {% endif %}
+    </div>
+  </form>
+
+  {% if submitted and form.is_valid %}
+    <h2>What this prints</h2>
+
+    {% if run.rows %}
+      <div class="card">
+        <div class="headline">
+          {{ run.total }} label{{ run.total|pluralize }}
+          <small>
+            across {{ run.rows|length }} product{{ run.rows|length|pluralize }},
+            {{ plan.sheet_count }} sheet{{ plan.sheet_count|pluralize }} of
+            {{ stock.labels_per_sheet }}
+          </small>
+        </div>
+
+        {% if not stock.is_continuous %}
+        <div class="sheets">
+          {% for sheet in plan.sheets %}
+            <div class="sheet">
+              <div class="sheet-name">Sheet {{ sheet.number }}</div>
+              <div class="labelmap"
+                   style="grid-template-columns: repeat({{ stock.columns }}, 34px);">
+                {% for cell in sheet.cells %}
+                  <div class="cell {{ cell.state }}">{{ cell.number }}</div>
+                {% endfor %}
+              </div>
+            </div>
+          {% endfor %}
+        </div>
+
+        <div class="legend">
+          <span class="k-printing">stickers</span>
+          <span class="k-marker">marker</span>
+          <span class="k-used">already peeled</span>
+          <span class="k-free">left over</span>
+        </div>
+        {% endif %}
+
+        <div class="resume">
+          {% if stock.is_continuous %}
+            {{ stock.name }} is a continuous roll — one label per page, no
+            sheet to resume and no marker. Print at 100%: letting the driver
+            scale to fit changes the bar width and can stop it scanning.
+          {% elif plan.finishes_sheet %}
+            This uses the last sheet up exactly, so there's no marker to print —
+            the next run starts a fresh sheet at 1.
+          {% else %}
+            The last sticker printed is a marker reading
+            <strong>START AT {{ plan.resume_at }}</strong>. Leave it on the
+            sheet; whoever prints next reads it off the paper, so nothing
+            depends on this browser remembering.
+            {{ plan.free_after }} label{{ plan.free_after|pluralize }} free after it.
+          {% endif %}
+        </div>
+
+        {% if density_problems %}
+          <div class="warn">
+            <strong>Won't print.</strong>
+            {{ density_problems|length }} SKU(s) are too long for this stock and
+            would come out under the readable minimum:
+            {% for sku, mil in density_problems %}
+              <code>{{ sku }}</code> ({{ mil|floatformat:1 }} mil){% if not forloop.last %}, {% endif %}
+            {% endfor %}.
+            Shorten the SKU or use wider stock.
+          </div>
+        {% endif %}
+
+        {% if run.skipped_no_sku %}
+          <div class="warn">
+            Skipped {{ run.skipped_no_sku|length }} product(s) with no SKU:
+            {% for p in run.skipped_no_sku %}{{ p.name }}{% if not forloop.last %}, {% endif %}{% endfor %}.
+            Run <code>generate_skus</code> to give them one.
+          </div>
+        {% endif %}
+
+        {% if run.ambiguous_month_logs %}
+          <div class="noteline">
+            {{ run.ambiguous_month_logs }} back-dated entr{{ run.ambiguous_month_logs|pluralize:"y,ies" }}
+            from this month record only a month, not a day, so they fall before
+            your cutoff and aren't counted. Set the cutoff to the 1st to include them.
+          </div>
+        {% endif %}
+
+        <div class="actions">
+          <a class="btn" id="print-link" href="{{ pdf_url }}" target="_blank" rel="noopener"
+             data-resume-at="{{ plan.resume_at }}">
+            Print {{ run.total }} label{{ run.total|pluralize }}{% if plan.marker_index is not None %} + marker{% endif %}
+          </a>
+        </div>
+      </div>
+
+      <h2>Products</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>SKU</th><th>Product</th>
+            <th class="num">{% if form.cleaned_data.dataset == 'since' %}Produced{% else %}On hand{% endif %}</th>
+            <th class="num">Labels</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in run.rows %}
+            <tr>
+              <td><code>{{ row.product.sku }}</code></td>
+              <td>{{ row.product.name }}</td>
+              <td class="num">{{ row.base }}</td>
+              <td class="num">{{ row.quantity }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="empty">
+        Nothing to print for those settings.
+        {% if form.cleaned_data.dataset == 'since' %}
+          No production has been recorded on or after that date.
+        {% endif %}
+      </p>
+    {% endif %}
+  {% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // The browser remembers the last cutoff and the row the last run ended on.
+  // This is a convenience, not a record: the authoritative copy of the row is
+  // the number written on the sheet itself, because that survives a cleared
+  // cache, a second laptop and a week in a drawer. So these only ever
+  // pre-fill an empty form — they never overwrite what someone typed, and
+  // never block a reprint.
+  (function () {
+    var KEY_DATE = "labels.lastPrintedAt";
+    var KEY_ROW = "labels.resumeAt";
+    var params = new URLSearchParams(window.location.search);
+    var since = document.getElementById("{{ form.since.auto_id }}");
+    var startAt = document.getElementById("{{ form.start_at.auto_id }}");
+
+    function note(id, text) {
+      var el = document.getElementById(id);
+      if (el && text) { el.textContent = text; }
+    }
+
+    if (!params.has("since") && since && !since.value) {
+      var last = localStorage.getItem(KEY_DATE);
+      if (last) {
+        since.value = last;
+        note("since-help", "Last printed from this browser on " + last +
+                           ". Change it freely — reprinting is fine.");
+      }
+    }
+
+    if (!params.has("start_at") && startAt) {
+      var resume = localStorage.getItem(KEY_ROW);
+      if (resume) {
+        startAt.value = resume;
+        note("startat-help", "This browser last printed a marker reading " + resume +
+                             ". The sticker on the sheet is the real answer — if they " +
+                             "disagree, trust the sheet.");
+      }
+    }
+
+    var printLink = document.getElementById("print-link");
+    if (printLink) {
+      printLink.addEventListener("click", function () {
+        localStorage.setItem(KEY_DATE, new Date().toISOString().slice(0, 10));
+        localStorage.setItem(KEY_ROW, printLink.dataset.resumeAt);
+      });
+    }
+  })();
+</script>
+{% endblock %}

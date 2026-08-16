@@ -13,6 +13,7 @@ from .models import (
     DyeBrand,
     Dye,
     Employee,
+    LabelStock,
     RawProductCategory,
     RawProduct,
     Recipe,
@@ -428,3 +429,40 @@ class TimeEntryAdmin(admin.ModelAdmin):
     @admin.display(description="Revised", boolean=True)
     def was_revised(self, obj):
         return obj.was_revised
+
+
+@admin.register(LabelStock)
+class LabelStockAdmin(admin.ModelAdmin):
+    """Adding a stock is transcribing eight numbers off a vendor page.
+
+    Grouped in the order the vendor lists them so it reads as copying rather
+    than as filling in a form. `LabelStock.clean()` refuses geometry that runs
+    off the sheet, which is what a transposed digit in a pitch looks like.
+    """
+
+    list_display = ("name", "label_size", "grid", "labels_per_sheet", "is_active")
+    list_filter = ("is_active",)
+
+    fieldsets = (
+        (None, {"fields": ("name", "purchase_url", "is_active")}),
+        ("Sheet", {"fields": (("page_width_in", "page_height_in"),)}),
+        ("Label", {
+            "fields": (("label_width_in", "label_height_in"), ("columns", "rows")),
+        }),
+        ("Where the first label sits", {
+            "fields": (("margin_left_in", "margin_top_in"), ("pitch_x_in", "pitch_y_in")),
+        }),
+        ("Printer registration", {
+            "description": "Print the calibration sheet from the Barcode Labels "
+                           "page first, then nudge if the outlines don't line up.",
+            "fields": (("x_offset_mm", "y_offset_mm"),),
+        }),
+    )
+
+    @admin.display(description="Label")
+    def label_size(self, obj):
+        return f"{obj.label_width_in}in × {obj.label_height_in}in"
+
+    @admin.display(description="Grid")
+    def grid(self, obj):
+        return f"{obj.columns} × {obj.rows}"
