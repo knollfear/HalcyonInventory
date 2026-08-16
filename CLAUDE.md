@@ -380,6 +380,12 @@ placement, density guard, sheet plan) operates on `LabelRun.rows`, which is
 just product-and-quantity pairs. It's one function returning a `LabelRun` and
 one branch in `_label_run_from`.
 
+**A label is barcode and SKU text, and that's the whole design.** Branding
+lives on the printed hang tags, which are a separate physical thing — so
+there's no artwork to fit here, and the austerity is the decision rather than
+an unfinished job. It also keeps the stock small and the printing black and
+white, which is what makes a weekly run cheap.
+
 **Nobody here owns a printer.** Sheets get printed at a copy shop from a PDF
 emailed off a phone, which breaks two assumptions the offsets were built on:
 you can't calibrate the machine beforehand, and you have no computer with you
