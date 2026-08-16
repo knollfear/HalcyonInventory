@@ -1,3 +1,4 @@
+import json
 import uuid
 from datetime import datetime, timezone
 
@@ -21,6 +22,15 @@ class Command(BaseCommand):
     help = "Sync active finished products to Square as catalog items/variations, then push inventory counts."
 
     def add_arguments(self, parser):
+        parser.add_argument(
+            "--dry-run",
+            action="store_true",
+            help=(
+                "Build everything and print what would be sent, without "
+                "sending it. The stand-in for a sandbox account: see exactly "
+                "what would land in the live catalogue before it does."
+            ),
+        )
         parser.add_argument(
             "--check",
             action="store_true",
@@ -80,8 +90,61 @@ class Command(BaseCommand):
             f"using {settings.SQUARE_LOCATION_ID}."
         ))
 
+    def _describe(self, objects):
+        """One readable line per object, so a dry run can be eyeballed.
+
+        Raw JSON is available at -v 2; this is the version you can actually
+        scan for something that looks wrong.
+        """
+        for obj in objects:
+            if obj["type"] == "ITEM":
+                data = obj["item_data"]
+                self.stdout.write(
+                    f"  ITEM       {data['name']} "
+                    f"({len(data['variations'])} variation(s))"
+                )
+                for variation in data["variations"]:
+                    self._describe_variation(variation, indent=6)
+            else:
+                self._describe_variation(obj, indent=2)
+
+    def _describe_variation(self, variation, indent):
+        data = variation["item_variation_data"]
+        price = data["price_money"]["amount"] / 100
+        self.stdout.write(
+            f"{' ' * indent}VARIATION  {data['name']:<24} "
+            f"sku={data.get('sku') or '(none)':<16} ${price:.2f}"
+        )
+
+    def _record_ids(self, raw_products, id_mappings):
+        """Write Square's IDs onto our rows.
+
+        Called after *every* successful chunk, not once at the end. A run of
+        more than 100 objects is several calls; if a later one fails, the
+        earlier ones already created things in Square. Losing those IDs means
+        the next run creates them all over again, and the only sign is a
+        catalogue with everything in it twice.
+        """
+        updated_rp = updated_fp = 0
+        for raw_product in raw_products:
+            temp_id = f"#rp_{raw_product.pk}"
+            if temp_id in id_mappings and not raw_product.square_item_id:
+                raw_product.square_item_id = id_mappings[temp_id]
+                raw_product.save(update_fields=["square_item_id"])
+                updated_rp += 1
+
+            for fp in raw_product.finished_products.filter(is_active=True):
+                temp_id = f"#fp_{fp.pk}"
+                if temp_id in id_mappings and not fp.square_variation_id:
+                    fp.square_variation_id = id_mappings[temp_id]
+                    fp.save(update_fields=["square_variation_id"])
+                    updated_fp += 1
+        return updated_rp, updated_fp
+
     def handle(self, *args, **options):
         from square.client import Client
+
+        self.dry_run = options["dry_run"]
 
         client = Client(
             access_token=settings.SQUARE_ACCESS_TOKEN,
@@ -180,34 +243,42 @@ class Command(BaseCommand):
             f"Syncing {len(new_item_objects)} new items and {len(variation_objects)} new variations..."
         )
 
+        if self.dry_run:
+            self.stdout.write(self.style.WARNING("DRY RUN — would create:"))
+            self._describe(all_objects)
+            if options["verbosity"] >= 2:
+                self.stdout.write(json.dumps(all_objects, indent=2, default=str))
+            self._push_inventory(client)
+            return
+
+        # Recorded per chunk, and again on the way out of a failure: see
+        # _record_ids for why losing a partial result is the expensive case.
         id_mappings = {}
-        for i in range(0, len(all_objects), 100):
-            chunk = all_objects[i:i + 100]
-            result = client.catalog.batch_upsert_catalog_objects(body={
-                "idempotency_key": str(uuid.uuid4()),
-                "batches": [{"objects": chunk}],
-            })
-            if result.is_error():
-                self._fail("Catalog upsert failed", result)
-            id_mappings.update({
-                m["client_object_id"]: m["object_id"]
-                for m in result.body.get("id_mappings", [])
-            })
-
         updated_rp = updated_fp = 0
-        for raw_product in raw_products:
-            temp_id = f"#rp_{raw_product.pk}"
-            if temp_id in id_mappings:
-                raw_product.square_item_id = id_mappings[temp_id]
-                raw_product.save(update_fields=["square_item_id"])
-                updated_rp += 1
-
-            for fp in raw_product.finished_products.filter(is_active=True):
-                temp_id = f"#fp_{fp.pk}"
-                if temp_id in id_mappings:
-                    fp.square_variation_id = id_mappings[temp_id]
-                    fp.save(update_fields=["square_variation_id"])
-                    updated_fp += 1
+        try:
+            for i in range(0, len(all_objects), 100):
+                chunk = all_objects[i:i + 100]
+                result = client.catalog.batch_upsert_catalog_objects(body={
+                    "idempotency_key": str(uuid.uuid4()),
+                    "batches": [{"objects": chunk}],
+                })
+                if result.is_error():
+                    self._fail("Catalog upsert failed", result)
+                id_mappings.update({
+                    m["client_object_id"]: m["object_id"]
+                    for m in result.body.get("id_mappings", [])
+                })
+                got_rp, got_fp = self._record_ids(raw_products, id_mappings)
+                updated_rp += got_rp
+                updated_fp += got_fp
+        except CommandError:
+            if id_mappings:
+                self.stderr.write(self.style.WARNING(
+                    f"Kept {updated_rp} item and {updated_fp} variation ID(s) "
+                    f"from the batches that did succeed — re-run to continue "
+                    f"rather than duplicating them."
+                ))
+            raise
 
         self.stdout.write(self.style.SUCCESS(
             f"Catalog done: {updated_rp} new items, {updated_fp} new variations created."
@@ -274,6 +345,12 @@ class Command(BaseCommand):
             ))
 
         self.stdout.write(f"Updating {len(objects)} variations in Square...")
+
+        if self.dry_run:
+            self.stdout.write(self.style.WARNING("DRY RUN — would update:"))
+            self._describe(objects)
+            return
+
         updated = 0
         for i in range(0, len(objects), 100):
             chunk = objects[i:i + 100]
@@ -313,6 +390,18 @@ class Command(BaseCommand):
 
         if not changes:
             self.stdout.write("No variations with Square IDs found for inventory push.")
+            return
+
+        if self.dry_run:
+            self.stdout.write(self.style.WARNING(
+                f"DRY RUN — would set {len(changes)} stock count(s) at "
+                f"{settings.SQUARE_LOCATION_ID}:"
+            ))
+            for change in changes:
+                count = change["physical_count"]
+                self.stdout.write(
+                    f"  {count['catalog_object_id']} -> {count['quantity']}"
+                )
             return
 
         total_pushed = 0

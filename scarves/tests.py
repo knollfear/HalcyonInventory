@@ -5290,3 +5290,139 @@ class SquareFailsLoudlyTests(TestCase):
         self.assertIn("doesn't recognise", output)
         sent = client.upserts[0]["batches"][0]["objects"] if client.upserts else []
         self.assertEqual(sent, [], "nothing with a null version went up")
+
+
+@override_settings(
+    SQUARE_ACCESS_TOKEN="test-token",
+    SQUARE_LOCATION_ID="LOC123",
+    SQUARE_ENVIRONMENT="sandbox",
+)
+class SquareDryRunTests(TestCase):
+    """`--dry-run` stands in for a sandbox account.
+
+    The sandbox token process has been troublesome, so the way to avoid
+    production being the first thing that ever runs this is to build the whole
+    payload and print it instead of sending it.
+    """
+
+    def setUp(self):
+        recipe = make_recipe("Dry Recipe")
+        self.product = make_product(recipe, "Dry Product", with_image=False)
+        self.product.price = Decimal("18.50")
+        self.product.number_on_hand = 4
+        self.product.save()
+
+    def _run(self, client, **kwargs):
+        out = StringIO()
+        with mock.patch("square.client.Client", return_value=client):
+            call_command("sync_to_square", stdout=out, stderr=out, **kwargs)
+        return out.getvalue()
+
+    def test_it_sends_nothing(self):
+        client = FakeSquareClient()
+        self._run(client, dry_run=True)
+        self.assertEqual(client.upserts, [])
+        self.assertEqual(client.inventory_changes, [])
+
+    def test_it_writes_no_ids_back(self):
+        client = FakeSquareClient(upsert_results=[FakeSquareResult({
+            "id_mappings": [{"client_object_id": f"#rp_{self.product.raw_product.pk}",
+                             "object_id": "SHOULD_NOT_BE_SAVED"}],
+        })])
+        self._run(client, dry_run=True)
+        self.product.raw_product.refresh_from_db()
+        self.assertEqual(self.product.raw_product.square_item_id, "")
+
+    def test_it_shows_what_would_be_created(self):
+        output = self._run(FakeSquareClient(), dry_run=True)
+        self.assertIn("DRY RUN", output)
+        self.assertIn(self.product.raw_product.name, output)
+        self.assertIn(self.product.sku, output)
+        self.assertIn("$18.50", output)
+
+    def test_it_shows_the_stock_counts_it_would_set(self):
+        FinishedProduct.objects.filter(pk=self.product.pk).update(
+            square_variation_id="SQ_VAR"
+        )
+        RawProduct.objects.filter(pk=self.product.raw_product.pk).update(
+            square_item_id="SQ_ITEM"
+        )
+        output = self._run(FakeSquareClient(), dry_run=True, inventory_only=True)
+        self.assertIn("SQ_VAR -> 4", output)
+        self.assertIn("LOC123", output)
+
+    def test_it_still_checks_the_credentials(self):
+        """A dry run that passes with a dead token teaches nothing."""
+        client = FakeSquareClient(locations_result=FakeSquareResult(
+            errors=[{"category": "AUTHENTICATION_ERROR", "detail": "nope"}]
+        ))
+        with self.assertRaises(CommandError):
+            self._run(client, dry_run=True)
+
+
+@override_settings(
+    SQUARE_ACCESS_TOKEN="test-token",
+    SQUARE_LOCATION_ID="LOC123",
+    SQUARE_ENVIRONMENT="sandbox",
+)
+class SquarePartialBatchTests(TestCase):
+    """A failure partway through must not orphan what Square already created.
+
+    Over 100 objects is more than one call. If a later chunk fails and the
+    IDs from the earlier ones are discarded, those objects exist in Square
+    with nothing here pointing at them — and the next run creates them again.
+    The only symptom is a catalogue with everything in it twice, which is
+    tedious to unpick by hand.
+    """
+
+    def setUp(self):
+        self.recipe = make_recipe("Batch Recipe")
+        category, _ = RawProductCategory.objects.get_or_create(name="Silk")
+        self.products = []
+        for i in range(150):
+            raw = RawProduct.objects.create(
+                name=f"Blank {i:03d}", category=category, price="5.00"
+            )
+            self.products.append(FinishedProduct.objects.create(
+                name=f"Product {i:03d}", raw_product=raw,
+                recipe=self.recipe, price="20.00",
+            ))
+
+    def test_ids_from_a_successful_chunk_survive_a_later_failure(self):
+        first = self.products[0]
+        client = FakeSquareClient(upsert_results=[
+            FakeSquareResult({"id_mappings": [
+                {"client_object_id": f"#rp_{first.raw_product.pk}",
+                 "object_id": "SAVED_ITEM"},
+                {"client_object_id": f"#fp_{first.pk}",
+                 "object_id": "SAVED_VAR"},
+            ]}),
+            FakeSquareResult(errors=[{"category": "API_ERROR", "detail": "later boom"}]),
+        ])
+
+        out = StringIO()
+        with mock.patch("square.client.Client", return_value=client):
+            with self.assertRaises(CommandError):
+                call_command("sync_to_square", stdout=out, stderr=out)
+
+        first.refresh_from_db()
+        first.raw_product.refresh_from_db()
+        self.assertEqual(first.raw_product.square_item_id, "SAVED_ITEM")
+        self.assertEqual(first.square_variation_id, "SAVED_VAR")
+        self.assertIn("re-run to continue", out.getvalue())
+
+    def test_a_rerun_does_not_recreate_what_is_already_linked(self):
+        linked = self.products[0]
+        RawProduct.objects.filter(pk=linked.raw_product.pk).update(
+            square_item_id="SAVED_ITEM"
+        )
+        FinishedProduct.objects.filter(pk=linked.pk).update(
+            square_variation_id="SAVED_VAR"
+        )
+        client = FakeSquareClient()
+        with mock.patch("square.client.Client", return_value=client):
+            call_command("sync_to_square", stdout=StringIO(), stderr=StringIO())
+
+        sent = [o for body in client.upserts
+                for o in body["batches"][0]["objects"]]
+        self.assertNotIn(f"#rp_{linked.raw_product.pk}", [o["id"] for o in sent])
