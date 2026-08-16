@@ -380,6 +380,18 @@ placement, density guard, sheet plan) operates on `LabelRun.rows`, which is
 just product-and-quantity pairs. It's one function returning a `LabelRun` and
 one branch in `_label_run_from`.
 
+**The whole-catalogue export starts each blank on a fresh row; nothing else
+does.** SKUs read `BLANK-DYEBATH` and sort alphabetically, so a stack of
+sheets is already grouped by blank — padding to a row boundary at each change
+just stops the seam falling mid-row when the stack gets split up. It's keyed
+on the SKU prefix, not the finished product: 266 products would cost a partial
+row each, several hundred labels.
+
+Off for every other run, and that's a ratio judgement rather than a
+preference. The padding is ~20 labels either way. Across the 31 sheets of a
+full export that rounds to nothing; across a 3-sheet weekly run of ~20
+products over ~80 labels it's a quarter of the job.
+
 **A label is barcode and SKU text, and that's the whole design.** Branding
 lives on the printed hang tags, which are a separate physical thing — so
 there's no artwork to fit here, and the austerity is the decision rather than

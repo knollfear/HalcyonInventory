@@ -5496,3 +5496,106 @@ class SheetMapNoiseTests(TestCase):
         })
         self.assertContains(response, "used end to end")
         self.assertContains(response, "Only the part-used sheets are drawn")
+
+
+class RowBreakTests(TestCase):
+    """The whole-catalogue export starts each blank on a fresh row.
+
+    So a 31-sheet stack can be split by blank without a seam landing
+    mid-row. Deliberately off everywhere else: the padding is ~20 labels
+    either way, which rounds to nothing across 31 sheets and is a third of a
+    3-sheet weekly run.
+    """
+
+    def setUp(self):
+        self.stock = make_stock()      # 4 columns
+        self.recipe = make_recipe("Dawn")
+        category, _ = RawProductCategory.objects.get_or_create(name="Silk")
+        self.category = category
+        # SKUs come out BLANK-DAWN, so the prefix is the blank.
+        self.blanks = {}
+        for blank, on_hand in (("Alpha Scarf", 6), ("Beta Scarf", 3)):
+            raw = RawProduct.objects.create(
+                name=blank, category=category, price="5.00"
+            )
+            product = FinishedProduct.objects.create(
+                name=f"{blank} Dawn", raw_product=raw, recipe=self.recipe,
+                price="20.00", number_on_hand=on_hand,
+            )
+            self.blanks[blank] = product
+
+    def test_a_new_blank_starts_on_a_fresh_row(self):
+        run = labelmod.inventory_run()
+        sequence = run.sequence(columns=4)
+
+        # 6 of ALPHAS fills a row and two of the next; the remaining two
+        # positions are padded so BETASC starts clean.
+        skus = [p.sku if p else None for p in sequence]
+        self.assertEqual(skus[:6], ["ALPHAS-DAWN"] * 6)
+        self.assertEqual(skus[6:8], [None, None])
+        self.assertEqual(skus[8:], ["BETASC-DAWN"] * 3)
+        self.assertEqual(len(sequence) % 4, 3 % 4)
+
+    def test_stickers_printed_is_unchanged_by_padding(self):
+        run = labelmod.inventory_run()
+        self.assertEqual(run.total, 9)
+        self.assertEqual(len(run.flat(columns=4)), 9)
+        self.assertEqual(len(run.sequence(columns=4)), 11)
+
+    def test_no_padding_when_a_group_already_ends_on_a_row_boundary(self):
+        self.blanks["Alpha Scarf"].number_on_hand = 8
+        self.blanks["Alpha Scarf"].save()
+        run = labelmod.inventory_run()
+        self.assertEqual(len(run.sequence(columns=4)), 11)
+        self.assertNotIn(None, run.sequence(columns=4))
+
+    def test_a_filtered_run_does_not_pad(self):
+        """Same ~20 labels, but a third of a short run instead of nothing."""
+        run = labelmod.inventory_run(category=self.category)
+        self.assertFalse(run.row_break_on_group)
+        self.assertNotIn(None, run.sequence(columns=4))
+
+        picked = [self.blanks["Alpha Scarf"].raw_product]
+        run = labelmod.inventory_run(raw_products=picked)
+        self.assertFalse(run.row_break_on_group)
+
+    def test_the_weekly_run_does_not_pad(self):
+        """~20 products over ~80 labels — breaking per group would waste a
+        quarter of it."""
+        InventoryLog.objects.create(
+            finished_product=self.blanks["Alpha Scarf"],
+            log_type=InventoryLog.PRODUCTION, quantity=6,
+        )
+        run = labelmod.produced_since(timezone.localdate() - timedelta(days=1))
+        self.assertFalse(run.row_break_on_group)
+        self.assertNotIn(None, run.sequence(columns=4))
+
+    def test_hand_picked_runs_do_not_pad(self):
+        run = labelmod.specific_items([(self.blanks["Alpha Scarf"], 6),
+                                       (self.blanks["Beta Scarf"], 3)])
+        self.assertFalse(run.row_break_on_group)
+        self.assertNotIn(None, run.sequence(columns=4))
+
+    def test_padding_consumes_a_sheet_position_but_prints_nothing(self):
+        run = labelmod.inventory_run()
+        pdf = labelmod.render_run(run, self.stock, start_at=0)
+        text = _pdf_text(pdf)
+        self.assertEqual(text.count("ALPHAS-DAWN"), 6)
+        self.assertEqual(text.count("BETASC-DAWN"), 3)
+
+        # Position 8 is the first of the second blank, i.e. row 3 column 1.
+        items = [i for i in _pdf_text_items(pdf) if i[2] == "BETASC-DAWN"]
+        first_beta_x = min(i[0] for i in items)
+        alphas = [i for i in _pdf_text_items(pdf) if i[2] == "ALPHAS-DAWN"]
+        self.assertAlmostEqual(first_beta_x, min(i[0] for i in alphas), delta=0.5,
+                               msg="the new blank starts in column 1")
+
+    def test_the_page_reports_the_padding(self):
+        user = User.objects.create_superuser("pad", "p@example.test", "pw")
+        self.client.force_login(user)
+        response = self.client.get(reverse("label_index"), {
+            "dataset": "inventory", "extra": "0",
+            "stock": str(LabelStock.objects.first().pk), "start_at": "1",
+        })
+        self.assertEqual(response.context["padding"], 2)
+        self.assertContains(response, "skipped so each blank starts its own row")

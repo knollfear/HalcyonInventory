@@ -2856,11 +2856,14 @@ def label_index(request):
         stock = _label_stock_from(form)
         start_at = form.cleaned_data["start_at"] - 1  # UI is 1-indexed
         run = _label_run_from(form)
+        sequence = run.sequence(stock.columns)
+        blanks = {i for i, p in enumerate(sequence) if p is None}
 
         context.update({
             "run": run,
             "stock": stock,
-            "plan": labels.plan_sheets(stock, run.total, start_at),
+            "padding": len(blanks),
+            "plan": labels.plan_sheets(stock, len(sequence), start_at, blanks),
             "density_problems": labels.density_problems(run, stock),
             "pdf_url": f"{reverse('label_pdf')}?{request.GET.urlencode()}",
             "calibration_url": (

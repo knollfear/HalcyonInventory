@@ -40,6 +40,8 @@ labels get used, and what the marker sticker will say.
   .cell.used { background: #fff; border: 1px dashed #d6dbe1; line-height: 10px; }
   .cell.printing { background: var(--accent); color: #fff; }
   .cell.marker { background: #6b4700; color: #fff; font-weight: 700; }
+  .cell.skipped { background: repeating-linear-gradient(45deg,
+      #eef1f4, #eef1f4 3px, #dde3ea 3px, #dde3ea 6px); }
   .legend { margin-top: 8px; font-size: 12px; color: #667; display: flex; gap: 14px; flex-wrap: wrap; }
   .legend span::before {
       content: ""; display: inline-block; width: 10px; height: 10px;
@@ -49,6 +51,8 @@ labels get used, and what the marker sticker will say.
   .legend .k-marker::before { background: #6b4700; }
   .legend .k-used::before { background: #fff; border: 1px dashed #d6dbe1; }
   .legend .k-free::before { background: #eef1f4; }
+  .legend .k-skipped::before { background: repeating-linear-gradient(45deg,
+      #eef1f4, #eef1f4 3px, #dde3ea 3px, #dde3ea 6px); }
 
   /* How a part-used sheet gets resumed next week. The run prints its own
      marker sticker, so this is telling you what's about to be on the paper
@@ -226,7 +230,8 @@ labels get used, and what the marker sticker will say.
           <small>
             across {{ run.rows|length }} product{{ run.rows|length|pluralize }},
             {{ plan.sheet_count }} sheet{{ plan.sheet_count|pluralize }} of
-            {{ stock.labels_per_sheet }}
+            {{ stock.labels_per_sheet }}{% if padding %},
+            plus {{ padding }} skipped so each blank starts its own row{% endif %}
           </small>
         </div>
 
@@ -260,6 +265,7 @@ labels get used, and what the marker sticker will say.
           <span class="k-marker">marker</span>
           <span class="k-used">already peeled</span>
           <span class="k-free">left over</span>
+          {% if padding %}<span class="k-skipped">row break</span>{% endif %}
         </div>
         {% endif %}
 

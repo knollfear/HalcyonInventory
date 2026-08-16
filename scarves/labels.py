@@ -97,16 +97,49 @@ class LabelRun:
     rows: list
     skipped_no_sku: list          # products that can't be printed at all
     ambiguous_month_logs: int     # see `month_precision_ambiguity`
+    row_break_on_group: bool = False
 
     @property
     def total(self) -> int:
+        """Stickers actually printed. Excludes any padding — see `sequence`."""
         return sum(r.quantity for r in self.rows)
 
-    def flat(self):
-        """One entry per physical sticker, in sheet order."""
+    def sequence(self, columns=None):
+        """Sheet positions in order: a product per sticker, `None` for a gap.
+
+        With `row_break_on_group`, each blank starts on a fresh row, so a
+        stack of sheets can be split by blank without a seam falling
+        mid-row. The group is the SKU prefix rather than the finished
+        product: SKUs read `BLANK-DYEBATH` and sort alphabetically, so the
+        prefix is exactly what's already contiguous on the sheet — and
+        breaking per *product* instead would cost a partial row for each of
+        266 of them, several hundred labels, which is the opposite of the
+        point.
+
+        Only worth it when the run is long. Across 31 sheets ~20 padding
+        labels round to nothing; across 3 sheets the same number is a third
+        of the run, which is why this is off for anything but the whole
+        export.
+        """
+        out = []
+        group = None
         for row in self.rows:
-            for _ in range(row.quantity):
-                yield row.product
+            key = row.product.sku.split("-")[0]
+            if (
+                self.row_break_on_group
+                and columns
+                and group is not None
+                and key != group
+                and len(out) % columns
+            ):
+                out.extend([None] * (columns - len(out) % columns))
+            group = key
+            out.extend([row.product] * row.quantity)
+        return out
+
+    def flat(self, columns=None):
+        """Just the stickers, skipping any padding."""
+        return [p for p in self.sequence(columns) if p is not None]
 
 
 def _finish(products_and_counts, extra):
@@ -148,7 +181,15 @@ def inventory_run(extra=0, category=None, raw_products=None, include_zero=False)
         qs = qs.filter(number_on_hand__gt=0)
 
     rows, skipped = _finish(((p, p.number_on_hand) for p in qs), extra)
-    return LabelRun(rows=rows, skipped_no_sku=skipped, ambiguous_month_logs=0)
+    return LabelRun(
+        rows=rows,
+        skipped_no_sku=skipped,
+        ambiguous_month_logs=0,
+        # Only the unfiltered export is long enough for the padding to be
+        # free; a filtered run is short, and there the same few labels are a
+        # noticeable fraction of it.
+        row_break_on_group=not (category or raw_products),
+    )
 
 
 def specific_items(pairs):
@@ -318,8 +359,12 @@ def marker_index_for(stock, count, start_at=0):
     return after
 
 
-def plan_sheets(stock, count, start_at=0) -> SheetPlan:
-    """Lay the run out over sheets, including the marker sticker."""
+def plan_sheets(stock, count, start_at=0, blanks=frozenset()) -> SheetPlan:
+    """Lay the run out over sheets, including the marker sticker.
+
+    `count` is sheet positions consumed, not stickers printed: `blanks` holds
+    the offsets within the run that are row-break padding.
+    """
     per_sheet = stock.labels_per_sheet
     if count <= 0:
         return SheetPlan([], 0, start_at + 1, None, per_sheet - start_at, False)
@@ -348,7 +393,7 @@ def plan_sheets(stock, count, start_at=0) -> SheetPlan:
         for within in range(per_sheet):
             index = page * per_sheet + within
             if first_printed <= index <= last_printed:
-                state = "printing"
+                state = "skipped" if (index - start_at) in blanks else "printing"
             elif index == marker:
                 state = "marker"
             elif index < start_at:
@@ -444,14 +489,16 @@ def render_run(run, stock, start_at=0) -> bytes:
     pdf = canvas.Canvas(buf, pagesize=page_size)
     pdf.setTitle(f"Barcode labels — {stock.name}")
 
-    products = list(run.flat())
-    positions = slots(stock, len(products), start_at)
+    sequence = run.sequence(stock.columns)
+    positions = slots(stock, len(sequence), start_at)
 
-    # (slot, draw) pairs in page order, marker last.
+    # (slot, draw) pairs in page order, marker last. Gaps consume a position
+    # and draw nothing, which is what leaves a row start free for the next
+    # blank.
     work = [(slot, lambda p, s, fp=fp: _draw_label(p, fp, s, stock))
-            for fp, slot in zip(products, positions)]
+            for fp, slot in zip(sequence, positions) if fp is not None]
 
-    marker = marker_index_for(stock, len(products), start_at)
+    marker = marker_index_for(stock, len(sequence), start_at)
     if marker is not None:
         resume_at = marker % stock.labels_per_sheet + 2
         work.append((
@@ -467,7 +514,7 @@ def render_run(run, stock, start_at=0) -> bytes:
             current_page = slot.page
         draw(pdf, slot)
 
-    if work:
+    if sequence:
         _draw_scale_check(pdf, stock)
         pdf.showPage()
     pdf.save()
