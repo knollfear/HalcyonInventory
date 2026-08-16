@@ -15,9 +15,11 @@ import shutil
 import tempfile
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
+from io import StringIO
 from unittest import mock
 
 from django.contrib.auth.models import User
+from django.core.management import call_command
 from django.utils import timezone
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
@@ -4727,3 +4729,65 @@ class LabelItemSearchTests(TestCase):
         self.client.logout()
         response = self.client.get(reverse("product_search"), {"q": "x"})
         self.assertEqual(response.status_code, 302)
+
+
+class GenerateSkusOverwriteTests(TestCase):
+    """`--overwrite` got dangerous the day labels became printable.
+
+    A SKU in the database is an edit; a SKU on a sticker stuck to a scarf, and
+    in Square's catalogue, is neither. Regenerating orphans both, and the
+    symptom is an item scanning to nothing at the till weeks later.
+    """
+
+    def setUp(self):
+        recipe = make_recipe("SKU Recipe")
+        self.existing = make_product(recipe, "Has A Sku", with_image=False)
+        self.existing.sku = "PRINTED-CODE"
+        self.existing.save()
+        self.blank = make_product(recipe, "Needs A Sku", with_image=False)
+
+    def _run(self, **kwargs):
+        out = StringIO()
+        call_command("generate_skus", stdout=out, stderr=out, **kwargs)
+        return out.getvalue()
+
+    def test_a_plain_run_only_fills_blanks(self):
+        self._run()
+        self.existing.refresh_from_db()
+        self.blank.refresh_from_db()
+        self.assertEqual(self.existing.sku, "PRINTED-CODE", "never touched")
+        self.assertTrue(self.blank.sku)
+
+    def test_overwrite_aborts_unless_confirmed(self):
+        with mock.patch("builtins.input", return_value="no"):
+            output = self._run(overwrite=True)
+        self.existing.refresh_from_db()
+        self.assertEqual(self.existing.sku, "PRINTED-CODE")
+        self.assertIn("Aborted", output)
+
+    def test_overwrite_says_what_it_will_break(self):
+        with mock.patch("builtins.input", return_value="no"):
+            output = self._run(overwrite=True)
+        self.assertIn("1 SKU(s)", output)
+        self.assertIn("scan to nothing", output)
+
+    def test_overwrite_proceeds_once_confirmed(self):
+        with mock.patch("builtins.input", return_value="yes"):
+            self._run(overwrite=True)
+        self.existing.refresh_from_db()
+        self.assertNotEqual(self.existing.sku, "PRINTED-CODE")
+
+    def test_noinput_skips_the_prompt(self):
+        """For scripts — but it still prints the warning."""
+        with mock.patch("builtins.input", side_effect=AssertionError("prompted")):
+            output = self._run(overwrite=True, interactive=False)
+        self.existing.refresh_from_db()
+        self.assertNotEqual(self.existing.sku, "PRINTED-CODE")
+        self.assertIn("scan to nothing", output)
+
+    def test_no_prompt_when_nothing_is_at_risk(self):
+        FinishedProduct.objects.update(sku="")
+        with mock.patch("builtins.input", side_effect=AssertionError("prompted")):
+            self._run(overwrite=True)
+        self.blank.refresh_from_db()
+        self.assertTrue(self.blank.sku)

@@ -29,11 +29,44 @@ class Command(BaseCommand):
         parser.add_argument(
             "--overwrite",
             action="store_true",
-            help="Regenerate SKUs even for products that already have one.",
+            help=(
+                "Regenerate SKUs even for products that already have one. "
+                "Asks first: a SKU that has been printed on a label is "
+                "physically out in the world and cannot be recalled."
+            ),
+        )
+        parser.add_argument(
+            "--noinput", "--no-input",
+            action="store_false", dest="interactive", default=True,
+            help="Skip the --overwrite confirmation prompt.",
         )
 
     def handle(self, *args, **options):
         overwrite = options["overwrite"]
+
+        # Overwriting was harmless while SKUs only lived in the database.
+        # Since /scarves/private/labels/ exists, the string is also on
+        # stickers stuck to scarves and in Square's catalogue, and neither
+        # can be rewritten from here. The failure surfaces weeks later at the
+        # till, so it gets a prompt rather than a line in --help.
+        if overwrite:
+            at_risk = (
+                FinishedProduct.objects.filter(is_active=True)
+                .exclude(sku="")
+                .count()
+            )
+            if at_risk:
+                self.stdout.write(self.style.WARNING(
+                    f"--overwrite will change {at_risk} SKU(s) that already "
+                    f"exist.\n"
+                    f"Any label already printed and stuck to a scarf keeps the "
+                    f"OLD code, and so does Square until you re-sync. Those "
+                    f"items will scan to nothing."
+                ))
+                if options["interactive"]:
+                    if input("Type 'yes' to continue: ") != "yes":
+                        self.stdout.write("Aborted. Nothing changed.")
+                        return
 
         existing_skus = set(
             FinishedProduct.objects.exclude(sku="").values_list("sku", flat=True)

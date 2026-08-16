@@ -334,6 +334,19 @@ worse than typing 3. It reuses the upload page's `product_search` endpoint via
 `?mode=labels`, which swaps the result template — the search is identical,
 only the click behaviour differs.
 
+**A printed SKU is out in the world and cannot be recalled.** Before labels
+existed, `generate_skus --overwrite` only rewrote a database column. Now the
+old string is also on stickers stuck to scarves and in Square's catalogue,
+neither of which this app can rewrite, and the symptom of breaking it is an
+item scanning to nothing at the till weeks later. So `--overwrite` states how
+many SKUs it will change and asks for confirmation (`--noinput` for scripts).
+
+Related ordering, for a fresh sync: **`generate_skus` first, then
+`sync_to_square`.** The sync omits the `sku` key entirely when it's blank, so
+syncing first creates Square variations with no SKU and nothing to scan. The
+update path does send it, so a re-sync afterwards repairs that — but only if
+someone knows to run one.
+
 **Only known SKUs can be printed, and a product with no SKU is shown
 disabled rather than hidden.** There's no free-text barcode entry: an unknown
 code scans fine and then Square finds nothing, which fails at the till with a
