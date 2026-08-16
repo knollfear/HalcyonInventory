@@ -1,0 +1,69 @@
+{% extends "scarves/base_internal.html" %}
+
+{% block title %}Reference Sheets by Colour{% endblock %}
+{% block heading %}Reference Sheets by Colour{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 760px; }
+  /* A style with nothing confirmed is shown, not hidden: hiding it means
+     someone looks for a sheet, doesn't see it, and never learns why. */
+  .card.off { opacity: .65; }
+  .card.off .stat { color: #8a2f2a; }
+{% endblock %}
+
+{% block content %}
+  <p class="lead">
+    Pick a style to build its printable sheet (PDF), ordered by the rainbow.
+    A colorway prints once in every section it claims — a red-and-blue scarf
+    appears under both.
+  </p>
+
+  <div class="cards">
+    {% for row in rows %}
+      {% if row.pages %}
+        <a class="card" href="{% url 'reference_sheet_by_color_pdf' row.style.pk %}">
+          <span class="name">{{ row.style.name }}</span>
+          <span class="stat">
+            {{ row.style.category.name }} ·
+            {{ row.pages }} page{{ row.pages|pluralize }}
+            from {{ row.colorways }} colorway{{ row.colorways|pluralize }}
+          </span>
+          {% if row.unconfirmed %}
+            <span class="short">{{ row.unconfirmed }} not classified</span>
+          {% elif row.photoless %}
+            <span class="short">{{ row.photoless }} without photos</span>
+          {% else %}
+            <span class="ok">all classified</span>
+          {% endif %}
+        </a>
+      {% else %}
+        <div class="card off">
+          <span class="name">{{ row.style.name }}</span>
+          <span class="stat">
+            {{ row.style.category.name }} · nothing to print yet —
+            {% if row.unconfirmed %}
+              {{ row.unconfirmed }} colorway{{ row.unconfirmed|pluralize }}
+              awaiting classification
+            {% else %}
+              no colorway claims a section
+            {% endif %}
+          </span>
+        </div>
+      {% endif %}
+    {% empty %}
+      <p class="empty">No styles have active products yet.</p>
+    {% endfor %}
+  </div>
+
+  {% comment %}
+    No link through to the classification page: this page is public, and the
+    staff half of the site is reached from the site map.
+  {% endcomment %}
+  <p class="stat">
+    A colorway prints only once someone has confirmed which sections it belongs
+    in — an unreviewed guess that files a scarf under the wrong colour fails
+    silently, because you look in that section, it isn't there, and nothing
+    says where it went.
+  </p>
+{% endblock %}

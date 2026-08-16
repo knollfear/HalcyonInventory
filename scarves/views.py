@@ -1974,6 +1974,279 @@ def reference_sheet_pdf(request, category_id):
 
 
 # ---------------------------------------------------------------------------
+# The by-colour sheet: one style, filed under every colour it shows.
+#
+# The category sheet answers "what does this colorway look like?". This one
+# answers the question a customer actually asks, which is "what have you got in
+# red?" — so it's ordered by the rainbow rather than by name, and a colorway
+# claiming two bands prints in both.
+# ---------------------------------------------------------------------------
+
+
+def _by_color_pages(raw_product):
+    """`(slug, label, color, product)` for one style, rainbow order then name.
+
+    One entry is one page. A colorway claiming red and blue yields two, which
+    is the entire point: the dyes aren't blended, so a red-and-blue scarf is
+    genuinely in both sections and printing it once means it's missing from
+    one of them (same reasoning as `colorbands`).
+
+    Unconfirmed recipes are left out rather than guessed at. `colorbands` gets
+    roughly 85% of these right, and the 15% is silent — you look under orange,
+    the scarf isn't there, and nothing tells you it was filed under red.
+    """
+    products = list(
+        FinishedProduct.objects.filter(
+            raw_product=raw_product,
+            is_active=True,
+            recipe__is_active=True,
+            recipe__bands_confirmed_at__isnull=False,
+        )
+        .select_related("recipe", "raw_product__category")
+        .prefetch_related("images")
+        .order_by("recipe__name")
+    )
+    return [
+        (slug, label, color, fp)
+        for slug, label, color in colorbands.BANDS
+        for fp in products
+        if slug in (fp.recipe.color_bands or [])
+    ]
+
+
+def _by_color_style_rows():
+    """One card per style, with what its sheet would contain.
+
+    Counted in Python rather than SQL because "how many pages" is the length of
+    an array field summed per recipe, and the numbers are 15 styles against a
+    few hundred products.
+    """
+    styles = (
+        RawProduct.objects.filter(is_active=True)
+        .select_related("category")
+        .prefetch_related(
+            Prefetch(
+                "finished_products",
+                queryset=FinishedProduct.objects.filter(
+                    is_active=True, recipe__is_active=True
+                ).select_related("recipe").prefetch_related("images"),
+            )
+        )
+        .order_by("category__name", "name")
+    )
+
+    rows = []
+    for style in styles:
+        products = list(style.finished_products.all())
+        if not products:
+            continue
+
+        printed = [
+            fp for fp in products
+            if fp.recipe.bands_confirmed and fp.recipe.color_bands
+        ]
+        rows.append({
+            "style": style,
+            "pages": sum(len(fp.recipe.color_bands) for fp in printed),
+            "colorways": len({fp.recipe_id for fp in printed}),
+            # Two different silences, kept apart. An unconfirmed recipe is work
+            # someone still has to do; a confirmed recipe with no bands is a
+            # decision already taken ("this belongs in no section"), and
+            # rolling them into one number would keep re-raising the settled one.
+            "unconfirmed": len({
+                fp.recipe_id for fp in products if not fp.recipe.bands_confirmed
+            }),
+            "photoless": sum(
+                1 for fp in printed if not any(img.image for img in fp.images.all())
+            ),
+        })
+    return rows
+
+
+@page_meta(
+    title="Reference Sheets by Colour",
+    description="Pick a style to build a printable sheet ordered by the "
+                "rainbow: one page per colorway, in every section it claims, "
+                "so a red-and-blue scarf prints in both.",
+    category="Reference Sheets",
+    # Deliberately doesn't name the staff page that does the confirming: this
+    # card is printed on the public map too, where a private page's title must
+    # never appear (URLBucketTests).
+    note="Only colorways whose sections have been confirmed are printed.",
+)
+def reference_sheet_by_color_index(request):
+    """Style picker for the by-colour sheets. Public, like the sheets."""
+    return render(
+        request,
+        "scarves/reference_sheet_by_color_index.html",
+        {"rows": _by_color_style_rows()},
+    )
+
+
+def _barcode_solo(fp, usable_width, name_style, sku_style):
+    """A single centred barcode card, half the page wide.
+
+    Half, not full: the card is the same object the category sheet prints two
+    across, and a barcode stretched over 7.5in of paper reads as a different
+    thing to whoever is holding both sheets.
+    """
+    from reportlab.lib.units import inch
+    from reportlab.platypus import Table
+
+    card_w = (usable_width - 0.25 * inch) / 2
+    return Table(
+        [[_barcode_card(fp, card_w, name_style, sku_style)]],
+        colWidths=[card_w],
+        hAlign="CENTER",
+    )
+
+
+def _band_tab_painter(page_bands):
+    """Paint each page's colour as a tab on the right edge, thumb-index style.
+
+    The band is named on the page too, but the tab is what makes a printed
+    stack usable: fan it and the sections are visible from the edge, which is
+    how someone standing at the stall finds red without reading anything. Its
+    slot is fixed per band, so the gaps in a stack tell you which sections that
+    style doesn't have.
+
+    Keyed on page number, which holds because the story puts exactly one entry
+    on each page (`KeepInFrame` shrinks rather than splitting).
+    """
+    from reportlab.lib import colors
+    from reportlab.lib.units import inch
+
+    slots = len(colorbands.BANDS)
+
+    def paint(canvas, doc):
+        index = canvas.getPageNumber() - 1
+        if index >= len(page_bands):
+            return
+        slug, label, color = page_bands[index]
+        slot = colorbands.BAND_SLUGS.index(slug)
+
+        page_w, page_h = doc.pagesize
+        top = page_h - doc.topMargin
+        height = (page_h - doc.topMargin - doc.bottomMargin) / slots
+        y = top - (slot + 1) * height
+        width = 0.28 * inch
+        x = page_w - doc.rightMargin + 0.10 * inch
+
+        canvas.saveState()
+        canvas.setFillColor(colors.HexColor(color))
+        canvas.rect(x, y, width, height, stroke=0, fill=1)
+        # Yellow, orange, pink and grey are too light to carry white text; the
+        # rest are too dark to carry black. Cheap luminance rather than a
+        # lookup nobody would remember to update when a band colour changes —
+        # the label has to survive a black-and-white photocopy of the sheet.
+        r, g, b = colors.HexColor(color).rgb()
+        canvas.setFillColor(
+            colors.black if (0.299 * r + 0.587 * g + 0.114 * b) > 0.5 else colors.white
+        )
+        canvas.setFont("Helvetica-Bold", 8)
+        canvas.translate(x + width / 2, y + height / 2)
+        canvas.rotate(90)
+        canvas.drawCentredString(0, -3, label.upper())
+        canvas.restoreState()
+
+    return paint
+
+
+@page_meta(
+    title="Reference Sheet by Colour (PDF)",
+    description="Builds the by-colour sheet for one style: a page per colorway "
+                "per rainbow section, with photos, a barcode and a colour tab "
+                "on the edge.",
+    category="Reference Sheets",
+    note="Returns a PDF.",
+    show_in_index=False,
+)
+def reference_sheet_by_color_pdf(request, raw_product_id):
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter, portrait
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import inch
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, KeepInFrame
+
+    style_row = get_object_or_404(
+        RawProduct.objects.select_related("category"), pk=raw_product_id
+    )
+    pages = _by_color_pages(style_row)
+
+    styles = getSampleStyleSheet()
+    kicker_style = ParagraphStyle("kicker", parent=styles["Normal"], fontSize=11, leading=13, fontName="Helvetica-Bold", spaceBefore=0, spaceAfter=0)
+    title_style = ParagraphStyle("title", parent=styles["h1"], fontSize=18, leading=22, spaceBefore=0, spaceAfter=0)
+    sub_style = ParagraphStyle("sub", parent=styles["Normal"], fontSize=10, textColor=colors.HexColor("#555555"), spaceBefore=0, spaceAfter=0)
+    name_style = ParagraphStyle("cardname", parent=styles["Normal"], fontSize=10, leading=12, fontName="Helvetica-Bold", alignment=1)
+    sku_style = ParagraphStyle("cardsku", parent=styles["Normal"], fontSize=8, leading=10, alignment=1)
+
+    page_w, page_h = portrait(letter)
+    margin = 0.5 * inch
+    usable_width = page_w - 2 * margin
+    usable_height = page_h - 2 * margin
+    top_gap = 0.15 * inch
+    mid_gap = 0.2 * inch
+    safety = 0.1 * inch
+
+    story = []
+    for position, (slug, label, color, fp) in enumerate(pages):
+        if position:
+            story.append(PageBreak())
+
+        kicker_p = Paragraph(
+            f'<font color="{color}">{label.upper()}</font>', kicker_style
+        )
+        title_p = Paragraph(fp.recipe.name, title_style)
+        sub_p = Paragraph(
+            f"{style_row.name} · {style_row.category.name}", sub_style
+        )
+        _, kh = kicker_p.wrap(usable_width, usable_height)
+        _, th = title_p.wrap(usable_width, usable_height)
+        _, sh = sub_p.wrap(usable_width, usable_height)
+        card = _barcode_solo(fp, usable_width, name_style, sku_style)
+        _, card_h = card.wrap(usable_width, usable_height)
+
+        photo_area = (
+            usable_height - kh - th - sh - top_gap - mid_gap - card_h - safety
+        )
+        gallery = None
+        if photo_area > 1.2 * inch:
+            gallery = _photo_gallery(
+                _select_recipe_photos([fp], cap=4), usable_width, photo_area
+            )
+
+        block = [kicker_p, title_p, sub_p, Spacer(1, top_gap)]
+        if gallery is not None:
+            block += [gallery, Spacer(1, mid_gap)]
+        else:
+            block.append(Spacer(1, max(photo_area + mid_gap, 0)))
+        block.append(card)
+
+        story.append(KeepInFrame(usable_width, usable_height, block, mode="shrink"))
+
+    if not story:
+        story = [Paragraph(
+            f"{style_row.name} — no colorways with confirmed colour bands. "
+            f"Confirm them on the Colour Classification page first.",
+            styles["h1"],
+        )]
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=portrait(letter),
+        topMargin=margin,
+        bottomMargin=margin,
+        leftMargin=margin,
+        rightMargin=margin,
+    )
+    painter = _band_tab_painter([(slug, label, color) for slug, label, color, _ in pages])
+    doc.build(story, onFirstPage=painter, onLaterPages=painter)
+    buf.seek(0)
+    return HttpResponse(buf, content_type="application/pdf")
+
+
+# ---------------------------------------------------------------------------
 # Product image upload: phone -> presigned POST straight to bucket -> server
 # decodes the barcode and files the photo against a FinishedProduct. If the
 # barcode can't be read, the uploader picks the product inline (HTMX type-ahead).

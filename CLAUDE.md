@@ -191,6 +191,38 @@ Two judgements are baked in and are not bugs:
   recipe in stock reads as something else too (`turq-mid-black`,
   `grey-forest-navy`), and nobody looks for those under grey.
 
+### The two reference sheets answer different questions
+
+`public/reference-sheet/` is **by category**: a page per colorway, carrying the
+barcodes of every style dyed in it. It answers "what does this colorway look
+like, and what can I scan it as?".
+
+`public/reference-sheet/by-color/` is **by style**, ordered by the rainbow: a
+page per colorway, printed once in *every* band it claims, with one barcode.
+It answers the question a customer actually asks — "what have you got in red?"
+— which is why the style is chosen up front rather than being a column: a
+sheet mixing shawls and sash belts under `RED` can't be handed to someone
+asking for a red shawl.
+
+Duplication is the feature, not waste. A red-and-blue scarf that printed once
+would be *missing* from one of the two sections it is genuinely in, and the
+absence is silent (see above). The cost is bounded by how many bands a recipe
+claims — the picker prints both numbers (pages, and colorways) so the ratio is
+visible before you build the PDF.
+
+**Each page carries its band twice**: named under the title, and as a colored
+tab in a fixed slot down the right edge. The tab is what makes a printed stack
+usable — fan it and the sections show from the edge, which is how someone at
+the stall finds red without reading. Slots are keyed to the band, not to the
+page, so a gap means "this style has nothing in green" rather than "the tabs
+shifted". Tab text flips black or white by luminance, because the sheet gets
+photocopied.
+
+A style with nothing confirmed is listed **disabled rather than hidden**, same
+reasoning as a product with no SKU on the labels page: filtering it out means
+someone looks for the sheet, doesn't find it, and never learns it was one
+click of confirmation away.
+
 ## Inventory log dates: print `log.when`, never `log.created_at`
 
 `InventoryLog.created_at` is always a full timestamp, but it is not always
