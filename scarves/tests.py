@@ -4497,10 +4497,10 @@ class LabelFormFieldVisibilityTests(TestCase):
                 self.assertIsNotNone(block, f"{field} is not tagged data-when")
                 self.assertEqual(block.group(1), dataset)
 
-    def test_fields_both_datasets_read_are_not_tagged(self):
-        """extra, stock and start_at apply either way and must always show."""
+    def test_fields_every_dataset_reads_are_not_tagged(self):
+        """stock and start_at apply to any run and must always show."""
         html = self.client.get(reverse("label_index")).content.decode()
-        for field in ("extra", "stock", "start_at"):
+        for field in ("stock", "start_at"):
             with self.subTest(field=field):
                 block = re.search(
                     r'<div class="field"( data-when="\w+")?>'
@@ -4579,3 +4579,142 @@ class BlankFilterTests(TestCase):
             sorted(r.product.sku for r in response.context["run"].rows),
             ["RUNN-ONE", "SCAR-ONE"],
         )
+
+
+class SpecificItemsTests(TestCase):
+    """The hand-picked run: exactly these products, exactly these counts.
+
+    Built because deferring it was the reliable way to need it. The shape is
+    additive — type three SKUs — rather than unticking 297 rows off a filter.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("pick", "p@example.test", "pw")
+        self.client.force_login(self.user)
+        recipe = make_recipe("Picked Recipe")
+        self.a = make_product(recipe, "Picked A", with_image=False)
+        self.b = make_product(recipe, "Picked B", with_image=False)
+        self.a.sku, self.a.number_on_hand = "PICK-AAA", 99
+        self.a.save()
+        self.b.sku, self.b.number_on_hand = "PICK-BBB", 0
+        self.b.save()
+
+    def _params(self, items, **overrides):
+        params = {
+            "dataset": "items", "extra": "0",
+            "stock": str(LabelStock.objects.first().pk), "start_at": "1",
+            "items": items,
+        }
+        params.update(overrides)
+        return params
+
+    def test_it_prints_exactly_what_was_asked_for(self):
+        run = labelmod.specific_items([(self.a, 3), (self.b, 1)])
+        self.assertEqual(run.total, 4)
+        self.assertEqual([(r.product.sku, r.quantity) for r in run.rows],
+                         [("PICK-AAA", 3), ("PICK-BBB", 1)])
+
+    def test_on_hand_is_irrelevant(self):
+        """Unlike the bulk runs — you asked for it, so it prints."""
+        run = labelmod.specific_items([(self.b, 5)])
+        self.assertEqual(run.total, 5)
+
+    def test_extras_do_not_apply(self):
+        """The bulk datasets add spares because their counts are derived.
+        Here somebody typed the number, so adding to it would surprise."""
+        response = self.client.get(
+            reverse("label_index"), self._params([f"{self.a.pk}:3"], extra="5")
+        )
+        self.assertEqual(response.context["run"].total, 3)
+
+    def test_the_same_item_twice_sums(self):
+        """Two rows for one SKU is a sum written confusingly."""
+        form = LabelRunForm(self._params([f"{self.a.pk}:2", f"{self.a.pk}:3"]))
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["items"], [(self.a, 5)])
+
+    def test_a_run_survives_as_a_url(self):
+        """The whole point of keeping it in the query string: reopen it."""
+        params = self._params([f"{self.a.pk}:2", f"{self.b.pk}:1"])
+        response = self.client.get(reverse("label_index"), params)
+        self.assertEqual(response.context["run"].total, 3)
+
+        pdf = self.client.get(reverse("label_pdf"), params)
+        self.assertEqual(pdf.status_code, 200)
+        self.assertEqual(_pdf_text(pdf.content).count("PICK-AAA"), 2)
+        self.assertEqual(_pdf_text(pdf.content).count("PICK-BBB"), 1)
+
+    def test_picking_nothing_is_an_error_not_an_empty_sheet(self):
+        form = LabelRunForm(self._params([]))
+        self.assertFalse(form.is_valid())
+        self.assertIn("items", form.errors)
+
+    def test_absurd_counts_are_refused(self):
+        self.assertFalse(LabelRunForm(self._params([f"{self.a.pk}:400"])).is_valid())
+        self.assertFalse(LabelRunForm(self._params([f"{self.a.pk}:0"])).is_valid())
+
+    def test_a_deleted_item_is_reported_not_skipped(self):
+        form = LabelRunForm(self._params(["99999:2"]))
+        self.assertFalse(form.is_valid())
+        self.assertIn("no longer exist", str(form.errors["items"]))
+
+    def test_the_list_survives_an_unrelated_error(self):
+        """A bad start row must not wipe a list somebody just built by hand."""
+        form = LabelRunForm(self._params([f"{self.a.pk}:2"], start_at="900"))
+        self.assertFalse(form.is_valid())
+        self.assertEqual(form.items_value, [(self.a, 2)])
+
+    def test_the_page_renders_picked_rows_back(self):
+        response = self.client.get(
+            reverse("label_index"), self._params([f"{self.a.pk}:4"])
+        )
+        html = response.content.decode()
+        self.assertIn('data-pk="%d"' % self.a.pk, html)
+        self.assertIn('value="4"', html)
+
+
+class LabelItemSearchTests(TestCase):
+    """The type-ahead, reusing the upload page's endpoint."""
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("srch", "s@example.test", "pw")
+        self.client.force_login(self.user)
+        recipe = make_recipe("Search Recipe")
+        self.withsku = make_product(recipe, "Stormy Silk", with_image=False)
+        self.withsku.sku = "SILKSC-STORMY"
+        self.withsku.save()
+        self.nosku = make_product(recipe, "Stormy Unlabelled", with_image=False)
+
+    def test_it_finds_by_name_and_by_sku(self):
+        for q in ("Stormy", "SILKSC"):
+            response = self.client.get(
+                reverse("product_search"), {"q": q, "mode": "labels"}
+            )
+            self.assertContains(response, "SILKSC-STORMY")
+
+    def test_products_without_a_sku_are_not_offered(self):
+        """There's no barcode to print, so offering it would only make a row
+        that silently drops out later."""
+        response = self.client.get(
+            reverse("product_search"), {"q": "Stormy", "mode": "labels"}
+        )
+        self.assertNotContains(response, "Stormy Unlabelled")
+
+    def test_the_upload_picker_still_offers_them(self):
+        """That flow assigns a photo and doesn't care about barcodes."""
+        response = self.client.get(
+            reverse("product_search"), {"q": "Stormy", "upload_id": "1"}
+        )
+        self.assertContains(response, "Stormy Unlabelled")
+
+    def test_results_carry_what_a_row_needs(self):
+        response = self.client.get(
+            reverse("product_search"), {"q": "Stormy", "mode": "labels"}
+        )
+        self.assertContains(response, 'data-pk="%d"' % self.withsku.pk)
+        self.assertContains(response, 'data-sku="SILKSC-STORMY"')
+
+    def test_it_needs_a_login(self):
+        self.client.logout()
+        response = self.client.get(reverse("product_search"), {"q": "x"})
+        self.assertEqual(response.status_code, 302)

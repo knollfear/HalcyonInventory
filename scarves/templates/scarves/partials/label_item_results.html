@@ -1,0 +1,19 @@
+{% comment %}
+Type-ahead results for the label page's hand-picked list.
+
+Same search endpoint as the upload page's picker, different click behaviour:
+there a result assigns a photo to a product, here it adds a row to a list the
+form submits. The data attributes are what the page's add-handler reads, so a
+result carries everything a row needs without a second round trip.
+{% endcomment %}
+{% for p in products %}
+    <button type="button"
+            class="result"
+            data-pk="{{ p.id }}"
+            data-sku="{{ p.sku }}"
+            data-name="{{ p.name }}">
+        {{ p.name }} <span class="muted">{{ p.sku }}</span>
+    </button>
+{% empty %}
+    <div class="muted">No matching products with a SKU.</div>
+{% endfor %}

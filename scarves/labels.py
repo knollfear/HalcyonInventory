@@ -151,6 +151,19 @@ def inventory_run(extra=0, category=None, raw_products=None, include_zero=False)
     return LabelRun(rows=rows, skipped_no_sku=skipped, ambiguous_month_logs=0)
 
 
+def specific_items(pairs):
+    """A run built by hand: exactly these products, exactly these counts.
+
+    Takes no `extra`. The bulk datasets add spares because their counts are
+    derived and a little slack is cheap; here somebody typed the number, so
+    quietly printing more than they asked for would be the surprising thing.
+    The page hides the extras control for this dataset rather than letting it
+    sit there doing nothing.
+    """
+    rows, skipped = _finish(pairs, extra=0)
+    return LabelRun(rows=rows, skipped_no_sku=skipped, ambiguous_month_logs=0)
+
+
 def produced_since(cutoff, extra=0):
     """One sticker per unit produced at or after `cutoff`.
 

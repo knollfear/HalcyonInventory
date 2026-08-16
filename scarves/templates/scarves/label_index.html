@@ -75,6 +75,20 @@ labels get used, and what the marker sticker will say.
   .checklist li { margin: 3px 0; }
   .checklist label { display: flex; gap: 7px; align-items: baseline;
                      font-weight: 400; font-size: 13px; margin: 0; }
+
+  /* Type-ahead results, matching the upload page's picker. */
+  .results { margin-top: 6px; display: grid; gap: 3px; }
+  .results:empty { margin-top: 0; }
+  .result {
+      text-align: left; font: inherit; font-size: 13px; cursor: pointer;
+      padding: 6px 9px; border: 1px solid #e1e5ea; border-radius: 6px;
+      background: #fff;
+  }
+  .result:hover { border-color: var(--accent); background: #f4f8fd; }
+  .result .muted, .results .muted { color: #8b929b; font-size: 12px; }
+  .results .muted { padding: 4px 2px; }
+  table.picked { margin-top: 12px; }
+  table.picked input.qty { width: 4.5rem; }
   td.num, th.num { text-align: right; }
 {% endblock %}
 
@@ -98,6 +112,39 @@ labels get used, and what the marker sticker will say.
           <div class="help" id="since-help">{{ form.since.help_text }}</div>
           {{ form.since.errors }}
         </div>
+        <div class="field" data-when="items">
+          <label for="item-search">Find an item</label>
+          <input type="text" id="item-search" name="q" autocomplete="off"
+                 placeholder="Type a product name or SKU…"
+                 hx-get="{% url 'product_search' %}"
+                 hx-trigger="keyup changed delay:250ms"
+                 hx-target="#item-results"
+                 hx-vals='{"mode": "labels"}'>
+          <div class="results" id="item-results"></div>
+          <div class="help">
+            Click a result to add it. Counts are exactly what you type — the
+            extras box doesn't apply here.
+          </div>
+          {{ form.items.errors }}
+
+          <table class="picked" id="picked-items" hidden>
+            <thead><tr><th>SKU</th><th>Item</th><th class="num">Labels</th><th></th></tr></thead>
+            <tbody>
+              {% for product, qty in form.items_value %}
+                <tr data-pk="{{ product.pk }}">
+                  <td><code>{{ product.sku }}</code></td>
+                  <td>{{ product.name }}</td>
+                  <td class="num">
+                    <input type="number" class="qty" min="1" max="99" value="{{ qty }}">
+                  </td>
+                  <td><button type="button" class="btn-quiet drop">Remove</button></td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          <div id="picked-empty" class="empty">Nothing picked yet.</div>
+        </div>
+
         <div class="field" data-when="inventory">
           <label for="{{ form.category.id_for_label }}">Category</label>
           {{ form.category }}
@@ -115,7 +162,7 @@ labels get used, and what the marker sticker will say.
       </div>
 
       <div>
-        <div class="field">
+        <div class="field" data-when="since inventory">
           <label for="{{ form.extra.id_for_label }}">{{ form.extra.label }}</label>
           {{ form.extra }}
           <div class="help">{{ form.extra.help_text }}</div>
@@ -287,6 +334,7 @@ labels get used, and what the marker sticker will say.
 {% endblock %}
 
 {% block scripts %}
+<script src="https://unpkg.com/htmx.org@1.9.12"></script>
 <script>
   // The browser remembers the last cutoff and the row the last run ended on.
   // This is a convenience, not a record: the authoritative copy of the row is
@@ -335,11 +383,95 @@ labels get used, and what the marker sticker will say.
       var conditional = document.querySelectorAll("#label-form .field[data-when]");
       var sync = function () {
         conditional.forEach(function (el) {
-          el.hidden = el.dataset.when !== dataset.value;
+          // data-when may list several datasets: "since inventory".
+          el.hidden = el.dataset.when.split(" ").indexOf(dataset.value) === -1;
         });
       };
       dataset.addEventListener("change", sync);
       sync();   // the form comes back server-rendered after a preview
+    }
+
+    // --- hand-picked item list -------------------------------------------
+    // Rows carry their own hidden `items=<pk>:<qty>` input, so the ordinary
+    // GET submit takes the list with it and a hand-built run stays a URL you
+    // can re-open. The server renders any existing rows back after a preview,
+    // and this only wires up behaviour on top of them.
+    var picked = document.getElementById("picked-items");
+    if (picked) {
+      var body = picked.querySelector("tbody");
+      var emptyNote = document.getElementById("picked-empty");
+      var search = document.getElementById("item-search");
+      var results = document.getElementById("item-results");
+
+      var refresh = function () {
+        var any = body.children.length > 0;
+        picked.hidden = !any;
+        emptyNote.hidden = any;
+      };
+
+      var syncRow = function (row) {
+        var qty = row.querySelector(".qty").value || "1";
+        var hidden = row.querySelector("input[name='items']");
+        if (!hidden) {
+          hidden = document.createElement("input");
+          hidden.type = "hidden";
+          hidden.name = "items";
+          row.appendChild(hidden);
+        }
+        hidden.value = row.dataset.pk + ":" + qty;
+      };
+
+      var addRow = function (pk, sku, name) {
+        var existing = body.querySelector('tr[data-pk="' + pk + '"]');
+        if (existing) {
+          // Adding something already on the list bumps its count rather than
+          // stacking a duplicate row — two rows for one SKU is just a sum
+          // written confusingly.
+          var q = existing.querySelector(".qty");
+          q.value = Math.min(parseInt(q.value || "0", 10) + 1, 99);
+          syncRow(existing);
+          return;
+        }
+        var row = document.createElement("tr");
+        row.dataset.pk = pk;
+        row.innerHTML =
+          "<td><code></code></td><td></td>" +
+          '<td class="num"><input type="number" class="qty" min="1" max="99" value="1"></td>' +
+          '<td><button type="button" class="btn-quiet drop">Remove</button></td>';
+        row.querySelector("code").textContent = sku;
+        row.children[1].textContent = name;
+        body.appendChild(row);
+        syncRow(row);
+        refresh();
+      };
+
+      // Delegated, so rows swapped in by htmx or added later are covered.
+      results.addEventListener("click", function (e) {
+        var hit = e.target.closest(".result");
+        if (!hit) { return; }
+        addRow(hit.dataset.pk, hit.dataset.sku, hit.dataset.name);
+        results.innerHTML = "";
+        search.value = "";
+        search.focus();
+      });
+
+      picked.addEventListener("input", function (e) {
+        if (e.target.classList.contains("qty")) { syncRow(e.target.closest("tr")); }
+      });
+      picked.addEventListener("click", function (e) {
+        if (e.target.classList.contains("drop")) {
+          e.target.closest("tr").remove();
+          refresh();
+        }
+      });
+
+      // Enter in the search box must not submit a half-built run.
+      search.addEventListener("keydown", function (e) {
+        if (e.key === "Enter") { e.preventDefault(); }
+      });
+
+      Array.prototype.forEach.call(body.children, syncRow);
+      refresh();
     }
 
     var printLink = document.getElementById("print-link");

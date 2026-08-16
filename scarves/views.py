@@ -2236,17 +2236,28 @@ def product_search(request):
     """HTMX type-ahead: products matching the typed name or SKU."""
     q = (request.GET.get("q") or "").strip()
     upload_id = request.GET.get("upload_id")
+    for_labels = request.GET.get("mode") == "labels"
+
     products = FinishedProduct.objects.none()
     if q:
         products = FinishedProduct.objects.filter(
             Q(name__icontains=q) | Q(sku__icontains=q),
             is_active=True,
-        ).order_by("name")[:10]
-    return render(
-        request,
-        "scarves/partials/product_search_results.html",
-        {"products": products, "upload_id": upload_id},
+        ).order_by("name")
+        # A product with no SKU has no barcode to print, so offering it on the
+        # label page would only produce a row that silently drops out later.
+        if for_labels:
+            products = products.exclude(sku="")
+        products = products[:10]
+
+    # Same search, two click behaviours: the upload page assigns the product
+    # to an upload, the label page adds it to a list. Only the template
+    # differs, so it's picked here rather than duplicating the query.
+    template = (
+        "scarves/partials/label_item_results.html" if for_labels
+        else "scarves/partials/product_search_results.html"
     )
+    return render(request, template, {"products": products, "upload_id": upload_id})
 
 
 @require_POST
@@ -2818,6 +2829,8 @@ def _label_stock_from(form):
 def _label_run_from(form):
     """Build the run described by a valid LabelRunForm."""
     data = form.cleaned_data
+    if data["dataset"] == LabelRunForm.ITEMS:
+        return labels.specific_items(data["items"])
     if data["dataset"] == LabelRunForm.SINCE:
         return labels.produced_since(data["since"], extra=data["extra"])
     return labels.inventory_run(

@@ -327,18 +327,25 @@ whole job, naming the SKUs. This is also why the stock is 1.75in wide — a
 first considered would have printed 4.5 mil. Barcodes are sized **per label**,
 not per run, so a short SKU gets fat bars instead of matching the longest one.
 
-**There is deliberately no way to hand-pick individual SKUs.** The bet is that
-the two bulk datasets plus the per-product extras cover it, and that asking
-for specific items costs more time than the labels it saves. If that bet fails
-the shape to build is *additive*, not a filter: a list you add "this SKU, this
-many" rows to, as a third dataset beside the other two. Tick-to-exclude on the
-preview table is the wrong instinct — unticking 297 rows to keep 3 is worse
-than typing 3.
+**Three datasets, and the hand-picked one is additive.** "Specific items I
+pick" is a type-ahead you add "this SKU, this many" rows to — deliberately not
+tick-to-exclude on the preview table, because unticking 297 rows to keep 3 is
+worse than typing 3. It reuses the upload page's `product_search` endpoint via
+`?mode=labels`, which swaps the result template (the search is identical; only
+the click behaviour differs) and drops products with no SKU, since there's no
+barcode to print for them.
 
-Either way it's a small change, because everything downstream (SKU sort,
-marker placement, density guard, sheet plan) operates on `LabelRun.rows`,
-which is just product-and-quantity pairs. A new dataset is one function
-returning a `LabelRun` and one branch in `_label_run_from`.
+**Extras don't apply to a hand-picked run.** The bulk datasets add spares
+because their counts are derived and slack is cheap; here somebody typed the
+number, so printing more than they asked would surprise. The page hides the
+extras box for that dataset rather than leaving a control that does nothing —
+the same `data-when` mechanism that hides the date box when printing
+everything on hand.
+
+Adding a fourth dataset stays cheap: everything downstream (SKU sort, marker
+placement, density guard, sheet plan) operates on `LabelRun.rows`, which is
+just product-and-quantity pairs. It's one function returning a `LabelRun` and
+one branch in `_label_run_from`.
 
 **Nobody here owns a printer.** Sheets get printed at a copy shop from a PDF
 emailed off a phone, which breaks two assumptions the offsets were built on:

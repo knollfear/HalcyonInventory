@@ -276,6 +276,59 @@ class HoursForm(forms.Form):
         return cleaned
 
 
+def parse_label_items(raw_values):
+    """`["12:3", "7:1", "12:2"]` -> `{12: 5, 7: 1}`.
+
+    Lenient on purpose: it backs both validation and re-rendering the picked
+    list after a failed submit, and losing someone's hand-built list because
+    an unrelated field was wrong is worse than ignoring a malformed row.
+    """
+    wanted = {}
+    for raw in raw_values or []:
+        pk, _, qty = str(raw).partition(":")
+        if not pk.isdigit():
+            continue
+        qty = int(qty) if qty.isdigit() else 1
+        wanted[int(pk)] = wanted.get(int(pk), 0) + qty
+    return wanted
+
+
+class LabelItemsField(forms.Field):
+    """A hand-picked list of items, parsed from repeated `items=<pk>:<qty>`.
+
+    Lives in the query string like everything else on the label page, so a
+    hand-built run stays a re-openable URL and survives the preview round
+    trip. Adding the same product twice sums rather than replacing — that's
+    what someone typing it twice means, and silently dropping the first entry
+    would be a missing sticker nobody notices until the till.
+    """
+
+    widget = forms.MultipleHiddenInput
+
+    def clean(self, value):
+        from .models import FinishedProduct
+
+        if not value:
+            return []
+
+        wanted = parse_label_items(value)
+        if not wanted:
+            raise forms.ValidationError("Couldn't read the picked items.")
+        if any(not 1 <= qty <= 99 for qty in wanted.values()):
+            raise forms.ValidationError("Label counts per item run from 1 to 99.")
+
+        found = {
+            p.pk: p
+            for p in FinishedProduct.objects.filter(pk__in=wanted)
+            .select_related("raw_product", "recipe")
+        }
+        if set(wanted) - set(found):
+            raise forms.ValidationError(
+                "Some picked items no longer exist. Remove them and re-add."
+            )
+        return [(found[pk], qty) for pk, qty in wanted.items()]
+
+
 class LabelRunForm(forms.Form):
     """What to print, how many, and where on the sheet to start.
 
@@ -287,9 +340,11 @@ class LabelRunForm(forms.Form):
 
     SINCE = "since"
     INVENTORY = "inventory"
+    ITEMS = "items"
     DATASET_CHOICES = [
         (SINCE, "Produced since a date"),
         (INVENTORY, "Everything on hand"),
+        (ITEMS, "Specific items I pick"),
     ]
 
     dataset = forms.ChoiceField(
@@ -319,6 +374,7 @@ class LabelRunForm(forms.Form):
         help_text="Off by default: with extras switched on, every dormant SKU "
                   "would otherwise use labels.",
     )
+    items = LabelItemsField(required=False, label="Picked items")
     extra = forms.IntegerField(
         min_value=0, max_value=20, initial=0, required=False,
         label="Extra labels per product",
@@ -362,14 +418,50 @@ class LabelRunForm(forms.Form):
         if first:
             self.fields["stock"].initial = first.pk
 
+    @property
+    def items_value(self):
+        """The picked list, for rendering the rows back onto the page.
+
+        Falls back to a lenient parse when the form is invalid, so a mistake
+        in some other field doesn't wipe a list somebody just built by hand.
+        """
+        from .models import FinishedProduct
+
+        if not self.is_bound:
+            return []
+        if self.is_valid():
+            return self.cleaned_data.get("items") or []
+
+        # Same extraction the field itself uses, rather than assuming a
+        # QueryDict — a plain dict of lists has to behave identically or this
+        # fallback quietly returns nothing exactly when it's needed.
+        field = self.fields["items"]
+        raw = field.widget.value_from_datadict(
+            self.data, self.files, self.add_prefix("items")
+        )
+        if isinstance(raw, str):
+            raw = [raw]
+        wanted = parse_label_items(raw)
+        found = {
+            p.pk: p
+            for p in FinishedProduct.objects.filter(pk__in=wanted)
+            .select_related("raw_product", "recipe")
+        }
+        return [(found[pk], qty) for pk, qty in wanted.items() if pk in found]
+
     def clean_extra(self):
         return self.cleaned_data.get("extra") or 0
 
     def clean(self):
         cleaned = super().clean()
 
-        if cleaned.get("dataset") == self.SINCE and not cleaned.get("since"):
+        dataset = cleaned.get("dataset")
+        if dataset == self.SINCE and not cleaned.get("since"):
             self.add_error("since", "Pick the date to count production from.")
+        if dataset == self.ITEMS and not cleaned.get("items"):
+            self.add_error(
+                "items", "Search for an item and add it before printing."
+            )
 
         stock, start_at = cleaned.get("stock"), cleaned.get("start_at")
         if stock and start_at and start_at > stock.labels_per_sheet:
