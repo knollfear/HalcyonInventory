@@ -327,6 +327,19 @@ whole job, naming the SKUs. This is also why the stock is 1.75in wide — a
 first considered would have printed 4.5 mil. Barcodes are sized **per label**,
 not per run, so a short SKU gets fat bars instead of matching the longest one.
 
+**There is deliberately no way to hand-pick individual SKUs.** The bet is that
+the two bulk datasets plus the per-product extras cover it, and that asking
+for specific items costs more time than the labels it saves. If that bet fails
+the shape to build is *additive*, not a filter: a list you add "this SKU, this
+many" rows to, as a third dataset beside the other two. Tick-to-exclude on the
+preview table is the wrong instinct — unticking 297 rows to keep 3 is worse
+than typing 3.
+
+Either way it's a small change, because everything downstream (SKU sort,
+marker placement, density guard, sheet plan) operates on `LabelRun.rows`,
+which is just product-and-quantity pairs. A new dataset is one function
+returning a `LabelRun` and one branch in `_label_run_from`.
+
 **Nobody here owns a printer.** Sheets get printed at a copy shop from a PDF
 emailed off a phone, which breaks two assumptions the offsets were built on:
 you can't calibrate the machine beforehand, and you have no computer with you
