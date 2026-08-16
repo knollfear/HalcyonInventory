@@ -306,8 +306,12 @@ class LabelRunForm(forms.Form):
     category = forms.ModelChoiceField(
         queryset=None, required=False, empty_label="All categories",
     )
-    raw_product = forms.ModelChoiceField(
-        queryset=None, required=False, empty_label="All blanks", label="Blank",
+    raw_products = forms.ModelMultipleChoiceField(
+        queryset=None, required=False,
+        widget=forms.CheckboxSelectMultiple,
+        label="Blanks",
+        help_text="Tick to narrow to particular blanks. Nothing ticked means "
+                  "all of them — it never means print nothing.",
     )
     include_zero = forms.BooleanField(
         required=False,
@@ -347,9 +351,9 @@ class LabelRunForm(forms.Form):
         from .models import LabelStock, RawProduct, RawProductCategory
 
         self.fields["category"].queryset = RawProductCategory.objects.order_by("name")
-        self.fields["raw_product"].queryset = RawProduct.objects.filter(
+        self.fields["raw_products"].queryset = RawProduct.objects.filter(
             is_active=True
-        ).order_by("name")
+        ).select_related("category").order_by("category__name", "name")
 
         stocks = LabelStock.objects.filter(is_active=True)
         self.fields["stock"].queryset = stocks

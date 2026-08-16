@@ -63,6 +63,18 @@ labels get used, and what the marker sticker will say.
           background: #fdf2f1; border: 1px solid #f0c8c4; color: #8a2f2a; font-size: 13px; }
   .noteline { margin-top: 14px; font-size: 13px; color: #667; }
   .buy { font-size: 12px; }
+
+  /* Blanks are a short, stable list, so they're all on screen rather than
+     behind a multi-select you have to ctrl-click. Capped and scrollable so a
+     long catalogue can't push the rest of the form off the page. */
+  .checklist {
+      max-height: 190px; overflow-y: auto; border: 1px solid #cfd6de;
+      border-radius: 6px; padding: 6px 10px; background: #fff;
+  }
+  .checklist ul { list-style: none; margin: 0; padding: 0; }
+  .checklist li { margin: 3px 0; }
+  .checklist label { display: flex; gap: 7px; align-items: baseline;
+                     font-weight: 400; font-size: 13px; margin: 0; }
   td.num, th.num { text-align: right; }
 {% endblock %}
 
@@ -91,8 +103,10 @@ labels get used, and what the marker sticker will say.
           {{ form.category }}
         </div>
         <div class="field" data-when="inventory">
-          <label for="{{ form.raw_product.id_for_label }}">{{ form.raw_product.label }}</label>
-          {{ form.raw_product }}
+          <label>{{ form.raw_products.label }}</label>
+          <div class="checklist">{{ form.raw_products }}</div>
+          <div class="help">{{ form.raw_products.help_text }}</div>
+          {{ form.raw_products.errors }}
         </div>
         <div class="field" data-when="inventory">
           <label>{{ form.include_zero }} {{ form.include_zero.label }}</label>

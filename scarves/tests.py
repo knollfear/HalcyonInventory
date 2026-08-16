@@ -4485,7 +4485,7 @@ class LabelFormFieldVisibilityTests(TestCase):
         for field, dataset in (
             ("since", "since"),
             ("category", "inventory"),
-            ("raw_product", "inventory"),
+            ("raw_products", "inventory"),
             ("include_zero", "inventory"),
         ):
             with self.subTest(field=field):
@@ -4524,3 +4524,58 @@ class LabelFormFieldVisibilityTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.context["form"].is_valid(),
                         response.context["form"].errors)
+
+
+class BlankFilterTests(TestCase):
+    """Narrowing a bulk re-label to particular blanks."""
+
+    def setUp(self):
+        recipe = make_recipe("Blank Filter Recipe")
+        self.products = {}
+        for name in ("Scarf", "Skein", "Runner"):
+            product = make_product(recipe, f"{name} Product", with_image=False)
+            product.raw_product.name = f"raw-{name}"
+            product.raw_product.save()
+            product.sku, product.number_on_hand = f"{name[:4].upper()}-ONE", 2
+            product.save()
+            self.products[name] = product
+
+    def test_no_ticks_means_every_blank(self):
+        """Not 'none' — a filter that silently prints nothing when you forget
+        to tick is a wasted trip to the print shop."""
+        self.assertEqual(len(labelmod.inventory_run().rows), 3)
+        self.assertEqual(len(labelmod.inventory_run(raw_products=[]).rows), 3)
+        self.assertEqual(len(labelmod.inventory_run(raw_products=None).rows), 3)
+
+    def test_several_blanks_can_be_picked_at_once(self):
+        picked = [self.products[n].raw_product for n in ("Scarf", "Runner")]
+        run = labelmod.inventory_run(raw_products=picked)
+        self.assertEqual(
+            sorted(r.product.sku for r in run.rows), ["RUNN-ONE", "SCAR-ONE"]
+        )
+
+    def test_one_blank_still_works(self):
+        run = labelmod.inventory_run(raw_products=[self.products["Skein"].raw_product])
+        self.assertEqual([r.product.sku for r in run.rows], ["SKEI-ONE"])
+
+    def test_the_page_renders_them_as_checkboxes(self):
+        user = User.objects.create_superuser("blank", "b@example.test", "pw")
+        self.client.force_login(user)
+        html = self.client.get(reverse("label_index")).content.decode()
+        self.assertIn('type="checkbox" name="raw_products"', html)
+        self.assertEqual(html.count('name="raw_products"'), 3)
+
+    def test_picking_blanks_through_the_view(self):
+        user = User.objects.create_superuser("blank2", "b2@example.test", "pw")
+        self.client.force_login(user)
+        picked = [self.products[n].raw_product.pk for n in ("Scarf", "Runner")]
+        response = self.client.get(reverse("label_index"), {
+            "dataset": "inventory", "extra": "0",
+            "stock": str(LabelStock.objects.first().pk), "start_at": "1",
+            "raw_products": [str(pk) for pk in picked],
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            sorted(r.product.sku for r in response.context["run"].rows),
+            ["RUNN-ONE", "SCAR-ONE"],
+        )

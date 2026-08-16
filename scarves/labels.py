@@ -21,8 +21,9 @@ a fraction of a cent; a boundary you can't edit costs an evening.
 shop: a different machine each time, no chance to calibrate beforehand, and no
 computer to hand when a sheet comes out 2mm high. So registration offsets ride
 in the query string rather than only living on the model, and every sheet
-prints its own one-inch ruler — the scaled-print failure is otherwise
-undetectable until the labels are already paid for.
+prints registration ticks against its own die-cuts — the scaled-print failure
+is progressive, so a short ruler can't see it and the check has to span the
+whole sheet.
 
 **The barcode is sized per label, not per run.** SKUs are `SLUG6-SLUG6`, so
 they're bounded at ~14 characters but most are shorter, and a short one
@@ -126,7 +127,7 @@ def _finish(products_and_counts, extra):
     return rows, sorted(skipped, key=lambda p: p.name)
 
 
-def inventory_run(extra=0, category=None, raw_product=None, include_zero=False):
+def inventory_run(extra=0, category=None, raw_products=None, include_zero=False):
     """Every active finished product, one sticker per unit on hand.
 
     The bulk re-label case. `include_zero` is off by default because with
@@ -139,8 +140,10 @@ def inventory_run(extra=0, category=None, raw_product=None, include_zero=False):
     )
     if category:
         qs = qs.filter(raw_product__category=category)
-    if raw_product:
-        qs = qs.filter(raw_product=raw_product)
+    # Empty means every blank, never "none" — a filter that silently prints
+    # nothing when you forget to tick something is a wasted trip to the shop.
+    if raw_products:
+        qs = qs.filter(raw_product__in=raw_products)
     if not include_zero:
         qs = qs.filter(number_on_hand__gt=0)
 

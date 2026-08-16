@@ -2823,7 +2823,7 @@ def _label_run_from(form):
     return labels.inventory_run(
         extra=data["extra"],
         category=data.get("category"),
-        raw_product=data.get("raw_product"),
+        raw_products=data.get("raw_products"),
         include_zero=data.get("include_zero", False),
     )
 
