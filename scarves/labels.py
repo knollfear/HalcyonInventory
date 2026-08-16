@@ -280,6 +280,12 @@ class SheetPlan:
 
     Exists so "what am I about to use up?" is answered before the print dialog
     rather than inferred from a label count afterwards.
+
+    `sheets` holds only the ones worth looking at — the partly-used sheet you
+    start on and the one you finish on. A run of 2435 labels covers 31 sheets,
+    29 of which are simply full, and drawing 29 identical grids buries the two
+    that carry information. The rest are counted in `full_sheets` and said in
+    a sentence.
     """
     sheets: list          # per sheet: {"number": n, "cells": [...]}
     sheet_count: int
@@ -287,6 +293,9 @@ class SheetPlan:
     marker_index: int     # 0-indexed absolute position of the marker, or None
     free_after: int       # unused labels left on the final sheet
     finishes_sheet: bool
+    full_sheets: int = 0  # sheets omitted from `sheets` as entirely used
+    full_from: int = 0    # 1-indexed range of those omitted sheets
+    full_to: int = 0
 
 
 def marker_index_for(stock, count, start_at=0):
@@ -319,13 +328,26 @@ def plan_sheets(stock, count, start_at=0) -> SheetPlan:
     last_index = (marker if marker is not None else start_at + count - 1)
     sheet_count = last_index // per_sheet + 1
 
-    printing = set(range(start_at, start_at + count))
-    sheets = []
-    for page in range(sheet_count):
+    first_printed, last_printed = start_at, start_at + count - 1
+
+    def is_full(page):
+        """Every label on this sheet gets printed on — nothing to look at.
+
+        The marker check is belt-and-braces: a marker sits immediately after
+        the last label, so its sheet always has an unprinted cell and fails
+        the range test anyway. Stated explicitly because "the sheet telling
+        you where to resume is never hidden" is the rule, not a side effect.
+        """
+        lo, hi = page * per_sheet, (page + 1) * per_sheet - 1
+        if marker is not None and marker // per_sheet == page:
+            return False
+        return first_printed <= lo and last_printed >= hi
+
+    def cells_for(page):
         cells = []
         for within in range(per_sheet):
             index = page * per_sheet + within
-            if index in printing:
+            if first_printed <= index <= last_printed:
                 state = "printing"
             elif index == marker:
                 state = "marker"
@@ -334,15 +356,27 @@ def plan_sheets(stock, count, start_at=0) -> SheetPlan:
             else:
                 state = "free"
             cells.append({"number": within + 1, "state": state})
-        sheets.append({"number": page + 1, "cells": cells})
+        return cells
+
+    # Only the sheets that differ from "all 80 used" are built at all; the
+    # rest would be identical grids and aren't worth the markup or the scroll.
+    drawn, full_pages = [], []
+    for page in range(sheet_count):
+        if is_full(page):
+            full_pages.append(page + 1)
+        else:
+            drawn.append({"number": page + 1, "cells": cells_for(page)})
 
     return SheetPlan(
-        sheets=sheets,
+        sheets=drawn,
         sheet_count=sheet_count,
         resume_at=1 if marker is None else marker % per_sheet + 2,
         marker_index=marker,
         free_after=0 if marker is None else per_sheet - (marker % per_sheet) - 1,
         finishes_sheet=marker is None,
+        full_sheets=len(full_pages),
+        full_from=full_pages[0] if full_pages else 0,
+        full_to=full_pages[-1] if full_pages else 0,
     )
 
 

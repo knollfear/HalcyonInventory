@@ -231,6 +231,16 @@ labels get used, and what the marker sticker will say.
         </div>
 
         {% if not stock.is_continuous %}
+        {% if plan.full_sheets %}
+          <p class="noteline">
+            Sheet{{ plan.full_sheets|pluralize }}
+            {% if plan.full_from == plan.full_to %}{{ plan.full_from }}{% else %}{{ plan.full_from }}–{{ plan.full_to }}{% endif %}
+            {{ plan.full_sheets|pluralize:"is,are" }} used end to end —
+            {{ plan.full_sheets }} × {{ stock.labels_per_sheet }} labels.
+            Only the part-used sheets are drawn.
+          </p>
+        {% endif %}
+
         <div class="sheets">
           {% for sheet in plan.sheets %}
             <div class="sheet">

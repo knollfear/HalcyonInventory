@@ -5426,3 +5426,73 @@ class SquarePartialBatchTests(TestCase):
         sent = [o for body in client.upserts
                 for o in body["batches"][0]["objects"]]
         self.assertNotIn(f"#rp_{linked.raw_product.pk}", [o["id"] for o in sent])
+
+
+class SheetMapNoiseTests(TestCase):
+    """The map draws only sheets that differ from "all 80 used".
+
+    A real run — 2435 labels over 31 sheets — drew 29 identical full grids,
+    which buries the two that carry information: the part-used sheet you start
+    on and the one you finish on.
+    """
+
+    def setUp(self):
+        self.stock = make_stock()   # 4 × 20 = 80
+
+    def test_a_long_run_draws_only_the_unfinished_sheet(self):
+        plan = labelmod.plan_sheets(self.stock, 2435, start_at=0)
+        self.assertEqual(plan.sheet_count, 31)
+        self.assertEqual([s["number"] for s in plan.sheets], [31])
+        self.assertEqual(plan.full_sheets, 30)
+        self.assertEqual((plan.full_from, plan.full_to), (1, 30))
+
+    def test_a_partial_start_keeps_the_first_sheet_too(self):
+        # 44 already peeled + 2435 printed ends at index 2478, on sheet 31.
+        plan = labelmod.plan_sheets(self.stock, 2435, start_at=44)
+        self.assertEqual([s["number"] for s in plan.sheets], [1, 31])
+        self.assertEqual(plan.full_sheets, 29)
+        self.assertEqual((plan.full_from, plan.full_to), (2, 30))
+
+    def test_a_single_sheet_is_always_drawn(self):
+        plan = labelmod.plan_sheets(self.stock, 12, start_at=0)
+        self.assertEqual([s["number"] for s in plan.sheets], [1])
+        self.assertEqual(plan.full_sheets, 0)
+
+    def test_an_exactly_full_single_sheet_is_still_drawn(self):
+        """One sheet, no marker — but with nothing else on screen, hiding the
+        only diagram would say less than showing it."""
+        plan = labelmod.plan_sheets(self.stock, 80, start_at=0)
+        self.assertEqual(plan.sheet_count, 1)
+        self.assertEqual(plan.full_sheets, 1)
+        self.assertEqual(plan.sheets, [])
+
+    def test_the_marker_sheet_is_never_hidden(self):
+        """It's the one that says where to start next time."""
+        plan = labelmod.plan_sheets(self.stock, 159, start_at=0)
+        self.assertEqual(plan.marker_index, 159)
+        drawn = [s["number"] for s in plan.sheets]
+        self.assertIn(2, drawn)
+        marker_cells = [
+            c for s in plan.sheets for c in s["cells"] if c["state"] == "marker"
+        ]
+        self.assertEqual(len(marker_cells), 1)
+
+    def test_drawn_cells_are_only_built_for_drawn_sheets(self):
+        """31 sheets × 80 cells is 2480 dicts nobody looks at."""
+        plan = labelmod.plan_sheets(self.stock, 2435, start_at=0)
+        self.assertEqual(sum(len(s["cells"]) for s in plan.sheets), 80)
+
+    def test_the_page_says_how_many_it_left_out(self):
+        user = User.objects.create_superuser("noise", "n@example.test", "pw")
+        self.client.force_login(user)
+        recipe = make_recipe("Noise Recipe")
+        product = make_product(recipe, "Noise Product", with_image=False)
+        product.number_on_hand = 500
+        product.save()
+
+        response = self.client.get(reverse("label_index"), {
+            "dataset": "inventory", "extra": "0",
+            "stock": str(LabelStock.objects.first().pk), "start_at": "1",
+        })
+        self.assertContains(response, "used end to end")
+        self.assertContains(response, "Only the part-used sheets are drawn")
