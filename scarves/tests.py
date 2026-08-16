@@ -4064,8 +4064,11 @@ class LabelRunSelectionTests(TestCase):
 
     def test_products_without_a_sku_are_reported_not_dropped(self):
         """A silently missing sticker is a scarf that won't scan at the till."""
-        self.b.sku, self.b.number_on_hand = "", 5
+        self.b.number_on_hand = 5
         self.b.save()
+        # save() fills a blank SKU now, so an empty one only arrives via a
+        # queryset write — a row created before generation moved to create.
+        FinishedProduct.objects.filter(pk=self.b.pk).update(sku="")
         run = labelmod.inventory_run()
         self.assertEqual([p.name for p in run.skipped_no_sku], ["Label B"])
         self.assertNotIn("", [r.product.sku for r in run.rows])
@@ -4686,6 +4689,8 @@ class LabelItemSearchTests(TestCase):
         self.withsku.sku = "SILKSC-STORMY"
         self.withsku.save()
         self.nosku = make_product(recipe, "Stormy Unlabelled", with_image=False)
+        # Predates SKU-on-create; only a queryset write can make one now.
+        FinishedProduct.objects.filter(pk=self.nosku.pk).update(sku="")
 
     def test_it_finds_by_name_and_by_sku(self):
         for q in ("Stormy", "SILKSC"):
@@ -4745,6 +4750,8 @@ class GenerateSkusOverwriteTests(TestCase):
         self.existing.sku = "PRINTED-CODE"
         self.existing.save()
         self.blank = make_product(recipe, "Needs A Sku", with_image=False)
+        FinishedProduct.objects.filter(pk=self.blank.pk).update(sku="")
+        self.blank.refresh_from_db()
 
     def _run(self, **kwargs):
         out = StringIO()
@@ -4791,3 +4798,127 @@ class GenerateSkusOverwriteTests(TestCase):
             self._run(overwrite=True)
         self.blank.refresh_from_db()
         self.assertTrue(self.blank.sku)
+
+
+class SkuOnCreateTests(TestCase):
+    """SKUs are assigned when a product is created, not when someone
+    remembers to run a command.
+
+    Generation used to live only in `generate_skus`, so anything made through
+    the admin, the bulk matrix or a shell had no barcode — and nothing said
+    so. It simply wasn't printable and wasn't scannable.
+    """
+
+    def setUp(self):
+        self.recipe = make_recipe("Sunset Glow")
+        self.category, _ = RawProductCategory.objects.get_or_create(name="Silk")
+
+    def _raw(self, name):
+        raw, _ = RawProduct.objects.get_or_create(
+            name=name, category=self.category, defaults={"price": "5.00"}
+        )
+        return raw
+
+    def test_a_new_product_gets_a_sku(self):
+        fp = FinishedProduct.objects.create(
+            name="Sunset Silk", raw_product=self._raw("Silk Scarf"),
+            recipe=self.recipe, price="30.00",
+        )
+        self.assertEqual(fp.sku, "SILKSC-SUNSET")
+
+    def test_it_survives_a_reload(self):
+        """Set in memory but not persisted would be the subtle version."""
+        fp = FinishedProduct.objects.create(
+            name="Sunset Silk", raw_product=self._raw("Silk Scarf"),
+            recipe=self.recipe, price="30.00",
+        )
+        fp.refresh_from_db()
+        self.assertEqual(fp.sku, "SILKSC-SUNSET")
+
+    def test_an_explicit_sku_is_respected(self):
+        fp = FinishedProduct.objects.create(
+            name="Sunset Silk", raw_product=self._raw("Silk Scarf"),
+            recipe=self.recipe, price="30.00", sku="HAND-PICKED",
+        )
+        self.assertEqual(fp.sku, "HAND-PICKED")
+
+    def test_an_existing_sku_is_never_rewritten(self):
+        """It's on stickers and in Square; this app can rewrite neither."""
+        fp = FinishedProduct.objects.create(
+            name="Sunset Silk", raw_product=self._raw("Silk Scarf"),
+            recipe=self.recipe, price="30.00",
+        )
+        original = fp.sku
+        fp.raw_product.name = "Completely Different Blank"
+        fp.raw_product.save()
+        fp.price = "35.00"
+        fp.save()
+        fp.refresh_from_db()
+        self.assertEqual(fp.sku, original)
+
+    def test_collisions_get_a_suffix(self):
+        first = FinishedProduct.objects.create(
+            name="One", raw_product=self._raw("Silk Scarf"),
+            recipe=self.recipe, price="30.00",
+        )
+        second = FinishedProduct.objects.create(
+            name="Two", raw_product=self._raw("Silk Scarf"),
+            recipe=self.recipe, price="30.00",
+        )
+        self.assertEqual(first.sku, "SILKSC-SUNSET")
+        self.assertEqual(second.sku, "SILKSC-SUNSET2")
+
+    def test_update_fields_still_persists_a_generated_sku(self):
+        """A caller narrowing the write didn't know a SKU was coming; without
+        adding it the value is set in memory and silently dropped."""
+        fp = FinishedProduct.objects.create(
+            name="Sunset Silk", raw_product=self._raw("Silk Scarf"),
+            recipe=self.recipe, price="30.00",
+        )
+        FinishedProduct.objects.filter(pk=fp.pk).update(sku="")
+        fp.refresh_from_db()
+        self.assertEqual(fp.sku, "")
+
+        fp.number_on_hand = 7
+        fp.save(update_fields=["number_on_hand"])
+        fp.refresh_from_db()
+        self.assertEqual(fp.number_on_hand, 7)
+        self.assertTrue(fp.sku, "the generated SKU has to reach the database")
+
+    def test_the_command_and_save_agree(self):
+        """One definition of a SKU, used by both paths."""
+        fp = FinishedProduct.objects.create(
+            name="Sunset Silk", raw_product=self._raw("Silk Scarf"),
+            recipe=self.recipe, price="30.00",
+        )
+        by_save = fp.sku
+        FinishedProduct.objects.filter(pk=fp.pk).update(sku="")
+        call_command("generate_skus", stdout=StringIO())
+        fp.refresh_from_db()
+        self.assertEqual(fp.sku, by_save)
+
+
+class FixtureSkuTests(TestCase):
+    """`loaddata` must not invent SKUs.
+
+    It goes through `save_base(raw=True)` rather than `save()`, so a fixture
+    that deliberately carries a blank SKU stays blank. Pinned because the
+    alternative — fixtures quietly gaining generated values — would make
+    `diff_fixture` round-trips report changes nobody made.
+    """
+
+    def test_a_blank_sku_in_a_fixture_stays_blank(self):
+        from django.core import serializers
+
+        recipe = make_recipe("Fixture Recipe")
+        product = make_product(recipe, "Fixture Product", with_image=False)
+        self.assertTrue(product.sku, "created normally, so it has one")
+
+        payload = serializers.serialize("json", [product])
+        payload = payload.replace(f'"sku": "{product.sku}"', '"sku": ""')
+
+        for deserialized in serializers.deserialize("json", payload):
+            deserialized.save()          # the path loaddata uses
+
+        product.refresh_from_db()
+        self.assertEqual(product.sku, "", "loaddata must not generate one")

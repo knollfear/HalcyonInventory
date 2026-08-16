@@ -1,25 +1,7 @@
-import re
-
 from django.core.management.base import BaseCommand
 
 from scarves.models import FinishedProduct
-
-
-def _slugify(text, max_len):
-    """Uppercase alphanumeric only, truncated."""
-    return re.sub(r"[^A-Z0-9]", "", text.upper())[:max_len]
-
-
-def _make_sku(fp, existing):
-    raw = _slugify(fp.raw_product.name, 6)
-    recipe = _slugify(fp.recipe.name, 6)
-    base = f"{raw}-{recipe}"
-    sku = base
-    counter = 2
-    while sku in existing:
-        sku = f"{base}{counter}"
-        counter += 1
-    return sku
+from scarves.skus import unique_sku
 
 
 class Command(BaseCommand):
@@ -80,7 +62,7 @@ class Command(BaseCommand):
 
         generated = 0
         for fp in qs:
-            sku = _make_sku(fp, existing_skus)
+            sku = unique_sku(fp, taken=existing_skus)
             fp.sku = sku
             fp.save(update_fields=["sku"])
             existing_skus.add(sku)

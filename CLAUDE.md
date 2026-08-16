@@ -334,12 +334,22 @@ worse than typing 3. It reuses the upload page's `product_search` endpoint via
 `?mode=labels`, which swaps the result template — the search is identical,
 only the click behaviour differs.
 
-**A printed SKU is out in the world and cannot be recalled.** Before labels
-existed, `generate_skus --overwrite` only rewrote a database column. Now the
-old string is also on stickers stuck to scarves and in Square's catalogue,
-neither of which this app can rewrite, and the symptom of breaking it is an
-item scanning to nothing at the till weeks later. So `--overwrite` states how
-many SKUs it will change and asks for confirmation (`--noinput` for scripts).
+**A SKU is write-once.** It has been printed since the reference sheets
+existed, it's now on stickers stuck to scarves, and Square holds it to
+identify a variation — this app can rewrite none of those. So
+`FinishedProduct.save()` only ever *fills a blank* SKU, never changes one, and
+`generate_skus --overwrite` states how many it would change and asks for
+confirmation (`--noinput` for scripts). The symptom of getting it wrong is an
+item scanning to nothing at the till weeks later.
+
+**SKUs are assigned at creation** (`FinishedProduct.save()` → `scarves/skus.py`).
+Generation used to live only in `generate_skus`, so anything made through the
+admin, the bulk matrix or a shell had no barcode until somebody remembered to
+run it — which is how unprintable products accumulated. The command stays, for
+backfill. Fixtures are unaffected: `loaddata` goes through
+`save_base(raw=True)` and never calls `save()`, so a deliberately blank SKU
+stays blank (`FixtureSkuTests`). In tests and data repair, a blank SKU can now
+only be made with a queryset `update()`.
 
 Related ordering, for a fresh sync: **`generate_skus` first, then
 `sync_to_square`.** The sync omits the `sku` key entirely when it's blank, so

@@ -303,6 +303,34 @@ class FinishedProduct(models.Model):
     def __str__(self):
         return self.name
 
+    def save(self, *args, **kwargs):
+        """Fill in a SKU on the way in, if there isn't one.
+
+        Generation used to live only in the `generate_skus` command, so
+        anything created through the admin, the bulk matrix or a shell had no
+        barcode until somebody remembered to run it. A product with no SKU
+        can't be printed on a label or scanned in Square, and nothing said so
+        — it simply wasn't there.
+
+        Only ever fills a blank. A SKU that exists has been printed on
+        reference sheets and stickers and handed to Square, none of which this
+        app can rewrite, so `save()` must never change one.
+
+        Fixtures are unaffected: `loaddata` goes through `save_base(raw=True)`
+        and never calls this, so a deliberately blank SKU in a fixture stays
+        blank. `FixtureSkuTests` pins that.
+        """
+        if not self.sku and self.raw_product_id and self.recipe_id:
+            from .skus import unique_sku
+
+            self.sku = unique_sku(self)
+            # A caller passing update_fields didn't know a SKU was coming, so
+            # add it — otherwise the value is set in memory and silently lost.
+            update_fields = kwargs.get("update_fields")
+            if update_fields is not None and "sku" not in update_fields:
+                kwargs["update_fields"] = list(update_fields) + ["sku"]
+        super().save(*args, **kwargs)
+
     @property
     def shortage(self) -> int:
         """
