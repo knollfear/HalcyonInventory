@@ -331,9 +331,19 @@ not per run, so a short SKU gets fat bars instead of matching the longest one.
 pick" is a type-ahead you add "this SKU, this many" rows to — deliberately not
 tick-to-exclude on the preview table, because unticking 297 rows to keep 3 is
 worse than typing 3. It reuses the upload page's `product_search` endpoint via
-`?mode=labels`, which swaps the result template (the search is identical; only
-the click behaviour differs) and drops products with no SKU, since there's no
-barcode to print for them.
+`?mode=labels`, which swaps the result template — the search is identical,
+only the click behaviour differs.
+
+**Only known SKUs can be printed, and a product with no SKU is shown
+disabled rather than hidden.** There's no free-text barcode entry: an unknown
+code scans fine and then Square finds nothing, which fails at the till with a
+customer waiting and no way to tell a typo from a missing product. The
+legitimate case barely exists here — nothing sells through Square without
+being a `FinishedProduct`, and production is recorded in the app before labels
+are printed — so the escape hatch is "add the product", which has to happen
+anyway. A no-SKU product still appears in the results, greyed out and saying
+`run generate_skus`, because filtering it out silently means someone searches,
+doesn't see it, and never learns why.
 
 **Extras don't apply to a hand-picked run.** The bulk datasets add spares
 because their counts are derived and slack is cheap; here somebody typed the

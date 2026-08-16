@@ -4692,13 +4692,22 @@ class LabelItemSearchTests(TestCase):
             )
             self.assertContains(response, "SILKSC-STORMY")
 
-    def test_products_without_a_sku_are_not_offered(self):
-        """There's no barcode to print, so offering it would only make a row
-        that silently drops out later."""
+    def test_products_without_a_sku_are_shown_but_unpickable(self):
+        """Filtering them out silently means someone searches, doesn't see
+        their product, and has no idea why. Shown and disabled says both that
+        it exists and what to do about it."""
         response = self.client.get(
             reverse("product_search"), {"q": "Stormy", "mode": "labels"}
         )
-        self.assertNotContains(response, "Stormy Unlabelled")
+        self.assertContains(response, "Stormy Unlabelled")
+        self.assertContains(response, "run generate_skus")
+
+        html = response.content.decode()
+        block = re.search(r"<button[^>]*>\s*Stormy Unlabelled.*?</button>", html, re.S)
+        self.assertIsNotNone(block)
+        self.assertIn("disabled", block.group(0))
+        self.assertNotIn("data-pk", block.group(0),
+                         "a disabled result must carry nothing the adder can use")
 
     def test_the_upload_picker_still_offers_them(self):
         """That flow assigns a photo and doesn't care about barcodes."""

@@ -7,13 +7,25 @@ form submits. The data attributes are what the page's add-handler reads, so a
 result carries everything a row needs without a second round trip.
 {% endcomment %}
 {% for p in products %}
-    <button type="button"
-            class="result"
-            data-pk="{{ p.id }}"
-            data-sku="{{ p.sku }}"
-            data-name="{{ p.name }}">
-        {{ p.name }} <span class="muted">{{ p.sku }}</span>
-    </button>
+    {% if p.sku %}
+        <button type="button"
+                class="result"
+                data-pk="{{ p.id }}"
+                data-sku="{{ p.sku }}"
+                data-name="{{ p.name }}">
+            {{ p.name }} <span class="muted">{{ p.sku }}</span>
+        </button>
+    {% else %}
+        {% comment %}
+        Shown rather than filtered out. Dropping it silently means someone
+        searches, doesn't see their product, and has no idea why — the fix
+        they need is one command away but nothing tells them that.
+        {% endcomment %}
+        <button type="button" class="result" disabled
+                title="This product has no SKU, so there is no barcode to print.">
+            {{ p.name }} <span class="muted">no SKU — run generate_skus</span>
+        </button>
+    {% endif %}
 {% empty %}
-    <div class="muted">No matching products with a SKU.</div>
+    <div class="muted">No matching products.</div>
 {% endfor %}

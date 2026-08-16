@@ -2243,12 +2243,7 @@ def product_search(request):
         products = FinishedProduct.objects.filter(
             Q(name__icontains=q) | Q(sku__icontains=q),
             is_active=True,
-        ).order_by("name")
-        # A product with no SKU has no barcode to print, so offering it on the
-        # label page would only produce a row that silently drops out later.
-        if for_labels:
-            products = products.exclude(sku="")
-        products = products[:10]
+        ).order_by("name")[:10]
 
     # Same search, two click behaviours: the upload page assigns the product
     # to an upload, the label page adds it to a list. Only the template

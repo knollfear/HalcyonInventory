@@ -84,7 +84,8 @@ labels get used, and what the marker sticker will say.
       padding: 6px 9px; border: 1px solid #e1e5ea; border-radius: 6px;
       background: #fff;
   }
-  .result:hover { border-color: var(--accent); background: #f4f8fd; }
+  .result:hover:not(:disabled) { border-color: var(--accent); background: #f4f8fd; }
+  .result:disabled { cursor: not-allowed; background: #f7f8fa; color: #8b929b; }
   .result .muted, .results .muted { color: #8b929b; font-size: 12px; }
   .results .muted { padding: 4px 2px; }
   table.picked { margin-top: 12px; }
