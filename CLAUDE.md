@@ -362,6 +362,18 @@ line it has already logged for that order. Square sends `order.updated` more
 than once and `COMPLETED` is not a one-shot state, so a redelivery used to
 decrement the same sale again.
 
+**The queue is pull-only on purpose — don't add a notification.** It is
+reconciliation on a weekly rhythm, not an incident: the count is already
+wrong, and it stays wrong at exactly the same rate whether the row is seen in
+ten minutes or on Monday. Nothing downstream is waiting on it. So a push would
+buy nothing and cost something real — it interrupts a weekend, it implies an
+urgency the work doesn't have, and an alert that turns out not to matter is
+how someone learns to ignore the next one that does.
+
+What makes pull-only safe is that the queue can't quietly empty itself.
+Every unplaceable line lands in it, dismissal keeps it readable, and it is
+still there on Monday. That is the whole of the guarantee, and it is enough.
+
 ## The PIN is remembered, and remembering is not authorising
 
 Both `secret/` pages open with "choose your name" and "type your PIN". That is
