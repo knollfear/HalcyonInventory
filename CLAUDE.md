@@ -362,17 +362,22 @@ line it has already logged for that order. Square sends `order.updated` more
 than once and `COMPLETED` is not a one-shot state, so a redelivery used to
 decrement the same sale again.
 
-**The queue is pull-only on purpose — don't add a notification.** It is
-reconciliation on a weekly rhythm, not an incident: the count is already
-wrong, and it stays wrong at exactly the same rate whether the row is seen in
-ten minutes or on Monday. Nothing downstream is waiting on it. So a push would
-buy nothing and cost something real — it interrupts a weekend, it implies an
-urgency the work doesn't have, and an alert that turns out not to matter is
-how someone learns to ignore the next one that does.
+**The queue is set to no notification.** Jiminy offers three settings per
+thing — none, a digest, or told when it happens — and this one is none. That
+is a choice, not a limitation: the queue is reconciliation on a weekly
+rhythm, so the count is already wrong by the time a row lands and stays wrong
+at exactly the same rate whether it's seen in ten minutes or on Monday.
+Nothing downstream is waiting on it. Told-when-it-happens would buy nothing
+and cost something real — an alert that turns out not to matter is how
+someone learns to ignore the next one that does.
 
-What makes pull-only safe is that the queue can't quietly empty itself.
-Every unplaceable line lands in it, dismissal keeps it readable, and it is
-still there on Monday. That is the whole of the guarantee, and it is enough.
+Which setting fits follows from the rhythm of the work, so ask that question
+per thing rather than assuming this answer generalises. A label run waiting
+on a print shop is time-bound and would want telling; this isn't.
+
+What makes none safe here is that the queue can't quietly empty itself. Every
+unplaceable line lands in it, dismissal keeps it readable, and it is still
+there on Monday. That is the whole of the guarantee, and it is enough.
 
 ## The PIN is remembered, and remembering is not authorising
 
