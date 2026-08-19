@@ -1,0 +1,177 @@
+{% extends "scarves/base_public.html" %}
+{% comment %}
+Send a photo in from the booth. Public shell because there is no login, off
+the public map because it isn't for customers — same shape as the hours form,
+and filled in on the same phone in the same field.
+
+Two reasons on one page. The radio shows the half that applies; both halves
+submit, and the view stores only the one that matches the reason, so nothing
+can leave a sharing permission attached to a sale report.
+{% endcomment %}
+
+{% block title %}Send a Photo{% endblock %}
+{% block heading %}Send a photo{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 460px; }
+
+  .field { margin-bottom: 18px; }
+  .field > label {
+      display: block; font-weight: 600; font-size: .95rem; margin-bottom: 6px;
+  }
+  .field select, .field input[type="text"], .field input[type="file"],
+  .field input[type="datetime-local"], .field textarea {
+      font: inherit; font-size: 16px; width: 100%;
+      padding: 12px; border: 1px solid #c8cfd8; border-radius: 8px;
+      background: #fff; color: var(--ink);
+  }
+  .field .helptext { display: block; font-size: .8rem; color: #667; margin-top: 4px; }
+  .field .errorlist {
+      margin: 6px 0 0; padding-left: 1.1rem; font-size: .85rem; color: #8a2f2a;
+  }
+
+  /* Tick rows are labels wrapping their own control, so the whole line is a
+     tap target — these get used with one thumb, standing up. */
+  .tick { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 12px; }
+  .tick input { width: 22px; height: 22px; margin: 0; flex: none; }
+  .tick span { font-size: .95rem; line-height: 1.35; }
+
+  .reasons { display: grid; gap: 10px; margin-bottom: 20px; }
+  .reasons label {
+      display: flex; gap: 10px; align-items: center;
+      border: 1px solid #c8cfd8; border-radius: 10px; padding: 14px;
+      background: #fff; font-weight: 600;
+  }
+  .reasons input { width: 22px; height: 22px; }
+  /* No JS: both halves are always on the page. The heading says which one the
+     reason above applies to, which is enough on a form this short. */
+  .half { border-top: 1px solid #e2e6ea; padding-top: 16px; margin-top: 4px; }
+  .half h2 { font-size: 1rem; margin: 0 0 4px; }
+  .half p.lead-in { font-size: .85rem; color: #667; margin: 0 0 14px; line-height: 1.5; }
+
+  .btn {
+      width: 100%; padding: 14px; font: inherit; font-size: 1rem;
+      font-weight: 600; border: 1px solid var(--accent);
+      background: var(--accent); color: #fff; border-radius: 8px; cursor: pointer;
+  }
+  .btn:hover { background: var(--accent-dark); border-color: var(--accent-dark); }
+
+  .panel {
+      border: 1px solid #e2e6ea; border-radius: 10px;
+      padding: 16px; margin-bottom: 22px; background: #f8fafc;
+  }
+  .panel.good { background: #f1f8f3; border-color: #bcd8c6; }
+  .panel.stop { background: #fdf2f1; border-color: #f0c8c4; }
+  .panel h2 { margin: 0 0 8px; font-size: 1rem; }
+  .panel p { margin: 0 0 8px; font-size: .9rem; line-height: 1.5; }
+  .panel p:last-child { margin-bottom: 0; }
+  .panel img { max-width: 100%; border-radius: 8px; margin-top: 8px; }
+{% endblock %}
+
+{% block content %}
+  {% if locked %}
+    <div class="panel stop">
+      <h2>Too many tries</h2>
+      <p>Close this page and open it again, or ask whoever runs the stall.</p>
+    </div>
+  {% endif %}
+
+  {% if saved %}
+    <div class="panel good">
+      <h2>Sent — thank you</h2>
+      {% if saved.reason == "unidentified" %}
+        <p>
+          Logged as an unidentified sale at
+          {{ saved.when|date:"H:i" }} on {{ saved.when|date:"d M Y" }}{% if saved.sku_prefix %},
+          barcode starting <strong>{{ saved.sku_prefix }}</strong>{% endif %}.
+          It'll be matched against the till later.
+        </p>
+      {% else %}
+        <p>
+          {% if saved.shareable %}
+            Cleared to post{% if saved.share_website %} on the website{% endif %}{% if saved.share_website and saved.share_instagram %} and{% endif %}{% if saved.share_instagram %} on Instagram{% endif %}.
+          {% else %}
+            Saved. It won't be posted anywhere — nothing was ticked, or the
+            person in it hasn't said yes.
+          {% endif %}
+        </p>
+      {% endif %}
+      {% if saved.image %}<img src="{{ saved.image.url }}" alt="">{% endif %}
+    </div>
+  {% endif %}
+
+  <form method="post" enctype="multipart/form-data" novalidate>
+    {% csrf_token %}
+    {{ form.non_field_errors }}
+
+    <div class="field">
+      <label for="{{ form.employee.id_for_label }}">{{ form.employee.label }}</label>
+      {{ form.employee }}{{ form.employee.errors }}
+    </div>
+
+    <div class="field">
+      <label for="{{ form.pin.id_for_label }}">{{ form.pin.label }}</label>
+      {{ form.pin }}{{ form.pin.errors }}
+    </div>
+
+    <div class="field">
+      <label for="{{ form.photo.id_for_label }}">{{ form.photo.label }}</label>
+      {{ form.photo }}{{ form.photo.errors }}
+    </div>
+
+    <div class="reasons">
+      {% for choice in form.reason %}
+        <label>{{ choice.tag }} <span>{{ choice.choice_label }}</span></label>
+      {% endfor %}
+      {{ form.reason.errors }}
+    </div>
+
+    <div class="half">
+      <h2>If it's something to share</h2>
+      <p class="lead-in">
+        Tick where it's OK to post. Ticking nothing is a fine answer — send it
+        anyway and it just won't be posted.
+      </p>
+
+      <label class="tick">{{ form.share_website }}<span>{{ form.share_website.label }}</span></label>
+      <label class="tick">{{ form.share_instagram }}<span>{{ form.share_instagram.label }}</span></label>
+      <label class="tick">{{ form.people_in_photo }}<span>{{ form.people_in_photo.label }}</span></label>
+      <label class="tick">{{ form.people_agreed }}<span>{{ form.people_agreed.label }}</span></label>
+      {{ form.people_agreed.errors }}
+
+      <div class="field">
+        <label for="{{ form.caption.id_for_label }}">{{ form.caption.label }}</label>
+        {{ form.caption }}
+      </div>
+      <div class="field">
+        <label for="{{ form.tag.id_for_label }}">{{ form.tag.label }}</label>
+        {{ form.tag }}
+      </div>
+    </div>
+
+    <div class="half">
+      <h2>If nobody could identify it</h2>
+      <p class="lead-in">
+        Sell it as a plain item, then send the photo. The first six characters
+        of the barcode are the style — that's enough to work out the rest.
+      </p>
+
+      <div class="field">
+        <label for="{{ form.sold_at.id_for_label }}">{{ form.sold_at.label }}</label>
+        {{ form.sold_at }}{{ form.sold_at.errors }}
+      </div>
+      <div class="field">
+        <label for="{{ form.sku_prefix.id_for_label }}">{{ form.sku_prefix.label }}</label>
+        {{ form.sku_prefix }}
+        <span class="helptext">{{ form.sku_prefix.help_text }}</span>
+      </div>
+      <div class="field">
+        <label for="{{ form.note.id_for_label }}">{{ form.note.label }}</label>
+        {{ form.note }}
+      </div>
+    </div>
+
+    <button class="btn" type="submit">Send it</button>
+  </form>
+{% endblock %}

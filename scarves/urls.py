@@ -141,6 +141,24 @@ urlpatterns = [
     # off the public map, and guarded by a four-digit PIN. The week, which
     # shows what everyone worked, is staff-only.
     path("secret/hours/", views.hours_entry, name="hours_entry"),
+
+    # --- The booth ---
+    # Same bucket and the same reasoning as the hours form: the crew has no
+    # accounts, and a login here would lock out exactly the people it is for
+    # — silently, because the symptom is only that nobody ever reports. The
+    # PIN is what guards it, in the page. The two office pages are private/.
+    path("secret/booth/", views.booth_photo, name="booth_photo"),
+    path("private/booth-photos/", views.booth_photos, name="booth_photos"),
+    path(
+        "private/unidentified-sales/",
+        views.unmatched_sales,
+        name="unmatched_sales",
+    ),
+    path(
+        "private/unidentified-sales/<int:pk>/resolve/",
+        views.resolve_unmatched_sale,
+        name="resolve_unmatched_sale",
+    ),
     path("private/timesheet/", views.timesheet, name="timesheet"),
 
     # --- Public: the directory ---

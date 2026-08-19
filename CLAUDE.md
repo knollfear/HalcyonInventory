@@ -294,6 +294,74 @@ depending on who typed it, with nothing on the page to say so. Until then a
 single unqualified total is the honest output, and the page says "booth
 hours" rather than "hours" so it can't be misread later.
 
+## The booth: photos in, and unidentified sales
+
+`secret/booth/` is one page the crew uses for two things, because there is one
+moment when a phone comes out at a stall and asking someone to pick the right
+page first is how you get no photos at all. The reason picks which half of the
+form is stored — the view keeps only that half, so a report that changed reason
+mid-thought can't leave a sharing permission attached to a sale report.
+
+**No login, a PIN, same as the hours form.** The crew has no accounts, and
+giving them accounts would hand the production pages to seasonal staff. The
+alternative — roles and permissions across ~30 hand-written views — is a real
+project, and the trigger for starting it is staff needing to *see* more than
+one page, not this. Until then the `Employee` PIN does what it does on the
+hours form: it stops the wrong name being tapped, and it is not a secret.
+
+### Sharing permission is two questions, not one
+
+A tick from the sender is the **sender's** permission. It is not the permission
+of whoever is in the photo, and the form refuses a submission that confuses the
+two: someone recognisable, plus a destination ticked, requires "I asked them
+and they said yes". Untick the destinations and the photo still sends — "here,
+your call" is a legitimate answer and must not be blocked.
+
+Website and Instagram are separate ticks on purpose: one is a shop page, the
+other is a feed with an audience and a comment box, and people do say yes to
+one and no to the other. The gallery reads `BoothPhoto.shareable`, never the
+two destination flags, so the awkward case can't be posted by reading the wrong
+checkbox. None of this is legal advice; it is a record of who agreed to what,
+and when, which is the part that is worth anything later.
+
+### An unidentified sale must not vanish
+
+`square_webhook` used to `continue` past any line item it couldn't tie to a
+`FinishedProduct`. That meant a scarf nobody could name was rung up, walked out
+of the tent, and left no trace: Square had the money, this app still had the
+stock, and nothing in either said they disagreed. **The silence was the whole
+failure** — the count was wrong and looked fine.
+
+Now every unplaceable line becomes an `UnmatchedSale`, whatever the reason (no
+`catalog_object_id` at all, an unsynced variation, a custom amount). Erring
+toward capture is cheap: a row that turns out not to be a scarf is dismissed in
+one click, and **dismissal has to exist** — a queue that can only grow stops
+being read.
+
+`private/unidentified-sales/` pairs each open sale with booth photos taken
+within **±15 minutes** — the width of a queue at a busy stall. The reported
+first six characters of the barcode are the *blank*, not the colorway
+(`BLANK-DYEBATH`), which is exactly the narrowing worth having: nobody can read
+a colorway off a scarf they couldn't name, but the style is on the tag and it
+turns a few hundred products into a few dozen. With no prefix reported the page
+offers the whole catalogue rather than pretending to have narrowed it.
+
+**Resolving moves stock, and that is not a violation of "back-dated entries
+never move stock".** That rule exists because a backfilled kanban card records
+a bath that was already counted. This sale was never applied at all — the
+webhook dropped it — so `number_on_hand` has been one too high ever since, and
+applying it late is the entire point. The `InventoryLog` row is dated at
+Square's sale time rather than the moment someone got round to the queue.
+
+Filing the photo against the product is **opt-in** on the same form: a stall
+snap in bad light isn't always what the catalogue should show, but when it is,
+the scarf nobody could name becomes identifiable next time.
+
+Related, and fixed while the loop was being closed: the webhook now skips a
+line it has already logged for that order. Square sends `order.updated` more
+than once and `COMPLETED` is not a one-shot state, so a redelivery used to
+decrement the same sale again.
+
 ## Templates: three layers, and the `block.super` trap
 
 Every page template inherits from a shared skeleton. Nothing extends

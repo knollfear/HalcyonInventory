@@ -811,3 +811,217 @@ class LabelStock(models.Model):
                 f"{over_y:.4f}in off the bottom of a "
                 f"{self.page_height_in}in sheet."
             )
+
+
+class BoothPhoto(models.Model):
+    """A photo sent in from the booth, and the reason it was sent.
+
+    Two reasons, one form, because there is one moment when a phone comes out
+    at a stall and asking someone to pick the right page first is how you get
+    no photos at all:
+
+    * **share** — something worth putting on the website or Instagram.
+    * **unidentified** — a scarf nobody could name, sold anyway. The photo,
+      the time, and the first six characters of the barcode are what let the
+      sale be reconstructed later; see `UnmatchedSale`.
+
+    Identified by `Employee` and a PIN rather than a login, for the same
+    reason the hours form is: a seasonal crew would need an account each, and
+    the page would then be behind exactly the door the people it was built for
+    can't open. Attribution still matters here — a sharing permission nobody
+    can attribute is not a permission — so the employee is required, not
+    optional.
+    """
+
+    REASON_SHARE = "share"
+    REASON_UNIDENTIFIED = "unidentified"
+    REASON_CHOICES = [
+        (REASON_SHARE, "Something to share"),
+        (REASON_UNIDENTIFIED, "A scarf nobody could identify"),
+    ]
+
+    image = models.ImageField(
+        upload_to="booth/",
+        help_text="The photo as sent, downscaled on the way in.",
+    )
+    employee = models.ForeignKey(
+        Employee,
+        on_delete=models.PROTECT,
+        related_name="booth_photos",
+        help_text="Who sent it. PROTECT because a permission with nobody "
+                  "attached to it can't be relied on later.",
+    )
+    reason = models.CharField(max_length=20, choices=REASON_CHOICES)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    # --- reason: share -----------------------------------------------------
+    # Two destinations, two ticks. Permission for the website is not
+    # permission for Instagram: one is a shop page, the other is a feed with
+    # an audience and a comment box, and people do say yes to one and no to
+    # the other.
+    share_website = models.BooleanField(default=False)
+    share_instagram = models.BooleanField(default=False)
+    people_in_photo = models.BooleanField(
+        default=False,
+        help_text="Someone recognisable is in the shot.",
+    )
+    people_agreed = models.BooleanField(
+        default=False,
+        help_text=(
+            "They were asked and said yes. Separate from the ticks above "
+            "because those record the *sender's* permission, and the sender "
+            "cannot give permission on behalf of the person in the picture."
+        ),
+    )
+    caption = models.TextField(blank=True)
+    tag = models.CharField(
+        max_length=200,
+        blank=True,
+        help_text="Anyone to tag, as the sender wrote it.",
+    )
+
+    # --- reason: unidentified sale ----------------------------------------
+    sold_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the scarf sold, as reported. Defaults to the moment "
+                  "the photo was sent, which is usually within a minute of it.",
+    )
+    sku_prefix = models.CharField(
+        max_length=6,
+        blank=True,
+        help_text=(
+            "First six characters of the barcode — the blank, not the "
+            "colorway (SKUs are BLANK-DYEBATH). Nobody can read a colorway "
+            "off a scarf they couldn't name, but the style is on the tag and "
+            "it narrows a few hundred products to a few dozen."
+        ),
+    )
+    note = models.CharField(max_length=200, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.get_reason_display()} from {self.employee.name}"
+
+    @property
+    def when(self):
+        """The moment this is about: the sale if one was reported, else the
+        moment the photo arrived."""
+        return self.sold_at or self.created_at
+
+    @property
+    def shareable(self) -> bool:
+        """Whether this may actually be posted anywhere.
+
+        A tick for a destination is not enough on its own: if there is a
+        recognisable person in the shot, they have to have agreed too. The
+        gallery leans on this rather than on the two destination flags, so
+        the awkward case can't be posted by reading the wrong checkbox.
+        """
+        if not (self.share_website or self.share_instagram):
+            return False
+        return self.people_agreed if self.people_in_photo else True
+
+    def candidate_products(self):
+        """Products whose SKU starts with the reported prefix.
+
+        Empty prefix means every active product — the reviewer picks by hand,
+        which is the honest answer rather than pretending to have narrowed it.
+        """
+        products = FinishedProduct.objects.filter(is_active=True)
+        if self.sku_prefix:
+            products = products.filter(sku__istartswith=self.sku_prefix)
+        return products.select_related("raw_product", "recipe").order_by("name")
+
+
+class UnmatchedSale(models.Model):
+    """A Square line item this app could not tie to a FinishedProduct.
+
+    Before this existed the webhook simply skipped those lines, so a scarf
+    nobody could name was rung up, walked out of the tent, and left no trace
+    anywhere: Square had the money, this app still had the stock, and nothing
+    in either said they disagreed. Silence was the whole failure — the count
+    was wrong and looked fine.
+
+    A row lands here whenever the line item has no `catalog_object_id`, or has
+    one this app doesn't know, whatever the reason (rung up as a generic
+    item, sold as a custom amount, or a variation that was never synced).
+    Getting it wrong in the cautious direction is cheap: a row that turns out
+    not to be a scarf is dismissed in one click.
+
+    Every row ends in exactly one of two states, and both of them are actions
+    a person took:
+
+    * **resolved** — matched to a product, so the stock moves and an
+      `InventoryLog` SALE row is written, marked as a manual match.
+    * **dismissed** — it was never a scarf (a tip, a bag, a hat), and it says
+      so. Without this the queue could only grow, and a queue that can't be
+      emptied stops being read.
+    """
+
+    order_id = models.CharField(max_length=100, db_index=True)
+    line_uid = models.CharField(
+        max_length=100,
+        help_text="Square's per-line identifier within the order.",
+    )
+    name = models.CharField(max_length=255, blank=True)
+    variation_name = models.CharField(max_length=255, blank=True)
+    square_variation_id = models.CharField(
+        max_length=100,
+        blank=True,
+        help_text="Blank when the line had no catalog object at all — a "
+                  "custom amount rather than an item.",
+    )
+    quantity = models.PositiveIntegerField(default=1)
+    amount_cents = models.IntegerField(
+        default=0,
+        help_text="What it sold for, in cents. Kept because price is often "
+                  "the strongest hint about which style it was.",
+    )
+    sold_at = models.DateTimeField(
+        help_text="Square's time for the order, not the time we heard about it.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    resolved_product = models.ForeignKey(
+        FinishedProduct,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="manual_matches",
+    )
+    resolved_photo = models.ForeignKey(
+        BoothPhoto,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="matched_sales",
+    )
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    dismissed_at = models.DateTimeField(null=True, blank=True)
+    dismissed_reason = models.CharField(max_length=200, blank=True)
+
+    class Meta:
+        ordering = ["-sold_at"]
+        constraints = [
+            # Square sends order.updated more than once for the same order, so
+            # without this the queue fills with copies of one sale and the
+            # reviewer resolves the same scarf out of stock repeatedly.
+            models.UniqueConstraint(
+                fields=["order_id", "line_uid"],
+                name="one_unmatched_row_per_order_line",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.name or 'unnamed line'} × {self.quantity} on {self.sold_at:%d %b %Y}"
+
+    @property
+    def is_open(self) -> bool:
+        return self.resolved_at is None and self.dismissed_at is None
+
+    @property
+    def amount(self) -> Decimal:
+        return Decimal(self.amount_cents) / 100

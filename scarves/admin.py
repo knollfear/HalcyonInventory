@@ -10,10 +10,12 @@ from django.template.response import TemplateResponse
 logger = logging.getLogger(__name__)
 
 from .models import (
+    BoothPhoto,
     DyeBrand,
     Dye,
     Employee,
     LabelStock,
+    UnmatchedSale,
     RawProductCategory,
     RawProduct,
     Recipe,
@@ -466,3 +468,29 @@ class LabelStockAdmin(admin.ModelAdmin):
     @admin.display(description="Grid")
     def grid(self, obj):
         return f"{obj.columns} × {obj.rows}"
+
+
+@admin.register(BoothPhoto)
+class BoothPhotoAdmin(admin.ModelAdmin):
+    """Read-mostly. The permissions on a row were given by a person at a
+    moment; editing them here would rewrite what someone agreed to, so the
+    sharing fields are visible but the sender and the time are not editable."""
+    list_display = ("employee", "reason", "created_at", "shareable", "sku_prefix")
+    list_filter = ("reason", "share_website", "share_instagram", "people_in_photo")
+    search_fields = ("employee__name", "caption", "tag", "sku_prefix", "note")
+    readonly_fields = ("created_at", "shareable")
+
+    @admin.display(boolean=True, description="OK to post")
+    def shareable(self, obj):
+        return obj.shareable
+
+
+@admin.register(UnmatchedSale)
+class UnmatchedSaleAdmin(admin.ModelAdmin):
+    """The queue, for looking at rather than working — resolving belongs on
+    the review page, which moves stock and writes the log row too. Resolving
+    one here would mark it done and leave the count untouched."""
+    list_display = ("name", "quantity", "sold_at", "resolved_at", "dismissed_at")
+    list_filter = ("resolved_at", "dismissed_at")
+    search_fields = ("name", "variation_name", "order_id")
+    readonly_fields = ("order_id", "line_uid", "sold_at", "created_at")

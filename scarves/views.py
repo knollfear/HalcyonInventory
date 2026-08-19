@@ -25,6 +25,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST, require_http_methods
 
 from .models import (
+    BoothPhoto,
     FinishedProduct,
     FinishedProductImage,
     InventoryLog,
@@ -33,6 +34,7 @@ from .models import (
     RawProductCategory,
     RecipeDye,
     TimeEntry,
+    UnmatchedSale,
 )
 
 from django.contrib import messages
@@ -41,7 +43,13 @@ from django.template.response import TemplateResponse
 
 from . import colorbands, labels, timesheets
 from .colorutils import nearest_by_color, pick_color_cluster
-from .forms import HoursForm, LabelRunForm, QuickRecipeRowForm, RecipeDyesForm
+from .forms import (
+    BoothPhotoForm,
+    HoursForm,
+    LabelRunForm,
+    QuickRecipeRowForm,
+    RecipeDyesForm,
+)
 from .models import Dye, Recipe
 from .s3utils import download_object, presigned_post, upload_object
 from django.db.models import Prefetch
@@ -1639,17 +1647,56 @@ def square_webhook(request):
     if result.is_error():
         return HttpResponse(status=500)
 
-    line_items = result.body.get("order", {}).get("line_items", [])
+    order = result.body.get("order", {})
+    line_items = order.get("line_items", [])
+    sold_at = _order_sold_at(order)
 
     with transaction.atomic():
         for item in line_items:
             variation_id = item.get("catalog_object_id")
             qty = int(item.get("quantity", "0"))
-            if not variation_id or qty == 0:
+            if qty == 0:
                 continue
-            try:
-                fp = FinishedProduct.objects.get(square_variation_id=variation_id, is_active=True)
-            except FinishedProduct.DoesNotExist:
+
+            fp = None
+            if variation_id:
+                fp = FinishedProduct.objects.filter(
+                    square_variation_id=variation_id, is_active=True
+                ).first()
+
+            if fp is None:
+                # Not a product this app knows: rung up as a generic item, sold
+                # as a custom amount, or a variation that was never synced.
+                # This used to `continue`, which meant a scarf nobody could
+                # name left the tent and nothing anywhere recorded it — Square
+                # had the money, this app still had the stock, and neither said
+                # they disagreed. Now it goes in a queue a person empties.
+                UnmatchedSale.objects.get_or_create(
+                    order_id=order_id,
+                    line_uid=item.get("uid") or "",
+                    defaults={
+                        "name": item.get("name") or "",
+                        "variation_name": item.get("variation_name") or "",
+                        "square_variation_id": variation_id or "",
+                        "quantity": qty,
+                        "amount_cents": (
+                            item.get("total_money", {}).get("amount") or 0
+                        ),
+                        "sold_at": sold_at,
+                    },
+                )
+                continue
+
+            # Square sends order.updated more than once for an order, and
+            # COMPLETED is not a one-shot state — so without this a re-delivery
+            # decrements the same sale again. One line item is one row: a
+            # genuine second sale of the same product arrives on its own order.
+            already = InventoryLog.objects.filter(
+                finished_product=fp,
+                sale_reference=order_id,
+                log_type=InventoryLog.SALE,
+            ).exists()
+            if already:
                 continue
 
             fp.number_on_hand = max(fp.number_on_hand - qty, 0)
@@ -1657,6 +1704,7 @@ def square_webhook(request):
 
             InventoryLog.objects.create(
                 finished_product=fp,
+                raw_product=fp.raw_product,
                 log_type=InventoryLog.SALE,
                 quantity=-qty,
                 sale_reference=order_id,
@@ -1664,6 +1712,25 @@ def square_webhook(request):
             )
 
     return HttpResponse(status=200)
+
+
+def _order_sold_at(order):
+    """When Square says the order happened, not when we heard about it.
+
+    The reconciliation screen pairs a sale with a photo taken within fifteen
+    minutes of it, so this timestamp is the join key — using receipt time
+    instead would drift by however long the webhook took to arrive, or by a
+    whole redelivery.
+    """
+    for field in ("closed_at", "created_at"):
+        raw = order.get(field)
+        if not raw:
+            continue
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+    return timezone.now()
 
 
 @page_meta(
@@ -3157,3 +3224,344 @@ def label_calibration_pdf(request):
     response = HttpResponse(labels.render_calibration(stock), content_type="application/pdf")
     response["Content-Disposition"] = 'inline; filename="label-calibration.pdf"'
     return response
+
+
+# ---------------------------------------------------------------------------
+# The booth: photos in, and unidentified sales reconciled.
+#
+# One page for the crew (`secret/booth/`, PIN — no accounts, same reasoning as
+# the hours form) and two for the office: a gallery of what may be posted, and
+# the queue of sales Square took that this app couldn't tie to a product.
+#
+# The two halves share a page because they share a moment: a phone comes out
+# at a stall, once, and asking someone to pick the right page first is how you
+# get no photos at all.
+# ---------------------------------------------------------------------------
+
+#: How far apart a photo and a sale can be and still be the same scarf. Fifteen
+#: minutes is the width of a queue at a busy stall: long enough that the report
+#: can wait until the customer has walked away, short enough that two sales of
+#: the same style rarely both land inside it.
+UNMATCHED_WINDOW = timedelta(minutes=15)
+
+#: Same PIN as the hours form, so the same limit — but its own counter, since
+#: locking one page has no business locking the other.
+BOOTH_PIN_ATTEMPT_LIMIT = HOURS_PIN_ATTEMPT_LIMIT
+
+
+def _booth_photo_file(upload):
+    """The uploaded photo, downscaled, ready to hand to an ImageField.
+
+    Straight through the app rather than the presigned-POST dance the product
+    upload page uses: this is one photo taken on a phone with one bar of
+    signal, and a page that needs JavaScript to work is a page that sometimes
+    doesn't. The shrink is the same one, so a 5MB phone JPEG doesn't reach the
+    bucket either way.
+    """
+    data = upload.read()
+    content_type = (getattr(upload, "content_type", "") or "image/jpeg").lower()
+    try:
+        shrunk = _shrink_image(data)
+    except Exception:
+        shrunk = None          # unreadable by PIL: keep what was sent
+    if shrunk:
+        data, content_type = shrunk
+    ext = _CONTENT_TYPE_EXT.get(content_type, ".jpg")
+    return ContentFile(data, name=f"{uuid.uuid4().hex}{ext}")
+
+
+@page_meta(
+    title="Send a Photo",
+    description="Send a photo in from the booth — something worth sharing, or "
+                "a scarf nobody could identify that sold anyway. Name and PIN, "
+                "no account needed.",
+    category="Booth",
+    note="Unlisted: hand out the URL, don't advertise it.",
+)
+def booth_photo(request):
+    """The crew's page. No login — a PIN, exactly like the hours form.
+
+    Post/redirect/get with the receipt in the session, so a refresh at the
+    stall can't send the same photo twice and a shared phone doesn't leave
+    somebody's name in the address bar.
+    """
+    now = timezone.localtime()
+
+    saved_pk = request.session.pop("booth_photo_saved", None)
+    saved = BoothPhoto.objects.filter(pk=saved_pk).select_related("employee").first() if saved_pk else None
+
+    if request.method == "POST":
+        attempts = request.session.get("booth_pin_attempts", 0)
+        if attempts >= BOOTH_PIN_ATTEMPT_LIMIT:
+            return render(request, "scarves/booth_photo.html", {
+                "form": BoothPhotoForm(now=now),
+                "locked": True,
+                "now": now,
+            })
+
+        form = BoothPhotoForm(request.POST, request.FILES, now=now)
+        if form.is_valid():
+            request.session["booth_pin_attempts"] = 0
+            data = form.cleaned_data
+            share = data["reason"] == BoothPhoto.REASON_SHARE
+
+            # Only the half that applies is stored. Both halves are always
+            # submitted, so a report that changed reason mid-thought would
+            # otherwise leave a sharing permission attached to a sale report
+            # nobody ever meant to publish.
+            photo = BoothPhoto(
+                employee=data["employee"],
+                reason=data["reason"],
+                share_website=share and data["share_website"],
+                share_instagram=share and data["share_instagram"],
+                people_in_photo=share and data["people_in_photo"],
+                people_agreed=share and data["people_agreed"],
+                caption=data["caption"] if share else "",
+                tag=data["tag"] if share else "",
+                sold_at=None if share else data["sold_at"],
+                sku_prefix="" if share else data["sku_prefix"],
+                note="" if share else data["note"],
+            )
+            # Built once: the uploaded file is a stream, and reading it a
+            # second time yields nothing.
+            stored = _booth_photo_file(data["photo"])
+            photo.image.save(stored.name, stored, save=False)
+            photo.save()
+            request.session["booth_photo_saved"] = photo.pk
+            return redirect("booth_photo")
+
+        if form.has_error("pin"):
+            request.session["booth_pin_attempts"] = attempts + 1
+    else:
+        form = BoothPhotoForm(now=now, initial={
+            "reason": BoothPhoto.REASON_SHARE,
+            "sold_at": now.strftime("%Y-%m-%dT%H:%M"),
+        })
+
+    return render(request, "scarves/booth_photo.html", {
+        "form": form,
+        "saved": saved,
+        "now": now,
+    })
+
+
+@page_meta(
+    title="Booth Photos",
+    description="Photos the crew sent in to share, with what each one is "
+                "cleared for — website, Instagram, or nothing yet.",
+    category="Products",
+)
+@login_required
+def booth_photos(request):
+    """The gallery. Reads `shareable`, not the two destination ticks.
+
+    A photo with a recognisable person in it and no answer from them is not
+    postable however many boxes the sender ticked, and the badge on the card
+    has to say that or the page is worse than no page.
+    """
+    photos = (
+        BoothPhoto.objects.filter(reason=BoothPhoto.REASON_SHARE)
+        .select_related("employee")
+    )
+    return render(request, "scarves/booth_photos.html", {"photos": photos})
+
+
+def _open_sales_on(day):
+    """Unresolved, undismissed sales that Square timestamped on `day` (local)."""
+    start = timezone.make_aware(datetime.combine(day, time.min))
+    return (
+        UnmatchedSale.objects.filter(
+            resolved_at__isnull=True,
+            dismissed_at__isnull=True,
+            sold_at__gte=start,
+            sold_at__lt=start + timedelta(days=1),
+        )
+        .order_by("sold_at")
+    )
+
+
+def _unused_reports():
+    """Unidentified-sale photos not yet spoken for by a resolved sale."""
+    return (
+        BoothPhoto.objects.filter(
+            reason=BoothPhoto.REASON_UNIDENTIFIED,
+            matched_sales__isnull=True,
+        )
+        .select_related("employee")
+        .order_by("sold_at")
+    )
+
+
+def _review_day(request):
+    """The day being reviewed: the query string, else the oldest open sale,
+    else today.
+
+    Oldest rather than newest on purpose — the queue is a to-do list, and the
+    row most likely to be forgotten is the one furthest back."""
+    raw = request.GET.get("day")
+    if raw:
+        try:
+            return date.fromisoformat(raw)
+        except ValueError:
+            pass
+    oldest = (
+        UnmatchedSale.objects.filter(
+            resolved_at__isnull=True, dismissed_at__isnull=True
+        )
+        .order_by("sold_at")
+        .first()
+    )
+    return timezone.localtime(oldest.sold_at).date() if oldest else timezone.localdate()
+
+
+def _resolution_options(reports):
+    """Products a sale could plausibly be, given the photos near it.
+
+    The reported prefix is the blank, not the colorway — six characters off a
+    tag that says `INFI-AEGEAN`. That is exactly the narrowing worth having:
+    nobody can read a colorway off a scarf they couldn't name, but the style
+    turns a few hundred products into a few dozen. With no prefix reported the
+    honest answer is the whole active catalogue rather than a guess.
+    """
+    prefixes = {r.sku_prefix for r in reports if r.sku_prefix}
+    products = FinishedProduct.objects.filter(is_active=True)
+    if prefixes:
+        narrowed = Q()
+        for prefix in prefixes:
+            narrowed |= Q(sku__istartswith=prefix)
+        products = products.filter(narrowed)
+    return list(
+        products.select_related("raw_product", "recipe").order_by("name")
+    ), bool(prefixes)
+
+
+@page_meta(
+    title="Unidentified Sales",
+    description="Square sold something this app couldn't tie to a product. "
+                "Match each one against the photos the booth sent in — paired "
+                "by time — so the stock leaves inventory like any other sale.",
+    category="Inventory",
+    note="Add ?day=YYYY-MM-DD to review another day.",
+)
+@login_required
+def unmatched_sales(request):
+    day = _review_day(request)
+    sales = list(_open_sales_on(day))
+    reports = list(_unused_reports())
+
+    rows = []
+    paired = set()
+    for sale in sales:
+        near = [
+            report for report in reports
+            if abs(report.when - sale.sold_at) <= UNMATCHED_WINDOW
+        ]
+        paired.update(report.pk for report in near)
+        options, narrowed = _resolution_options(near)
+        rows.append({
+            "sale": sale,
+            "reports": near,
+            "options": options,
+            "narrowed": narrowed,
+        })
+
+    # Photos with no sale beside them. Kept on the page rather than filtered
+    # out: a report with nothing to match is the interesting case — either the
+    # sale never reached Square, or it was rung up as a product after all and
+    # the scarf on the photo is still counted as in stock.
+    orphans = [
+        report for report in reports
+        if report.pk not in paired
+        and timezone.localtime(report.when).date() == day
+    ]
+
+    open_total = UnmatchedSale.objects.filter(
+        resolved_at__isnull=True, dismissed_at__isnull=True
+    ).count()
+
+    return render(request, "scarves/unmatched_sales.html", {
+        "day": day,
+        "rows": rows,
+        "orphans": orphans,
+        "open_total": open_total,
+        "window_minutes": int(UNMATCHED_WINDOW.total_seconds() // 60),
+        "prev_day": day - timedelta(days=1),
+        "next_day": day + timedelta(days=1),
+    })
+
+
+@require_POST
+@login_required
+def resolve_unmatched_sale(request, pk):
+    """Match one sale to a product, or say it was never a scarf.
+
+    Resolving moves stock, which looks like a contradiction of the rule that
+    back-dated entries never do — it isn't. That rule exists because a
+    backfilled kanban card records a bath that was already counted, so
+    applying it again would inflate the count. This sale was never applied at
+    all: the webhook dropped it, the scarf left the tent, and `number_on_hand`
+    has been one too high ever since. The whole point is to apply it late.
+    """
+    sale = get_object_or_404(UnmatchedSale, pk=pk)
+    day = (request.POST.get("day") or "").strip()
+    redirect_to = reverse("unmatched_sales") + (f"?day={day}" if day else "")
+
+    if not sale.is_open:
+        messages.info(request, "That sale was already dealt with.")
+        return redirect(redirect_to)
+
+    if request.POST.get("dismiss"):
+        sale.dismissed_at = timezone.now()
+        sale.dismissed_reason = (request.POST.get("dismissed_reason") or "").strip()[:200]
+        sale.save(update_fields=["dismissed_at", "dismissed_reason"])
+        messages.success(request, f"Dismissed “{sale.name or 'that line'}” — not a scarf.")
+        return redirect(redirect_to)
+
+    product = get_object_or_404(FinishedProduct, pk=request.POST.get("product_id"))
+    report = BoothPhoto.objects.filter(pk=request.POST.get("report_id")).first()
+
+    with transaction.atomic():
+        product.number_on_hand = max(product.number_on_hand - sale.quantity, 0)
+        product.save(update_fields=["number_on_hand"])
+
+        log = InventoryLog.objects.create(
+            finished_product=product,
+            raw_product=product.raw_product,
+            log_type=InventoryLog.SALE,
+            quantity=-sale.quantity,
+            sale_reference=sale.order_id,
+            notes=(
+                "Matched by hand from an unidentified sale"
+                + (f", reported by {report.employee.name}" if report else "")
+                + f" (Square line “{sale.name or 'unnamed'}”)."
+            ),
+        )
+        # created_at is auto_now_add, so the sale's own time can only be set
+        # afterwards. It matters: this row is otherwise dated the day someone
+        # got round to the queue, which is not the day the scarf sold.
+        InventoryLog.objects.filter(pk=log.pk).update(created_at=sale.sold_at)
+
+        sale.resolved_product = product
+        sale.resolved_photo = report
+        sale.resolved_at = timezone.now()
+        sale.save(update_fields=["resolved_product", "resolved_photo", "resolved_at"])
+
+        # The photo is a photo of the scarf, taken by someone who couldn't
+        # name it. Filing it against the product is opt-in rather than
+        # automatic — a stall snap in bad light is not always what you want
+        # the catalogue to show — but when it is, next time it's identifiable.
+        if report and request.POST.get("file_photo"):
+            next_order = (product.images.aggregate(Max("order"))["order__max"] or 0) + 1
+            FinishedProductImage.objects.create(
+                finished_product=product,
+                image=report.image.name,
+                order=next_order,
+                alt_text=f"{product.name} (from the booth, {report.when:%d %b %Y})",
+            )
+
+    messages.success(
+        request,
+        f"Matched to {product.name} — {sale.quantity} off the shelf, logged as "
+        f"a sale on {timezone.localtime(sale.sold_at):%d %b %Y, %H:%M}.",
+    )
+    return redirect(redirect_to)

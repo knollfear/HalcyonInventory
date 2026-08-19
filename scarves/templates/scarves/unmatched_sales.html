@@ -1,0 +1,132 @@
+{% extends "scarves/base_internal.html" %}
+
+{% block title %}Unidentified Sales{% endblock %}
+{% block heading %}Unidentified Sales{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 1000px; }
+  .daybar { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin: 16px 0; }
+  .daybar h2 { font-size: 1.05rem; margin: 0; }
+  .row { border: 1px solid #e1e5ea; border-radius: 10px; padding: 16px; background: #fff; margin-bottom: 14px; }
+  .sale { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+  .sale .what { font-size: 16px; font-weight: 600; }
+  .sale .meta { font-size: 13px; color: #667; }
+  .shots { display: flex; gap: 12px; flex-wrap: wrap; margin: 12px 0; }
+  .shot { border: 1px solid #e1e5ea; border-radius: 8px; padding: 8px; width: 190px; }
+  .shot img { display: block; width: 100%; height: 130px; object-fit: cover; border-radius: 6px; background: #f2f4f7; }
+  .shot .meta { font-size: 12px; color: #667; margin-top: 6px; line-height: 1.4; }
+  .shot .prefix { font-family: ui-monospace, Menlo, monospace; font-size: 13px; color: var(--ink); }
+  .pick { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+  .pick select { max-width: 420px; }
+  .dismiss { margin-top: 10px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .dismiss input[type="text"] { width: 240px; }
+  .note { font-size: 13px; color: #667; margin-top: 8px; }
+{% endblock %}
+
+{% block content %}
+  <p class="lead">
+    Square took money for something this app couldn't tie to a product, so the
+    stock never left. Match it and it leaves now — logged at the time of the
+    sale, marked as matched by hand.
+  </p>
+
+  <div class="daybar">
+    <a class="btn-quiet" href="?day={{ prev_day|date:'Y-m-d' }}">← {{ prev_day|date:"d M" }}</a>
+    <h2>{{ day|date:"D d M Y" }}</h2>
+    <a class="btn-quiet" href="?day={{ next_day|date:'Y-m-d' }}">{{ next_day|date:"d M" }} →</a>
+    <span class="stat">{{ open_total }} open in total</span>
+  </div>
+
+  {% for row in rows %}
+    <div class="row">
+      <div class="sale">
+        <span class="what">{{ row.sale.name|default:"(unnamed line)" }}</span>
+        <span class="meta">
+          {{ row.sale.quantity }} × ${{ row.sale.amount }} ·
+          {{ row.sale.sold_at|date:"H:i" }} · order {{ row.sale.order_id|truncatechars:14 }}
+        </span>
+      </div>
+
+      {% if row.reports %}
+        <div class="shots">
+          {% for report in row.reports %}
+            <label class="shot">
+              <input type="radio" form="resolve-{{ row.sale.pk }}" name="report_id"
+                     value="{{ report.pk }}" {% if forloop.first %}checked{% endif %}>
+              {% if report.image %}<img src="{{ report.image.url }}" alt="">{% endif %}
+              <div class="meta">
+                {% if report.sku_prefix %}
+                  <span class="prefix">{{ report.sku_prefix }}-…</span><br>
+                {% endif %}
+                {{ report.when|date:"H:i" }} · {{ report.employee.name }}
+                {% if report.note %}<br>{{ report.note }}{% endif %}
+              </div>
+            </label>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="note">
+          No photo within {{ window_minutes }} minutes of this sale — pick from
+          the whole catalogue, or dismiss it if it was never a scarf.
+        </p>
+      {% endif %}
+
+      <form method="post" id="resolve-{{ row.sale.pk }}"
+            action="{% url 'resolve_unmatched_sale' row.sale.pk %}">
+        {% csrf_token %}
+        <input type="hidden" name="day" value="{{ day|date:'Y-m-d' }}">
+
+        <div class="pick">
+          <select name="product_id">
+            <option value="">— which scarf was it? —</option>
+            {% for product in row.options %}
+              <option value="{{ product.pk }}">{{ product.name }} · {{ product.sku|default:"no SKU" }}</option>
+            {% endfor %}
+          </select>
+          <button class="btn" type="submit">Match it</button>
+          {% if row.narrowed %}
+            <span class="stat">{{ row.options|length }} match{{ row.options|length|pluralize:"es" }} the reported barcode</span>
+          {% else %}
+            <span class="stat">{{ row.options|length }} product{{ row.options|length|pluralize }} — no barcode reported</span>
+          {% endif %}
+        </div>
+
+        {% if row.reports %}
+          <label class="tick note">
+            <input type="checkbox" name="file_photo" value="1">
+            also file this photo against the product, so it's identifiable next time
+          </label>
+        {% endif %}
+
+        <div class="dismiss">
+          <input type="text" name="dismissed_reason" placeholder="not a scarf — what was it?">
+          <button class="btn-quiet" type="submit" name="dismiss" value="1">Dismiss</button>
+        </div>
+      </form>
+    </div>
+  {% empty %}
+    <p class="empty">Nothing unresolved on this day.</p>
+  {% endfor %}
+
+  {% if orphans %}
+    <h2 class="card-title">Photos with no sale beside them</h2>
+    <p class="note">
+      Either the sale never reached Square, or it was rung up as a real product
+      after all — in which case the stock has already moved and there's nothing
+      to do here.
+    </p>
+    <div class="shots">
+      {% for report in orphans %}
+        <div class="shot">
+          {% if report.image %}<img src="{{ report.image.url }}" alt="">{% endif %}
+          <div class="meta">
+            {% if report.sku_prefix %}<span class="prefix">{{ report.sku_prefix }}-…</span><br>{% endif %}
+            {{ report.when|date:"H:i" }} · {{ report.employee.name }}
+            {% if report.note %}<br>{{ report.note }}{% endif %}
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+{% endblock %}

@@ -9,6 +9,10 @@ Two things here are worth more than they look:
   so getting `Access-Control-Allow-Headers` wrong breaks every embed while the
   Django page itself keeps working perfectly.
 """
+import base64
+import hashlib
+import hmac
+import json
 import random
 import re
 import shutil
@@ -18,6 +22,7 @@ from decimal import Decimal
 from io import StringIO
 from unittest import mock
 
+from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.management import call_command
 from django.core.management.base import CommandError
@@ -40,6 +45,7 @@ from .colorutils import (
 from .forms import HoursForm, LabelRunForm, RecipeDyesForm
 from . import labels as labelmod
 from .models import (
+    BoothPhoto,
     Dye,
     DyeBrand,
     Employee,
@@ -53,8 +59,9 @@ from .models import (
     Recipe,
     RecipeDye,
     TimeEntry,
+    UnmatchedSale,
 )
-from .views import HOURS_PIN_ATTEMPT_LIMIT
+from .views import HOURS_PIN_ATTEMPT_LIMIT, IMAGE_MAX_EDGE
 
 
 def make_recipe(name, hexes=("#3355cc",), active=True):
@@ -5798,3 +5805,422 @@ class RowBreakTests(TestCase):
         })
         self.assertEqual(response.context["padding"], 2)
         self.assertContains(response, "skipped so each blank starts its own row")
+
+
+@override_settings(
+    SQUARE_WEBHOOK_SIGNATURE_KEY="test-signature-key",
+    SQUARE_WEBHOOK_URL="https://example.test/scarves/webhooks/square",
+    SQUARE_ACCESS_TOKEN="test-token",
+    SQUARE_ENVIRONMENT="sandbox",
+)
+class SquareWebhookTests(TestCase):
+    """What the webhook does with a line item, in all four shapes.
+
+    The one that matters is the line it *can't* place. That used to be a bare
+    `continue`: a scarf nobody could name was rung up, walked out of the tent,
+    and left no trace — Square had the money, this app still had the stock,
+    and nothing anywhere said the two disagreed.
+    """
+
+    def setUp(self):
+        self.silk, _ = RawProductCategory.objects.get_or_create(name="Silk")
+        raw = RawProduct.objects.create(name="Infinity", category=self.silk, price="5.00")
+        self.product = FinishedProduct.objects.create(
+            name="Aegean Infinity", raw_product=raw, recipe=make_recipe("Aegean Sea"),
+            price="30.00", number_on_hand=4, square_variation_id="VAR-AEGEAN",
+        )
+        self.sold_at = "2026-08-15T18:30:00Z"
+
+    def _post(self, line_items, order_id="ORDER-1", closed_at=None):
+        payload = json.dumps({
+            "type": "order.updated",
+            "data": {"object": {"order_updated": {
+                "state": "COMPLETED", "order_id": order_id,
+            }}},
+        })
+        signature = base64.b64encode(
+            hmac.new(
+                b"test-signature-key",
+                (settings.SQUARE_WEBHOOK_URL + payload).encode("utf-8"),
+                hashlib.sha256,
+            ).digest()
+        ).decode()
+
+        order = {"line_items": line_items, "closed_at": closed_at or self.sold_at}
+        with mock.patch("square.client.Client") as client:
+            client.return_value.orders.retrieve_order.return_value = FakeSquareResult(
+                {"order": order}
+            )
+            return self.client.post(
+                reverse("square_webhook"),
+                data=payload,
+                content_type="application/json",
+                HTTP_X_SQUARE_HMACSHA256_SIGNATURE=signature,
+            )
+
+    def test_a_known_variation_still_leaves_inventory(self):
+        response = self._post([{
+            "uid": "L1", "catalog_object_id": "VAR-AEGEAN", "quantity": "2",
+            "name": "Infinity", "variation_name": "Aegean Sea",
+        }])
+
+        self.assertEqual(response.status_code, 200)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.number_on_hand, 2)
+        self.assertEqual(UnmatchedSale.objects.count(), 0)
+
+    def test_an_unknown_variation_is_queued_instead_of_dropped(self):
+        self._post([{
+            "uid": "L1", "catalog_object_id": "VAR-WHO-KNOWS", "quantity": "1",
+            "name": "Scarf", "variation_name": "Regular",
+            "total_money": {"amount": 3000},
+        }])
+
+        sale = UnmatchedSale.objects.get()
+        self.assertEqual(sale.square_variation_id, "VAR-WHO-KNOWS")
+        self.assertEqual(sale.quantity, 1)
+        self.assertEqual(sale.amount_cents, 3000)
+        self.assertTrue(sale.is_open)
+
+    def test_a_line_with_no_catalog_object_is_queued_too(self):
+        """A custom amount rung up at the till has no catalog object at all."""
+        self._post([{"uid": "L1", "quantity": "1", "name": "Custom Amount",
+                     "total_money": {"amount": 2500}}])
+
+        self.assertEqual(UnmatchedSale.objects.get().name, "Custom Amount")
+
+    def test_the_queued_row_carries_squares_time_not_ours(self):
+        """The review screen pairs on this timestamp — receipt time would drift
+        by however long the webhook took to arrive."""
+        self._post([{"uid": "L1", "quantity": "1", "name": "Scarf"}])
+
+        sale = UnmatchedSale.objects.get()
+        self.assertEqual(sale.sold_at.isoformat(), "2026-08-15T18:30:00+00:00")
+
+    def test_a_redelivered_order_does_not_queue_it_twice(self):
+        """Square sends order.updated more than once for the same order."""
+        line = [{"uid": "L1", "quantity": "1", "name": "Scarf"}]
+        self._post(line)
+        self._post(line)
+
+        self.assertEqual(UnmatchedSale.objects.count(), 1)
+
+    def test_a_redelivered_order_does_not_sell_the_same_scarf_twice(self):
+        line = [{"uid": "L1", "catalog_object_id": "VAR-AEGEAN", "quantity": "1"}]
+        self._post(line)
+        self._post(line)
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.number_on_hand, 3)
+        self.assertEqual(
+            InventoryLog.objects.filter(log_type=InventoryLog.SALE).count(), 1
+        )
+
+
+class BoothPhotoFormTests(TestCase):
+    """The crew's form. PIN, and the one rule worth refusing a photo over."""
+
+    def setUp(self):
+        self.employee = Employee.objects.create(name="Robin", pin="4821")
+
+    def _data(self, **overrides):
+        data = {
+            "employee": self.employee.pk,
+            "pin": "4821",
+            "reason": BoothPhoto.REASON_SHARE,
+        }
+        data.update(overrides)
+        return data
+
+    def _files(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        return {"photo": SimpleUploadedFile(
+            "booth.jpg", make_jpeg((60, 40)), content_type="image/jpeg"
+        )}
+
+    def _form(self, **overrides):
+        from .forms import BoothPhotoForm
+        return BoothPhotoForm(self._data(**overrides), self._files())
+
+    def test_the_wrong_pin_is_rejected(self):
+        form = self._form(pin="0000")
+        self.assertFalse(form.is_valid())
+        self.assertIn("pin", form.errors)
+
+    def test_a_person_in_the_photo_needs_their_own_yes(self):
+        """The sender's tick is the sender's permission. It is not the
+        permission of the person in the picture, and the form won't pretend it
+        is."""
+        form = self._form(share_instagram=True, people_in_photo=True)
+
+        self.assertFalse(form.is_valid())
+        self.assertIn("people_agreed", form.errors)
+
+    def test_a_person_in_the_photo_is_fine_when_nothing_is_ticked(self):
+        """Sending it with no destination is a legitimate answer — 'here, your
+        call' — and must not be blocked."""
+        self.assertTrue(self._form(people_in_photo=True).is_valid())
+
+    def test_the_barcode_prefix_is_trimmed_to_what_it_means(self):
+        form = self._form(
+            reason=BoothPhoto.REASON_UNIDENTIFIED, sku_prefix="infi-aeg"
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["sku_prefix"], "INFIAE"[:6])
+
+    def test_an_unidentified_report_defaults_to_now(self):
+        """Reported straight after the sale is the normal case, and the moment
+        it was sent is what the ±15 minute match looks for."""
+        form = self._form(reason=BoothPhoto.REASON_UNIDENTIFIED)
+
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertIsNotNone(form.cleaned_data["sold_at"])
+
+    def test_a_sale_in_the_future_is_refused(self):
+        future = (timezone.localtime() + timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M")
+        form = self._form(reason=BoothPhoto.REASON_UNIDENTIFIED, sold_at=future)
+
+        self.assertFalse(form.is_valid())
+        self.assertIn("sold_at", form.errors)
+
+
+class BoothPhotoViewTests(TestCase):
+    """The page itself: no login, PIN in the page, and only the half of the
+    form that the reason applies to is kept."""
+
+    def setUp(self):
+        self.employee = Employee.objects.create(name="Robin", pin="4821")
+        self.url = reverse("booth_photo")
+
+    def _send(self, **overrides):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        data = {
+            "employee": self.employee.pk,
+            "pin": "4821",
+            "reason": BoothPhoto.REASON_SHARE,
+            "photo": SimpleUploadedFile(
+                "booth.jpg", make_jpeg((60, 40)), content_type="image/jpeg"
+            ),
+        }
+        data.update(overrides)
+        return self.client.post(self.url, data)
+
+    def test_it_serves_an_anonymous_get(self):
+        """A login here would lock out exactly the people it is for, and the
+        only symptom would be that nobody ever reports."""
+        self.assertEqual(self.client.get(self.url).status_code, 200)
+
+    def test_a_share_photo_is_stored_with_its_permissions(self):
+        self._send(share_website=True, caption="Best hat all weekend", tag="@someone")
+
+        photo = BoothPhoto.objects.get()
+        self.assertTrue(photo.share_website)
+        self.assertFalse(photo.share_instagram)
+        self.assertEqual(photo.caption, "Best hat all weekend")
+        self.assertEqual(photo.employee, self.employee)
+        self.assertTrue(photo.image.name.startswith("booth/"))
+
+    def test_a_sale_report_keeps_no_sharing_permission(self):
+        """Both halves always submit. A report that changed reason mid-thought
+        must not leave a permission to post it behind."""
+        self._send(
+            reason=BoothPhoto.REASON_UNIDENTIFIED,
+            share_instagram=True,
+            caption="ignore me",
+            sku_prefix="INFI",
+        )
+
+        photo = BoothPhoto.objects.get()
+        self.assertFalse(photo.share_instagram)
+        self.assertEqual(photo.caption, "")
+        self.assertEqual(photo.sku_prefix, "INFI")
+
+    def test_the_photo_is_downscaled_on_the_way_in(self):
+        self._send()
+
+        photo = BoothPhoto.objects.get()
+        with photo.image.open("rb") as fh:
+            self.assertLessEqual(max(image_size(fh.read())), IMAGE_MAX_EDGE)
+
+    def test_a_bad_pin_saves_nothing(self):
+        self._send(pin="1111")
+
+        self.assertEqual(BoothPhoto.objects.count(), 0)
+
+
+class ShareableTests(TestCase):
+    """`shareable` is what the gallery reads, so it has to be the whole rule
+    rather than the two destination ticks."""
+
+    def _photo(self, **kwargs):
+        employee = Employee.objects.create(name=f"E{BoothPhoto.objects.count()}", pin="1234")
+        return BoothPhoto(employee=employee, reason=BoothPhoto.REASON_SHARE, **kwargs)
+
+    def test_nothing_ticked_is_not_shareable(self):
+        self.assertFalse(self._photo().shareable)
+
+    def test_a_destination_alone_is_enough_with_nobody_in_shot(self):
+        self.assertTrue(self._photo(share_website=True).shareable)
+
+    def test_a_person_in_shot_without_their_yes_is_not_shareable(self):
+        self.assertFalse(
+            self._photo(share_website=True, people_in_photo=True).shareable
+        )
+
+    def test_a_person_in_shot_who_agreed_is_shareable(self):
+        self.assertTrue(
+            self._photo(
+                share_website=True, people_in_photo=True, people_agreed=True
+            ).shareable
+        )
+
+
+class UnmatchedSaleReviewTests(TestCase):
+    """Pairing sales with photos, and what resolving one actually does."""
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("owner", "o@example.test", "pw")
+        self.client.force_login(self.user)
+        self.employee = Employee.objects.create(name="Robin", pin="4821")
+        self.silk, _ = RawProductCategory.objects.get_or_create(name="Silk")
+        self.raw = RawProduct.objects.create(
+            name="Infinity", category=self.silk, price="5.00"
+        )
+        self.product = FinishedProduct.objects.create(
+            name="Aegean Infinity", raw_product=self.raw,
+            recipe=make_recipe("Aegean Sea"), price="30.00", number_on_hand=4,
+        )
+        self.sold_at = timezone.now() - timedelta(hours=3)
+        self.sale = UnmatchedSale.objects.create(
+            order_id="ORDER-1", line_uid="L1", name="Scarf",
+            quantity=1, amount_cents=3000, sold_at=self.sold_at,
+        )
+        self.url = reverse("unmatched_sales")
+
+    def _report(self, minutes_off=0, prefix="", image=True):
+        photo = BoothPhoto(
+            employee=self.employee,
+            reason=BoothPhoto.REASON_UNIDENTIFIED,
+            sold_at=self.sold_at + timedelta(minutes=minutes_off),
+            sku_prefix=prefix,
+        )
+        if image:
+            photo.image.save("r.jpg", ContentFile(make_jpeg((40, 30))), save=False)
+        photo.save()
+        return photo
+
+    def _day(self):
+        return timezone.localtime(self.sold_at).date().isoformat()
+
+    def _rows(self):
+        return self.client.get(f"{self.url}?day={self._day()}").context["rows"]
+
+    def test_a_photo_within_the_window_is_offered_against_the_sale(self):
+        report = self._report(minutes_off=7)
+
+        self.assertEqual([r.pk for r in self._rows()[0]["reports"]], [report.pk])
+
+    def test_a_photo_well_outside_the_window_is_not(self):
+        self._report(minutes_off=45)
+
+        response = self.client.get(f"{self.url}?day={self._day()}")
+        self.assertEqual(response.context["rows"][0]["reports"], [])
+        # Not dropped either: a report with no sale beside it is the
+        # interesting case, so it stays on the page.
+        self.assertEqual(len(response.context["orphans"]), 1)
+
+    def test_a_reported_barcode_narrows_the_products_offered(self):
+        other = RawProduct.objects.create(name="Sash Belt", category=self.silk, price="5")
+        FinishedProduct.objects.create(
+            name="Aegean Belt", raw_product=other,
+            recipe=Recipe.objects.get(name="Aegean Sea"), price="20.00",
+        )
+        self._report(minutes_off=2, prefix=self.product.sku[:6])
+
+        row = self._rows()[0]
+        self.assertTrue(row["narrowed"])
+        self.assertEqual([p.pk for p in row["options"]], [self.product.pk])
+
+    def test_with_no_barcode_reported_the_whole_catalogue_is_offered(self):
+        self._report(minutes_off=2, prefix="")
+
+        row = self._rows()[0]
+        self.assertFalse(row["narrowed"])
+        self.assertEqual(len(row["options"]), FinishedProduct.objects.count())
+
+    def _resolve(self, **extra):
+        data = {"product_id": self.product.pk, "day": self._day()}
+        data.update(extra)
+        return self.client.post(
+            reverse("resolve_unmatched_sale", args=[self.sale.pk]), data
+        )
+
+    def test_matching_takes_the_scarf_out_of_stock(self):
+        self._resolve()
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.number_on_hand, 3)
+
+    def test_the_log_row_is_dated_when_it_sold_not_when_it_was_matched(self):
+        """Otherwise the sale lands on the day someone got round to the queue,
+        which is a day nothing happened."""
+        self._resolve()
+
+        log = InventoryLog.objects.get(log_type=InventoryLog.SALE)
+        self.assertEqual(log.created_at, self.sold_at)
+        self.assertEqual(log.sale_reference, "ORDER-1")
+        self.assertIn("by hand", log.notes)
+
+    def test_matching_twice_only_sells_it_once(self):
+        """A double-submitted review screen must not take two scarves off."""
+        self._resolve()
+        self._resolve()
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.number_on_hand, 3)
+        self.assertEqual(InventoryLog.objects.count(), 1)
+
+    def test_dismissing_closes_the_row_without_touching_stock(self):
+        """Not everything Square couldn't place was a scarf — a queue that
+        can't be emptied stops being read."""
+        self.client.post(
+            reverse("resolve_unmatched_sale", args=[self.sale.pk]),
+            {"dismiss": "1", "dismissed_reason": "tip jar", "day": self._day()},
+        )
+
+        self.sale.refresh_from_db()
+        self.product.refresh_from_db()
+        self.assertFalse(self.sale.is_open)
+        self.assertEqual(self.sale.dismissed_reason, "tip jar")
+        self.assertEqual(self.product.number_on_hand, 4)
+        self.assertEqual(InventoryLog.objects.count(), 0)
+
+    def test_the_photo_can_be_filed_against_the_product(self):
+        """The scarf nobody could name now has a picture, so next time it's
+        identifiable."""
+        report = self._report(minutes_off=3)
+        self._resolve(report_id=report.pk, file_photo="1")
+
+        image = self.product.images.get()
+        self.assertEqual(image.image.name, report.image.name)
+
+    def test_the_photo_is_not_filed_unless_asked(self):
+        report = self._report(minutes_off=3)
+        self._resolve(report_id=report.pk)
+
+        self.assertEqual(self.product.images.count(), 0)
+        self.sale.refresh_from_db()
+        self.assertEqual(self.sale.resolved_photo, report)
+
+    def test_a_resolved_photo_leaves_the_queue(self):
+        report = self._report(minutes_off=3)
+        self._resolve(report_id=report.pk)
+
+        second = UnmatchedSale.objects.create(
+            order_id="ORDER-2", line_uid="L1", name="Scarf",
+            quantity=1, sold_at=self.sold_at,
+        )
+        rows = self._rows()
+        self.assertEqual([r["sale"].pk for r in rows], [second.pk])
+        self.assertEqual(rows[0]["reports"], [])

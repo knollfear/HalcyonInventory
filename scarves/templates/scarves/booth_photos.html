@@ -1,0 +1,53 @@
+{% extends "scarves/base_internal.html" %}
+
+{% block title %}Booth Photos{% endblock %}
+{% block heading %}Booth Photos{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 900px; }
+  .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); margin-top: 18px; }
+  .shot { border: 1px solid #e1e5ea; border-radius: 10px; overflow: hidden; background: #fff; }
+  .shot img { display: block; width: 100%; height: 200px; object-fit: cover; background: #f2f4f7; }
+  .shot .body { padding: 12px; }
+  .shot .who { font-size: 12px; color: #667; }
+  .shot .caption { font-size: 14px; margin: 6px 0 0; line-height: 1.4; }
+  .shot .tag { font-size: 13px; color: var(--accent); margin: 6px 0 0; }
+  .badges { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+{% endblock %}
+
+{% block content %}
+  <p class="lead">
+    What the crew sent in to share. The badge is what a photo is actually
+    cleared for — a tick from the sender isn't permission from the person in
+    the picture, so a photo with someone in it says <em>ask first</em> until
+    they've said yes.
+  </p>
+
+  <div class="grid">
+    {% for photo in photos %}
+      <div class="shot">
+        {% if photo.image %}<img src="{{ photo.image.url }}" alt="{{ photo.caption|default:'Booth photo' }}">{% endif %}
+        <div class="body">
+          <div class="badges">
+            {% if photo.shareable %}
+              {% if photo.share_website %}<span class="ok">website</span>{% endif %}
+              {% if photo.share_instagram %}<span class="ok">Instagram</span>{% endif %}
+            {% elif photo.people_in_photo and not photo.people_agreed %}
+              <span class="short">ask the person first</span>
+            {% else %}
+              <span class="short">not cleared to post</span>
+            {% endif %}
+          </div>
+          <div class="who">
+            {{ photo.employee.name }} · {{ photo.created_at|date:"d M Y, H:i" }}
+          </div>
+          {% if photo.caption %}<p class="caption">{{ photo.caption }}</p>{% endif %}
+          {% if photo.tag %}<p class="tag">tag: {{ photo.tag }}</p>{% endif %}
+        </div>
+      </div>
+    {% empty %}
+      <p class="empty">Nothing sent in yet.</p>
+    {% endfor %}
+  </div>
+{% endblock %}

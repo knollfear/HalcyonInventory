@@ -6,7 +6,14 @@ from django import forms
 from django.db import transaction
 from django.utils import timezone
 
-from .models import Dye, Employee, Recipe, RecipeDye, RawProduct  # RecipeDye is your through model
+from .models import (  # RecipeDye is the through model
+    BoothPhoto,
+    Dye,
+    Employee,
+    Recipe,
+    RecipeDye,
+    RawProduct,
+)
 
 class RecipeDyesForm(forms.Form):
     """Edit just the dye assignments of one existing recipe.
@@ -471,5 +478,145 @@ class LabelRunForm(forms.Form):
                 f"there is no label {start_at}. A used-up sheet is a fresh one "
                 f"starting at 1.",
             )
+
+        return cleaned
+
+
+class BoothPhotoForm(forms.Form):
+    """Send a photo in from the booth: who you are, the photo, and why.
+
+    No login — identity is a name off a list plus the same four-digit PIN the
+    hours form uses. That is deliberate and is not a security boundary: it
+    stops somebody tapping the wrong name and stops idle mischief from whoever
+    finds the URL. What it buys is that the crew can actually use the page,
+    which a login would prevent for exactly the people it is for.
+
+    The reason picks which half of the form matters. Both halves are always
+    submitted; the view stores only the half that applies, so a report that
+    changes reason mid-thought can't leave a stray sharing permission behind.
+    """
+
+    employee = forms.ModelChoiceField(
+        queryset=Employee.objects.none(),   # set in __init__, as HoursForm does
+        empty_label="— choose your name —",
+        label="Your name",
+    )
+    pin = forms.CharField(
+        max_length=4,
+        label="Your PIN",
+        widget=forms.TextInput(attrs={
+            "inputmode": "numeric",
+            "pattern": "[0-9]*",
+            "autocomplete": "off",
+            "placeholder": "····",
+        }),
+    )
+    photo = forms.ImageField(
+        label="The photo",
+        # capture="environment" opens the rear camera straight away on a
+        # phone, but still allows picking from the roll — which matters,
+        # because half of these are taken first and sent later.
+        widget=forms.ClearableFileInput(attrs={
+            "accept": "image/*",
+            "capture": "environment",
+        }),
+    )
+    reason = forms.ChoiceField(
+        choices=BoothPhoto.REASON_CHOICES,
+        widget=forms.RadioSelect,
+        label="What's this for?",
+    )
+
+    # --- share -------------------------------------------------------------
+    share_website = forms.BooleanField(required=False, label="OK to share on the website")
+    share_instagram = forms.BooleanField(required=False, label="OK to share on Instagram")
+    people_in_photo = forms.BooleanField(
+        required=False, label="Someone recognisable is in this photo"
+    )
+    people_agreed = forms.BooleanField(
+        required=False, label="I asked them and they said yes"
+    )
+    caption = forms.CharField(required=False, widget=forms.Textarea(attrs={"rows": 3}))
+    tag = forms.CharField(required=False, max_length=200, label="Anyone to tag")
+
+    # --- unidentified sale -------------------------------------------------
+    sold_at = forms.DateTimeField(
+        required=False,
+        label="When did it sell?",
+        widget=forms.DateTimeInput(attrs={"type": "datetime-local"}, format="%Y-%m-%dT%H:%M"),
+        input_formats=["%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"],
+    )
+    sku_prefix = forms.CharField(
+        required=False,
+        max_length=20,          # generous input, trimmed to six in clean
+        label="First 6 of the barcode",
+        help_text="The bit before the dash, if the tag is still on it. Leave "
+                  "blank if you can't read it.",
+        widget=forms.TextInput(attrs={"autocapitalize": "characters", "autocomplete": "off"}),
+    )
+    note = forms.CharField(required=False, max_length=200, label="Anything else worth saying")
+
+    def __init__(self, *args, **kwargs):
+        self.now = kwargs.pop("now", None) or timezone.localtime()
+        super().__init__(*args, **kwargs)
+        self.fields["employee"].queryset = Employee.objects.filter(is_active=True)
+
+    def clean_pin(self):
+        pin = (self.cleaned_data.get("pin") or "").strip()
+        if not pin.isdigit() or len(pin) != 4:
+            raise forms.ValidationError("Your PIN is four digits.")
+        return pin
+
+    def clean_sku_prefix(self):
+        """Trim to the six characters that mean something.
+
+        Run through the same slug the SKU was built with, so someone typing
+        `infi-` or `Infi 6` lands on the same prefix the barcode carries.
+        """
+        from .skus import slug
+        return slug(self.cleaned_data.get("sku_prefix"))
+
+    def clean_sold_at(self):
+        sold_at = self.cleaned_data.get("sold_at")
+        if sold_at is None:
+            return None
+        if timezone.is_naive(sold_at):
+            sold_at = timezone.make_aware(sold_at)
+        if sold_at > self.now + timedelta(minutes=5):
+            raise forms.ValidationError(
+                "That's in the future — when did the scarf actually sell?"
+            )
+        return sold_at
+
+    def clean(self):
+        cleaned = super().clean()
+
+        employee = cleaned.get("employee")
+        pin = cleaned.get("pin")
+        if employee and pin and pin != employee.pin:
+            self.add_error("pin", "That PIN doesn't match the name you picked.")
+
+        reason = cleaned.get("reason")
+
+        # The one rule worth refusing a submission over. The two destination
+        # ticks record the *sender's* permission, and the sender cannot give
+        # permission for the person in the picture — so if there is one, and
+        # somewhere to post it, the answer has to be on the record.
+        if reason == BoothPhoto.REASON_SHARE:
+            posting = cleaned.get("share_website") or cleaned.get("share_instagram")
+            if posting and cleaned.get("people_in_photo") and not cleaned.get("people_agreed"):
+                self.add_error(
+                    "people_agreed",
+                    "Someone's in this photo and you've ticked somewhere to "
+                    "post it — ask them first. If they'd rather not, untick "
+                    "the sharing boxes and send it anyway; it just won't be "
+                    "posted.",
+                )
+
+        if reason == BoothPhoto.REASON_UNIDENTIFIED and not cleaned.get("sold_at"):
+            # Reported straight after the sale is the normal case, so the
+            # moment the form was sent is the better default than nothing —
+            # it is what the ±15 minute match is looking for.
+            cleaned["sold_at"] = self.now
 
         return cleaned
