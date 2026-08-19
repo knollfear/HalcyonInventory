@@ -137,6 +137,19 @@ end of a long day, quite possibly in the dark.
         <div class="panel stop">{{ form.non_field_errors }}</div>
       {% endif %}
 
+      {% if remembered %}
+        {% comment %}
+        The name and PIN below were filled in from this device's cookie, not
+        typed. Saying so is what makes the "not you?" case recoverable —
+        phones get lent, and a pre-filled name that nobody mentions is how
+        one person's hours quietly get filed under another.
+        {% endcomment %}
+        <p class="muted remembered">
+          Filled in for <strong>{{ remembered.name }}</strong> from this phone.
+          <a href="?{{ forget_param }}=1">Not you?</a>
+        </p>
+      {% endif %}
+
       {% for field in form %}
         <div class="field">
           <label for="{{ field.id_for_label }}">{{ field.label }}</label>

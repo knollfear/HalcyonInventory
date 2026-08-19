@@ -32,7 +32,7 @@ from django.core.files.storage import default_storage
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
-from . import timesheets
+from . import crew, timesheets
 from .colorutils import (
     delta_e,
     hex_to_lab,
@@ -6224,3 +6224,135 @@ class UnmatchedSaleReviewTests(TestCase):
         rows = self._rows()
         self.assertEqual([r["sale"].pk for r in rows], [second.pk])
         self.assertEqual(rows[0]["reports"], [])
+
+
+class CrewCookieTests(TestCase):
+    """Remembering name and PIN on the two `secret/` pages.
+
+    The friction this removes is the whole reason the PIN is acceptable at
+    all: a four-digit challenge at the moment a scarf sells is enough to mean
+    the photo never gets sent. So the cases worth pinning are the ones where
+    remembering could quietly do harm — a stale PIN, a departed employee, a
+    forged cookie, and above all a cookie that starts standing in for the
+    check instead of just typing it.
+    """
+
+    def setUp(self):
+        self.sam = make_employee("Sam", pin="4821")
+        self.hours_url = reverse("hours_entry")
+        self.booth_url = reverse("booth_photo")
+
+    def _report_hours(self, **overrides):
+        data = {
+            "employee": self.sam.pk,
+            "pin": "4821",
+            "hours": "9.5",
+            "work_date": timezone.localdate().isoformat(),
+        }
+        data.update(overrides)
+        return self.client.post(self.hours_url, data)
+
+    def _send_photo(self, **overrides):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        data = {
+            "employee": self.sam.pk,
+            "pin": "4821",
+            "reason": BoothPhoto.REASON_SHARE,
+            "photo": SimpleUploadedFile(
+                "booth.jpg", make_jpeg((60, 40)), content_type="image/jpeg"
+            ),
+        }
+        data.update(overrides)
+        return self.client.post(self.booth_url, data)
+
+    def _prefilled(self, url):
+        """`(employee pk, pin)` the form at `url` opens with."""
+        form = self.client.get(url).context["form"]
+        return form.initial.get("employee"), form.initial.get("pin")
+
+    # --- the point of the whole thing ----------------------------------
+
+    def test_reporting_hours_leaves_the_form_filled_in_next_time(self):
+        self._report_hours()
+
+        self.assertEqual(self._prefilled(self.hours_url), (self.sam.pk, "4821"))
+
+    def test_one_cookie_covers_both_pages(self):
+        """Somebody who has just sent a photo shouldn't have to re-introduce
+        themselves to the hours form."""
+        self._send_photo()
+
+        self.assertEqual(self._prefilled(self.hours_url), (self.sam.pk, "4821"))
+
+    def test_nothing_is_remembered_before_a_first_submission(self):
+        self.assertEqual(self._prefilled(self.booth_url), (None, None))
+
+    # --- it fills the form in; it never stands in for the PIN ----------
+
+    def test_the_cookie_does_not_authorise_a_submission(self):
+        """The cookie types for you. It is not a credential, and a POST
+        carrying it with the wrong PIN has to fail exactly as before —
+        otherwise a found phone submits with no check anywhere."""
+        self._report_hours()
+        TimeEntry.objects.all().delete()
+
+        self._send_photo(pin="1111")
+
+        self.assertEqual(BoothPhoto.objects.count(), 0)
+
+    def test_a_missing_pin_is_still_a_missing_pin(self):
+        self._report_hours()
+        TimeEntry.objects.all().delete()
+
+        self._report_hours(pin="")
+
+        self.assertEqual(TimeEntry.objects.count(), 0)
+
+    def test_a_rejected_pin_is_never_remembered(self):
+        """Remembering a wrong answer is worse than remembering nothing: the
+        page opens looking ready and rejects whatever is submitted."""
+        self._report_hours(pin="1111")
+
+        self.assertEqual(self._prefilled(self.hours_url), (None, None))
+
+    # --- a cookie can outlive the facts in it --------------------------
+
+    def test_a_changed_pin_keeps_the_name_and_drops_the_pin(self):
+        """The name is still right, so the page still knows who this is and
+        asks for the one thing that actually changed."""
+        self._report_hours()
+        Employee.objects.filter(pk=self.sam.pk).update(pin="9999")
+
+        self.assertEqual(self._prefilled(self.hours_url), (self.sam.pk, None))
+
+    def test_someone_who_has_left_is_forgotten_entirely(self):
+        self._report_hours()
+        Employee.objects.filter(pk=self.sam.pk).update(is_active=False)
+
+        self.assertEqual(self._prefilled(self.hours_url), (None, None))
+
+    def test_a_forged_cookie_is_ignored_rather_than_trusted(self):
+        self.client.cookies[crew.COOKIE] = f"{self.sam.pk}:4821"
+
+        self.assertEqual(self._prefilled(self.hours_url), (None, None))
+
+    # --- not you? ------------------------------------------------------
+
+    def test_the_not_you_link_forgets_both_pages(self):
+        """Personal phones make this rare, not never — phones get lent."""
+        self._report_hours()
+
+        response = self.client.get(f"{self.hours_url}?{crew.FORGET}=1")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self._prefilled(self.booth_url), (None, None))
+
+    def test_the_page_says_the_name_was_filled_in_for_you(self):
+        """A pre-filled name nobody mentions is how one person's hours get
+        filed under another."""
+        self._report_hours()
+
+        response = self.client.get(self.hours_url)
+
+        self.assertContains(response, "Not you?")
+        self.assertContains(response, f"{crew.FORGET}=1")

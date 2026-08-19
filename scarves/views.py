@@ -41,7 +41,7 @@ from django.contrib import messages
 from django.shortcuts import render, redirect
 from django.template.response import TemplateResponse
 
-from . import colorbands, labels, timesheets
+from . import colorbands, crew, labels, timesheets
 from .colorutils import nearest_by_color, pick_color_cluster
 from .forms import (
     BoothPhotoForm,
@@ -2965,6 +2965,12 @@ def hours_entry(request):
     """
     today = timezone.localdate()
 
+    # "Not you?" — drop the remembered name and PIN, come back to an empty
+    # form. A GET with a side effect, but the side effect is this browser's
+    # own cookie: idempotent, nothing written, nothing to re-submit.
+    if crew.asked_to_forget(request):
+        return crew.forget(redirect("hours_entry"))
+
     # Post/redirect/get. The success state is carried in the session rather
     # than the URL so a refresh can't re-submit and a shared screen doesn't
     # leave somebody's name in the address bar.
@@ -3010,18 +3016,23 @@ def hours_entry(request):
                 defaults={"hours": hours},
             )
             request.session["hours_entry_saved"] = entry.pk
-            return redirect("hours_entry")
+            # After the PIN has been checked, never before — see crew.remember.
+            return crew.remember(
+                request, redirect("hours_entry"), employee, form.cleaned_data["pin"]
+            )
 
         if form.has_error("pin"):
             request.session["hours_pin_attempts"] = attempts + 1
     else:
-        form = HoursForm(today=today, initial={"work_date": today})
+        form = HoursForm(today=today, initial=crew.initial(request, work_date=today))
 
     return render(request, "scarves/hours_entry.html", {
         "form": form,
         "saved": saved,
         "saved_week": _employee_week(saved) if saved else None,
         "today": today,
+        "remembered": crew.remembered(request)[0],
+        "forget_param": crew.FORGET,
     })
 
 
@@ -3287,6 +3298,12 @@ def booth_photo(request):
     """
     now = timezone.localtime()
 
+    # "Not you?" — drop the remembered name and PIN, come back to an empty
+    # form. A GET with a side effect, but the side effect is this browser's
+    # own cookie: idempotent, nothing written, nothing to re-submit.
+    if crew.asked_to_forget(request):
+        return crew.forget(redirect("booth_photo"))
+
     saved_pk = request.session.pop("booth_photo_saved", None)
     saved = BoothPhoto.objects.filter(pk=saved_pk).select_related("employee").first() if saved_pk else None
 
@@ -3328,20 +3345,26 @@ def booth_photo(request):
             photo.image.save(stored.name, stored, save=False)
             photo.save()
             request.session["booth_photo_saved"] = photo.pk
-            return redirect("booth_photo")
+            # After the PIN has been checked, never before — see crew.remember.
+            return crew.remember(
+                request, redirect("booth_photo"), data["employee"], data["pin"]
+            )
 
         if form.has_error("pin"):
             request.session["booth_pin_attempts"] = attempts + 1
     else:
-        form = BoothPhotoForm(now=now, initial={
-            "reason": BoothPhoto.REASON_SHARE,
-            "sold_at": now.strftime("%Y-%m-%dT%H:%M"),
-        })
+        form = BoothPhotoForm(now=now, initial=crew.initial(
+            request,
+            reason=BoothPhoto.REASON_SHARE,
+            sold_at=now.strftime("%Y-%m-%dT%H:%M"),
+        ))
 
     return render(request, "scarves/booth_photo.html", {
         "form": form,
         "saved": saved,
         "now": now,
+        "remembered": crew.remembered(request)[0],
+        "forget_param": crew.FORGET,
     })
 
 

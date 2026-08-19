@@ -362,6 +362,58 @@ line it has already logged for that order. Square sends `order.updated` more
 than once and `COMPLETED` is not a one-shot state, so a redelivery used to
 decrement the same sale again.
 
+## The PIN is remembered, and remembering is not authorising
+
+Both `secret/` pages open with "choose your name" and "type your PIN". That is
+the price of having no accounts, and it is charged at the worst possible
+moment: a scarf has just sold, the queue is moving, the phone is out for about
+ten seconds. Friction there doesn't produce a late report, it produces **no**
+report — which makes the page worth nothing. So `scarves/crew.py` keeps the
+name and PIN in a signed cookie and both pages open pre-filled.
+
+**The cookie fills the form in; it never stands in for the PIN check.** Both
+forms still compare the submitted PIN against `Employee.pin` on every POST,
+unchanged. The cookie writes `initial` and nothing else. That is the whole
+safety argument, and it is the same shape as `colorbands`: it fills the form
+in, the check still happens. A cookie that *authorised* would mean a found
+phone submits with nothing checked anywhere, and it would need its own expiry,
+revocation and threat model. A cookie that only types for you can be stale,
+wrong or forged and the worst outcome is the error message a typo already
+gets. `CrewCookieTests` pins that a POST carrying the cookie and the wrong PIN
+still fails.
+
+Which is why the PIN itself is in there rather than a token standing for it.
+Signing stops tampering, not reading — anyone holding the device can read the
+cookie. The PIN was never a secret (it stops the wrong name being tapped), so
+storing it somewhere readable-with-the-device costs nothing it was protecting,
+and it keeps one code path instead of two.
+
+A cookie outlives the facts in it, so every read resolves against the database
+and drops what no longer holds — quietly, because this is a page nobody has
+typed into yet and an error on it is noise. Three cases, and the split in the
+third is the useful one:
+
+| Cookie says                    | What happens              |
+|--------------------------------|---------------------------|
+| tampered / unsigned            | forget the lot            |
+| employee gone or now inactive  | forget the lot            |
+| PIN has since changed          | **keep the name**, drop the PIN |
+
+The name is still right, so the page still knows who this is and asks for the
+one thing that actually changed.
+
+**Everyone uses their own phone.** There is no shared stall tablet, and that
+is what makes remembering the *name* safe rather than dangerous — on a shared
+device a pre-filled name is exactly how one person's hours get filed under
+another, silently, and correctly built it would need a much louder confirmation
+than a link. If a tablet ever appears, revisit this before anything else.
+
+Even on personal phones the pages **say** the fields were filled in for you and
+offer `?forget=1`. Phones get lent, handed over and replaced; a pre-filled name
+that nothing mentions is unrecoverable by the person looking at it. The link is
+a GET with a side effect, which is fine here because the side effect is this
+browser's own cookie — idempotent, nothing written, nothing to re-submit.
+
 ## Templates: three layers, and the `block.super` trap
 
 Every page template inherits from a shared skeleton. Nothing extends

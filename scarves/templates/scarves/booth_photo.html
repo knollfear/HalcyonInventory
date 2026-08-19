@@ -115,6 +115,14 @@ can leave a sharing permission attached to a sale report.
       {{ form.pin }}{{ form.pin.errors }}
     </div>
 
+    {% if remembered %}
+      {% comment %}Filled in from this device, not typed — see hours_entry.html.{% endcomment %}
+      <p class="muted remembered">
+        Filled in for <strong>{{ remembered.name }}</strong> from this phone.
+        <a href="?{{ forget_param }}=1">Not you?</a>
+      </p>
+    {% endif %}
+
     <div class="field">
       <label for="{{ form.photo.id_for_label }}">{{ form.photo.label }}</label>
       {{ form.photo }}{{ form.photo.errors }}
