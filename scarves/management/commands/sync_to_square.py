@@ -1,3 +1,4 @@
+import io
 import json
 import uuid
 from datetime import datetime, timezone
@@ -5,7 +6,7 @@ from datetime import datetime, timezone
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
-from scarves.models import RawProduct, FinishedProduct
+from scarves.models import FinishedProduct, FinishedProductImage, RawProduct
 
 
 class Command(BaseCommand):
@@ -44,6 +45,16 @@ class Command(BaseCommand):
             "--inventory-only",
             action="store_true",
             help="Skip catalog upsert and only push inventory counts.",
+        )
+        parser.add_argument(
+            "--images",
+            action="store_true",
+            help=(
+                "Upload product photos and attach them to their Square "
+                "variations, then stop. A mode of its own because it is slow "
+                "— no batch endpoint, one multipart request per photo — and "
+                "has no business running on the schedule that pushes stock."
+            ),
         )
         parser.add_argument(
             "--update",
@@ -153,6 +164,10 @@ class Command(BaseCommand):
 
         self._preflight(client)
         if options["check"]:
+            return
+
+        if options["images"]:
+            self._push_images(client)
             return
 
         if options["inventory_only"]:
@@ -363,6 +378,180 @@ class Command(BaseCommand):
             updated += len(chunk)
 
         self.stdout.write(self.style.SUCCESS(f"Updated {updated} variations with current prices and SKUs."))
+
+    def _push_images(self, client):
+        """Send product photos to Square and attach them to their variations.
+
+        A photo is of one colorway, so it belongs on the ITEM_VARIATION
+        rather than the ITEM — an item here is a style (`Silk Scarf`) and
+        every one of them looks completely different depending on the recipe.
+        Putting one photo on the item would pick a winner and mislabel every
+        other variation under it.
+
+        One request per photo, and slow: there is no batch image endpoint,
+        the payload is multipart, and the bucket is private so the bytes go
+        Railway -> here -> Square rather than being handed over as a URL that
+        Square could fetch itself. That is why this is a mode rather than
+        another step in the ordinary sync.
+        """
+        pending = list(
+            FinishedProductImage.objects
+            .filter(square_image_id="", finished_product__is_active=True)
+            .select_related("finished_product")
+            .order_by("finished_product_id", "order", "pk")
+        )
+
+        # Two kinds of photo this can't send, counted and named rather than
+        # dropped. Both look identical from the Square end — a product with
+        # no picture — and neither is a failure worth stopping for.
+        unsynced = [i for i in pending if not i.finished_product.square_variation_id]
+        external = [i for i in pending if i.finished_product.square_variation_id and not i.image]
+        sendable = [
+            i for i in pending
+            if i.finished_product.square_variation_id and i.image
+        ]
+
+        if unsynced:
+            self.stdout.write(self.style.WARNING(
+                f"{len(unsynced)} photo(s) belong to products Square has "
+                f"never seen. Run the plain sync first, then --images: "
+                f"{self._name_a_few(unsynced)}"
+            ))
+        if external:
+            self.stdout.write(self.style.WARNING(
+                f"{len(external)} photo(s) are external URLs with no file in "
+                f"the bucket, and Square's image endpoint only takes bytes: "
+                f"{self._name_a_few(external)}"
+            ))
+
+        if not sendable:
+            self.stdout.write("No new photos to send — everything is already on Square.")
+            return
+
+        # Which variations Square already has a picture for. The first photo
+        # to land on a variation is its primary, i.e. the one the POS shows;
+        # later ones must not quietly displace it on a re-run.
+        has_primary = set(
+            FinishedProductImage.objects
+            .filter(square_image_id__gt="")
+            .values_list("finished_product_id", flat=True)
+        )
+
+        self.stdout.write(f"Sending {len(sendable)} photo(s) to Square...")
+
+        if self.dry_run:
+            self.stdout.write(self.style.WARNING("DRY RUN — would upload:"))
+            seen = set(has_primary)
+            for image in sendable:
+                fp = image.finished_product
+                primary = fp.pk not in seen
+                seen.add(fp.pk)
+                self.stdout.write(
+                    f"  IMAGE      {image.image.name} -> {fp.sku or fp.name} "
+                    f"({fp.square_variation_id})"
+                    f"{' [primary]' if primary else ''}"
+                )
+            return
+
+        sent = 0
+        unreadable = []
+        try:
+            for image in sendable:
+                fp = image.finished_product
+
+                # A file missing from the bucket is this photo's problem and
+                # nobody else's, so it is collected and the run carries on.
+                # Anything broader — bad credentials, the bucket gone — is
+                # everybody's problem and bubbles out, which is what the
+                # narrow catch buys: S3Storage raises FileNotFoundError only
+                # on a 404 and re-raises every other ClientError untouched.
+                try:
+                    with image.image.open("rb") as fh:
+                        payload = fh.read()
+                except (OSError, ValueError) as exc:
+                    unreadable.append((image, exc))
+                    continue
+
+                primary = fp.pk not in has_primary
+                square_id = self._upload_image(client, image, payload, primary)
+
+                # Written the moment Square answers, before the next photo is
+                # started. The run can die at any point and what got through
+                # is already recorded — which is the whole reason the column
+                # exists, because Square appends to `image_ids` and cannot
+                # tell it is being handed a picture it already holds.
+                image.square_image_id = square_id
+                image.save(update_fields=["square_image_id"])
+                has_primary.add(fp.pk)
+                sent += 1
+        except CommandError:
+            if sent:
+                self.stderr.write(self.style.WARNING(
+                    f"{sent} photo(s) went up before this and are recorded — "
+                    f"re-run to continue rather than uploading them twice."
+                ))
+            raise
+
+        if unreadable:
+            self.stderr.write(self.style.WARNING(
+                f"{len(unreadable)} photo(s) could not be read from the "
+                f"bucket and were skipped: "
+                f"{self._name_a_few([i for i, _ in unreadable])}"
+            ))
+
+        self.stdout.write(self.style.SUCCESS(
+            f"Images done: {sent} photo(s) uploaded and attached."
+        ))
+
+    def _upload_image(self, client, image, payload, primary):
+        """One multipart upload. Returns the ID Square assigned."""
+        fp = image.finished_product
+        request = {
+            "idempotency_key": str(uuid.uuid4()),
+            # Attaching here rather than in a follow-up variation upsert:
+            # `object_id` makes Square do the attach itself, so there is no
+            # window where an uploaded image exists and nothing points at it.
+            "object_id": fp.square_variation_id,
+            "is_primary": primary,
+            "image": {
+                "type": "IMAGE",
+                "id": f"#img_{image.pk}",
+                "image_data": {
+                    "caption": image.alt_text or fp.name,
+                },
+            },
+        }
+
+        upload = io.BytesIO(payload)
+        # The SDK sends this as the multipart filename; without one some
+        # servers reject the part outright.
+        upload.name = image.image.name.rsplit("/", 1)[-1] or "photo.jpg"
+
+        result = client.catalog.create_catalog_image(
+            request=request, image_file=upload
+        )
+        if result.is_error():
+            self._fail(f"Image upload failed for {fp.sku or fp.name}", result)
+
+        square_id = ((result.body or {}).get("image") or {}).get("id")
+        if not square_id:
+            # Square took the photo and we have no ID to record. Carrying on
+            # would upload it again next run and stack a duplicate, so this
+            # stops — the one case where a success is worse than an error.
+            raise CommandError(
+                f"Square accepted the photo for {fp.sku or fp.name} but "
+                f"returned no image ID. Nothing was recorded, so re-running "
+                f"would attach it twice — check the catalogue before you do."
+            )
+        return square_id
+
+    @staticmethod
+    def _name_a_few(images, limit=5):
+        """`sku, sku, sku (and 12 more)` — enough to go and look."""
+        names = [i.finished_product.sku or i.finished_product.name for i in images]
+        shown = ", ".join(names[:limit])
+        rest = len(names) - limit
+        return f"{shown} (and {rest} more)" if rest > 0 else shown
 
     def _push_inventory(self, client):
         self.stdout.write("Pushing inventory counts to Square...")

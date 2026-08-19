@@ -5198,10 +5198,14 @@ class FakeSquareClient:
     """
 
     def __init__(self, upsert_results=None, retrieve_result=None,
-                 inventory_result=None, locations_result=None):
+                 inventory_result=None, locations_result=None,
+                 image_results=None):
         self.upserts = []
         self.retrieves = []
         self.inventory_changes = []
+        self.images = []
+        self._image_results = list(image_results or [])
+        self._image_seq = 0
         self._upsert_results = list(upsert_results or [])
         self._retrieve_result = retrieve_result or FakeSquareResult({"objects": []})
         self._inventory_result = inventory_result or FakeSquareResult()
@@ -5225,6 +5229,18 @@ class FakeSquareClient:
         def batch_retrieve_catalog_objects(self, body):
             self.outer.retrieves.append(body)
             return self.outer._retrieve_result
+
+        def create_catalog_image(self, request, image_file):
+            # The bytes are read here rather than kept, because the thing
+            # worth asserting is that a real file reached the call at all —
+            # the bucket read is the step most likely to be silently skipped.
+            self.outer.images.append((request, image_file.read()))
+            if self.outer._image_results:
+                return self.outer._image_results.pop(0)
+            self.outer._image_seq += 1
+            return FakeSquareResult({
+                "image": {"id": f"SQ_IMG_{self.outer._image_seq}"},
+            })
 
     class _Inventory:
         def __init__(self, outer):
@@ -6356,3 +6372,190 @@ class CrewCookieTests(TestCase):
 
         self.assertContains(response, "Not you?")
         self.assertContains(response, f"{crew.FORGET}=1")
+
+
+@override_settings(
+    SQUARE_ACCESS_TOKEN="test-token",
+    SQUARE_LOCATION_ID="LOC123",
+    SQUARE_ENVIRONMENT="sandbox",
+    MEDIA_ROOT=tempfile.mkdtemp(),
+)
+class SquareImageSyncTests(TestCase):
+    """`sync_to_square --images`.
+
+    The failure this is built around is a re-run stacking the same photo on
+    the same variation: Square appends to `image_ids` and has no way to tell
+    it is being handed a picture it already holds, so nothing but our own
+    record stops it. Every test here is ultimately about that record being
+    written at the right moment.
+    """
+
+    def setUp(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        self.recipe = make_recipe("Stormy Sea")
+        self.product = make_product(self.recipe, "Stormy Silk", with_image=False)
+        FinishedProduct.objects.filter(pk=self.product.pk).update(
+            square_variation_id="SQ_VAR"
+        )
+        self.product.refresh_from_db()
+        self.image = FinishedProductImage.objects.create(
+            finished_product=self.product,
+            image=SimpleUploadedFile(
+                "stormy.jpg", make_jpeg((60, 40)), content_type="image/jpeg"
+            ),
+        )
+
+    def _run(self, client, **kwargs):
+        out, err = StringIO(), StringIO()
+        with mock.patch("square.client.Client", return_value=client):
+            call_command("sync_to_square", "--images", stdout=out, stderr=err, **kwargs)
+        return out.getvalue() + err.getvalue()
+
+    def _second_photo(self, order=2):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        return FinishedProductImage.objects.create(
+            finished_product=self.product,
+            order=order,
+            image=SimpleUploadedFile(
+                "stormy-2.jpg", make_jpeg((60, 40)), content_type="image/jpeg"
+            ),
+        )
+
+    # --- the upload ------------------------------------------------------
+
+    def test_a_photo_is_attached_to_its_variation_not_its_item(self):
+        """An item here is a style and every variation under it looks
+        completely different — a photo on the item mislabels all but one."""
+        client = FakeSquareClient()
+        self._run(client)
+
+        self.assertEqual(len(client.images), 1)
+        request, payload = client.images[0]
+        self.assertEqual(request["object_id"], "SQ_VAR")
+        self.assertTrue(request["is_primary"])
+        self.assertEqual(request["image"]["type"], "IMAGE")
+        self.assertTrue(payload, "the file's bytes have to reach the call")
+
+    def test_the_square_id_is_recorded(self):
+        client = FakeSquareClient()
+        self._run(client)
+
+        self.image.refresh_from_db()
+        self.assertEqual(self.image.square_image_id, "SQ_IMG_1")
+
+    def test_a_second_run_sends_nothing(self):
+        """The whole reason the column exists."""
+        self._run(FakeSquareClient())
+
+        again = FakeSquareClient()
+        output = self._run(again)
+
+        self.assertEqual(again.images, [])
+        self.assertIn("already on Square", output)
+
+    def test_only_the_first_photo_on_a_variation_is_primary(self):
+        """A later photo must not displace the picture the POS shows."""
+        self._second_photo()
+        client = FakeSquareClient()
+        self._run(client)
+
+        self.assertEqual([r["is_primary"] for r, _ in client.images], [True, False])
+
+    def test_a_photo_added_later_is_not_primary_either(self):
+        self._run(FakeSquareClient())
+        self._second_photo()
+
+        client = FakeSquareClient()
+        self._run(client)
+
+        self.assertEqual(len(client.images), 1)
+        self.assertFalse(client.images[0][0]["is_primary"])
+
+    # --- what it can't send ----------------------------------------------
+
+    def test_a_product_square_has_never_seen_is_named_not_dropped(self):
+        FinishedProduct.objects.filter(pk=self.product.pk).update(
+            square_variation_id=""
+        )
+        client = FakeSquareClient()
+        output = self._run(client)
+
+        self.assertEqual(client.images, [])
+        self.assertIn("never seen", output)
+        self.assertIn(self.product.sku, output)
+
+    def test_an_external_url_with_no_file_is_named_not_dropped(self):
+        """Square's image endpoint takes bytes, and there are none here."""
+        FinishedProductImage.objects.filter(pk=self.image.pk).delete()
+        FinishedProductImage.objects.create(
+            finished_product=self.product,
+            image_url="https://example.test/elsewhere.jpg",
+        )
+        client = FakeSquareClient()
+        output = self._run(client)
+
+        self.assertEqual(client.images, [])
+        self.assertIn("external URLs", output)
+
+    def test_an_unreadable_file_is_skipped_and_the_run_carries_on(self):
+        """One missing object in the bucket is that photo's problem. An API
+        error is everybody's problem and stops the run — see below."""
+        second = self._second_photo()
+        FinishedProductImage.objects.filter(pk=self.image.pk).update(
+            image="finished_products/gone.jpg"
+        )
+        client = FakeSquareClient()
+        output = self._run(client)
+
+        self.assertEqual(len(client.images), 1)
+        second.refresh_from_db()
+        self.assertEqual(second.square_image_id, "SQ_IMG_1")
+        self.assertIn("could not be read", output)
+
+    # --- failure ----------------------------------------------------------
+
+    def test_an_api_error_stops_the_run_and_keeps_what_went_up(self):
+        self._second_photo()
+        client = FakeSquareClient(image_results=[
+            FakeSquareResult({"image": {"id": "SQ_IMG_1"}}),
+            FakeSquareResult(errors=[{"category": "API_ERROR", "detail": "boom"}]),
+        ])
+        with self.assertRaises(CommandError) as caught:
+            self._run(client)
+
+        self.image.refresh_from_db()
+        self.assertEqual(self.image.square_image_id, "SQ_IMG_1",
+                         "what succeeded must stay recorded or the re-run duplicates it")
+        self.assertIn("boom", str(caught.exception))
+
+    def test_an_accepted_photo_with_no_id_back_stops_the_run(self):
+        """The one case where a success is worse than an error: Square has
+        the photo, we have nothing to record, and a re-run stacks it."""
+        client = FakeSquareClient(image_results=[FakeSquareResult({"image": {}})])
+        with self.assertRaises(CommandError) as caught:
+            self._run(client)
+
+        self.image.refresh_from_db()
+        self.assertEqual(self.image.square_image_id, "")
+        self.assertIn("twice", str(caught.exception))
+
+    # --- mode -------------------------------------------------------------
+
+    def test_a_dry_run_uploads_nothing(self):
+        client = FakeSquareClient()
+        output = self._run(client, dry_run=True)
+
+        self.assertEqual(client.images, [])
+        self.assertIn("DRY RUN", output)
+        self.image.refresh_from_db()
+        self.assertEqual(self.image.square_image_id, "")
+
+    def test_images_is_a_mode_of_its_own(self):
+        """Slow and one-at-a-time — it has no business on the schedule that
+        pushes stock counts."""
+        client = FakeSquareClient()
+        self._run(client)
+
+        self.assertEqual(client.upserts, [])
+        self.assertEqual(client.inventory_changes, [])

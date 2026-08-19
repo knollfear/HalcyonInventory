@@ -397,6 +397,17 @@ class FinishedProductImage(models.Model):
         default=1,
         help_text="Ordering of images in galleries.",
     )
+    square_image_id = models.CharField(
+        max_length=100,
+        blank=True,
+        help_text=(
+            "Square's ID for this photo once `sync_to_square --images` has "
+            "pushed it. Blank means Square has never seen it. This is what "
+            "stops a second run stacking the same photo on the variation "
+            "again — Square appends to `image_ids` and has no idea it is "
+            "looking at a picture it already holds."
+        ),
+    )
 
     class Meta:
         ordering = ["finished_product", "order"]

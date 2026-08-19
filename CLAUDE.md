@@ -414,6 +414,63 @@ that nothing mentions is unrecoverable by the person looking at it. The link is
 a GET with a side effect, which is fine here because the side effect is this
 browser's own cookie — idempotent, nothing written, nothing to re-submit.
 
+## Syncing to Square: what goes up, and what deliberately doesn't
+
+`sync_to_square` runs in modes, and each one returns rather than falling
+through: `--check` (credentials only), `--images`, `--inventory-only`,
+`--update`, or the bare run that upserts the catalogue and then pushes stock.
+Every failure path raises `CommandError` rather than printing and returning,
+because a bare `return` exits 0 — on a schedule that reads as a successful
+run, and a catalogue that quietly stopped syncing looks exactly like one that
+had nothing to do.
+
+Ordering for a fresh account is in the labels section: **`generate_skus`
+first, then `sync_to_square`**, because the sync omits the `sku` key entirely
+when it's blank.
+
+### `--images`: photos go on the variation, and only once
+
+A photo is of one colorway, so it is attached to the **ITEM_VARIATION**, not
+the ITEM. An item here is a style (`Silk Scarf`) and every variation under it
+looks completely different — one photo on the item would pick a winner and
+mislabel everything else.
+
+**`FinishedProductImage.square_image_id` is the whole point.** Square's
+`CreateCatalogImage` appends to the object's `image_ids` and has nothing that
+says "you already sent me this"; without a local record, every re-run stacks
+another copy of the same photo on the same variation. So the ID is written the
+moment Square answers, before the next photo starts — the run can die anywhere
+and what got through is already recorded.
+
+Two consequences fall out of that:
+
+- **A success with no ID back stops the run.** Square has the photo, we have
+  nothing to record, and continuing would upload it again next time. It's the
+  one case here where a success is worse than an error.
+- **The first photo to land on a variation is its primary**, and later ones
+  are not, so a re-run can't displace the picture the POS shows.
+
+It's a mode of its own because it's slow: no batch endpoint, one multipart
+request per photo, and the bucket is private so the bytes go bucket → this
+process → Square rather than being handed over as a URL Square could fetch.
+That has no business running on the schedule that pushes stock counts.
+
+Three things it can't send are **named and counted, never silently dropped** —
+from Square's end all three look identical (a product with no picture):
+products Square has never seen (run the plain sync first), images that are
+only an external URL with no file in the bucket, and files missing from the
+bucket. That last one is caught narrowly on purpose: `S3Storage` raises
+`FileNotFoundError` only on a 404 and re-raises every other `ClientError`, so
+one missing object skips one photo while bad credentials still stop the run.
+
+### Colour bands are not synced, on purpose
+
+`Recipe.color_bands` stays local. The POS never displays custom attributes, so
+pushing them would put data in Square that no one can see and that then has to
+be kept in step. The question they answer — "what sold in red?" — is a local
+join from a sale back to `recipe.color_bands`, which needs nothing at the
+Square end beyond the variation ID already stored.
+
 ## Templates: three layers, and the `block.super` trap
 
 Every page template inherits from a shared skeleton. Nothing extends
