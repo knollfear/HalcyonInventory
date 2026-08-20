@@ -3170,7 +3170,11 @@ def production_sheet_index(request):
     return render(request, "scarves/production_sheet_index.html", {
         "form": form,
         "baths": baths,
-        "submitted": bool(request.GET) or request.method == "POST",
+        # Only a form that actually asked a question gets an answer below.
+        # Keyed on validity rather than "was anything submitted", or a typo in
+        # the bath count reads back as "nothing needs dyeing" — which is a
+        # different and much more alarming statement.
+        "submitted": form.is_bound and form.is_valid(),
         "short_blanks": production.short_blanks(baths),
         # Sheets printed and not reported. The whole design leans on paper
         # coming back, so a sheet that never does has to be visible here

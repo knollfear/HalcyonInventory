@@ -6989,3 +6989,23 @@ class BoothReasonHalvesTests(TestCase):
 
         self.assertNotIn("hx-get", body)
         self.assertNotIn("hx-post", body)
+
+
+class ProductionPickerFeedbackTests(TestCase):
+    """A bad number must not read back as "nothing needs dyeing"."""
+
+    def setUp(self):
+        self.client.force_login(User.objects.create_user("staff", password="pw"))
+        make_bathable(make_recipe("Stormy Sea"), "Stormy Silk", on_hand=0, par=8, bath=4)
+        self.url = reverse("production_sheet_index")
+
+    def test_a_typo_shows_the_error_not_an_empty_queue(self):
+        response = self.client.get(self.url, {"baths": "900"})
+
+        self.assertNotContains(response, "Nothing needs dyeing")
+        self.assertTrue(response.context["form"].errors)
+
+    def test_a_real_preview_still_answers(self):
+        response = self.client.get(self.url, {"baths": "10"})
+
+        self.assertEqual(len(response.context["baths"]), 2)
