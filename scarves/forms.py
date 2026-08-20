@@ -13,6 +13,7 @@ from .models import (  # RecipeDye is the through model
     Recipe,
     RecipeDye,
     RawProduct,
+    RawProductCategory,
 )
 
 class RecipeDyesForm(forms.Form):
@@ -281,6 +282,50 @@ class HoursForm(forms.Form):
             self.add_error("pin", "That PIN doesn't match the name you picked.")
 
         return cleaned
+
+
+class ProductionSheetForm(forms.Form):
+    """What to put on a printed production sheet.
+
+    Three questions, because a dyeing session is planned in about that much
+    detail: how many baths are you good for, which table are you dyeing for,
+    and do you want the ones a bath would take past par.
+    """
+
+    #: A day's dyeing, generously. High enough that nobody hits it planning a
+    #: real session, low enough that a typo can't produce a hundred-page PDF.
+    MAX_BATHS = 60
+
+    baths = forms.IntegerField(
+        min_value=1,
+        max_value=MAX_BATHS,
+        initial=20,
+        label="How many baths?",
+        help_text="One row per dye bath, most urgent first.",
+    )
+    category = forms.ModelChoiceField(
+        queryset=RawProductCategory.objects.none(),   # set in __init__
+        required=False,
+        empty_label="Everything",
+        label="Just one kind of blank?",
+    )
+    include_overshoot = forms.BooleanField(
+        required=False,
+        label="Include ones a bath would take past par",
+        help_text=(
+            "Off, the sheet only lists products where a whole bath still "
+            "lands at or under par. On, it also lists the ones that are "
+            "short by less than a bath — overshoot is a bath being a fixed "
+            "size, not overproduction, and those shortages get rounded away "
+            "next time the recipe is dyed anyway."
+        ),
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Per-instance, so a category added this morning is selectable
+        # without a redeploy — same reasoning as the employee pickers.
+        self.fields["category"].queryset = RawProductCategory.objects.order_by("name")
 
 
 def parse_label_items(raw_values):

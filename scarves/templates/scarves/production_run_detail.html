@@ -1,0 +1,84 @@
+{% extends "scarves/base_internal.html" %}
+{% comment %}
+One printed sheet, from the office side: what it asked for, what came back,
+and the link to hand over if the QR won't scan.
+{% endcomment %}
+
+{% block title %}Run {{ run.pk }}{% endblock %}
+{% block heading %}Production run {{ run.pk }}{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 940px; }
+  table.rows { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  table.rows th, table.rows td {
+      text-align: left; padding: 6px 8px; border-bottom: 1px solid #e6eaee;
+      font-size: 13px;
+  }
+  table.rows th { font-size: 11px; text-transform: uppercase; color: #667; }
+  table.rows td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.done td { background: #f2f8f2; }
+  .crewlink {
+      font-family: ui-monospace, Menlo, monospace; font-size: 12px;
+      word-break: break-all;
+  }
+{% endblock %}
+
+{% block content %}
+
+  <p>
+    {{ run.rows.count }} bath{{ run.rows.count|pluralize }},
+    printed {{ run.created_at|date:"d M Y, H:i" }}.
+    {% if run.included_overshoot %}Included products a bath takes past par.{% endif %}
+  </p>
+
+  {% if run.is_open %}
+    <div class="panel warn">
+      <strong>Still out.</strong> Nothing has been reported against this sheet,
+      so none of it has moved inventory.
+    </div>
+  {% else %}
+    <div class="panel">
+      <strong>{{ run.done_count }} of {{ run.rows.count }} reported done</strong>
+      on {{ run.submitted_at|date:"d M Y, H:i" }}{% if run.submitted_by %}
+      by {{ run.submitted_by.name }}{% endif %}.
+    </div>
+  {% endif %}
+
+  <p>
+    <a class="btn" href="{% url 'production_sheet_pdf' run.pk %}">Print the sheet</a>
+  </p>
+
+  <p class="muted">
+    The crew's link, if the QR won't scan:<br>
+    <span class="crewlink">{{ crew_url }}</span>
+  </p>
+
+  <table class="rows">
+    <thead>
+      <tr>
+        <th>#</th><th>Colorway</th><th>Blank</th><th>SKU</th>
+        <th class="num">Yields</th><th>Reported</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in run.rows.all %}
+        <tr {% if row.done_at %}class="done"{% endif %}>
+          <td>{{ row.order }}</td>
+          <td>{{ row.finished_product.recipe.name }}</td>
+          <td>{{ row.finished_product.raw_product.name }}</td>
+          <td>{{ row.finished_product.sku|default:"—" }}</td>
+          <td class="num">{{ row.quantity }}</td>
+          <td>
+            {% if row.done_at %}
+              done {{ row.done_at|date:"d M, H:i" }}
+            {% else %}
+              —
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+{% endblock %}

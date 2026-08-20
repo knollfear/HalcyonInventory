@@ -255,6 +255,91 @@ the whole card-backfill flow write log rows only when the date is in the past �
 that yarn was counted or sold long ago, and adding it to `number_on_hand` would
 inflate current inventory by however far back the records go.
 
+## Production sheets: paper to the dye room, one scan back
+
+`private/production-sheet/` prints a dye-room worksheet — the next N baths to
+run — and `secret/production/<token>/` is how the answer comes back.
+`scarves/production.py` picks the baths and draws the PDF.
+
+The session runs off paper because the dye room has gloves, water and a sink
+in it, which makes a phone the wrong thing to be holding. The sheet is the
+work order, a pencil is the input device, and the phone is picked up once,
+afterwards, with dry hands.
+
+**The row is a bath, not a scarf.** A bath is one blank plus one recipe
+yielding `number_per_dye_bath` units of a single SKU, so production is not a
+column of counts to be entered — it is a handful of yes/no answers. "We only
+got through 10 of the 20" is ten ticked boxes, nobody adds anything up, and
+the form on the phone is the same rows in the same order, which makes
+reporting recognition rather than transcription.
+
+**One QR for the sheet, not one per row.** Twenty codes would be twenty scans
+to record what is one session's work. The token in that URL is what
+authorises the return — the same bargain as the other `secret/` pages, scoped
+to a single sheet instead of standing open forever, and it means the crew
+report production without accounts. No PIN: you reached the page by scanning
+something you are holding, so a PIN would be friction with nothing behind it.
+`ProductionRun.submitted_by` is filled from the remembered-PIN cookie when the
+phone knows a name, purely as a record.
+
+**`ProductionRunRow.applied_log` is what stops a bath counting twice.** The
+return URL is printed on paper that can be re-scanned, the button can be
+double-tapped, and somebody who remembers one more bath will reopen the page
+and submit again. All three are normal. `production.apply_row()` is a no-op on
+a row that already has a log — same failure as the Square webhook and
+redelivered orders, same fix. Un-ticking is deliberately **not** the inverse:
+once stock has moved, taking it back is an inventory adjustment with a reason
+attached, not a checkbox on a page with no login.
+
+`quantity` is frozen when the sheet prints rather than read back off the raw
+product. The paper says `x4` and the paper is what somebody worked from; if
+the bath size is edited next week, that row still has to mean what it said.
+
+### What lands on the sheet
+
+Default is `FinishedProduct.behind_a_bath` — products where a whole bath still
+lands at or under par, which is where a session's work is fully used. The
+checkbox widens it to everything below par, including the ones a bath takes
+*past* par. That second group isn't sloppiness: a bath is a fixed size, so
+overshoot is rounding rather than overproduction, and those shortages get
+rounded away next time the recipe runs anyway. Worth printing when the session
+has capacity spare, not when it doesn't — hence a checkbox rather than a
+judgement baked into the query.
+
+Baths of one recipe print together, because one mix and one pot serve several
+loads and that is what makes the session cheaper. Order *between* recipes is
+urgency, and an empty shelf leads: zero is the only state a customer can see,
+where half par is just a shorter stack.
+
+The picker **says when there aren't enough blanks** for what it's about to
+ask for, and prints anyway. The order may already be placed, and refusing
+would be the app arguing with someone who can see the shelf.
+
+**A sheet that never comes back is listed as still out**, on the picker and on
+`secret/production/`. The whole design leans on paper returning, so an
+unreported session must not be something only the person who printed it
+remembers — the failure is otherwise silent, and looks exactly like a session
+that never happened.
+
+### Rows carry a barcode, and nothing reads it yet
+
+The QR flow never touches them. They are there for the next step: a photo of
+the marked sheet filling the same confirmation page in, instead of twenty
+taps. Barcode decoding already works here and hands back each symbol's
+bounding box, which localises its row and gives scale and skew for free — so
+a tick box at a **fixed offset** from a barcode (`BOX_TO_BARCODE`,
+`BOX_SIZE`) becomes "is this known rectangle darker than blank paper?" rather
+than general checkbox recognition. Printing them now costs nothing and means
+sheets already in circulation work when that lands. When it does, it must
+**pre-tick the confirmation page, never write straight through** — same rule
+as `colorbands`: it fills the form in, a person decides.
+
+**Marking is positive only.** Tick what you did; never cross out what you
+didn't. Crossing out is the tempting shorthand and it's wrong twice: pen
+through a Code128 sometimes still decodes and sometimes doesn't, so the signal
+that matters rides on the unreliable mark, and an unmarked row stops meaning
+anything definite.
+
 ## Timekeeping: the pay week, and the two totals
 
 The hours form (`secret/hours/`) and the timesheet (`private/timesheet/`)

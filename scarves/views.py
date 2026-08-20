@@ -30,6 +30,8 @@ from .models import (
     FinishedProductImage,
     InventoryLog,
     ProductImageUpload,
+    ProductionRun,
+    ProductionRunRow,
     RawProduct,
     RawProductCategory,
     RecipeDye,
@@ -41,12 +43,13 @@ from django.contrib import messages
 from django.shortcuts import render, redirect
 from django.template.response import TemplateResponse
 
-from . import colorbands, crew, labels, timesheets
+from . import colorbands, crew, labels, production, timesheets
 from .colorutils import nearest_by_color, pick_color_cluster
 from .forms import (
     BoothPhotoForm,
     HoursForm,
     LabelRunForm,
+    ProductionSheetForm,
     QuickRecipeRowForm,
     RecipeDyesForm,
 )
@@ -3089,6 +3092,210 @@ def timesheet(request):
         "is_current_week": start == timesheets.week_start(today),
         "today": today,
         "hours_entry_url": request.build_absolute_uri(reverse("hours_entry")),
+    })
+
+
+# ---------------------------------------------------------------------------
+# Production sheets: paper to the dye room, one scan back.
+#
+# Three views for staff (plan it, look at it, print it) and two for the crew
+# (find your sheet, report it done). The split is the usual one — planning is
+# a staff job at a desk, reporting is done by whoever was at the sink, and
+# they have no accounts.
+# ---------------------------------------------------------------------------
+
+
+def _crew_run_url(request, run):
+    """The absolute URL that goes in the QR code."""
+    return request.build_absolute_uri(
+        reverse("production_run", args=[run.token])
+    )
+
+
+@page_meta(
+    title="Production Sheet",
+    description="Print a dye-room worksheet: the next N baths to run, most "
+                "urgent first, with a QR code the crew scan afterwards to "
+                "say which ones they got through.",
+    category="Production",
+)
+@login_required
+@require_http_methods(["GET", "POST"])
+def production_sheet_index(request):
+    """Plan the sheet, see exactly what it asks for, then print it.
+
+    Preview by GET, create by POST. A run only exists once somebody has
+    decided to print one, so browsing the options leaves nothing behind —
+    but the moment paper exists, so does the row that the crew's return URL
+    points at.
+    """
+    if request.method == "POST":
+        form = ProductionSheetForm(request.POST)
+        if form.is_valid():
+            baths = production.plan_baths(
+                form.cleaned_data["baths"],
+                category=form.cleaned_data.get("category"),
+                include_overshoot=form.cleaned_data["include_overshoot"],
+            )
+            if not baths:
+                messages.warning(request, "Nothing needs dyeing for those settings.")
+                return redirect(f"{reverse('production_sheet_index')}?{request.POST.urlencode()}")
+
+            with transaction.atomic():
+                run = ProductionRun.objects.create(
+                    category=form.cleaned_data.get("category"),
+                    included_overshoot=form.cleaned_data["include_overshoot"],
+                )
+                ProductionRunRow.objects.bulk_create([
+                    ProductionRunRow(
+                        run=run,
+                        finished_product=bath.product,
+                        order=index,
+                        quantity=bath.quantity,
+                    )
+                    for index, bath in enumerate(baths, start=1)
+                ])
+            return redirect("production_run_detail", pk=run.pk)
+    else:
+        form = ProductionSheetForm(request.GET or None)
+
+    baths = []
+    if form.is_bound and form.is_valid():
+        baths = production.plan_baths(
+            form.cleaned_data["baths"],
+            category=form.cleaned_data.get("category"),
+            include_overshoot=form.cleaned_data["include_overshoot"],
+        )
+
+    return render(request, "scarves/production_sheet_index.html", {
+        "form": form,
+        "baths": baths,
+        "submitted": bool(request.GET) or request.method == "POST",
+        "short_blanks": production.short_blanks(baths),
+        # Sheets printed and not reported. The whole design leans on paper
+        # coming back, so a sheet that never does has to be visible here
+        # rather than being remembered by whoever printed it.
+        "open_runs": (
+            ProductionRun.objects.filter(submitted_at__isnull=True)
+            .prefetch_related("rows")
+        ),
+    })
+
+
+@page_meta(
+    title="Production Sheet (one run)",
+    description="One printed sheet: what it asked for, what came back, and "
+                "the link the crew use to report it.",
+    category="Production",
+    show_in_index=False,
+)
+@login_required
+def production_run_detail(request, pk):
+    run = get_object_or_404(
+        ProductionRun.objects.prefetch_related(
+            "rows__finished_product__recipe",
+            "rows__finished_product__raw_product",
+        ),
+        pk=pk,
+    )
+    return render(request, "scarves/production_run_detail.html", {
+        "run": run,
+        "crew_url": _crew_run_url(request, run),
+    })
+
+
+@page_meta(
+    title="Production Sheet PDF",
+    description="Renders one run's worksheet for printing.",
+    category="Production",
+    note="Returns a PDF. Reached from the run's page.",
+    show_in_index=False,
+)
+@login_required
+def production_sheet_pdf(request, pk):
+    run = get_object_or_404(ProductionRun, pk=pk)
+    pdf = production.render_sheet(run, _crew_run_url(request, run))
+    response = HttpResponse(pdf, content_type="application/pdf")
+    response["Content-Disposition"] = (
+        f'inline; filename="production-run-{run.pk}.pdf"'
+    )
+    return response
+
+
+@page_meta(
+    title="Report a Dyeing Session",
+    description="Pick the sheet you were working from and tick off the baths "
+                "you finished. No login — the sheet's own code is the way in.",
+    category="Production",
+)
+def production_run_index(request):
+    """The fallback for a sheet whose QR won't scan.
+
+    The QR is the fast path and this is the one that still works with a
+    cracked camera, a flat battery or a photocopied sheet. Open sheets only,
+    newest first, which is almost always the one in your hand.
+    """
+    return render(request, "scarves/production_run_index.html", {
+        "runs": (
+            ProductionRun.objects.filter(submitted_at__isnull=True)
+            .prefetch_related("rows")[:20]
+        ),
+    })
+
+
+@page_meta(
+    title="Report a Dyeing Session (one sheet)",
+    description="The rows from one printed sheet, to tick off.",
+    category="Production",
+    show_in_index=False,
+)
+@require_http_methods(["GET", "POST"])
+def production_run(request, token):
+    """The crew's page: the same rows as the paper, in the same order.
+
+    No login and no PIN. The token is on a sheet of paper that was in the dye
+    room, which is the same bargain the other `secret/` pages make, and
+    asking for a PIN on a page you reached by scanning something you are
+    holding would be friction with nothing on the other side of it. The name
+    is filled in from the phone if it knows one, purely as a record of who
+    reported.
+    """
+    run = get_object_or_404(
+        ProductionRun.objects.prefetch_related(
+            "rows__finished_product__recipe",
+            "rows__finished_product__raw_product",
+        ),
+        token=token,
+    )
+
+    if request.method == "POST":
+        ticked = set(request.POST.getlist("done"))
+        applied = 0
+        with transaction.atomic():
+            for row in run.rows.all():
+                if str(row.pk) not in ticked or row.is_applied:
+                    continue
+                row.done_at = timezone.now()
+                row.save(update_fields=["done_at"])
+                production.apply_row(row)
+                applied += 1
+
+            if run.submitted_at is None:
+                run.submitted_at = timezone.now()
+            employee, _pin = crew.remembered(request)
+            if employee is not None and run.submitted_by_id is None:
+                run.submitted_by = employee
+            run.save(update_fields=["submitted_at", "submitted_by"])
+
+        request.session["production_run_applied"] = applied
+        return redirect("production_run", token=run.token)
+
+    applied = request.session.pop("production_run_applied", None)
+    employee, _pin = crew.remembered(request)
+    return render(request, "scarves/production_run.html", {
+        "run": run,
+        "just_applied": applied,
+        "remembered": employee,
     })
 
 

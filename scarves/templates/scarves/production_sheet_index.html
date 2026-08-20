@@ -1,0 +1,142 @@
+{% extends "scarves/base_internal.html" %}
+{% comment %}
+Picker and preview in one page, same as the label sheet: everything the run
+will ask for is on screen before any paper exists. Printing creates a run, so
+the preview is deliberately a GET and the print button is the only POST.
+{% endcomment %}
+
+{% block title %}Production Sheet{% endblock %}
+{% block heading %}Production Sheet{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 940px; }
+
+  .field { margin-bottom: 14px; }
+  .field label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+  .field .help { font-size: 12px; color: #667; margin-top: 4px; }
+  .field input[type="number"], .field select {
+      font: inherit; padding: 5px 8px; border: 1px solid #cfd6de;
+      border-radius: 6px; background: #fff;
+  }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; }
+  @media (max-width: 640px) { .grid2 { grid-template-columns: 1fr; } }
+
+  .tick { display: flex; gap: 8px; align-items: flex-start; }
+  .tick input { margin-top: 3px; }
+
+  table.rows { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  table.rows th, table.rows td {
+      text-align: left; padding: 6px 8px; border-bottom: 1px solid #e6eaee;
+      font-size: 13px;
+  }
+  table.rows th { font-size: 11px; text-transform: uppercase; color: #667; }
+  table.rows td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .headline { font-size: 26px; font-weight: 700; color: var(--accent); }
+{% endblock %}
+
+{% block content %}
+
+  {% if open_runs %}
+    <div class="panel">
+      <strong>Sheets still out</strong>
+      {% comment %}
+      A printed sheet that never comes back is the failure mode this whole
+      design leans on not happening quietly, so it is listed first.
+      {% endcomment %}
+      <ul>
+        {% for run in open_runs %}
+          <li>
+            <a href="{% url 'production_run_detail' run.pk %}">Run {{ run.pk }}</a>
+            — {{ run.rows.count }} bath{{ run.rows.count|pluralize }},
+            printed {{ run.created_at|date:"d M Y" }}, nothing reported yet
+          </li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+
+  <form method="get">
+    <div class="grid2">
+      <div class="field">
+        <label for="{{ form.baths.id_for_label }}">{{ form.baths.label }}</label>
+        {{ form.baths }}
+        <div class="help">{{ form.baths.help_text }}</div>
+        {{ form.baths.errors }}
+      </div>
+      <div class="field">
+        <label for="{{ form.category.id_for_label }}">{{ form.category.label }}</label>
+        {{ form.category }}
+        {{ form.category.errors }}
+      </div>
+    </div>
+    <div class="field tick">
+      {{ form.include_overshoot }}
+      <div>
+        <label for="{{ form.include_overshoot.id_for_label }}">{{ form.include_overshoot.label }}</label>
+        <div class="help">{{ form.include_overshoot.help_text }}</div>
+      </div>
+    </div>
+    <button class="btn" type="submit">Preview</button>
+  </form>
+
+  {% if submitted and baths %}
+    <hr>
+    <p class="headline">{{ baths|length }} bath{{ baths|length|pluralize }}</p>
+
+    {% if short_blanks %}
+      <div class="panel warn">
+        <strong>Not enough blanks for all of this.</strong>
+        {% comment %}
+        Said, not enforced. The order may already be placed, and refusing to
+        print would be the app arguing with someone who can see the shelf.
+        {% endcomment %}
+        <ul>
+          {% for raw, needed, on_hand in short_blanks %}
+            <li>{{ raw.name }} — needs {{ needed }}, {{ on_hand }} on hand</li>
+          {% endfor %}
+        </ul>
+      </div>
+    {% endif %}
+
+    <table class="rows">
+      <thead>
+        <tr>
+          <th>#</th><th>Colorway</th><th>Blank</th><th>SKU</th>
+          <th class="num">Yields</th><th class="num">On hand</th><th class="num">Par</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for bath in baths %}
+          <tr>
+            <td>{{ forloop.counter }}</td>
+            <td>{{ bath.recipe_name }}</td>
+            <td>{{ bath.blank_name }}</td>
+            <td>{{ bath.product.sku|default:"—" }}</td>
+            <td class="num">{{ bath.quantity }}</td>
+            <td class="num">{{ bath.product.number_on_hand }}</td>
+            <td class="num">{{ bath.product.par }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <form method="post" style="margin-top:18px">
+      {% csrf_token %}
+      <input type="hidden" name="baths" value="{{ form.cleaned_data.baths }}">
+      <input type="hidden" name="category" value="{{ form.cleaned_data.category.pk|default_if_none:'' }}">
+      {% if form.cleaned_data.include_overshoot %}
+        <input type="hidden" name="include_overshoot" value="on">
+      {% endif %}
+      <button class="btn" type="submit">Print this sheet</button>
+      <p class="muted">
+        Creates a run and a QR code the crew scan to report back. Nothing is
+        recorded against inventory until they do.
+      </p>
+    </form>
+  {% elif submitted %}
+    <hr>
+    <p>Nothing needs dyeing for those settings.</p>
+  {% endif %}
+
+{% endblock %}

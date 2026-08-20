@@ -1,0 +1,47 @@
+{% extends "scarves/base_public.html" %}
+{% comment %}
+The fallback for a sheet whose QR won't scan — a cracked camera, a flat
+battery, a third-generation photocopy. Public shell because there is no
+login; off the public map because it isn't for customers.
+{% endcomment %}
+
+{% block title %}Report a Dyeing Session{% endblock %}
+{% block heading %}Which sheet were you working from?{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 460px; }
+  ul.runs { list-style: none; padding: 0; margin: 0; }
+  ul.runs li { margin-bottom: 12px; }
+  ul.runs a {
+      display: block; padding: 16px; border: 1px solid #c8cfd8;
+      border-radius: 10px; background: #fff; text-decoration: none;
+      color: var(--ink); font-size: 16px;
+  }
+  ul.runs .meta { display: block; font-size: 13px; color: #667; margin-top: 4px; }
+{% endblock %}
+
+{% block content %}
+
+  {% if runs %}
+    <p class="muted">
+      The run number is printed at the top of your sheet.
+    </p>
+    <ul class="runs">
+      {% for run in runs %}
+        <li>
+          <a href="{% url 'production_run' run.token %}">
+            <strong>Run {{ run.pk }}</strong>
+            <span class="meta">
+              {{ run.rows.count }} bath{{ run.rows.count|pluralize }} ·
+              printed {{ run.created_at|date:"d M Y" }}
+            </span>
+          </a>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p>No sheets are waiting to be reported.</p>
+  {% endif %}
+
+{% endblock %}

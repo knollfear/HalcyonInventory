@@ -134,6 +134,37 @@ urlpatterns = [
         name="product_search",
     ),
 
+    # --- Production sheets ---
+    # Planning is staff at a desk; reporting is whoever was at the sink, and
+    # they have no accounts. So the return path is secret/ and its way in is
+    # a token printed on the paper — scoped to one sheet rather than a
+    # standing URL, and expiring in practice when the run is reported.
+    path(
+        "private/production-sheet/",
+        views.production_sheet_index,
+        name="production_sheet_index",
+    ),
+    path(
+        "private/production-sheet/<int:pk>/",
+        views.production_run_detail,
+        name="production_run_detail",
+    ),
+    path(
+        "private/production-sheet/<int:pk>/pdf/",
+        views.production_sheet_pdf,
+        name="production_sheet_pdf",
+    ),
+    path(
+        "secret/production/",
+        views.production_run_index,
+        name="production_run_index",
+    ),
+    path(
+        "secret/production/<str:token>/",
+        views.production_run,
+        name="production_run",
+    ),
+
     # --- Timekeeping ---
     # The two halves sit in different buckets on purpose. Reporting your own
     # hours needs no account — that is the entire point — but it isn't for

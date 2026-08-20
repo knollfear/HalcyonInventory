@@ -1,3 +1,4 @@
+import secrets
 from decimal import Decimal
 
 from colorfield.fields import ColorField
@@ -1036,3 +1037,156 @@ class UnmatchedSale(models.Model):
     @property
     def amount(self) -> Decimal:
         return Decimal(self.amount_cents) / 100
+
+
+def new_run_token():
+    """An unguessable path segment for a production sheet's return URL.
+
+    Long enough that the URL is not worth guessing, short enough to be
+    readable off paper if the QR won't scan — which is the whole reason the
+    run also prints its number in plain text.
+    """
+    return secrets.token_urlsafe(12)
+
+
+class ProductionRun(models.Model):
+    """One printed production sheet: a list of dye baths to go and do.
+
+    The sheet is the work order and the paper is what goes to the sink —
+    gloves, dye and water make a phone a bad thing to be holding. So the
+    session is marked in pencil as it happens, and the phone is only picked up
+    afterwards to say which of the baths actually got done.
+
+    **The row is a bath, not a scarf.** A dye bath is one blank plus one
+    recipe and yields `number_per_dye_bath` units of a single SKU, so a
+    session is a handful of yes/no answers rather than a column of counts.
+    "We got through 10 of the 20" is ten ticked rows, and nothing has to be
+    added up by the person holding the pencil.
+
+    Getting the answer back is one scan of one QR code for the whole sheet,
+    not one per row: twenty codes would be twenty interactions to record what
+    is genuinely one session's work. The token in that URL is what authorises
+    the return — the same bargain as the other `secret/` pages, except scoped
+    to a single sheet rather than standing open forever.
+    """
+
+    token = models.CharField(
+        max_length=32,
+        unique=True,
+        default=new_run_token,
+        help_text="Path segment for the crew's return URL. Printed as a QR code.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    submitted_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=(
+            "When the crew first reported back. Null means this sheet is "
+            "still out — which has to be visible, because a session nobody "
+            "reported looks exactly like a session that never happened."
+        ),
+    )
+    submitted_by = models.ForeignKey(
+        Employee,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="production_runs",
+        help_text=(
+            "Whoever reported back, if their phone remembered them. A record, "
+            "not a check: the token on the paper is what lets the report "
+            "through, so asking for a PIN here would only add friction to a "
+            "page reached by scanning a sheet you are already holding."
+        ),
+    )
+
+    # Kept so the sheet can say what it asked for, and so a reprint can be
+    # made to match. Not re-derived on submit: by then the shortages have
+    # moved, and the question "what was on the paper?" has exactly one honest
+    # answer, which is the rows.
+    category = models.ForeignKey(
+        RawProductCategory,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="production_runs",
+    )
+    included_overshoot = models.BooleanField(
+        default=False,
+        help_text=(
+            "Whether the sheet included products a whole bath would take past "
+            "par. See FinishedProduct.behind_a_bath for the distinction."
+        ),
+    )
+    note = models.CharField(max_length=200, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Production run #{self.pk} ({self.rows.count()} baths)"
+
+    @property
+    def is_open(self) -> bool:
+        return self.submitted_at is None
+
+    @property
+    def done_count(self) -> int:
+        return sum(1 for row in self.rows.all() if row.done_at is not None)
+
+
+class ProductionRunRow(models.Model):
+    """One dye bath on one sheet: one line, one tick box, one barcode.
+
+    `quantity` is frozen when the sheet prints rather than read back off the
+    raw product. The paper says "x4" and the paper is what the person worked
+    from; if somebody edits the bath size next week, this row still has to
+    mean what it said when it was in their hand.
+    """
+
+    run = models.ForeignKey(
+        ProductionRun,
+        on_delete=models.CASCADE,
+        related_name="rows",
+    )
+    finished_product = models.ForeignKey(
+        FinishedProduct,
+        on_delete=models.PROTECT,
+        related_name="production_rows",
+    )
+    order = models.PositiveSmallIntegerField(
+        default=1,
+        help_text="Position on the printed sheet, so the phone lists them in the same order.",
+    )
+    quantity = models.PositiveSmallIntegerField(
+        help_text="Units this bath yields, as printed on the sheet.",
+    )
+    done_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When this bath was reported done. Null means it wasn't.",
+    )
+    applied_log = models.ForeignKey(
+        InventoryLog,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+        help_text=(
+            "The stock movement this row caused. Set once and then never "
+            "again — it is what stops a second submission, a double-tapped "
+            "button or a re-scanned QR from dyeing the same bath twice on "
+            "paper. Same failure the Square webhook had with redelivered "
+            "orders, and the same fix."
+        ),
+    )
+
+    class Meta:
+        ordering = ["run", "order", "pk"]
+
+    def __str__(self):
+        return f"{self.finished_product.sku or self.finished_product.name} x{self.quantity}"
+
+    @property
+    def is_applied(self) -> bool:
+        return self.applied_log_id is not None

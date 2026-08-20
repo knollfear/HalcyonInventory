@@ -1,0 +1,99 @@
+{% extends "scarves/base_public.html" %}
+{% comment %}
+The crew's page, reached by scanning the sheet. Same rows as the paper, in
+the same order, so reporting back is recognition rather than transcription.
+
+Big tap targets and no JavaScript: this gets used standing up, on a phone,
+by someone who has just taken their gloves off, quite possibly on one bar of
+signal — the same reasoning as the booth form.
+{% endcomment %}
+
+{% block title %}Run {{ run.pk }}{% endblock %}
+{% block heading %}Run {{ run.pk }} — what got done?{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 520px; }
+
+  .row {
+      display: flex; gap: 14px; align-items: flex-start;
+      padding: 14px; margin-bottom: 10px;
+      border: 1px solid #c8cfd8; border-radius: 10px; background: #fff;
+      cursor: pointer;
+  }
+  /* 28px boxes: this is tapped with a thumb, not clicked with a mouse. */
+  .row input { width: 28px; height: 28px; flex: none; margin: 0; }
+  .row .what { font-size: 16px; font-weight: 600; }
+  .row .detail { font-size: 13px; color: #667; margin-top: 3px; }
+  .row.recorded { background: #f2f8f2; border-color: #b9d3b9; cursor: default; }
+  .row.recorded .tag {
+      font-size: 12px; font-weight: 700; color: #2f6b34;
+      text-transform: uppercase; letter-spacing: .04em;
+  }
+
+  .btn {
+      width: 100%; padding: 16px; font: inherit; font-size: 1.05rem;
+      font-weight: 600; border: 1px solid var(--accent); border-radius: 10px;
+      background: var(--accent); color: #fff; cursor: pointer;
+  }
+{% endblock %}
+
+{% block content %}
+
+  {% if just_applied is not None %}
+    <div class="panel">
+      {% if just_applied %}
+        <strong>Thanks — {{ just_applied }} bath{{ just_applied|pluralize }} recorded.</strong>
+        Stock has been updated.
+      {% else %}
+        <strong>Nothing new to record.</strong>
+        Everything you ticked was already in.
+      {% endif %}
+    </div>
+  {% endif %}
+
+  {% if remembered %}
+    <p class="muted">Reporting as <strong>{{ remembered.name }}</strong>.</p>
+  {% endif %}
+
+  <form method="post">
+    {% csrf_token %}
+
+    {% for row in run.rows.all %}
+      {% if row.is_applied %}
+        {% comment %}
+        Already recorded, and shown rather than hidden — a row that vanished
+        would read as "I never ticked that". Not un-tickable: once stock has
+        moved, taking it back is an inventory adjustment with a reason on it,
+        not a checkbox on a page with no login.
+        {% endcomment %}
+        <div class="row recorded">
+          <div>
+            <div class="what">{{ row.quantity }} × {{ row.finished_product.recipe.name }}</div>
+            <div class="detail">{{ row.finished_product.raw_product.name }}</div>
+            <div class="tag">Already recorded</div>
+          </div>
+        </div>
+      {% else %}
+        <label class="row">
+          <input type="checkbox" name="done" value="{{ row.pk }}">
+          <div>
+            <div class="what">{{ row.quantity }} × {{ row.finished_product.recipe.name }}</div>
+            <div class="detail">
+              {{ row.finished_product.raw_product.name }} ·
+              #{{ row.order }} on the sheet
+            </div>
+          </div>
+        </label>
+      {% endif %}
+    {% endfor %}
+
+    <button class="btn" type="submit">Record these</button>
+  </form>
+
+  <p class="muted" style="margin-top:18px">
+    Only tick the baths you actually finished. You can come back to this page
+    and add more later — the ones already recorded stay put.
+  </p>
+
+{% endblock %}
