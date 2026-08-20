@@ -613,6 +613,20 @@ class Employee(models.Model):
             "they already reported."
         ),
     )
+    user = models.OneToOneField(
+        "auth.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="employee",
+        help_text=(
+            "The login this person uses, for the few who have one. Almost "
+            "nobody does — the crew are deliberately account-less. It exists "
+            "so a signed-in staff member isn't asked to pick their own name "
+            "off a list and type a PIN on a page they have already "
+            "authenticated for. Blank is the normal case and changes nothing."
+        ),
+    )
     notes = models.TextField(blank=True)
 
     class Meta:

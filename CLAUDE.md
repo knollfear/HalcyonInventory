@@ -394,6 +394,46 @@ project, and the trigger for starting it is staff needing to *see* more than
 one page, not this. Until then the `Employee` PIN does what it does on the
 hours form: it stops the wrong name being tapped, and it is not a secret.
 
+### Signed in? Then no name picker and no PIN
+
+The crew get the name-and-PIN pair; a staff login gets neither, because a
+login is a stronger claim than four digits and being asked to pick your own
+name off a list on a page you already authenticated for is what makes an app
+feel like paperwork.
+
+`Employee.user` is the link, and it is blank for almost everybody — the crew
+are deliberately account-less. It only exists so the few people with a login
+are recognised. The degradation matters:
+
+| Who                        | Name picker | PIN |
+|----------------------------|-------------|-----|
+| Not signed in (the crew)   | yes         | yes |
+| Signed in, `user` linked   | no          | no  |
+| Signed in, not linked      | **yes**     | no  |
+
+The third row is the honest one. Without a link the app genuinely does not
+know which `Employee` a login is, and guessing would put somebody else's name
+on a sharing permission — so it still asks, and only drops the PIN.
+
+**The fields are removed from the form, not hidden in the template.** A field
+that is present but invisible is one a hand-built POST can still fill in, and
+here that would mean attributing a photo to whoever the sender named.
+
+### One reason, one half, and no request to switch
+
+The radio hides the half that doesn't apply, in CSS (`form:has(input[value=…]:checked)`),
+not with an htmx swap. The fields are already on the page, this gets used on
+a phone on one bar of signal, and a toggle that needs the network is a toggle
+that sometimes doesn't happen — the same reasoning that keeps the photo
+upload off the presigned-POST path. A browser without `:has()` shows both
+halves, which is what the page did before, so the fallback is the old
+behaviour rather than a form with nothing in it.
+
+None of this is load-bearing for correctness: the view already stores only
+the half the reason matches. It's the difference between a form that looks
+like it's asking two unrelated things and one that asks the question you
+picked.
+
 ### Sharing permission is two questions, not one
 
 A tick from the sender is the **sender's** permission. It is not the permission

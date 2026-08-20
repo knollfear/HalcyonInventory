@@ -6853,3 +6853,139 @@ class ProductionReturnTests(TestCase):
         response = self.client.get(reverse("production_run_index"))
 
         self.assertNotContains(response, f"Run {self.run.pk}")
+
+
+class BoothSignedInTests(TestCase):
+    """A staff login shouldn't be asked to prove itself twice.
+
+    The crew path is unchanged and tested elsewhere; what matters here is
+    that the name and PIN come off the page for someone already
+    authenticated, and that removing them doesn't quietly remove the
+    attribution `BoothPhoto` depends on.
+    """
+
+    def setUp(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        self.SimpleUploadedFile = SimpleUploadedFile
+        self.user = User.objects.create_user("owner", password="pw")
+        self.employee = Employee.objects.create(name="Robin", pin="4821", user=self.user)
+        self.url = reverse("booth_photo")
+
+    def _photo(self):
+        return self.SimpleUploadedFile(
+            "booth.jpg", make_jpeg((60, 40)), content_type="image/jpeg"
+        )
+
+    def test_a_linked_login_is_asked_for_neither(self):
+        self.client.force_login(self.user)
+
+        form = self.client.get(self.url).context["form"]
+
+        self.assertNotIn("employee", form.fields)
+        self.assertNotIn("pin", form.fields)
+
+    def test_the_photo_is_still_attributed(self):
+        """`BoothPhoto.employee` is required on purpose — a sharing
+        permission nobody can attribute isn't a permission."""
+        self.client.force_login(self.user)
+
+        self.client.post(self.url, {
+            "reason": BoothPhoto.REASON_SHARE,
+            "photo": self._photo(),
+            "share_website": True,
+        })
+
+        photo = BoothPhoto.objects.get()
+        self.assertEqual(photo.employee, self.employee)
+        self.assertTrue(photo.share_website)
+
+    def test_an_unlinked_login_still_picks_a_name(self):
+        """The app genuinely doesn't know which employee this is, and
+        guessing would put someone else's name on a permission."""
+        other = User.objects.create_user("stranger", password="pw")
+        self.client.force_login(other)
+
+        form = self.client.get(self.url).context["form"]
+
+        self.assertIn("employee", form.fields)
+        self.assertNotIn("pin", form.fields, "the login already proved more than a PIN")
+
+    def test_an_unlinked_login_can_still_send(self):
+        other = User.objects.create_user("stranger", password="pw")
+        self.client.force_login(other)
+
+        self.client.post(self.url, {
+            "employee": self.employee.pk,
+            "reason": BoothPhoto.REASON_SHARE,
+            "photo": self._photo(),
+        })
+
+        self.assertEqual(BoothPhoto.objects.get().employee, self.employee)
+
+    def test_the_crew_are_unaffected(self):
+        """Anonymous is still name plus PIN, and a wrong PIN still stops."""
+        form = self.client.get(self.url).context["form"]
+        self.assertIn("employee", form.fields)
+        self.assertIn("pin", form.fields)
+
+        self.client.post(self.url, {
+            "employee": self.employee.pk,
+            "pin": "1111",
+            "reason": BoothPhoto.REASON_SHARE,
+            "photo": self._photo(),
+        })
+        self.assertEqual(BoothPhoto.objects.count(), 0)
+
+    def test_a_signed_in_post_cannot_smuggle_a_pin_field(self):
+        """The fields are removed, not hidden — so a hand-built POST has
+        nothing to fill in."""
+        self.client.force_login(self.user)
+        other = Employee.objects.create(name="Someone Else", pin="1234")
+
+        self.client.post(self.url, {
+            "employee": other.pk,
+            "pin": "1234",
+            "reason": BoothPhoto.REASON_SHARE,
+            "photo": self._photo(),
+        })
+
+        self.assertEqual(BoothPhoto.objects.get().employee, self.employee)
+
+    def test_signing_in_writes_no_crew_cookie(self):
+        """There's no PIN to remember, and the login outlives a cookie."""
+        self.client.force_login(self.user)
+
+        self.client.post(self.url, {
+            "reason": BoothPhoto.REASON_SHARE,
+            "photo": self._photo(),
+        })
+
+        self.assertNotIn(crew.COOKIE, self.client.cookies)
+
+
+class BoothReasonHalvesTests(TestCase):
+    """Only the half the reason applies to is shown.
+
+    Cosmetic by design — the view already stores only the matching half — so
+    what's pinned is that the rule is on the page at all, and that it's the
+    kind that still works when the network doesn't.
+    """
+
+    def test_each_half_is_addressable_and_hidden_by_the_other_reason(self):
+        response = self.client.get(reverse("booth_photo"))
+        body = response.content.decode()
+
+        self.assertIn('class="half share"', body)
+        self.assertIn('class="half unidentified"', body)
+        self.assertIn(
+            'form:has(input[name="reason"][value="share"]:checked) .half.unidentified',
+            body,
+        )
+
+    def test_the_toggle_needs_no_request(self):
+        """A stall has one bar of signal; a toggle that needs the network is
+        a toggle that sometimes doesn't happen."""
+        body = self.client.get(reverse("booth_photo")).content.decode()
+
+        self.assertNotIn("hx-get", body)
+        self.assertNotIn("hx-post", body)

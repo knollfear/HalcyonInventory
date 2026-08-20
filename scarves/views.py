@@ -3518,12 +3518,12 @@ def booth_photo(request):
         attempts = request.session.get("booth_pin_attempts", 0)
         if attempts >= BOOTH_PIN_ATTEMPT_LIMIT:
             return render(request, "scarves/booth_photo.html", {
-                "form": BoothPhotoForm(now=now),
+                "form": BoothPhotoForm(now=now, user=request.user),
                 "locked": True,
                 "now": now,
             })
 
-        form = BoothPhotoForm(request.POST, request.FILES, now=now)
+        form = BoothPhotoForm(request.POST, request.FILES, now=now, user=request.user)
         if form.is_valid():
             request.session["booth_pin_attempts"] = 0
             data = form.cleaned_data
@@ -3553,14 +3553,19 @@ def booth_photo(request):
             photo.save()
             request.session["booth_photo_saved"] = photo.pk
             # After the PIN has been checked, never before — see crew.remember.
-            return crew.remember(
-                request, redirect("booth_photo"), data["employee"], data["pin"]
-            )
+            # Only the crew have a PIN to remember. A signed-in staff member
+            # is identified by their login, which outlives any cookie here.
+            response = redirect("booth_photo")
+            if "pin" in data:
+                response = crew.remember(
+                    request, response, data["employee"], data["pin"]
+                )
+            return response
 
         if form.has_error("pin"):
             request.session["booth_pin_attempts"] = attempts + 1
     else:
-        form = BoothPhotoForm(now=now, initial=crew.initial(
+        form = BoothPhotoForm(now=now, user=request.user, initial=crew.initial(
             request,
             reason=BoothPhoto.REASON_SHARE,
             sold_at=now.strftime("%Y-%m-%dT%H:%M"),
@@ -3570,7 +3575,11 @@ def booth_photo(request):
         "form": form,
         "saved": saved,
         "now": now,
-        "remembered": crew.remembered(request)[0],
+        # Only meaningful for the crew. Keyed on the PIN field rather than on
+        # being signed in, because the note it drives says "name and PIN
+        # filled in from this phone" — with no PIN on the page that sentence
+        # describes something that didn't happen.
+        "remembered": crew.remembered(request)[0] if "pin" in form.fields else None,
         "forget_param": crew.FORGET,
     })
 

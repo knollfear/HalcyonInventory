@@ -50,6 +50,22 @@ can leave a sharing permission attached to a sale report.
   .half h2 { font-size: 1rem; margin: 0 0 4px; }
   .half p.lead-in { font-size: .85rem; color: #667; margin: 0 0 14px; line-height: 1.5; }
 
+  /* Only the half the reason applies to. Done in CSS rather than with a
+     round trip: the fields are already on the page, this is used on a phone
+     on one bar of signal, and a toggle that needs the network is a toggle
+     that sometimes doesn't happen. Selecting on the radio's `value` rather
+     than a generated id so reordering the choices can't silently swap which
+     half hides.
+
+     A browser without :has() shows both halves, which is what this page did
+     before — so the failure mode is the old behaviour, not a form with
+     nothing in it. Nothing about correctness rests on this either way: the
+     view already stores only the half the reason matches. */
+  form:has(input[name="reason"][value="share"]:checked) .half.unidentified,
+  form:has(input[name="reason"][value="unidentified"]:checked) .half.share {
+      display: none;
+  }
+
   .btn {
       width: 100%; padding: 14px; font: inherit; font-size: 1rem;
       font-weight: 600; border: 1px solid var(--accent);
@@ -105,15 +121,31 @@ can leave a sharing permission attached to a sale report.
     {% csrf_token %}
     {{ form.non_field_errors }}
 
-    <div class="field">
-      <label for="{{ form.employee.id_for_label }}">{{ form.employee.label }}</label>
-      {{ form.employee }}{{ form.employee.errors }}
-    </div>
+    {% comment %}
+    Both of these disappear for a signed-in staff member: the login is a
+    stronger claim than a four-digit PIN, and being asked to pick your own
+    name off a list on a page you are already authenticated for is the sort
+    of thing that makes an app feel like paperwork. The fields are removed in
+    the form, not hidden here — a field that is present but invisible is one
+    a hand-built POST can still fill in.
+    {% endcomment %}
+    {% if form.employee %}
+      <div class="field">
+        <label for="{{ form.employee.id_for_label }}">{{ form.employee.label }}</label>
+        {{ form.employee }}{{ form.employee.errors }}
+      </div>
+    {% endif %}
 
-    <div class="field">
-      <label for="{{ form.pin.id_for_label }}">{{ form.pin.label }}</label>
-      {{ form.pin }}{{ form.pin.errors }}
-    </div>
+    {% if form.pin %}
+      <div class="field">
+        <label for="{{ form.pin.id_for_label }}">{{ form.pin.label }}</label>
+        {{ form.pin }}{{ form.pin.errors }}
+      </div>
+    {% endif %}
+
+    {% if form.signed_in_as %}
+      <p class="muted">Sending as <strong>{{ form.signed_in_as.name }}</strong>.</p>
+    {% endif %}
 
     {% if remembered %}
       {% comment %}Filled in from this device, not typed — see hours_entry.html.{% endcomment %}
@@ -135,7 +167,7 @@ can leave a sharing permission attached to a sale report.
       {{ form.reason.errors }}
     </div>
 
-    <div class="half">
+    <div class="half share">
       <h2>If it's something to share</h2>
       <p class="lead-in">
         Tick where it's OK to post. Ticking nothing is a fine answer — send it
@@ -158,7 +190,7 @@ can leave a sharing permission attached to a sale report.
       </div>
     </div>
 
-    <div class="half">
+    <div class="half unidentified">
       <h2>If nobody could identify it</h2>
       <p class="lead-in">
         Sell it as a plain item, then send the photo. The first six characters

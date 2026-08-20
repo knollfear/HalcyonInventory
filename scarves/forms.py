@@ -603,8 +603,28 @@ class BoothPhotoForm(forms.Form):
 
     def __init__(self, *args, **kwargs):
         self.now = kwargs.pop("now", None) or timezone.localtime()
+        # Who is already signed in, if anyone. The crew never are — this is
+        # for the handful of people with a staff login, who should not be
+        # asked to prove themselves twice on the same page.
+        user = kwargs.pop("user", None)
         super().__init__(*args, **kwargs)
         self.fields["employee"].queryset = Employee.objects.filter(is_active=True)
+
+        self.signed_in_as = None
+        if user is not None and user.is_authenticated:
+            # A login is a stronger claim than a four-digit PIN, so asking for
+            # the PIN on top of it buys nothing. The field goes rather than
+            # being hidden, because a field that is present but not shown is
+            # one a bad POST can still fill in.
+            del self.fields["pin"]
+            self.signed_in_as = Employee.objects.filter(
+                user=user, is_active=True
+            ).first()
+            # The name picker only goes when the app actually knows which
+            # employee this login is. Unlinked, it genuinely doesn't — and
+            # guessing would put somebody else's name on a permission.
+            if self.signed_in_as is not None:
+                del self.fields["employee"]
 
     def clean_pin(self):
         pin = (self.cleaned_data.get("pin") or "").strip()
@@ -636,10 +656,20 @@ class BoothPhotoForm(forms.Form):
     def clean(self):
         cleaned = super().clean()
 
-        employee = cleaned.get("employee")
-        pin = cleaned.get("pin")
-        if employee and pin and pin != employee.pin:
-            self.add_error("pin", "That PIN doesn't match the name you picked.")
+        # A signed-in staff member has no employee *field* to have filled in,
+        # so the answer is put where every caller already looks for it rather
+        # than making the view ask a second question.
+        if self.signed_in_as is not None:
+            cleaned["employee"] = self.signed_in_as
+
+        # No PIN field means a signed-in staff member, already authenticated
+        # by something stronger. With one, it is the crew and the rule is
+        # unchanged.
+        if "pin" in self.fields:
+            employee = cleaned.get("employee")
+            pin = cleaned.get("pin")
+            if employee and pin and pin != employee.pin:
+                self.add_error("pin", "That PIN doesn't match the name you picked.")
 
         reason = cleaned.get("reason")
 
