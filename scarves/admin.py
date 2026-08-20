@@ -393,9 +393,13 @@ class EmployeeAdmin(admin.ModelAdmin):
     guards a timesheet figure that a person reviews, not an account — see
     Employee's docstring for where that line is drawn.
     """
-    list_display = ("name", "pin", "is_active", "entry_count", "last_reported")
+    # `user` is here so linking one is discoverable — it is the only way a
+    # signed-in person stops being asked to pick their own name off the booth
+    # form. Blank for almost everybody, which is the normal case.
+    list_display = ("name", "pin", "is_active", "user", "entry_count", "last_reported")
     list_editable = ("pin", "is_active")
     list_filter = ("is_active",)
+    autocomplete_fields = ("user",)
     search_fields = ("name",)
     ordering = ("name",)
 
