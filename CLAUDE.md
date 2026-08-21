@@ -505,6 +505,30 @@ push, the "everything on hand" label run, any report.
 Shortfall shows up on `private/raw-inventory/`, already the reorder workflow
 and where it belongs: **you order these, you don't make them.**
 
+### Making them: `create_passthrough_products`
+
+Creating one is two rows — a `RawProduct` for the pile and a
+`FinishedProduct` for the thing Square sells — and the second is mechanical,
+so `create_passthrough_products --group "Undyed Yarn"` does the batch. Same
+name, no recipe, price off the raw product, `par=0` because the par that
+matters for these lives on `raw_product.par_level`. It skips raw products
+that already have a passthrough, so running it twice creates nothing new, and
+`--dry-run` shows the batch first.
+
+**Pricing, and why the fallback is $1.00.** There is an older helper,
+`_default_finished_name`'s neighbour `_default_price_for_raw`, which falls
+back to cost × 3. That's the wrong shape here twice over: a plausible price
+can reach a customer without anyone looking at it, and it bottoms out at
+**zero** whenever a blank has no cost recorded. Zero is the dangerous kind of
+wrong — valid, syncs, and rings up free at the till with a queue behind it.
+A pound is obviously wrong and gets fixed.
+
+**Null and zero are different, and the schema already says so.**
+`suggested_price` is nullable: null means nobody set a price, zero means
+somebody set it to zero, and a giveaway is a real product. So only a *missing*
+price is replaced. A deliberate zero is taken at its word and reported,
+because free is the one price nobody notices until it has been charged.
+
 ### Category is Yarn, not a category of its own
 
 Category means "which table at the stall" — that is why reference sheets print

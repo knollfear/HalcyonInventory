@@ -8030,3 +8030,156 @@ class PhotoUploadFlowTests(TestCase):
 
         self.assertNotContains(page, 'name="sheet"')
         self.assertContains(page, reverse("production_upload"))
+
+
+class CreatePassthroughProductsTests(TestCase):
+    """The one-off that makes the sellable half of each undyed yarn.
+
+    Creating one is two rows — a raw product for the pile, a finished product
+    for the thing Square sells — and the second is mechanical enough to be
+    worth doing in a pass rather than by hand per yarn.
+    """
+
+    def setUp(self):
+        self.category = RawProductCategory.objects.create(name="Yarn")
+        self.group = CatalogGroup.objects.create(
+            name="Undyed Yarn", category=self.category
+        )
+        self.merino = RawProduct.objects.create(
+            name="Merino Worsted Natural", category=self.category,
+            price="9.00", suggested_price="24.00", catalog_group=self.group,
+            number_on_hand=12, par_level=10,
+        )
+        self.bfl = RawProduct.objects.create(
+            name="BFL DK Ecru", category=self.category, price="8.00",
+            catalog_group=self.group, number_on_hand=4,
+        )
+
+    def _run(self, **kwargs):
+        out, err = StringIO(), StringIO()
+        call_command("create_passthrough_products", group="Undyed Yarn",
+                     stdout=out, stderr=err, **kwargs)
+        return out.getvalue() + err.getvalue()
+
+    def test_it_makes_one_per_raw_product(self):
+        self._run()
+
+        self.assertEqual(FinishedProduct.objects.count(), 2)
+        names = set(FinishedProduct.objects.values_list("name", flat=True))
+        self.assertEqual(names, {"Merino Worsted Natural", "BFL DK Ecru"})
+
+    def test_they_are_passthroughs(self):
+        self._run()
+
+        for product in FinishedProduct.objects.all():
+            self.assertTrue(product.is_passthrough)
+            self.assertIsNone(product.recipe)
+
+    def test_the_suggested_price_is_used_when_there_is_one(self):
+        self._run()
+
+        product = FinishedProduct.objects.get(name="Merino Worsted Natural")
+        self.assertEqual(product.price, Decimal("24.00"))
+
+    def test_a_missing_price_is_conspicuous_and_reported(self):
+        """A plausible price might reach a customer unlooked-at; a pound
+        gets noticed and fixed."""
+        output = self._run()
+
+        product = FinishedProduct.objects.get(name="BFL DK Ecru")
+        self.assertEqual(product.price, Decimal("1.00"))
+        self.assertIn("no usable suggested price", output)
+        self.assertIn("BFL DK Ecru", output)
+
+    def test_a_deliberate_zero_is_honoured(self):
+        """Null and zero are different things — the field is nullable, so
+        null means nobody set a price and zero means somebody set it. A
+        giveaway is a real product."""
+        RawProduct.objects.filter(pk=self.bfl.pk).update(suggested_price="0.00")
+
+        self._run()
+
+        self.assertEqual(
+            FinishedProduct.objects.get(name="BFL DK Ecru").price, Decimal("0.00")
+        )
+
+    def test_a_free_item_is_reported(self):
+        """Free is the one price nobody notices until it has been charged."""
+        RawProduct.objects.filter(pk=self.bfl.pk).update(suggested_price="0.00")
+
+        output = self._run()
+
+        self.assertIn("ring up free", output)
+        self.assertIn("BFL DK Ecru", output)
+
+    def test_a_missing_price_is_not_treated_as_free(self):
+        self._run()
+
+        self.assertEqual(
+            FinishedProduct.objects.get(name="BFL DK Ecru").price, Decimal("1.00")
+        )
+
+    def test_they_get_skus_without_being_asked(self):
+        self._run()
+
+        for product in FinishedProduct.objects.all():
+            self.assertTrue(product.sku.endswith("-UNDYED"), product.sku)
+
+    def test_stock_comes_from_the_raw_pile(self):
+        self._run()
+
+        product = FinishedProduct.objects.get(name="Merino Worsted Natural")
+        self.assertEqual(product.number_on_hand, 12)
+
+    def test_no_par_is_set_here(self):
+        """The par that matters lives on the raw product — you order these
+        rather than making them, and a par here is a number nothing reads."""
+        self._run()
+
+        self.assertEqual(
+            set(FinishedProduct.objects.values_list("par", flat=True)), {0}
+        )
+
+    def test_running_it_twice_creates_nothing_new(self):
+        self._run()
+        output = self._run()
+
+        self.assertEqual(FinishedProduct.objects.count(), 2)
+        self.assertIn("already had one", output)
+
+    def test_a_dry_run_creates_nothing(self):
+        output = self._run(dry_run=True)
+
+        self.assertEqual(FinishedProduct.objects.count(), 0)
+        self.assertIn("Would create 2", output)
+
+    def test_a_dyed_colorway_on_the_same_blank_does_not_block_it(self):
+        """A blank sold undyed *and* dyed into colorways could exist; its
+        colorways must not stop the undyed one being made."""
+        FinishedProduct.objects.create(
+            name="Merino Stormy", raw_product=self.merino,
+            recipe=make_recipe("Stormy Sea", hexes=()), price="30.00",
+        )
+
+        self._run()
+
+        self.assertEqual(
+            FinishedProduct.objects.filter(
+                raw_product=self.merino, recipe__isnull=True).count(),
+            1,
+        )
+
+    def test_an_unknown_group_stops_and_names_the_real_ones(self):
+        with self.assertRaises(CommandError) as caught:
+            call_command("create_passthrough_products", group="Nope",
+                         stdout=StringIO(), stderr=StringIO())
+
+        self.assertIn("Undyed Yarn", str(caught.exception))
+
+    def test_an_empty_group_stops_rather_than_reporting_success(self):
+        RawProduct.objects.filter(catalog_group=self.group).update(catalog_group=None)
+
+        with self.assertRaises(CommandError) as caught:
+            self._run()
+
+        self.assertIn("no active raw products", str(caught.exception))
