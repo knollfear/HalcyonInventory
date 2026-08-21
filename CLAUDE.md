@@ -341,10 +341,21 @@ with a note rather than deleted, it applies no stock, and if it turns out to
 matter the PDF reprints in one click. The list on the picker is a convenience,
 "sheets you might still be working from", not a queue to be worked off.
 
-### The dye collection page
+### The collection page: blanks, then dyes
 
-The sheet's first page is a shelf list: every dye the run needs, with a
-colour chip, the brand, and how many baths want it. One walk to the shelf
+The sheet's first page is a shelf list, in the order the work happens: the
+**blanks** to carry to the dye room, then the **dyes** to carry to them.
+
+Blanks are one line per raw product with the total the sheet's baths consume.
+**Nothing is filtered on stock.** A blank the app believes is out is far more
+likely to be a number nobody has updated than an empty shelf, and leaving it
+off would turn a stale count into a bath that never got dyed. The belief is
+printed beside the requirement — `12 (we think 2 on hand)` — so a real
+shortage is still visible, but the instruction is what to fetch, and the
+sheet says so in its own header.
+
+The dyes follow, each with a colour chip, the brand, and how many baths want
+it. One walk to the shelf
 instead of twenty, and the dyes several colorways share are exactly the ones
 you don't want a second trip for. It's a page of its own rather than a block
 above the rows so a long list can't squeeze them, and so it can be carried to

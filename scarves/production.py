@@ -63,7 +63,10 @@ MAX_OPEN_RUNS = 5
 #: Page furniture, in points (72 to the inch). Plain paper, so unlike the
 #: label stock none of this has to line up with anything physical.
 PAGE_MARGIN = 40
-HEADER_HEIGHT = 96
+#: Reserved for the header block. It has to clear the tallest thing in it,
+#: which is the QR plus the code plus the URL beneath — not the instructions
+#: on the left. Too small and the first list row prints over the URL.
+HEADER_HEIGHT = 120
 ROW_HEIGHT = 46
 QR_SIZE = 74
 
@@ -97,6 +100,7 @@ BATH_INSTRUCTIONS = (
 )
 DYE_INSTRUCTIONS = (
     ("Collect these before you start — the baths are on the next page.", False),
+    ("Fetch what's listed even if the count looks short; counts drift.", False),
 )
 
 
@@ -200,6 +204,29 @@ def plan_baths(limit, category=None, include_overshoot=False):
         if len(baths) >= limit:
             break
     return baths[:limit]
+
+
+def blank_demand(rows):
+    """`[(raw_product, needed, believed_on_hand), ...]` for a printed sheet.
+
+    The blanks half of the collection list. Every raw product the sheet's
+    baths consume, however many baths want it.
+
+    **Nothing is filtered on stock.** A blank we believe is out is far more
+    likely to be a number nobody has updated than an empty shelf, and leaving
+    it off the list would turn a stale count into a bath that doesn't get
+    dyed. The belief is printed beside the requirement so a real shortage is
+    still visible, but the instruction is what to fetch.
+    """
+    totals = {}
+    for row in rows:
+        raw = row.finished_product.raw_product
+        _, running = totals.get(raw.pk, (raw, 0))
+        totals[raw.pk] = (raw, running + row.quantity)
+    return [
+        (raw, needed, raw.number_on_hand)
+        for raw, needed in sorted(totals.values(), key=lambda pair: pair[0].name)
+    ]
 
 
 def raw_demand(baths):
@@ -472,7 +499,7 @@ def render_sheet(run, return_url) -> bytes:
     # one walk to the shelf, then the session. It is its own page rather than
     # a block above the rows so a long list can't squeeze them, and so it can
     # be carried to the shelf on its own.
-    _draw_dye_page(pdf, run, return_url, rows, page_w, page_h)
+    _draw_collection_page(pdf, run, return_url, rows, page_w, page_h)
 
     for start in range(0, max(len(rows), 1), per_page):
         page_rows = rows[start:start + per_page]
@@ -491,16 +518,56 @@ def render_sheet(run, return_url) -> bytes:
     return buf.read()
 
 
-def _draw_dye_page(pdf, run, return_url, rows, page_w, page_h):
-    """The shelf list: every dye this run needs, and what it doesn't know."""
+def _draw_collection_page(pdf, run, return_url, rows, page_w, page_h):
+    """The shelf list: the blanks and the dyes this run needs.
+
+    Both halves of one errand, in the order the work happens — you carry
+    scarves to the dye room, and you carry dye to them.
+    """
     plan = dye_plan([row.finished_product.recipe for row in rows])
+    blanks = blank_demand(rows)
 
     _draw_header(pdf, run, return_url, page_w, page_h,
                  page_no=None, page_count=None,
                  instructions=DYE_INSTRUCTIONS)
 
-    y = page_h - PAGE_MARGIN - HEADER_HEIGHT + 8
+    y = page_h - PAGE_MARGIN - HEADER_HEIGHT
 
+    def carry_on(cursor):
+        """Start a fresh page when the current one runs out."""
+        if cursor >= PAGE_MARGIN + 20:
+            return cursor
+        pdf.showPage()
+        _draw_header(pdf, run, return_url, page_w, page_h,
+                     page_no=None, page_count=None,
+                     instructions=DYE_INSTRUCTIONS)
+        return page_h - PAGE_MARGIN - HEADER_HEIGHT
+
+    # --- blanks ------------------------------------------------------------
+    pdf.setFont("Helvetica-Bold", 13)
+    units = sum(needed for _, needed, _ in blanks)
+    pdf.drawString(
+        PAGE_MARGIN, y,
+        f"Blanks to collect — {units} item{'' if units == 1 else 's'}",
+    )
+    y -= 20
+
+    pdf.setFont("Helvetica", 10)
+    for raw, needed, on_hand in blanks:
+        pdf.drawString(PAGE_MARGIN + 22, y, raw.name)
+        note = f"{needed}"
+        if on_hand < needed:
+            # Printed, not acted on: a blank we think is out is more likely a
+            # number nobody updated than an empty shelf.
+            note += f"   (we think {on_hand} on hand)"
+        pdf.drawRightString(page_w - PAGE_MARGIN, y, note)
+        y -= 17
+        y = carry_on(y)
+
+    y -= 10
+    y = carry_on(y)
+
+    # --- dyes --------------------------------------------------------------
     pdf.setFont("Helvetica-Bold", 13)
     count = len(plan.entries)
     pdf.drawString(
@@ -550,13 +617,9 @@ def _draw_dye_page(pdf, run, return_url, rows, page_w, page_h):
             f"{uses} bath{'' if uses == 1 else 's'}",
         )
         y -= 17
-
-        if y < PAGE_MARGIN + 20:
-            pdf.showPage()
-            _draw_header(pdf, run, return_url, page_w, page_h,
-                         page_no=None, page_count=None,
-                         instructions=DYE_INSTRUCTIONS)
-            y = page_h - PAGE_MARGIN - HEADER_HEIGHT + 8
+        before = y
+        y = carry_on(y)
+        if y != before:
             pdf.setFont("Helvetica", 10)
 
     if not plan.entries:

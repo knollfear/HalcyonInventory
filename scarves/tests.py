@@ -8183,3 +8183,76 @@ class CreatePassthroughProductsTests(TestCase):
             self._run()
 
         self.assertIn("no active raw products", str(caught.exception))
+
+
+class BlankCollectionTests(TestCase):
+    """The blanks half of the shelf list.
+
+    Same errand as the dyes: one walk before the session rather than a trip
+    per bath. The difference is what happens when the count looks wrong.
+    """
+
+    def setUp(self):
+        self.run = ProductionRun.objects.create()
+        self.rows = []
+        for name, baths in (("Silk Infinity", 3), ("Wool Wrap", 2)):
+            recipe = make_recipe(f"{name} colorway", hexes=())
+            product = make_bathable(recipe, name, on_hand=0, par=8, bath=4)
+            for i in range(baths):
+                self.rows.append(ProductionRunRow.objects.create(
+                    run=self.run, finished_product=product,
+                    order=len(self.rows) + 1, quantity=4,
+                ))
+
+    def test_it_totals_the_blanks_a_sheet_eats(self):
+        demand = production.blank_demand(self.rows)
+
+        needed = {raw.name: qty for raw, qty, _ in demand}
+        self.assertEqual(needed["raw-Silk Infinity"], 12)
+        self.assertEqual(needed["raw-Wool Wrap"], 8)
+
+    def test_one_line_per_blank_not_per_bath(self):
+        self.assertEqual(len(production.blank_demand(self.rows)), 2)
+
+    def test_a_blank_we_think_is_out_is_still_listed(self):
+        """A count nobody updated is likelier than an empty shelf, and
+        leaving it off would turn a stale number into a bath that never got
+        dyed."""
+        raw = self.rows[0].finished_product.raw_product
+        RawProduct.objects.filter(pk=raw.pk).update(number_on_hand=0)
+
+        names = [r.name for r, _, _ in production.blank_demand(self.rows)]
+
+        self.assertIn("raw-Silk Infinity", names)
+
+    def test_the_belief_travels_with_the_requirement(self):
+        raw = self.rows[0].finished_product.raw_product
+        RawProduct.objects.filter(pk=raw.pk).update(number_on_hand=2)
+        # Re-read: the rows in memory carry the counts they were loaded
+        # with, and `render_sheet` fetches its own.
+        rows = list(ProductionRunRow.objects.filter(run=self.run)
+                    .select_related("finished_product__raw_product"))
+
+        demand = dict(
+            (r.name, (needed, on_hand))
+            for r, needed, on_hand in production.blank_demand(rows)
+        )
+
+        self.assertEqual(demand["raw-Silk Infinity"], (12, 2))
+
+    def test_the_sheet_prints_them(self):
+        raw = self.rows[0].finished_product.raw_product
+        RawProduct.objects.filter(pk=raw.pk).update(number_on_hand=2)
+        run = ProductionRun.objects.get(pk=self.run.pk)
+
+        pdf = production.render_sheet(run, "https://example.test/x/")
+
+        self.assertTrue(pdf.startswith(b"%PDF"))
+
+    def test_the_header_clears_the_code_beneath_the_qr(self):
+        """The first list row printed over the URL when the header block was
+        shorter than the tallest thing drawn into it."""
+        self.assertGreater(
+            production.HEADER_HEIGHT, production.QR_SIZE + 30,
+            "header must clear the QR plus the code and URL under it",
+        )
