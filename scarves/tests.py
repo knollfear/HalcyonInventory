@@ -7886,7 +7886,10 @@ class SheetScanPageTests(TestCase):
         self.url = reverse("production_run", args=[self.run.token])
 
     def _upload(self, **kwargs):
+        """A whole-page photo — which now means the sheet's own QR is in it,
+        because a photo that can't identify its sheet is refused."""
         from django.core.files.uploadedfile import SimpleUploadedFile
+        kwargs.setdefault("token", self.run.token)
         photo = sheet_photo(self.rows, **kwargs)
         return self.client.post(
             self.url,
@@ -7942,3 +7945,75 @@ class SheetScanPageTests(TestCase):
 
         self.assertContains(response, "Tick them below instead")
         self.assertEqual(response.context["prefilled"], set())
+
+
+class SheetConfirmationTests(TestCase):
+    """Whether the photo proved which sheet it was of.
+
+    The QR check only fires when a QR is in frame. A close-up of half a long
+    sheet is a legitimate photo — it reads better — and is not refused. But
+    it isn't *checked* either, and two runs can share a row code, so an
+    unconfirmed photo of the wrong sheet reads as a set of plausible marks.
+    The difference has to be on the page.
+    """
+
+    def setUp(self):
+        self.run = ProductionRun.objects.create()
+        recipe = make_recipe("Stormy Sea", hexes=())
+        product = make_bathable(recipe, "Silk Infinity", on_hand=0, par=8, bath=4)
+        self.rows = [
+            ProductionRunRow.objects.create(
+                run=self.run, finished_product=product, order=i, quantity=4)
+            for i in (1, 2)
+        ]
+        self.codes = [production.row_code(r) for r in self.rows]
+
+    def _read(self, **kwargs):
+        return sheetscan.read_sheet(
+            sheet_photo(self.rows, **kwargs),
+            known_codes=self.codes, expect_token=self.run.token,
+        )
+
+    def test_a_qr_in_frame_confirms_the_sheet(self):
+        scan = self._read(filled=(0,), token=self.run.token)
+
+        self.assertTrue(scan.sheet_confirmed)
+
+    def test_no_qr_in_frame_is_refused(self):
+        """Cropping to half a page reads the bars better, which is exactly
+        why this is refused rather than warned about: the reward for the
+        shortcut would be marks that look right and belong to another run."""
+        scan = self._read(filled=(0,))
+
+        self.assertFalse(scan.sheet_confirmed)
+        self.assertEqual(scan.filled, [])
+        self.assertEqual(scan.marks, [])
+
+    def test_the_wrong_qr_is_neither_read_nor_confirmed(self):
+        scan = self._read(filled=(0, 1), token="SOMEOTHERRUN")
+
+        self.assertFalse(scan.sheet_confirmed)
+        self.assertEqual(scan.filled, [])
+
+    def test_a_cropped_photo_ticks_nothing_and_says_why(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        url = reverse("production_run", args=[self.run.token])
+        self.client.post(url, {"sheet": SimpleUploadedFile(
+            "s.png", sheet_photo(self.rows, filled=(0,)), content_type="image/png")})
+
+        response = self.client.get(url)
+
+        self.assertEqual(response.context["prefilled"], set())
+        self.assertContains(response, "whole page in frame")
+
+    def test_a_whole_page_photo_is_accepted(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        url = reverse("production_run", args=[self.run.token])
+        self.client.post(url, {"sheet": SimpleUploadedFile(
+            "s.png", sheet_photo(self.rows, filled=(0,), token=self.run.token),
+            content_type="image/png")})
+
+        response = self.client.get(url)
+
+        self.assertEqual(response.context["prefilled"], {self.rows[0].pk})
+        self.assertNotContains(response, "whole page in frame")

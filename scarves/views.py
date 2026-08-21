@@ -3323,6 +3323,7 @@ def production_run(request, token):
         )
         request.session["production_scan"] = {
             "wrong_sheet": scan.wrong_sheet,
+            "confirmed": scan.sheet_confirmed,
             "ticked": sheetscan.rows_to_tick(run, scan),
             "filled": len(scan.filled),
             "unsure": len(scan.unsure),
