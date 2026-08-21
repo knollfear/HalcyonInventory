@@ -25,6 +25,8 @@ from .models import (
     FinishedProductImage,
     InventoryLog,
     ProductImageUpload,
+    ProductionRun,
+    ProductionRunRow,
     TimeEntry,
 )
 
@@ -395,6 +397,66 @@ class FinishedProductAdmin(admin.ModelAdmin):
     # here rather than an oversight — so it gets a filter of its own.
     list_filter = ("is_active", "raw_product__category", ("recipe", admin.EmptyFieldListFilter))
     ordering = ("name",)
+
+
+class ProductionRunRowInline(admin.TabularInline):
+    """The sheet's rows, read-only.
+
+    Here so a run can be *seen* before it is deleted, not edited. A row's
+    quantity is what the paper said and its `applied_log` is what it moved;
+    neither is something to retype.
+    """
+    model = ProductionRunRow
+    extra = 0
+    can_delete = False
+    fields = ("order", "finished_product", "quantity", "done_at", "applied_log")
+    readonly_fields = fields
+    ordering = ("order",)
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(ProductionRun)
+class ProductionRunAdmin(admin.ModelAdmin):
+    """Printed sheets, mostly so the useless ones can be deleted.
+
+    A run is scaffolding rather than a record — the inventory log is what
+    closes the loop — so throwing one away is cheap and normal. Two things
+    are worth knowing before you do:
+
+    **Deleting a run does not un-move stock.** Its rows cascade away, but the
+    `InventoryLog` rows they created are separate objects and stay, which is
+    right: those baths really were dyed. What goes is the trail from the
+    sheet to the movement. `Reported` is in the list for exactly that reason
+    — a run showing 0 reported has moved nothing and is free to delete.
+
+    **The token is write-once.** It is printed on paper and encoded in that
+    sheet's QR code, and this app can rewrite neither, so editing it here
+    would silently orphan every copy of the sheet — the same reasoning that
+    makes a SKU write-once.
+    """
+    list_display = (
+        "pk", "token", "created_at", "bath_count", "reported", "submitted_at",
+        "submitted_by",
+    )
+    list_filter = (("submitted_at", admin.EmptyFieldListFilter), "category")
+    search_fields = ("token", "note")
+    ordering = ("-created_at",)
+    readonly_fields = ("token", "created_at")
+    inlines = [ProductionRunRowInline]
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).prefetch_related("rows")
+
+    @admin.display(description="Baths")
+    def bath_count(self, obj):
+        return obj.rows.count()
+
+    @admin.display(description="Reported")
+    def reported(self, obj):
+        applied = sum(1 for row in obj.rows.all() if row.applied_log_id)
+        return f"{applied} of {obj.rows.count()}"
 
 
 @admin.register(InventoryLog)

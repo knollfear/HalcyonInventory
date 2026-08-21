@@ -8256,3 +8256,87 @@ class BlankCollectionTests(TestCase):
             production.HEADER_HEIGHT, production.QR_SIZE + 30,
             "header must clear the QR plus the code and URL under it",
         )
+
+
+class ProductionRunAdminTests(TestCase):
+    """Runs in the admin, mostly so the useless ones can be deleted.
+
+    A run is scaffolding rather than a record, so throwing one away is cheap
+    — but what survives the deletion is the part worth pinning.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("boss", "b@x.test", "pw")
+        self.client.force_login(self.user)
+        self.run = ProductionRun.objects.create()
+        recipe = make_recipe("Stormy Sea", hexes=())
+        self.product = make_bathable(recipe, "Silk Infinity", on_hand=0, par=8, bath=4)
+        self.rows = [
+            ProductionRunRow.objects.create(
+                run=self.run, finished_product=self.product, order=i, quantity=4)
+            for i in (1, 2)
+        ]
+
+    def test_the_list_page_loads(self):
+        response = self.client.get(reverse("admin:scarves_productionrun_changelist"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, self.run.token)
+
+    def test_the_detail_page_shows_its_rows(self):
+        response = self.client.get(
+            reverse("admin:scarves_productionrun_change", args=[self.run.pk])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Silk Infinity")
+
+    def test_an_unreported_run_deletes_cleanly(self):
+        self.client.post(
+            reverse("admin:scarves_productionrun_delete", args=[self.run.pk]),
+            {"post": "yes"},
+        )
+
+        self.assertEqual(ProductionRun.objects.count(), 0)
+        self.assertEqual(ProductionRunRow.objects.count(), 0)
+
+    def test_deleting_a_run_does_not_un_move_stock(self):
+        """Those baths really were dyed. What goes is the trail from the
+        sheet to the movement, not the movement."""
+        production.apply_row(self.rows[0])
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.number_on_hand, 4)
+
+        self.client.post(
+            reverse("admin:scarves_productionrun_delete", args=[self.run.pk]),
+            {"post": "yes"},
+        )
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.number_on_hand, 4)
+        self.assertEqual(InventoryLog.objects.count(), 1)
+
+    def test_the_list_says_how_much_was_reported(self):
+        """A run showing 0 reported has moved nothing and is free to go."""
+        production.apply_row(self.rows[0])
+
+        response = self.client.get(reverse("admin:scarves_productionrun_changelist"))
+
+        self.assertContains(response, "1 of 2")
+
+    def test_the_token_cannot_be_edited(self):
+        """It is printed on paper and encoded in that sheet's QR code, and
+        this app can rewrite neither."""
+        from scarves.admin import ProductionRunAdmin
+        from django.contrib.admin.sites import site
+
+        admin_obj = ProductionRunAdmin(ProductionRun, site)
+        self.assertIn("token", admin_obj.get_readonly_fields(None, self.run))
+
+    def test_rows_are_not_editable_from_here(self):
+        from scarves.admin import ProductionRunRowInline
+        from django.contrib.admin.sites import site
+
+        inline = ProductionRunRowInline(ProductionRun, site)
+        self.assertFalse(inline.has_add_permission(None))
+        self.assertFalse(inline.can_delete)
