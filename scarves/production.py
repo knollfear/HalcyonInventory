@@ -93,7 +93,7 @@ BARCODE_BASELINE_OFFSET = 2
 BATH_INSTRUCTIONS = (
     ("Fill in the box for every bath you finish. Leave the rest blank.", False),
     ("Scan the code when you're done, then tap them or photograph this page.", True),
-    ("A photo must show the code above — that is how it knows which sheet.", False),
+    ("Include the code above in a photo so it can check which sheet.", False),
 )
 DYE_INSTRUCTIONS = (
     ("Collect these before you start — the baths are on the next page.", False),

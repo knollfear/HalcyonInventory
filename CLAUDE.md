@@ -415,20 +415,30 @@ blue, green and pencil all sit far nearer black than paper; **yellow does
 not** and never will, which is why the sheet says "any pen but yellow".
 Anything between the thresholds is reported `unsure` rather than guessed.
 
-**The QR grants permission to record production. No QR, no permission.**
+**The QR binds; it does not authorise.** Reaching this page at all means
+holding the run's token — that is the whole of the authorisation, the bargain
+`secret/` makes everywhere here, and it is already spent by the time a photo
+is uploaded. The QR in the photo adds no permission. What it adds is evidence
+that the paper in the picture is the run the URL claims.
 
-The token in it is the same one the return URL carries — holding the paper is
-what authorises reporting against a run, the bargain `secret/` makes
-everywhere here. Tapping presents that token in the URL; a photo has to
-present it in the photo. A photo is its own claim about which sheet was
-marked, so it is authorised on its own terms rather than riding on the URL's:
-one channel's permission must not silently cover another channel's payload.
+So the two failures are not equal, and are treated differently:
 
-A photo without it is read as nothing. Every page carries the code, so any
-whole-page shot satisfies this; what it rules out is a crop — and cropping to
-half a page reads the bars *better*, which is exactly why this is refused
-rather than warned about. Row codes repeat across runs, so an unauthorised
-photo doesn't give a doubtful answer, it gives a confident wrong one.
+| In the photo              | What it means                    | What happens |
+|---------------------------|----------------------------------|--------------|
+| A QR that doesn't match   | positive evidence of a wrong sheet | refused, nothing read |
+| No readable QR            | no evidence either way           | marks read, page says it wasn't confirmed |
+
+The second is deliberately not a refusal. Glare, a torn corner, a third-
+generation photocopy and a hurried frame are all ordinary, and turning any of
+them into "start again" spends a real person's patience to buy nothing —
+they hold the token either way.
+
+It is said out loud rather than passed over, because the evidence is weak
+*here* in a way it wouldn't be elsewhere: row codes repeat across runs, and
+consecutive sheets tend to be near-identical (print one, don't report it,
+print another tomorrow and it lists much the same work). "The row codes
+matched" is not much of a check, so the confirmation step is doing the real
+work and the page has to point at it.
 
 **Re-reading the same photo ticks nothing new.** `rows_to_tick()` skips rows
 already applied, and because a mark maps to exactly one row it can't go

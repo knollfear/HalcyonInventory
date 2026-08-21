@@ -68,9 +68,8 @@ signal — the same reasoning as the booth form.
     <div class="panel {% if scan.error or scan.wrong_sheet or not scan.read %}stop{% endif %}">
       {% if scan.wrong_sheet %}
         <strong>That photo is of a different sheet.</strong>
-        Nothing was read from it. Two sheets printed days apart share most of
-        their rows, so marks off the wrong one would land on rows that look
-        right — scan the code on the sheet in your hand.
+        Nothing was read from it — the code on it belongs to another run.
+        Scan the code on the sheet in your hand.
       {% elif scan.error %}
         <strong>{{ scan.error }}</strong> Tick them below instead.
       {% elif not scan.read %}
@@ -78,6 +77,19 @@ signal — the same reasoning as the booth form.
         Try again with the whole page in frame and the phone held square to it
         — or just tick them below.
       {% else %}
+        {% if not scan.confirmed %}
+          {% comment %}
+          No readable code, so nothing tied this photo to this run. Not a
+          refusal — reaching this page meant holding the token already, so
+          the photo adds no permission and refusing would spend a real
+          person's patience to buy nothing. But row codes repeat across runs
+          and consecutive sheets look alike, so "the rows matched" is weak
+          evidence and the check that matters is the one below.
+          {% endcomment %}
+          <strong>Couldn't read the code at the top of this sheet,</strong>
+          so nothing confirmed the photo is of <em>this</em> run — check the
+          rows below against your paper before you submit.
+        {% endif %}
         <strong>Read {{ scan.filled }} filled in</strong>
         of {{ scan.read }} row{{ scan.read|pluralize }} in the photo.
         {% if scan.unsure %}
@@ -113,8 +125,10 @@ signal — the same reasoning as the booth form.
       <button class="btn" type="submit">Read the photo</button>
     </noscript>
     <p class="muted">
-      Whole page in frame, phone held square to it. Any pen or pencil except
-      yellow. You'll still get to check it before anything is recorded.
+      Whole page in frame, including the square code at the top so it can
+      check which sheet this is. Phone held square to the page, any pen or
+      pencil except yellow. You'll still get to check it before anything is
+      recorded.
     </p>
   </form>
 

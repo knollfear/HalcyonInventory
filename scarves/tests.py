@@ -7979,15 +7979,14 @@ class SheetConfirmationTests(TestCase):
 
         self.assertTrue(scan.sheet_confirmed)
 
-    def test_no_qr_in_frame_is_refused(self):
-        """Cropping to half a page reads the bars better, which is exactly
-        why this is refused rather than warned about: the reward for the
-        shortcut would be marks that look right and belong to another run."""
+    def test_no_readable_qr_is_read_anyway_but_not_confirmed(self):
+        """Reaching this page meant holding the token, so the photo adds no
+        permission and refusing would spend a real person's patience to buy
+        nothing. Glare and torn corners are ordinary."""
         scan = self._read(filled=(0,))
 
         self.assertFalse(scan.sheet_confirmed)
-        self.assertEqual(scan.filled, [])
-        self.assertEqual(scan.marks, [])
+        self.assertEqual(len(scan.filled), 1)
 
     def test_the_wrong_qr_is_neither_read_nor_confirmed(self):
         scan = self._read(filled=(0, 1), token="SOMEOTHERRUN")
@@ -7995,7 +7994,7 @@ class SheetConfirmationTests(TestCase):
         self.assertFalse(scan.sheet_confirmed)
         self.assertEqual(scan.filled, [])
 
-    def test_a_cropped_photo_ticks_nothing_and_says_why(self):
+    def test_an_unconfirmed_photo_still_ticks_but_says_so(self):
         from django.core.files.uploadedfile import SimpleUploadedFile
         url = reverse("production_run", args=[self.run.token])
         self.client.post(url, {"sheet": SimpleUploadedFile(
@@ -8003,10 +8002,10 @@ class SheetConfirmationTests(TestCase):
 
         response = self.client.get(url)
 
-        self.assertEqual(response.context["prefilled"], set())
-        self.assertContains(response, "whole page in frame")
+        self.assertEqual(response.context["prefilled"], {self.rows[0].pk})
+        self.assertContains(response, "nothing confirmed the photo is of")
 
-    def test_a_whole_page_photo_is_accepted(self):
+    def test_a_confirmed_photo_does_not_nag(self):
         from django.core.files.uploadedfile import SimpleUploadedFile
         url = reverse("production_run", args=[self.run.token])
         self.client.post(url, {"sheet": SimpleUploadedFile(
@@ -8016,4 +8015,17 @@ class SheetConfirmationTests(TestCase):
         response = self.client.get(url)
 
         self.assertEqual(response.context["prefilled"], {self.rows[0].pk})
-        self.assertNotContains(response, "whole page in frame")
+        self.assertNotContains(response, "nothing confirmed the photo is of")
+
+    def test_a_mismatched_code_is_still_a_refusal(self):
+        """Positive evidence of the wrong sheet — there is nothing to weigh."""
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        url = reverse("production_run", args=[self.run.token])
+        self.client.post(url, {"sheet": SimpleUploadedFile(
+            "s.png", sheet_photo(self.rows, filled=(0, 1), token="ANOTHERRUN"),
+            content_type="image/png")})
+
+        response = self.client.get(url)
+
+        self.assertEqual(response.context["prefilled"], set())
+        self.assertContains(response, "different sheet")

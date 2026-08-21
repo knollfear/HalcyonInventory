@@ -4,21 +4,31 @@ The sheet already comes back by QR code — scan it, tap the baths you did,
 submit. This is the shortcut: photograph the marked paper instead, and the
 same list arrives already ticked.
 
-**The QR grants permission to record production. No QR, no permission.**
+**What the QR does, and what it doesn't.** Reaching this page at all means
+holding the run's token — that is the whole of the authorisation, the bargain
+`secret/` makes everywhere here, and it is already spent by the time a photo
+is uploaded. So the QR in the photo adds no permission. What it adds is
+**binding**: evidence that the paper in the picture is the run the URL says.
 
-The token it carries is the same one the return URL carries — holding the
-paper is what authorises reporting against a run, which is the bargain
-`secret/` makes everywhere in this app. Tapping the boxes presents that token
-in the URL; a photo has to present it in the photo. A photo is its own claim
-about which sheet was marked, so it is authorised on its own terms rather
-than riding on the URL's — one channel's permission does not silently cover
-another channel's payload.
+That makes the two failures unequal, and they are treated differently:
 
-A photo without it is read as nothing at all. Every page carries the code, so
-any whole-page shot satisfies this; what it rules out is a crop, and cropping
-to half a page reads the bars *better* — which is exactly why this is refused
-rather than warned about. Row codes repeat across runs, so an unauthorised
-photo doesn't produce a doubtful answer, it produces a confident wrong one.
+- **The QR reads and doesn't match.** Positive evidence of the wrong sheet.
+  Refused outright, nothing read; there is nothing to weigh.
+- **No QR readable at all.** No evidence either way, and the person is
+  already authorised. The marks are read, and the page says the sheet
+  couldn't be confirmed.
+
+The second is deliberately not a refusal. Glare, a torn corner, a third-
+generation photocopy and a hurried frame are all ordinary, and turning any of
+them into "start again" spends a real person's patience to buy nothing —
+they hold the token either way.
+
+It is said out loud rather than passed over, though, because the evidence is
+genuinely weak *here* in a way it wouldn't be elsewhere. Row codes are not
+unique across runs, and consecutive sheets tend to be near-identical: print
+one, don't report it, print another tomorrow and it lists much the same work.
+So "the row codes matched" is not much of a check, and the confirmation step
+is doing the real work.
 
 **It never applies anything.** What it produces is a pre-filled form, which
 the person then looks at and submits. That is the whole safety argument, and
@@ -126,12 +136,10 @@ class ScanResult:
     #: two sheets printed days apart share most of their SKUs, so the marks
     #: would otherwise land on plausible-looking rows of the wrong run.
     wrong_sheet: str = ""
-    #: Whether a QR in the photo positively confirmed this is the right run.
-    #: **Required**: with `expect_token` set, a photo that doesn't contain the
-    #: sheet's own code is read as nothing. Two runs can share a row code, so
-    #: an unverified photo of the wrong sheet is not an ambiguous result — it
-    #: is a set of perfectly plausible marks for rows nobody dyed, and there
-    #: is no later step at which that becomes obvious.
+    #: Whether a QR in the photo positively tied it to this run. False means
+    #: no readable code was in frame — the marks are still read, because the
+    #: person held the token to get here, but nothing has confirmed the paper
+    #: in the picture is this sheet and the page has to say so.
     sheet_confirmed: bool = False
 
     @property
@@ -197,14 +205,10 @@ def read_sheet(data, known_codes=(), expect_token=None):
     exactly what stops them resolving.
 
     One decode pass finds both kinds of symbol on the page: the Code128 on
-    each row, and the QR in the header. With `expect_token` given, that QR is
-    a **requirement** — the sheet must identify itself, and a photo that
-    doesn't show its code is read as nothing at all. Row codes are not unique
-    across runs, so an unverified photo doesn't produce a doubtful answer, it
-    produces a confident wrong one.
-
-    Every page carries the QR, so any whole-page photo satisfies this; what
-    it rules out is a crop.
+    each row, and the QR in the header. With `expect_token` given, a QR that
+    *disagrees* stops the read; a QR that can't be found doesn't, and leaves
+    `sheet_confirmed` False for the page to report. See the module docstring
+    for why those two aren't the same thing.
     """
     result = ScanResult()
     known = set(known_codes)
@@ -242,12 +246,9 @@ def read_sheet(data, known_codes=(), expect_token=None):
                 return result
             result.sheet_confirmed = True
 
-        # The sheet has to identify itself. Cropping to half a page reads the
-        # bars better and is a reasonable thing to try, which is exactly why
-        # this is refused rather than warned about: the reward for the shortcut
-        # is marks that look right and belong to another run.
-        if not result.sheet_confirmed:
-            return result
+        # Not finding one is not a refusal — see the module docstring. The
+        # caller already held the token to get here, and `sheet_confirmed`
+        # stays False so the page can say the sheet wasn't confirmed.
 
     for code in codes:
         if code.type == "QRCODE":
