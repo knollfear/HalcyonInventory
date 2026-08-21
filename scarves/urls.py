@@ -159,6 +159,12 @@ urlpatterns = [
         views.production_run_index,
         name="production_run_index",
     ),
+    # Before the token route, or `upload` would be read as a sheet code.
+    path(
+        "secret/production/upload/",
+        views.production_upload,
+        name="production_upload",
+    ),
     path(
         "secret/production/<str:token>/",
         views.production_run,

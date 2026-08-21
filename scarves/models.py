@@ -1,3 +1,4 @@
+import re
 import secrets
 from decimal import Decimal
 
@@ -1177,14 +1178,74 @@ class UnmatchedSale(models.Model):
         return Decimal(self.amount_cents) / 100
 
 
-def new_run_token():
-    """An unguessable path segment for a production sheet's return URL.
+#: Words for a sheet's code. Chosen to be short, unambiguously spelled, and
+#: readable off a photocopy — no homophones, no doubled letters that blur, and
+#: nothing anyone has to think about how to spell. Someone types these in a
+#: dye room while holding the paper.
+RUN_ADJECTIVES = (
+    "amber azure brisk bronze calm clever coastal copper coral crimson curious "
+    "dapper deep dusty eager early easy emerald fabled fleet gentle gilded "
+    "golden grand happy hardy hazel hidden humble idle indigo ivory jade jolly "
+    "keen kindly lively lucky lunar marble mellow merry misty modest noble "
+    "nimble northern olive opal patient pearl plucky polar prairie proud quiet "
+    "rapid ready restless rosy royal ruby rugged rustic sable sandy scarlet "
+    "shady sharp silent silver simple sleepy slender snowy solar sombre "
+    "southern sparkling spry stately steady stormy sunny swift tawny tidy "
+    "timber tranquil trusty umber upland velvet violet wandering warm western "
+    "whispering wild windy winter wise woven zesty"
+).split()
 
-    Long enough that the URL is not worth guessing, short enough to be
-    readable off paper if the QR won't scan — which is the whole reason the
-    run also prints its number in plain text.
+RUN_ANIMALS = (
+    "adder badger bison bittern bobcat caribou chamois cheetah civet condor "
+    "corgi cougar coyote crane cricket curlew dingo dormouse dunlin eagle "
+    "egret falcon fennec ferret finch fisher gannet gecko gerbil gibbon "
+    "godwit gopher goshawk grebe heron hoopoe ibex ibis impala jackal jaguar "
+    "kestrel kingfisher kite koala kudu lapwing lemur leopard linnet lynx "
+    "magpie manatee marmot marten meerkat merlin mongoose moorhen muntjac "
+    "narwhal newt nuthatch ocelot opossum osprey otter panther pelican petrel "
+    "pika plover polecat puffin quokka raccoon redshank reindeer roebuck "
+    "sable serval shrew siskin skylark sparrow stoat swallow tapir teal tern "
+    "thrush toucan vicuna vole wallaby walrus warbler weasel wombat wren"
+).split()
+
+
+def new_run_token():
+    """The code identifying one production sheet: `42-brisk-wombat`.
+
+    Two words and two digits because a person types this off paper when the
+    QR won't read, and typing it *from the sheet* is what ties a photo to the
+    run it claims to be of. A random string does that job too, right up until
+    somebody has to transcribe `VnHePvvkqH__toMw` from a photocopy — at which
+    point the fallback is one in name only.
+
+    The digits are there for entropy, not decoration. Words alone give about
+    fourteen bits, and with a handful of sheets open at once that is inside
+    reach of a script; the pair of digits buys back most of what plain words
+    give away. Worth being clear what is at stake either way: the URL is
+    unlisted rather than secret, and the worst a guess wins is production
+    recorded against a sheet, which is visible on the run's own page and
+    correctable — see CLAUDE.md on what `secret/` does and doesn't promise.
     """
-    return secrets.token_urlsafe(12)
+    return "-".join((
+        f"{secrets.randbelow(100):02d}",
+        secrets.choice(RUN_ADJECTIVES),
+        secrets.choice(RUN_ANIMALS),
+    ))
+
+
+def normalize_token(text):
+    """Compare codes the way a person types them.
+
+    `42 Brisk Wombat`, `42-brisk-wombat` and `42BRISKWOMBAT` are the same
+    answer. Punctuation and case are how a phone keyboard differs from a
+    printed page, not how one sheet differs from another.
+
+    Which is also why the code carries no punctuation beyond its separators:
+    stripped here, a symbol would add nothing to the guesswork while costing
+    a keystroke on the worst keyboard anyone will use for this. A third digit
+    would buy real bits for the same effort, if it is ever wanted.
+    """
+    return re.sub(r"[^a-z0-9]", "", (text or "").lower())
 
 
 class ProductionRun(models.Model):
@@ -1212,7 +1273,11 @@ class ProductionRun(models.Model):
         max_length=32,
         unique=True,
         default=new_run_token,
-        help_text="Path segment for the crew's return URL. Printed as a QR code.",
+        help_text=(
+            "The sheet's code. Rides in the crew's return URL, prints as a QR "
+            "code, and prints in plain text for someone to type when the QR "
+            "won't read."
+        ),
     )
     created_at = models.DateTimeField(auto_now_add=True)
     submitted_at = models.DateTimeField(

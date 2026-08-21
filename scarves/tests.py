@@ -57,6 +57,10 @@ from .models import (
     ProductImageUpload,
     ProductionRun,
     ProductionRunRow,
+    RUN_ADJECTIVES,
+    RUN_ANIMALS,
+    new_run_token,
+    normalize_token,
     RawProduct,
     RawProductCategory,
     Recipe,
@@ -7726,8 +7730,7 @@ class SheetScanTests(TestCase):
         self.codes = [production.row_code(r) for r in self.rows]
 
     def _read(self, **kwargs):
-        photo = sheet_photo(self.rows, **kwargs)
-        return sheetscan.read_sheet(photo, known_codes=self.codes)
+        return sheetscan.read_sheet(sheet_photo(self.rows, **kwargs))
 
     # --- the reading ------------------------------------------------------
 
@@ -7784,21 +7787,18 @@ class SheetScanTests(TestCase):
         for scale in (4.0, 7.0):
             scan = sheetscan.read_sheet(
                 sheet_photo(self.rows, filled=(0, 2), scale=scale),
-                known_codes=self.codes,
             )
             self.assertEqual(len(scan.filled), 2, f"at scale {scale}")
 
-    def test_a_barcode_from_another_sheet_is_reported_not_ignored(self):
-        """"I photographed it and nothing happened" needs an explanation."""
-        scan = sheetscan.read_sheet(
-            sheet_photo(self.rows, filled=(0,)),
-            known_codes=self.codes[1:],
-        )
+    def test_rows_not_on_this_run_are_reported(self):
+        """Expected to be empty forever; if it isn't, the photo is of some
+        other sheet and the matched marks would land here unremarked."""
+        scan = sheetscan.read_sheet(sheet_photo(self.rows, filled=(0,)))
 
-        self.assertEqual(scan.unknown_codes, [self.codes[0]])
+        self.assertEqual(sheetscan.strays(self.run, scan), [])
 
     def test_junk_is_an_error_not_a_crash(self):
-        scan = sheetscan.read_sheet(b"not a photo", known_codes=self.codes)
+        scan = sheetscan.read_sheet(b"not a photo")
 
         self.assertTrue(scan.error)
         self.assertEqual(scan.marks, [])
@@ -7807,23 +7807,18 @@ class SheetScanTests(TestCase):
 
     def test_the_qr_confirms_which_sheet_this_is(self):
         scan = sheetscan.read_sheet(
-            sheet_photo(self.rows, filled=(0,), token=self.run.token),
-            known_codes=self.codes, expect_token=self.run.token,
-        )
+            sheet_photo(self.rows, filled=(0,), token=self.run.token))
 
-        self.assertEqual(scan.wrong_sheet, "")
+        self.assertEqual(scan.qr_token, self.run.token)
         self.assertEqual(len(scan.filled), 1)
 
     def test_a_photo_of_another_sheet_is_refused(self):
         """Two sheets printed days apart share most of their rows, so marks
         off the wrong one land on rows that look right."""
         scan = sheetscan.read_sheet(
-            sheet_photo(self.rows, filled=(0, 1, 2), token="SOMEOTHERTOKEN"),
-            known_codes=self.codes, expect_token=self.run.token,
-        )
+            sheet_photo(self.rows, filled=(0, 1, 2), token="SOMEOTHERTOKEN"))
 
-        self.assertEqual(scan.wrong_sheet, "SOMEOTHERTOKEN")
-        self.assertEqual(scan.filled, [])
+        self.assertEqual(scan.qr_token, "SOMEOTHERTOKEN")
 
     # --- turning marks into rows -------------------------------------------
 
@@ -7844,8 +7839,7 @@ class SheetScanTests(TestCase):
             order=9, quantity=4,
         )
         rows = self.rows + [extra]
-        codes = [production.row_code(r) for r in rows]
-        scan = sheetscan.read_sheet(sheet_photo(rows, filled=(0, 4)), known_codes=codes)
+        scan = sheetscan.read_sheet(sheet_photo(rows, filled=(0, 4)))
 
         self.assertEqual(len(scan.filled), 2)
         ticked = sheetscan.rows_to_tick(self.run, scan)
@@ -7870,9 +7864,47 @@ class SheetScanTests(TestCase):
         self.assertEqual(sheetscan.rows_to_tick(self.run, scan), [])
 
 
-class SheetScanPageTests(TestCase):
-    """The photo shortcut on the crew page. It fills the form in; it does
-    not submit it."""
+class RunCodeTests(TestCase):
+    """The code on a sheet, which a person reads off paper and types."""
+
+    def test_it_reads_as_words(self):
+        token = new_run_token()
+        number, adjective, animal = token.split("-")
+
+        self.assertEqual(len(number), 2)
+        self.assertTrue(number.isdigit())
+        self.assertIn(adjective, RUN_ADJECTIVES)
+        self.assertIn(animal, RUN_ANIMALS)
+
+    def test_it_fits_the_column(self):
+        longest = max(len(new_run_token()) for _ in range(2000))
+        field = ProductionRun._meta.get_field("token")
+
+        self.assertLessEqual(longest, field.max_length)
+
+    def test_typing_it_is_forgiving(self):
+        """Punctuation and case are how a phone keyboard differs from a
+        printed page, not how one sheet differs from another."""
+        token = "42-brisk-wombat"
+
+        for typed in ("42-brisk-wombat", "42 Brisk Wombat", "42BRISKWOMBAT",
+                      "  42-BRISK-WOMBAT  "):
+            self.assertEqual(normalize_token(typed), normalize_token(token), typed)
+
+    def test_a_different_code_is_still_different(self):
+        self.assertNotEqual(
+            normalize_token("42-brisk-wombat"), normalize_token("43-brisk-wombat")
+        )
+
+
+class PhotoUploadFlowTests(TestCase):
+    """Camera first: photograph any sheet at one page, and the photo says
+    which run it is.
+
+    That is what makes the QR do real work — it isn't a second presentation
+    of something the address bar already proved, it is the only thing that
+    names the sheet.
+    """
 
     def setUp(self):
         self.run = ProductionRun.objects.create()
@@ -7881,151 +7913,120 @@ class SheetScanPageTests(TestCase):
         self.rows = [
             ProductionRunRow.objects.create(
                 run=self.run, finished_product=self.product, order=i, quantity=4)
-            for i in (1, 2)
+            for i in (1, 2, 3)
         ]
-        self.url = reverse("production_run", args=[self.run.token])
+        self.url = reverse("production_upload")
 
-    def _upload(self, **kwargs):
-        """A whole-page photo — which now means the sheet's own QR is in it,
-        because a photo that can't identify its sheet is refused."""
+    def _send(self, rows=None, **kwargs):
         from django.core.files.uploadedfile import SimpleUploadedFile
-        kwargs.setdefault("token", self.run.token)
-        photo = sheet_photo(self.rows, **kwargs)
-        return self.client.post(
-            self.url,
-            {"sheet": SimpleUploadedFile("sheet.png", photo, content_type="image/png")},
-        )
+        photo = sheet_photo(rows if rows is not None else self.rows, **kwargs)
+        return self.client.post(self.url, {
+            "sheet": SimpleUploadedFile("s.png", photo, content_type="image/png"),
+        })
 
-    def test_a_photo_records_nothing_by_itself(self):
-        """The safety argument for the whole feature."""
-        self._upload(filled=(0, 1))
+    def test_it_serves_an_anonymous_get(self):
+        self.assertEqual(self.client.get(self.url).status_code, 200)
+
+    def test_a_photo_lands_on_its_own_run_pre_ticked(self):
+        response = self._send(filled=(0, 2), token=self.run.token)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(self.run.token, response["Location"])
+        self.assertIn("done=", response["Location"])
+
+        page = self.client.get(response["Location"])
+        self.assertEqual(page.context["prefilled"], {self.rows[0].pk, self.rows[2].pk})
+
+    def test_nothing_is_recorded_by_uploading(self):
+        response = self._send(filled=(0, 2), token=self.run.token)
+        self.client.get(response["Location"])
 
         self.assertEqual(InventoryLog.objects.count(), 0)
         self.product.refresh_from_db()
         self.assertEqual(self.product.number_on_hand, 0)
 
-    def test_it_comes_back_with_the_boxes_already_ticked(self):
-        self._upload(filled=(0,))
-
-        response = self.client.get(self.url)
-
-        self.assertEqual(response.context["prefilled"], {self.rows[0].pk})
-        self.assertContains(response, "Read 1 filled in")
-
-    def test_submitting_afterwards_is_what_records_it(self):
-        self._upload(filled=(0,))
-        self.client.post(self.url, {"done": [str(self.rows[0].pk)]})
+    def test_submitting_on_the_run_page_is_what_records(self):
+        response = self._send(filled=(0,), token=self.run.token)
+        self.client.get(response["Location"])
+        self.client.post(
+            reverse("production_run", args=[self.run.token]),
+            {"done": [str(self.rows[0].pk)]},
+        )
 
         self.product.refresh_from_db()
         self.assertEqual(self.product.number_on_hand, 4)
 
-    def test_the_reading_clears_once_it_is_acted_on(self):
-        self._upload(filled=(0,))
-        self.client.post(self.url, {"done": [str(self.rows[0].pk)]})
+    def test_no_readable_code_asks_for_it_and_then_hands_over(self):
+        """Nearly always a soft photo rather than a wrong sheet, so this is a
+        way through rather than an interrogation."""
+        self._send(filled=(0,))
+        page = self.client.get(self.url)
+        self.assertContains(page, "Type the code printed beside it")
 
-        response = self.client.get(self.url)
+        response = self.client.post(self.url, {"sheet_code": self.run.token})
 
-        self.assertIsNone(response.context["scan"])
+        self.assertEqual(response.status_code, 302)
+        page = self.client.get(response["Location"])
+        self.assertEqual(page.context["prefilled"], {self.rows[0].pk})
 
-    def test_a_photo_of_the_wrong_sheet_ticks_nothing(self):
-        self._upload(filled=(0, 1), token="NOTTHISRUN")
+    def test_a_typed_code_is_forgiving(self):
+        self._send(filled=(0,))
 
-        response = self.client.get(self.url)
-
-        self.assertEqual(response.context["prefilled"], set())
-        self.assertContains(response, "different sheet")
-
-    def test_an_unreadable_photo_says_so_and_leaves_the_list_usable(self):
-        from django.core.files.uploadedfile import SimpleUploadedFile
-        self.client.post(self.url, {
-            "sheet": SimpleUploadedFile("x.png", b"junk", content_type="image/png"),
+        response = self.client.post(self.url, {
+            "sheet_code": self.run.token.replace("-", " ").upper(),
         })
 
-        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 302)
 
-        self.assertContains(response, "Tick them below instead")
-        self.assertEqual(response.context["prefilled"], set())
+    def test_an_unknown_typed_code_says_so(self):
+        self._send(filled=(0,))
 
+        self.client.post(self.url, {"sheet_code": "99-wrong-badger"})
+        page = self.client.get(self.url)
 
-class SheetConfirmationTests(TestCase):
-    """Whether the photo proved which sheet it was of.
+        self.assertContains(page, "99-wrong-badger")
 
-    The QR check only fires when a QR is in frame. A close-up of half a long
-    sheet is a legitimate photo — it reads better — and is not refused. But
-    it isn't *checked* either, and two runs can share a row code, so an
-    unconfirmed photo of the wrong sheet reads as a set of plausible marks.
-    The difference has to be on the page.
-    """
-
-    def setUp(self):
-        self.run = ProductionRun.objects.create()
-        recipe = make_recipe("Stormy Sea", hexes=())
-        product = make_bathable(recipe, "Silk Infinity", on_hand=0, par=8, bath=4)
-        self.rows = [
-            ProductionRunRow.objects.create(
-                run=self.run, finished_product=product, order=i, quantity=4)
-            for i in (1, 2)
-        ]
-        self.codes = [production.row_code(r) for r in self.rows]
-
-    def _read(self, **kwargs):
-        return sheetscan.read_sheet(
-            sheet_photo(self.rows, **kwargs),
-            known_codes=self.codes, expect_token=self.run.token,
-        )
-
-    def test_a_qr_in_frame_confirms_the_sheet(self):
-        scan = self._read(filled=(0,), token=self.run.token)
-
-        self.assertTrue(scan.sheet_confirmed)
-
-    def test_no_readable_qr_is_read_anyway_but_not_confirmed(self):
-        """Reaching this page meant holding the token, so the photo adds no
-        permission and refusing would spend a real person's patience to buy
-        nothing. Glare and torn corners are ordinary."""
-        scan = self._read(filled=(0,))
-
-        self.assertFalse(scan.sheet_confirmed)
-        self.assertEqual(len(scan.filled), 1)
-
-    def test_the_wrong_qr_is_neither_read_nor_confirmed(self):
-        scan = self._read(filled=(0, 1), token="SOMEOTHERRUN")
-
-        self.assertFalse(scan.sheet_confirmed)
-        self.assertEqual(scan.filled, [])
-
-    def test_an_unconfirmed_photo_still_ticks_but_says_so(self):
+    def test_an_unreadable_photo_says_so(self):
         from django.core.files.uploadedfile import SimpleUploadedFile
+        self.client.post(self.url, {
+            "sheet": SimpleUploadedFile("s.png", b"junk", content_type="image/png"),
+        })
+
+        self.assertContains(self.client.get(self.url), "Try again")
+
+    def test_the_run_page_reports_what_the_photo_missed(self):
+        """The everyday failure is a soft photo, and it fails partially."""
+        response = self._send(rows=self.rows[:2], filled=(0,), token=self.run.token)
+
+        page = self.client.get(response["Location"])
+
+        self.assertEqual(page.context["scan"]["read"], 2)
+        self.assertEqual(page.context["scan"]["total"], 3)
+        self.assertContains(page, "come out of the photo")
+
+    def test_a_stale_link_degrades_to_an_empty_form(self):
+        """Ids that aren't this run's are dropped rather than half-ticking a
+        page from some other sheet."""
+        other = ProductionRun.objects.create()
         url = reverse("production_run", args=[self.run.token])
-        self.client.post(url, {"sheet": SimpleUploadedFile(
-            "s.png", sheet_photo(self.rows, filled=(0,)), content_type="image/png")})
 
-        response = self.client.get(url)
+        page = self.client.get(f"{url}?done=99999&done=abc&read=3&filled=1")
 
-        self.assertEqual(response.context["prefilled"], {self.rows[0].pk})
-        self.assertContains(response, "nothing confirmed the photo is of")
+        self.assertEqual(page.context["prefilled"], set())
+        self.assertEqual(other.rows.count(), 0)
 
-    def test_a_confirmed_photo_does_not_nag(self):
-        from django.core.files.uploadedfile import SimpleUploadedFile
-        url = reverse("production_run", args=[self.run.token])
-        self.client.post(url, {"sheet": SimpleUploadedFile(
-            "s.png", sheet_photo(self.rows, filled=(0,), token=self.run.token),
-            content_type="image/png")})
+    def test_an_already_recorded_row_is_not_re_ticked(self):
+        production.apply_row(self.rows[0])
+        response = self._send(filled=(0, 1), token=self.run.token)
 
-        response = self.client.get(url)
+        page = self.client.get(response["Location"])
 
-        self.assertEqual(response.context["prefilled"], {self.rows[0].pk})
-        self.assertNotContains(response, "nothing confirmed the photo is of")
+        self.assertEqual(page.context["prefilled"], {self.rows[1].pk})
 
-    def test_a_mismatched_code_is_still_a_refusal(self):
-        """Positive evidence of the wrong sheet — there is nothing to weigh."""
-        from django.core.files.uploadedfile import SimpleUploadedFile
-        url = reverse("production_run", args=[self.run.token])
-        self.client.post(url, {"sheet": SimpleUploadedFile(
-            "s.png", sheet_photo(self.rows, filled=(0, 1), token="ANOTHERRUN"),
-            content_type="image/png")})
+    def test_the_run_page_no_longer_takes_photos(self):
+        """Arriving at the run URL first means answering by hand — the user's
+        'what not to do' path — so the camera lives on the upload page."""
+        page = self.client.get(reverse("production_run", args=[self.run.token]))
 
-        response = self.client.get(url)
-
-        self.assertEqual(response.context["prefilled"], set())
-        self.assertContains(response, "different sheet")
+        self.assertNotContains(page, 'name="sheet"')
+        self.assertContains(page, reverse("production_upload"))

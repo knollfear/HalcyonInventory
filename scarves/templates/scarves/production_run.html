@@ -31,13 +31,15 @@ signal — the same reasoning as the booth form.
       text-transform: uppercase; letter-spacing: .04em;
   }
 
-  .shot { margin-bottom: 18px; }
-  .shotbtn input { display: none; }
-  .shotbtn span {
-      display: block; text-align: center; padding: 14px;
-      border: 1px dashed #9aa6b4; border-radius: 10px; background: #fff;
-      font-size: 16px; font-weight: 600; cursor: pointer;
+  .codeform { display: flex; gap: 8px; margin-top: 10px; }
+  .codeform input {
+      flex: 1; min-width: 0; font: inherit; font-size: 16px; padding: 12px;
+      border: 1px solid #c8cfd8; border-radius: 8px; background: #fff;
   }
+  .codeform .btn { width: auto; padding: 12px 18px; font-size: 1rem; }
+  .badcode { color: #8a2f2a; font-size: .9rem; margin: 8px 0 0; }
+
+  .faster { margin-bottom: 16px; }
 
   .btn {
       width: 100%; padding: 16px; font: inherit; font-size: 1.05rem;
@@ -65,72 +67,51 @@ signal — the same reasoning as the booth form.
   {% endif %}
 
   {% if scan %}
-    <div class="panel {% if scan.error or scan.wrong_sheet or not scan.read %}stop{% endif %}">
-      {% if scan.wrong_sheet %}
-        <strong>That photo is of a different sheet.</strong>
-        Nothing was read from it — the code on it belongs to another run.
-        Scan the code on the sheet in your hand.
-      {% elif scan.error %}
-        <strong>{{ scan.error }}</strong> Tick them below instead.
-      {% elif not scan.read %}
-        <strong>Couldn't find any barcodes in that photo.</strong>
-        Try again with the whole page in frame and the phone held square to it
-        — or just tick them below.
-      {% else %}
-        {% if not scan.confirmed %}
-          {% comment %}
-          No readable code, so nothing tied this photo to this run. Not a
-          refusal — reaching this page meant holding the token already, so
-          the photo adds no permission and refusing would spend a real
-          person's patience to buy nothing. But row codes repeat across runs
-          and consecutive sheets look alike, so "the rows matched" is weak
-          evidence and the check that matters is the one below.
-          {% endcomment %}
-          <strong>Couldn't read the code at the top of this sheet,</strong>
-          so nothing confirmed the photo is of <em>this</em> run — check the
-          rows below against your paper before you submit.
-        {% endif %}
-        <strong>Read {{ scan.filled }} filled in</strong>
-        of {{ scan.read }} row{{ scan.read|pluralize }} in the photo.
-        {% if scan.unsure %}
-          {{ scan.unsure }} {{ scan.unsure|pluralize:"box was,boxes were" }}
-          hard to call — check {{ scan.unsure|pluralize:"it,them" }} below.
-        {% endif %}
-        Nothing is recorded until you submit.
+    <div class="panel">
+      <strong>Read {{ scan.filled }} filled in</strong>
+      of {{ scan.read }} row{{ scan.read|pluralize }} in your photo.
+      {% if scan.read < scan.total %}
+        {% comment %}
+        The ordinary failure, and the one worth saying out loud: a soft focus
+        or a hurried frame takes out some rows and leaves others. A count of
+        what was found reads as a complete answer unless the page says what
+        was missed.
+        {% endcomment %}
+        <strong>{{ scan.total|add:"-"|add:scan.read }} of the {{ scan.total }}
+        rows on this sheet didn't come out of the photo</strong> — those are
+        the ones to check by hand.
       {% endif %}
-      {% if scan.unknown %}
-        <p class="muted">
-          {{ scan.unknown|length }} barcode{{ scan.unknown|length|pluralize }}
-          in the photo {{ scan.unknown|length|pluralize:"isn't,aren't" }} on this
-          sheet and {{ scan.unknown|length|pluralize:"was,were" }} ignored.
+      {% if scan.unsure %}
+        {{ scan.unsure }} {{ scan.unsure|pluralize:"box was,boxes were" }}
+        hard to call.
+      {% endif %}
+      Nothing is recorded until you submit.
+      {% if scan.strays %}
+        {% comment %}
+        Not expected ever: rows in the photo that don't belong to this run,
+        which would mean a photo of some other sheet. The matched marks would
+        otherwise be applied here without comment.
+        {% endcomment %}
+        <p class="badcode">
+          {{ scan.strays }} row{{ scan.strays|pluralize }} in that photo
+          {{ scan.strays|pluralize:"isn't,aren't" }} on this sheet — check you
+          photographed the right one.
         </p>
       {% endif %}
     </div>
   {% endif %}
 
   {% comment %}
-  The shortcut: photograph the marked sheet instead of tapping twenty rows.
-  Its own form because it carries a file and posts separately — reading the
-  photo only fills the list in below, and the ordinary submit is still what
-  records anything.
+  No camera here. Photographing is its own page because the photo is what
+  says which run a sheet belongs to — arriving at this URL first means you
+  have already answered that question by hand, and are about to answer the
+  rest by hand too.
   {% endcomment %}
-  <form method="post" enctype="multipart/form-data" class="shot">
-    {% csrf_token %}
-    <label class="shotbtn">
-      <input type="file" name="sheet" accept="image/*" capture="environment"
-             onchange="this.form.submit()">
-      <span>📷 Photograph the sheet instead</span>
-    </label>
-    <noscript>
-      <button class="btn" type="submit">Read the photo</button>
-    </noscript>
-    <p class="muted">
-      Whole page in frame, including the square code at the top so it can
-      check which sheet this is. Phone held square to the page, any pen or
-      pencil except yellow. You'll still get to check it before anything is
-      recorded.
-    </p>
-  </form>
+  <p class="muted faster">
+    Quicker next time: mark the sheet, then
+    <a href="{% url 'production_upload' %}">send a photo of it</a>
+    instead of tapping.
+  </p>
 
   <form method="post">
     {% csrf_token %}

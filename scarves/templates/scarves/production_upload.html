@@ -1,0 +1,98 @@
+{% extends "scarves/base_public.html" %}
+{% comment %}
+Photograph a marked sheet. One page for every run, not one per run — the
+photo is what says which sheet it is, so there is nothing to navigate to
+first. Bookmark this and the whole job is: mark the paper, open this, shoot.
+
+Public shell, no login, off the public map: same shape as the rest of the
+crew's pages.
+{% endcomment %}
+
+{% block title %}Photograph a Sheet{% endblock %}
+{% block heading %}Send a photo of your sheet{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 480px; }
+
+  .shotbtn input { display: none; }
+  .shotbtn span {
+      display: block; text-align: center; padding: 22px 14px;
+      border: 1px dashed #9aa6b4; border-radius: 12px; background: #fff;
+      font-size: 17px; font-weight: 600; cursor: pointer;
+  }
+  .codeform { display: flex; gap: 8px; margin-top: 12px; }
+  .codeform input {
+      flex: 1; min-width: 0; font: inherit; font-size: 16px; padding: 12px;
+      border: 1px solid #c8cfd8; border-radius: 8px; background: #fff;
+  }
+  .codeform .btn { width: auto; padding: 12px 18px; }
+  .btn {
+      padding: 14px 18px; font: inherit; font-size: 1rem; font-weight: 600;
+      border: 1px solid var(--accent); border-radius: 10px;
+      background: var(--accent); color: #fff; cursor: pointer;
+  }
+  .badcode { color: #8a2f2a; font-size: .9rem; margin: 8px 0 0; }
+{% endblock %}
+
+{% block content %}
+
+  {% if photo.error %}
+    <div class="panel stop">
+      <strong>{{ photo.error }}</strong> Try again.
+    </div>
+  {% elif photo.read == 0 and photo %}
+    <div class="panel stop">
+      <strong>Couldn't find any rows in that photo.</strong>
+      Usually the picture came out soft. Whole page in frame, phone held
+      square to it, and as much light as you can manage.
+    </div>
+  {% elif photo.unknown_run %}
+    <div class="panel stop">
+      <strong>{{ photo.unknown_run }}</strong> isn't a sheet code I know.
+      Check it against the code printed at the top of your sheet.
+    </div>
+  {% endif %}
+
+  {% if photo.read and not photo.token or photo.unknown_run %}
+    {% comment %}
+    Rows were read but the QR wasn't. Nearly always a soft photo rather than
+    a wrong sheet — the code is on every page, so a whole-page shot includes
+    it. Typing it off the sheet makes the same claim the QR would have.
+    {% endcomment %}
+    <div class="panel">
+      <strong>Read {{ photo.filled }} filled in
+      of {{ photo.read }} row{{ photo.read|pluralize }}</strong> — but the
+      square code at the top didn't come out, so I don't know which sheet
+      this is. Type the code printed beside it.
+      <form method="post" class="codeform">
+        {% csrf_token %}
+        <input type="text" name="sheet_code" autocomplete="off"
+               autocapitalize="none" spellcheck="false"
+               placeholder="42-brisk-wombat"
+               aria-label="Code printed on your sheet">
+        <button class="btn" type="submit">Go</button>
+      </form>
+    </div>
+  {% endif %}
+
+  <form method="post" enctype="multipart/form-data">
+    {% csrf_token %}
+    <label class="shotbtn">
+      <input type="file" name="sheet" accept="image/*" capture="environment"
+             onchange="this.form.submit()">
+      <span>📷 Photograph the sheet</span>
+    </label>
+    <noscript>
+      <button class="btn" type="submit" style="margin-top:10px">Send the photo</button>
+    </noscript>
+  </form>
+
+  <p class="muted" style="margin-top:18px">
+    Fill in the box beside every bath you finished, then photograph the whole
+    page — including the square code at the top, which is how it knows which
+    sheet this is. Any pen or pencil except yellow. You'll get to check it
+    before anything is recorded.
+  </p>
+
+{% endblock %}

@@ -374,37 +374,54 @@ Dyes marked out of stock are called out in both places. A missing dye is a
 bath that can't run, and finding that out at the sink is the expensive
 version of finding it out here.
 
-### Reading the marked sheet from a photo
+### Photographing a marked sheet
 
-`secret/production/<token>/` takes a photo of the marked paper and comes back
-with the same list already ticked. `scarves/sheetscan.py` does the reading.
+`secret/production/upload/` takes a photo of a marked sheet and hands the
+reading to that run's own page, already ticked. `scarves/sheetscan.py` does
+the reading.
 
-**It applies nothing.** The scan fills the form in and a person submits it —
-the same rule `colorbands` follows, and the whole safety argument. It also
-means the photo path can never be *worse* than tapping: at worst it saves
-zero taps and they tap them anyway.
+**One upload page for every run, not one per run.** Camera first: the photo
+is what says which sheet this is, so there is nothing to navigate to before
+taking it. That is what makes the QR do real work — it isn't a second
+presentation of something the address bar already proved, it is the only
+thing that names the sheet. Bookmark the upload page and the whole job is:
+mark the paper, open it, shoot.
+
+Arriving at a run's URL first and tapping the boxes is the manual path. It
+still works and is the fallback, but it means answering by hand the question
+the photo would have answered.
+
+**It applies nothing.** The upload page redirects to
+`.../<token>/?done=12&done=15`, the boxes come up ticked, and a person
+submits. Same rule `colorbands` follows.
+
+**The reading rides in the query string, not the session.** It belongs to
+that run's URL, which is what structurally stops one sheet's photo pre-ticking
+another sheet's page — the session version needed a hand-written guard for
+exactly that. The parameter is named `done` because that is the checkbox's own
+name, so the URL is what the form would have serialised. Nothing is lost in
+safety: a hand-edited `?done=` can only tick boxes a person could tick anyway.
+Ids are parsed defensively so a stale link degrades to an empty form.
 
 **The barcode does the hard part.** Every row prints one a fixed distance
 from its box, so a decoded symbol gives the row's identity *and* the
 position, scale and orientation of everything beside it. Finding a tick box
 is then arithmetic rather than the general checkbox-recognition problem.
 Geometry comes from `production.box_geometry()`, the same constants the PDF
-draws with, because a scanner with its own copy would drift — and the symptom
-of drift is the worst available: the sample window lands on blank paper and
-every box reads empty, which is indistinguishable from a careful person who
-ticked nothing.
+draws with — a scanner with its own copy would drift, and drift lands the
+sample window on blank paper and reads every box empty, which is
+indistinguishable from a careful person who ticked nothing.
 
-Two subtleties in that geometry, both of which bite silently:
+Two subtleties there, both of which bite silently:
 
 - **Quiet zones don't scale.** reportlab pins them at a quarter inch, so a
   drawn symbol is wider than `BARCODE_WIDTH` by a margin that depends on the
-  value. Scale is worked out from `bars_width()`, never the target width.
+  value. Scale comes from `bars_width()`, never the target width.
 - **A decoder returns one result per distinct symbol, not per printed
-  symbol.** Three identical barcodes on a page come back as one. A sheet
-  routinely prints the same SKU several times — `plan_baths` groups repeated
-  baths of a colorway together on purpose — so `row_code()` puts the row's
-  position in the barcode as well as its SKU (`RAWSIL-STORMY#3`). Without
-  that, four marked baths of one colorway report as one.
+  symbol.** Three identical barcodes come back as one, and a sheet routinely
+  prints the same SKU several times — `plan_baths` groups repeated baths of a
+  colorway together on purpose. So `row_code()` carries the row's position as
+  well as its SKU (`RAWSIL-STORMY#3`).
 
 **Ink, not colour.** Each barcode is full-black bars on full-white paper a
 couple of centimetres from its own box, so it doubles as a calibration
@@ -413,45 +430,29 @@ exposure. The box is scored on where it falls between them, which is a ratio
 and survives white balance, a tungsten bulb and a glare on one corner. Red,
 blue, green and pencil all sit far nearer black than paper; **yellow does
 not** and never will, which is why the sheet says "any pen but yellow".
-Anything between the thresholds is reported `unsure` rather than guessed.
+Anything between the thresholds is `unsure` rather than guessed.
 
-**The QR binds; it does not authorise.** Reaching this page at all means
-holding the run's token — that is the whole of the authorisation, the bargain
-`secret/` makes everywhere here, and it is already spent by the time a photo
-is uploaded. The QR in the photo adds no permission. What it adds is evidence
-that the paper in the picture is the run the URL claims.
+**The likely failure is the photograph, not the sheet.** Soft focus, a
+hurried frame, a bad photocopy — and it fails *partially*, taking out some
+rows and leaving others. So the run page reports how many rows it read
+against how many are on the sheet: a count of what was found reads as a
+complete answer unless something says what was missed.
 
-So the two failures are not equal, and are treated differently:
+When the QR itself can't be read, the upload page asks for the code printed
+beside it (`42-brisk-wombat` — words, because someone types this off paper;
+`normalize_token` makes case and punctuation irrelevant). That is nearly
+always a soft photo rather than a wrong sheet, so it is a way through rather
+than an interrogation. Rows in the photo that aren't on the named run are
+reported too — expected to be empty forever, but the matched marks would
+otherwise land there unremarked.
 
-| In the photo              | What it means                    | What happens |
-|---------------------------|----------------------------------|--------------|
-| A QR that doesn't match   | positive evidence of a wrong sheet | refused, nothing read |
-| No readable QR            | no evidence either way           | marks read, page says it wasn't confirmed |
-
-The second is deliberately not a refusal. Glare, a torn corner, a third-
-generation photocopy and a hurried frame are all ordinary, and turning any of
-them into "start again" spends a real person's patience to buy nothing —
-they hold the token either way.
-
-It is said out loud rather than passed over, because the evidence is weak
-*here* in a way it wouldn't be elsewhere: row codes repeat across runs, and
-consecutive sheets tend to be near-identical (print one, don't report it,
-print another tomorrow and it lists much the same work). "The row codes
-matched" is not much of a check, so the confirmation step is doing the real
-work and the page has to point at it.
-
-**Re-reading the same photo ticks nothing new.** `rows_to_tick()` skips rows
-already applied, and because a mark maps to exactly one row it can't go
-looking for another row with the same SKU to land on instead.
-
-The photo is **not stored**. It's read in the request and discarded — it is
-an input to a form, not a record, and the record is the inventory log.
+The photo is **not stored**. It's read in the request and discarded — an
+input to a form, not a record. The record is the inventory log.
 
 **Marking is positive only.** Tick what you did; never cross out what you
-didn't. Crossing out is the tempting shorthand and it's wrong twice: pen
-through a Code128 sometimes still decodes and sometimes doesn't, so the
-signal that matters rides on the unreliable mark, and an unmarked row stops
-meaning anything definite.
+didn't. Pen through a Code128 sometimes still decodes and sometimes doesn't,
+so the signal that matters would ride on the unreliable mark, and an unmarked
+row would stop meaning anything definite.
 
 ## Undyed stock: one pile, two rows, and the axes swapped
 

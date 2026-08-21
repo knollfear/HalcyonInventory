@@ -4,31 +4,23 @@ The sheet already comes back by QR code — scan it, tap the baths you did,
 submit. This is the shortcut: photograph the marked paper instead, and the
 same list arrives already ticked.
 
-**What the QR does, and what it doesn't.** Reaching this page at all means
-holding the run's token — that is the whole of the authorisation, the bargain
-`secret/` makes everywhere here, and it is already spent by the time a photo
-is uploaded. So the QR in the photo adds no permission. What it adds is
-**binding**: evidence that the paper in the picture is the run the URL says.
+**The photo says which sheet it is.** Uploading happens at one page for all
+runs, not at a run's own page, so nothing has identified the sheet before the
+picture arrives — the QR in the header does it, and the token it carries is
+what admits the marks to that run. That is the same bargain `secret/` makes
+everywhere here, arriving by camera instead of by address bar.
 
-That makes the two failures unequal, and they are treated differently:
+When the QR can't be read the person types the code printed beside it. That
+is almost always what has happened: the code is on every page, so a
+whole-page shot includes it, and a failure to read one means the photo came
+out soft rather than that anybody is holding the wrong paper. Typing it is a
+way through, not an interrogation.
 
-- **The QR reads and doesn't match.** Positive evidence of the wrong sheet.
-  Refused outright, nothing read; there is nothing to weigh.
-- **No QR readable at all.** No evidence either way, and the person is
-  already authorised. The marks are read, and the page says the sheet
-  couldn't be confirmed.
-
-The second is deliberately not a refusal. Glare, a torn corner, a third-
-generation photocopy and a hurried frame are all ordinary, and turning any of
-them into "start again" spends a real person's patience to buy nothing —
-they hold the token either way.
-
-It is said out loud rather than passed over, though, because the evidence is
-genuinely weak *here* in a way it wouldn't be elsewhere. Row codes are not
-unique across runs, and consecutive sheets tend to be near-identical: print
-one, don't report it, print another tomorrow and it lists much the same work.
-So "the row codes matched" is not much of a check, and the confirmation step
-is doing the real work.
+**The likely failure is the photograph, not the sheet.** Soft focus, a hurried
+frame, a third-generation photocopy — and it fails *partially*, taking out
+some rows and leaving others. So a caller is told how many rows it read as
+well as how many were filled: a count of what was found reads as a complete
+answer unless something says what was missed.
 
 **It never applies anything.** What it produces is a pre-filled form, which
 the person then looks at and submits. That is the whole safety argument, and
@@ -130,18 +122,10 @@ class ScanResult:
     #: "I photographed it and nothing happened" needs an explanation.
     unknown_codes: list = field(default_factory=list)
     error: str = ""
-    #: Token read off the QR in the photo, when it isn't this run's. The sheet
-    #: carries its own identity, so photographing the wrong one is a question
-    #: that can be answered rather than assumed — and it has to be, because
-    #: two sheets printed days apart share most of their SKUs, so the marks
-    #: would otherwise land on plausible-looking rows of the wrong run.
-    wrong_sheet: str = ""
-    #: Whether a QR in the photo positively tied it to this run. False means
-    #: no readable code was in frame — the marks are still read, because the
-    #: person held the token to get here, but nothing has confirmed the paper
-    #: in the picture is this sheet and the page has to say so.
-    sheet_confirmed: bool = False
-
+    #: Token read off the QR in the header, if one was legible. This is how a
+    #: photo names the run it belongs to; without it the person types the same
+    #: code off the sheet.
+    qr_token: str = ""
     @property
     def filled(self):
         return [m for m in self.marks if m.state == FILLED]
@@ -197,7 +181,7 @@ def _score_box(grey, box, ink, paper):
     return (paper - mean) / spread
 
 
-def read_sheet(data, known_codes=(), expect_token=None):
+def read_sheet(data):
     """Read a photo of a marked sheet. Returns a `ScanResult`.
 
     `data` is the uploaded bytes, decoded at full resolution — a page holds
@@ -205,13 +189,11 @@ def read_sheet(data, known_codes=(), expect_token=None):
     exactly what stops them resolving.
 
     One decode pass finds both kinds of symbol on the page: the Code128 on
-    each row, and the QR in the header. With `expect_token` given, a QR that
-    *disagrees* stops the read; a QR that can't be found doesn't, and leaves
-    `sheet_confirmed` False for the page to report. See the module docstring
-    for why those two aren't the same thing.
+    each row, and the QR in the header. Which run this is comes back as
+    `qr_token`; matching marks to rows is the caller's job, once it knows
+    which run to match against.
     """
     result = ScanResult()
-    known = set(known_codes)
 
     try:
         from io import BytesIO
@@ -234,31 +216,19 @@ def read_sheet(data, known_codes=(), expect_token=None):
         result.error = f"Couldn't read that photo ({exc})."
         return result
 
-    if expect_token:
-        for code in codes:
-            if code.type != "QRCODE":
-                continue
-            seen = token_in(code.data.decode("utf-8", "ignore").strip())
-            if not seen:
-                continue
-            if seen != expect_token:
-                result.wrong_sheet = seen
-                return result
-            result.sheet_confirmed = True
-
-        # Not finding one is not a refusal — see the module docstring. The
-        # caller already held the token to get here, and `sheet_confirmed`
-        # stays False so the page can say the sheet wasn't confirmed.
+    for code in codes:
+        if code.type != "QRCODE":
+            continue
+        seen = token_in(code.data.decode("utf-8", "ignore").strip())
+        if seen:
+            result.qr_token = seen
+            break
 
     for code in codes:
         if code.type == "QRCODE":
             continue
         value = code.data.decode("utf-8", "ignore").strip()
         if not value:
-            continue
-        if value not in known:
-            if value not in result.unknown_codes:
-                result.unknown_codes.append(value)
             continue
 
         rect = code.rect
@@ -328,3 +298,14 @@ def rows_to_tick(run, scan):
         for row in run.rows.all()
         if not row.is_applied and production.row_code(row) in filled
     ]
+
+
+def strays(run, scan):
+    """Codes in the photo that aren't rows of `run`.
+
+    Expected to be empty forever. If it isn't, the photo is of some other
+    sheet, and saying so costs a line — the marks that *did* match would
+    otherwise be applied to this run without comment.
+    """
+    codes = {production.row_code(row) for row in run.rows.all()}
+    return sorted({mark.code for mark in scan.marks} - codes)

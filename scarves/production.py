@@ -609,8 +609,15 @@ def _draw_header(pdf, run, return_url, page_w, page_h, page_no, page_count,
     # won't scan and the run has already dropped off `secret/production/`, and
     # a fallback nobody can read off the page is not a fallback. The token is
     # sixteen mixed-case characters, so it needs all the legibility it can get.
-    pdf.setFont("Helvetica", 8)
-    pdf.drawRightString(page_w - PAGE_MARGIN, top - QR_SIZE - 10, return_url)
+    # The code in plain text, big enough to read off a photocopy. This is
+    # what somebody types when the QR won't scan, and typing it *from the
+    # sheet* is what ties a photo to the run — so it has to be legible and
+    # unmistakably part of this sheet, not buried in a URL.
+    pdf.setFont("Helvetica-Bold", 12)
+    pdf.drawRightString(page_w - PAGE_MARGIN, top - QR_SIZE - 13,
+                        f"CODE: {run.token}")
+    pdf.setFont("Helvetica", 7)
+    pdf.drawRightString(page_w - PAGE_MARGIN, top - QR_SIZE - 24, return_url)
 
 
 def _draw_row(pdf, row, number, y, page_w):

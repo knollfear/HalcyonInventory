@@ -1,4 +1,5 @@
 import base64
+from urllib.parse import urlencode
 import hashlib
 import hmac
 import json
@@ -53,7 +54,7 @@ from .forms import (
     QuickRecipeRowForm,
     RecipeDyesForm,
 )
-from .models import Dye, Recipe
+from .models import Dye, Recipe, normalize_token
 from .s3utils import download_object, presigned_post, upload_object
 from django.db.models import Prefetch
 
@@ -3287,6 +3288,135 @@ def production_run_index(request):
     })
 
 
+def _photo_reading(request, run):
+    """`(summary, prefilled)` from a `?done=` handed over by the upload page.
+
+    Parsed defensively rather than trusted: ids that aren't this run's, or
+    are already recorded, are dropped. Not for safety — a person can tick any
+    box on this page by hand — but because a stale link should degrade to an
+    ordinary empty form instead of a page half-ticked from some other sheet.
+    """
+    if "done" not in request.GET:
+        return None, set()
+
+    wanted = {
+        int(value) for value in request.GET.getlist("done") if value.isdigit()
+    }
+    prefilled = {
+        row.pk for row in run.rows.all()
+        if row.pk in wanted and not row.is_applied
+    }
+
+    def number(name):
+        value = request.GET.get(name, "")
+        return int(value) if value.isdigit() else 0
+
+    return {
+        "read": number("read"),
+        "filled": number("filled"),
+        "unsure": number("unsure"),
+        "strays": number("strays"),
+        "total": run.rows.count(),
+    }, prefilled
+
+
+@page_meta(
+    title="Photograph a Sheet",
+    description="Send in a photo of a marked production sheet and it works "
+                "out which run it is and which baths were filled in.",
+    category="Production",
+)
+@require_http_methods(["GET", "POST"])
+def production_upload(request):
+    """One page for photographing any sheet, rather than one per run.
+
+    Camera first: the photo is what says which run this is, so there is no
+    navigating to a page before taking it. That is what makes the QR do real
+    work — it isn't a second presentation of something the address bar
+    already proved, it is the only thing that names the sheet.
+
+    Nothing is applied here. The reading is handed to that run's own page,
+    already ticked, and a person submits it.
+    """
+    held = request.session.get("production_photo") or {}
+
+    if request.method == "POST" and "sheet" in request.FILES:
+        scan = sheetscan.read_sheet(request.FILES["sheet"].read())
+        held = {
+            "error": scan.error,
+            "read": len(scan.marks),
+            "filled": len(scan.filled),
+            "unsure": len(scan.unsure),
+            # The marks travel, not the photo: the photo is an input to a
+            # form, and it has done its job by here.
+            "codes": sorted(scan.filled_codes),
+            "token": scan.qr_token,
+        }
+        request.session["production_photo"] = held
+        return _hand_off_photo(request, held) or redirect("production_upload")
+
+    if request.method == "POST" and "sheet_code" in request.POST:
+        # The QR wouldn't read — nearly always a soft photo rather than the
+        # wrong sheet, since the code is on every page. Typing it off the
+        # sheet is the same claim the QR makes.
+        held["token"] = (request.POST.get("sheet_code") or "").strip()
+        held["typed"] = True
+        request.session["production_photo"] = held
+        return _hand_off_photo(request, held) or redirect("production_upload")
+
+    return render(request, "scarves/production_upload.html", {"photo": held})
+
+
+def _hand_off_photo(request, held):
+    """Send a read photo to its run's page, pre-ticked. None if it can't be."""
+    token = (held.get("token") or "").strip()
+    if not token or not held.get("read"):
+        return None
+
+    run = next(
+        (
+            candidate
+            for candidate in ProductionRun.objects.all()
+            if normalize_token(candidate.token) == normalize_token(token)
+        ),
+        None,
+    )
+    if run is None:
+        held["unknown_run"] = token[:40]
+        request.session["production_photo"] = held
+        return None
+
+    filled = set(held.get("codes") or [])
+    codes = {production.row_code(row): row for row in run.rows.all()}
+    ticked = [
+        row.pk for code, row in codes.items()
+        if code in filled and not row.is_applied
+    ]
+
+    # The reading rides in the query string rather than the session. It
+    # belongs to *this run's* URL, which is what stops one sheet's photo
+    # pre-ticking another sheet's page, and it costs nothing in safety: a
+    # hand-edited `checked` can only tick boxes a person could tick anyway,
+    # and the submit below is still the only thing that records.
+    query = urlencode({
+        # Named for the checkbox it fills, so the URL is exactly what the form
+        # would have serialised: `?done=12&done=15` prefills the boxes called
+        # `done`. Nothing in HTML does that by itself, but a page can, and it
+        # leaves the link self-describing rather than carrying a private
+        # parameter that only this view understands.
+        "done": [str(pk) for pk in ticked],
+        "read": held.get("read", 0),
+        "filled": held.get("filled", 0),
+        "unsure": held.get("unsure", 0),
+        # Rows in the photo that aren't on this sheet. Expected to be empty
+        # forever; if it isn't, the photo is of another run and the matched
+        # marks would otherwise land here unremarked.
+        "strays": len(filled - set(codes)),
+    }, doseq=True)
+    request.session.pop("production_photo", None)
+    return redirect(f"{reverse('production_run', args=[run.token])}?{query}")
+
+
 @page_meta(
     title="Report a Dyeing Session (one sheet)",
     description="The rows from one printed sheet, to tick off.",
@@ -3312,27 +3442,6 @@ def production_run(request, token):
         token=token,
     )
 
-    if request.method == "POST" and "sheet" in request.FILES:
-        # The photo shortcut. Reads the marked paper and comes back with the
-        # same list already ticked — it applies nothing, which is what makes
-        # it safe to be approximate. See sheetscan.
-        scan = sheetscan.read_sheet(
-            request.FILES["sheet"].read(),
-            known_codes=[production.row_code(r) for r in run.rows.all()],
-            expect_token=run.token,
-        )
-        request.session["production_scan"] = {
-            "wrong_sheet": scan.wrong_sheet,
-            "confirmed": scan.sheet_confirmed,
-            "ticked": sheetscan.rows_to_tick(run, scan),
-            "filled": len(scan.filled),
-            "unsure": len(scan.unsure),
-            "read": len(scan.marks),
-            "unknown": scan.unknown_codes,
-            "error": scan.error,
-        }
-        return redirect("production_run", token=run.token)
-
     if request.method == "POST":
         ticked = set(request.POST.getlist("done"))
         applied = 0
@@ -3353,21 +3462,22 @@ def production_run(request, token):
             run.save(update_fields=["submitted_at", "submitted_by"])
 
         request.session["production_run_applied"] = applied
-        request.session.pop("production_scan", None)
+        request.session.pop("production_photo", None)
         return redirect("production_run", token=run.token)
 
     applied = request.session.pop("production_run_applied", None)
-    scan = request.session.get("production_scan")
+    scan, prefilled = _photo_reading(request, run)
     employee, _pin = crew.remembered(request)
     return render(request, "scarves/production_run.html", {
         "run": run,
         "just_applied": applied,
         "remembered": employee,
         "scan": scan,
-        # Pre-ticked from the photo, if there was one. Kept in the session so
-        # the upload can post/redirect/get like everything else here — a
-        # refresh must not re-send a phone photo over a stall's signal.
-        "prefilled": set(scan["ticked"]) if scan else set(),
+        # Pre-ticked from the photo, if there was one and the sheet has
+        # identified itself. Kept in the session so the upload can
+        # post/redirect/get like everything else here — a refresh must not
+        # re-send a phone photo over a stall's signal.
+        "prefilled": prefilled,
     })
 
 
