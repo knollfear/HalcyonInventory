@@ -261,10 +261,18 @@ inflate current inventory by however far back the records go.
 run — and `secret/production/<token>/` is how the answer comes back.
 `scarves/production.py` picks the baths and draws the PDF.
 
-The session runs off paper because the dye room has gloves, water and a sink
-in it, which makes a phone the wrong thing to be holding. The sheet is the
-work order, a pencil is the input device, and the phone is picked up once,
-afterwards, with dry hands.
+**This is a tool to facilitate a task in the real world, where a computer is
+an ill fit.** That sentence decides most of the arguments below. The dye room
+has gloves, water and a sink in it, which makes a phone the wrong thing to be
+holding — so the sheet is the work order, a pencil is the input device, and
+the phone is picked up once, afterwards, with dry hands.
+
+**A `ProductionRun` is not a source of truth.** It is scaffolding for a
+physical job. What closes the loop is the `InventoryLog` rows and the stock
+they moved; the run is only how the paper and the phone found each other.
+Treating it as a record to be preserved, audited, or worked off as a queue is
+the mistake — that road leads to retention rules, reconciliation screens and a
+backlog nobody reads, none of which the job needs.
 
 **The row is a bath, not a scarf.** A bath is one blank plus one recipe
 yielding `number_per_dye_bath` units of a single SKU, so production is not a
@@ -315,11 +323,23 @@ The picker **says when there aren't enough blanks** for what it's about to
 ask for, and prints anyway. The order may already be placed, and refusing
 would be the app arguing with someone who can see the shelf.
 
-**A sheet that never comes back is listed as still out**, on the picker and on
-`secret/production/`. The whole design leans on paper returning, so an
-unreported session must not be something only the person who printed it
-remembers — the failure is otherwise silent, and looks exactly like a session
-that never happened.
+**A sheet leaves the outstanding list as soon as one row is reported.** One
+tick means somebody is working from it and the loop is closing; after that the
+QR code is how you get back to it, which is as findable as it needs to be.
+Adding the rest later still works.
+
+**Only the newest `MAX_OPEN_RUNS` (5) stay outstanding — printing a sixth
+retires the oldest.** Five out at once already means the reporting loop has
+stopped working, and the two ways out of that (never reconciling, or
+abandoning the lot and starting over) are both bad. But *blocking* the sixth
+print is the wrong medicine: it deadlocks exactly when the paper has gone
+missing, which is the same moment a sheet gets abandoned in the first place.
+Keeping the newest five never deadlocks.
+
+Retiring costs nothing precisely because a run isn't a record — it is closed
+with a note rather than deleted, it applies no stock, and if it turns out to
+matter the PDF reprints in one click. The list on the picker is a convenience,
+"sheets you might still be working from", not a queue to be worked off.
 
 ### The dye collection page
 
@@ -372,6 +392,93 @@ didn't. Crossing out is the tempting shorthand and it's wrong twice: pen
 through a Code128 sometimes still decodes and sometimes doesn't, so the signal
 that matters rides on the unreliable mark, and an unmarked row stops meaning
 anything definite.
+
+## Undyed stock: one pile, two rows, and the axes swapped
+
+A few yarns are sold exactly as they arrive — no dye step, straight from
+supplier to customer. They break two assumptions, and both breaks are worth
+understanding before touching them.
+
+**`FinishedProduct.recipe` is null for these, and null is the marker.** Not a
+sentinel "Undyed" recipe row. Every dyed-only query in the app joins through
+that FK, so a null row drops out of production planning, the rainbow sheets,
+the colour pages and the games *by construction*. A sentinel would need each
+of those to remember to exclude it, and a forgotten exclusion is silent — an
+undyed skein filed under a colour it doesn't have. A forgotten null check, by
+contrast, raises. Loud beats silent.
+
+Three queries don't join through recipe and so needed explicit exclusions:
+`production.candidates()`, `production_needed_view` and `card_backfill_index`.
+Without the first two the sheet prints `4 × ` with no colorway and sends
+somebody to the dye room to make something that arrives in a box; without the
+third you are offered a kanban card to backfill for a dye bath that never
+happened.
+
+### One pile, and only one row may count it
+
+This is the part that bites. For anything dyed, the raw blank and the finished
+item are **two** piles, and the dye bath is the event that moves one to the
+other. For a passthrough they are the same physical skein. Two
+independently-maintained counts for one pile drift, silently, and in the
+direction that matters most — knowing when to reorder is the entire reason
+this stock is tracked.
+
+So the **raw row holds the count** and the finished row mirrors it:
+
+- `mirror_passthrough_stock` (a `post_save` on `RawProduct`) is the mirror's
+  only writer. A signal rather than calls at each site, because the raw count
+  moves from several places and forgetting one gives a number that looks fine
+  and isn't.
+- `FinishedProduct.save()` re-derives it too, covering the row being
+  *created*, when there was no passthrough for the signal to find.
+- `FinishedProduct.set_on_hand()` writes a counted quantity to whichever row
+  actually holds it. Use it for stock takes — writing the finished count
+  directly means `save()` re-derives it, the number snaps back, and the count
+  looks like it never happened.
+- The Square webhook decrements the **raw** for a passthrough.
+
+Everything downstream keeps reading `FinishedProduct.number_on_hand` and gets
+the right answer without knowing a passthrough exists — the Square inventory
+push, the "everything on hand" label run, any report.
+
+Shortfall shows up on `private/raw-inventory/`, already the reorder workflow
+and where it belongs: **you order these, you don't make them.**
+
+### Category is Yarn, not a category of its own
+
+Category means "which table at the stall" — that is why reference sheets print
+per category — and undyed skeins sit on the yarn table. Forking the category
+would also break the day an undyed *silk* appears. The distinction actually
+needed is "this can't be dyed", which keys on the null recipe, not on where it
+sits in the shop.
+
+### `CatalogGroup`: the item is "Undyed Yarn", the variations are the blanks
+
+Everywhere else the Square ITEM is the blank and each VARIATION is a colorway.
+Undyed stock inverts it: there is no colorway, and the thing a customer picks
+between is the yarn. Same two axes, swapped.
+
+`CatalogGroup` names that shared item and `RawProduct.catalog_group` points at
+it. Blank means "I am my own item", which is every scarf blank and stays the
+default, so nothing about the dyed path changed.
+`FinishedProduct.variation_name` is the colorway when there is one and the
+blank's name when there isn't.
+
+Two places must read the group rather than the raw product's own
+`square_item_id`: building new variations, and `--update` (`_item_id_for`).
+Reading the raw product there sends a blank item id, which moves the variation
+to nowhere. Losing a group's id is the expensive one — the next run creates a
+second "Undyed Yarn" and splits the shelf across two items — so `_record_ids`
+writes it before anything else.
+
+SKUs keep the `BLANK-DYEBATH` shape with `UNDYED` as the second half, because
+`private/unidentified-sales/` reads the first six characters as the blank and
+a SKU with no dash would narrow to nothing.
+
+Worth knowing where these came from: last season they were rung up as a
+hand-keyed price, which carries no `catalog_object_id` at all — so every one
+landed in `private/unidentified-sales/` (or, before that existed, vanished).
+Selling them as real variations fixes that at the source.
 
 ## Timekeeping: the pay week, and the two totals
 

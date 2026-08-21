@@ -64,7 +64,13 @@ the preview is deliberately a GET and the print button is the only POST.
 
   {% if open_runs %}
     <div class="panel">
-      <strong>Sheets still out</strong>
+      <strong>Sheets you might still be working from</strong>
+      {% comment %}
+      A convenience list, not a queue to be worked off. The record of what
+      was actually dyed is the inventory log; a sheet is scaffolding, and it
+      drops off here the moment anything on it is reported. Only the newest
+      few are kept — printing another retires the oldest.
+      {% endcomment %}
       {% comment %}
       A printed sheet that never comes back is the failure mode this whole
       design leans on not happening quietly, so it is listed first.
@@ -74,7 +80,7 @@ the preview is deliberately a GET and the print button is the only POST.
           <li>
             <a href="{% url 'production_run_detail' run.pk %}">Run {{ run.pk }}</a>
             — {{ run.rows.count }} bath{{ run.rows.count|pluralize }},
-            printed {{ run.created_at|date:"d M Y" }}, nothing reported yet
+            printed {{ run.created_at|date:"d M Y" }}
           </li>
         {% endfor %}
       </ul>

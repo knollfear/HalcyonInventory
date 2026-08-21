@@ -228,6 +228,10 @@ def production_needed_view(request):
             is_active=True,
             par__gt=0,
             number_on_hand__lt=F("par"),
+            # A passthrough has no recipe and cannot be produced — you order
+            # more, you don't dye more. `private/raw-inventory/` is where its
+            # shortfall belongs.
+            recipe__isnull=False,
         )
         .select_related("raw_product", "raw_product__category", "recipe")
         .prefetch_related("recipe__recipe_dyes__dye")
@@ -1118,7 +1122,9 @@ def parse_card_date(text):
 def card_backfill_index(request):
     """Pick a card to type up, and see how far through the stack you are."""
     products = (
-        FinishedProduct.objects.filter(is_active=True)
+        # A kanban card records a dye bath, so an undyed passthrough has
+        # nothing to backfill and shouldn't be offered.
+        FinishedProduct.objects.filter(is_active=True, recipe__isnull=False)
         .select_related("recipe", "raw_product")
         .annotate(
             backfilled=Count(
@@ -1580,8 +1586,9 @@ def bulk_inventory_update(request):
                         continue
 
                     delta = new_val - fp.number_on_hand
-                    fp.number_on_hand = new_val
-                    fp.save(update_fields=["number_on_hand"])
+                    # Through the model, because an undyed passthrough's count
+                    # lives on its raw product — see set_on_hand.
+                    fp.set_on_hand(new_val)
 
                     InventoryLog.objects.create(
                         finished_product=fp,
@@ -1702,8 +1709,17 @@ def square_webhook(request):
             if already:
                 continue
 
-            fp.number_on_hand = max(fp.number_on_hand - qty, 0)
-            fp.save(update_fields=["number_on_hand"])
+            if fp.is_passthrough:
+                # One pile, and the raw row is the one that holds it. Writing
+                # the finished count here instead would be writing to a mirror
+                # — the next raw save would overwrite it, and the reorder
+                # signal this stock exists for would never move.
+                raw = fp.raw_product
+                raw.number_on_hand = max(raw.number_on_hand - qty, 0)
+                raw.save(update_fields=["number_on_hand"])   # signal mirrors down
+            else:
+                fp.number_on_hand = max(fp.number_on_hand - qty, 0)
+                fp.save(update_fields=["number_on_hand"])
 
             InventoryLog.objects.create(
                 finished_product=fp,
@@ -3155,6 +3171,17 @@ def production_sheet_index(request):
                     )
                     for index, bath in enumerate(baths, start=1)
                 ])
+                # Printing a sixth retires the oldest rather than being
+                # refused. Nothing is lost: the run is a work aid, and the
+                # record of what actually happened is the inventory log.
+                retired = production.retire_superseded_runs()
+
+            if retired:
+                messages.info(
+                    request,
+                    f"Closed {len(retired)} older sheet(s) that were never "
+                    f"reported: {', '.join(str(r.pk) for r in retired)}.",
+                )
             return redirect("production_run_detail", pk=run.pk)
     else:
         form = ProductionSheetForm(request.GET or None)
@@ -3197,6 +3224,13 @@ def production_sheet_index(request):
 )
 @login_required
 def production_run_detail(request, pk):
+    """One sheet from the office side.
+
+    A sheet leaves the outstanding list the moment anything on it is reported
+    — one tick is enough, because at that point somebody is working from it
+    and the loop is closing. After that the QR code is how you get back to
+    it, which is all the way back it needs to be found.
+    """
     run = get_object_or_404(
         ProductionRun.objects.prefetch_related(
             "rows__finished_product__recipe",
@@ -3205,6 +3239,7 @@ def production_run_detail(request, pk):
         ),
         pk=pk,
     )
+
     return render(request, "scarves/production_run_detail.html", {
         "run": run,
         "crew_url": _crew_run_url(request, run),

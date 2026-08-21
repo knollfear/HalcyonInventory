@@ -42,8 +42,23 @@ from math import ceil
 
 from django.db.models import F, Value
 from django.db.models.functions import Greatest
+from django.utils import timezone
 
 from .models import FinishedProduct
+
+#: How many sheets stay outstanding. Printing a sixth retires the oldest.
+#:
+#: Five out at once already means the reporting loop has stopped working, and
+#: the two ways out of that — never reconciling, or abandoning the lot and
+#: starting over — are both bad. But *blocking* the sixth print is the wrong
+#: medicine: it deadlocks exactly when the paper has gone missing, which is
+#: the same moment a sheet gets abandoned in the first place.
+#:
+#: Keeping the newest five never deadlocks. A sheet that six print-runs have
+#: overtaken is dead in practice, and the cost of retiring it is nil because
+#: the sheet is a PDF rather than a web view — if it turns out to matter, the
+#: run reprints in one click.
+MAX_OPEN_RUNS = 5
 
 #: Page furniture, in points (72 to the inch). Plain paper, so unlike the
 #: label stock none of this has to line up with anything physical.
@@ -111,6 +126,10 @@ def candidates(category=None, include_overshoot=False):
             is_active=True,
             par__gt=0,
             number_on_hand__lt=F("par"),
+            # Undyed passthroughs are ordered, not dyed. Without this the
+            # sheet would put "4 × " with no colorway on it and send somebody
+            # to the dye room to make something that arrives in a box.
+            recipe__isnull=False,
         )
         .select_related("raw_product", "raw_product__category", "recipe")
         # The dye plan walks every recipe on the sheet; without this it is a
@@ -280,6 +299,27 @@ def dye_plan_for_baths(baths):
 def dye_plan_for_run(run):
     """`dye_plan` for a printed sheet."""
     return dye_plan([row.finished_product.recipe for row in run.rows.all()])
+
+
+def retire_superseded_runs(keep=MAX_OPEN_RUNS):
+    """Close outstanding sheets older than the newest `keep`. Returns them.
+
+    Closing, not deleting: the run and its rows stay readable, and the note
+    says why it went. What it must not do is apply anything — a sheet nobody
+    reported describes a session that didn't happen.
+    """
+    from .models import ProductionRun
+
+    stale = list(
+        ProductionRun.objects
+        .filter(submitted_at__isnull=True)
+        .order_by("-created_at", "-pk")[keep:]
+    )
+    for run in stale:
+        run.submitted_at = timezone.now()
+        run.note = f"Closed automatically — {keep} newer sheets were printed after it."
+        run.save(update_fields=["submitted_at", "note"])
+    return stale
 
 
 def apply_row(row):

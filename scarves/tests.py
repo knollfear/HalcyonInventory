@@ -46,6 +46,7 @@ from .forms import HoursForm, LabelRunForm, RecipeDyesForm
 from . import labels as labelmod
 from .models import (
     BoothPhoto,
+    CatalogGroup,
     Dye,
     DyeBrand,
     Employee,
@@ -6714,14 +6715,14 @@ class ProductionSheetViewTests(TestCase):
 
         self.assertEqual(ProductionRun.objects.count(), 0)
 
-    def test_sheets_still_out_are_listed(self):
-        """A printed sheet that never comes back must not be something only
-        the person who printed it remembers."""
+    def test_sheets_you_might_still_be_working_from_are_listed(self):
+        """A convenience list, not a queue to be worked off — the record of
+        what was dyed is the inventory log."""
         self.client.post(self.url, {"baths": 10})
 
         response = self.client.get(self.url)
 
-        self.assertContains(response, "Sheets still out")
+        self.assertContains(response, "still be working from")
 
     def test_the_pdf_renders(self):
         self.client.post(self.url, {"baths": 10})
@@ -7168,3 +7169,435 @@ class DyePlanOnThePageTests(TestCase):
         response = self.client.get(reverse("production_sheet_pdf", args=[run.pk]))
 
         self.assertTrue(response.content.startswith(b"%PDF"))
+
+
+def post_square_order(test_client, order_id, variation_id, qty,
+                     sold_at="2026-08-15T18:30:00Z"):
+    """Drive the webhook with one line item for `variation_id`.
+
+    Signs the payload the way Square does, so the view's own signature check
+    runs rather than being bypassed.
+    """
+    payload = json.dumps({
+        "type": "order.updated",
+        "data": {"object": {"order_updated": {
+            "state": "COMPLETED", "order_id": order_id,
+        }}},
+    })
+    signature = base64.b64encode(
+        hmac.new(
+            b"test-signature-key",
+            (settings.SQUARE_WEBHOOK_URL + payload).encode("utf-8"),
+            hashlib.sha256,
+        ).digest()
+    ).decode()
+    order = {
+        "line_items": [{
+            "uid": "L1", "catalog_object_id": variation_id,
+            "quantity": str(qty), "name": "Yarn",
+        }],
+        "closed_at": sold_at,
+    }
+    with mock.patch("square.client.Client") as client:
+        client.return_value.orders.retrieve_order.return_value = FakeSquareResult(
+            {"order": order}
+        )
+        return test_client.post(
+            reverse("square_webhook"),
+            data=payload,
+            content_type="application/json",
+            HTTP_X_SQUARE_HMACSHA256_SIGNATURE=signature,
+        )
+
+
+def make_undyed(name, category_name="Yarn", group=None, on_hand=0, par_level=10):
+    """A yarn sold exactly as it arrives: raw product, no recipe."""
+    category, _ = RawProductCategory.objects.get_or_create(name=category_name)
+    raw = RawProduct.objects.create(
+        name=name, category=category, price="9.00",
+        number_on_hand=on_hand, par_level=par_level,
+        catalog_group=group,
+    )
+    product = FinishedProduct.objects.create(
+        name=name, raw_product=raw, recipe=None, price="18.00",
+    )
+    product.refresh_from_db()
+    return product
+
+
+class PassthroughStockTests(TestCase):
+    """An undyed yarn is one pile with two rows pointing at it.
+
+    That is the whole difference from a dyed scarf, where the raw blank and
+    the finished item are two piles and the dye bath is what moves one to the
+    other. Two independently-kept counts for one pile drift, silently, and in
+    the direction that matters — the reorder signal is the entire reason this
+    stock is tracked at all.
+    """
+
+    def setUp(self):
+        self.product = make_undyed("Merino Worsted Natural", on_hand=12)
+        self.raw = self.product.raw_product
+
+    def test_it_knows_it_was_never_dyed(self):
+        self.assertTrue(self.product.is_passthrough)
+        self.assertIsNone(self.product.recipe)
+
+    def test_the_count_follows_the_raw_pile(self):
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.number_on_hand, 12)
+
+    def test_booking_in_a_delivery_moves_both_rows(self):
+        self.raw.number_on_hand = 30
+        self.raw.save()
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.number_on_hand, 30)
+
+    def test_a_dyed_product_is_left_alone(self):
+        """The mirror must not reach past the passthroughs — a scarf's raw
+        blank and finished stock are genuinely different numbers."""
+        recipe = make_recipe("Stormy Sea")
+        dyed = make_product(recipe, "Stormy Silk", with_image=False)
+        FinishedProduct.objects.filter(pk=dyed.pk).update(number_on_hand=5)
+
+        dyed.raw_product.number_on_hand = 99
+        dyed.raw_product.save()
+
+        dyed.refresh_from_db()
+        self.assertEqual(dyed.number_on_hand, 5)
+
+    def test_it_gets_a_sku_shaped_like_every_other(self):
+        """`BLANK-DYEBATH` is what the unidentified-sales page reads the
+        first six characters of; a passthrough can't be the one without a
+        dash."""
+        self.assertEqual(self.product.sku, "MERINO-UNDYED")
+
+    def test_two_yarns_that_slug_alike_still_get_their_own(self):
+        other = make_undyed("Merino DK Natural")
+        self.assertNotEqual(other.sku, self.product.sku)
+
+    def test_the_variation_is_named_for_the_yarn(self):
+        """The item is the group, so the thing being chosen between is the
+        blank."""
+        self.assertEqual(self.product.variation_name, "Merino Worsted Natural")
+
+
+@override_settings(
+    SQUARE_WEBHOOK_SIGNATURE_KEY="test-signature-key",
+    SQUARE_WEBHOOK_URL="https://example.test/scarves/webhooks/square",
+    SQUARE_ACCESS_TOKEN="test-token",
+    SQUARE_ENVIRONMENT="sandbox",
+)
+class PassthroughSaleTests(TestCase):
+    """A sale has to come off the pile the reorder page reads."""
+
+    def setUp(self):
+        self.product = make_undyed("Merino Worsted Natural", on_hand=12)
+        FinishedProduct.objects.filter(pk=self.product.pk).update(
+            square_variation_id="SQ_VAR"
+        )
+        self.product.refresh_from_db()
+
+    def _sell(self, qty=2, order_id="ORDER-1"):
+        return post_square_order(self.client, order_id, "SQ_VAR", qty)
+
+    def test_a_sale_decrements_the_raw_stock(self):
+        self._sell(qty=2)
+
+        self.product.raw_product.refresh_from_db()
+        self.assertEqual(self.product.raw_product.number_on_hand, 10)
+
+    def test_the_finished_row_follows(self):
+        self._sell(qty=2)
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.number_on_hand, 10)
+
+    def test_it_is_still_logged_as_a_sale(self):
+        self._sell(qty=2)
+
+        log = InventoryLog.objects.get()
+        self.assertEqual(log.log_type, InventoryLog.SALE)
+        self.assertEqual(log.quantity, -2)
+        self.assertEqual(log.raw_product, self.product.raw_product)
+
+    def test_a_redelivered_order_still_only_counts_once(self):
+        self._sell(qty=2)
+        self._sell(qty=2)
+
+        self.product.raw_product.refresh_from_db()
+        self.assertEqual(self.product.raw_product.number_on_hand, 10)
+
+
+class PassthroughIsNotProducedTests(TestCase):
+    """You order these; you don't dye them."""
+
+    def setUp(self):
+        self.client.force_login(User.objects.create_user("staff", password="pw"))
+        self.product = make_undyed("Merino Worsted Natural", on_hand=0)
+        FinishedProduct.objects.filter(pk=self.product.pk).update(par=10)
+
+    def test_it_never_reaches_a_production_sheet(self):
+        """Without this the sheet says '4 × ' with no colorway and sends
+        somebody to the dye room for something that arrives in a box."""
+        self.assertEqual(production.plan_baths(20), [])
+
+    def test_it_is_not_on_the_production_page_either(self):
+        response = self.client.get(reverse("production_needed"))
+
+        self.assertNotContains(response, "Merino Worsted Natural")
+
+    def test_its_shortfall_shows_where_ordering_happens(self):
+        """The raw inventory page is the reorder workflow, and it already
+        works — that is the point of keeping the pile on the raw row."""
+        raw = self.product.raw_product
+        response = self.client.get(
+            reverse("raw_inventory", args=[raw.category_id])
+        )
+
+        self.assertContains(response, "Merino Worsted Natural")
+
+
+@override_settings(
+    SQUARE_ACCESS_TOKEN="test-token",
+    SQUARE_LOCATION_ID="LOC123",
+    SQUARE_ENVIRONMENT="sandbox",
+)
+class PassthroughCatalogTests(TestCase):
+    """One Square item, variations named for the yarns under it."""
+
+    def setUp(self):
+        self.category = RawProductCategory.objects.create(name="Yarn")
+        self.group = CatalogGroup.objects.create(
+            name="Undyed Yarn", category=self.category
+        )
+        self.merino = make_undyed("Merino Worsted Natural", group=self.group, on_hand=5)
+        self.bfl = make_undyed("BFL DK Ecru", group=self.group, on_hand=3)
+
+    def _run(self, client, **kwargs):
+        out, err = StringIO(), StringIO()
+        with mock.patch("square.client.Client", return_value=client):
+            call_command("sync_to_square", stdout=out, stderr=err, **kwargs)
+        return out.getvalue() + err.getvalue()
+
+    def test_the_group_goes_up_as_one_item(self):
+        client = FakeSquareClient()
+        self._run(client)
+
+        items = [o for o in client.upserts[0]["batches"][0]["objects"]
+                 if o["type"] == "ITEM"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["item_data"]["name"], "Undyed Yarn")
+
+    def test_each_yarn_is_a_variation_named_for_itself(self):
+        client = FakeSquareClient()
+        self._run(client)
+
+        item = [o for o in client.upserts[0]["batches"][0]["objects"]
+                if o["type"] == "ITEM"][0]
+        names = sorted(
+            v["item_variation_data"]["name"] for v in item["item_data"]["variations"]
+        )
+        self.assertEqual(names, ["BFL DK Ecru", "Merino Worsted Natural"])
+
+    def test_the_group_id_is_written_back(self):
+        """Losing it means the next run creates a second 'Undyed Yarn' and
+        splits the shelf across two items."""
+        client = FakeSquareClient(upsert_results=[FakeSquareResult({
+            "id_mappings": [
+                {"client_object_id": f"#cg_{self.group.pk}", "object_id": "SQ_ITEM"},
+            ],
+        })])
+        self._run(client)
+
+        self.group.refresh_from_db()
+        self.assertEqual(self.group.square_item_id, "SQ_ITEM")
+
+    def test_a_known_group_sends_only_new_variations(self):
+        CatalogGroup.objects.filter(pk=self.group.pk).update(square_item_id="SQ_ITEM")
+        FinishedProduct.objects.filter(pk=self.merino.pk).update(
+            square_variation_id="SQ_VAR"
+        )
+        client = FakeSquareClient()
+        self._run(client)
+
+        objects = client.upserts[0]["batches"][0]["objects"]
+        self.assertEqual(len(objects), 1)
+        self.assertEqual(objects[0]["type"], "ITEM_VARIATION")
+        self.assertEqual(objects[0]["item_variation_data"]["item_id"], "SQ_ITEM")
+        self.assertEqual(
+            objects[0]["item_variation_data"]["name"], "BFL DK Ecru"
+        )
+
+    def test_the_stock_pushed_is_the_raw_pile(self):
+        FinishedProduct.objects.filter(pk=self.merino.pk).update(
+            square_variation_id="SQ_VAR"
+        )
+        client = FakeSquareClient()
+        self._run(client, inventory_only=True)
+
+        counts = {
+            c["physical_count"]["catalog_object_id"]: c["physical_count"]["quantity"]
+            for c in client.inventory_changes[0]["changes"]
+        }
+        self.assertEqual(counts["SQ_VAR"], "5")
+
+    def test_update_points_a_grouped_variation_at_its_group(self):
+        """Reading raw_product.square_item_id here would send a blank item id
+        and move the variation to nowhere."""
+        CatalogGroup.objects.filter(pk=self.group.pk).update(square_item_id="SQ_ITEM")
+        FinishedProduct.objects.filter(pk=self.merino.pk).update(
+            square_variation_id="SQ_VAR"
+        )
+        client = FakeSquareClient(retrieve_result=FakeSquareResult({
+            "objects": [{"id": "SQ_VAR", "version": 7}],
+        }))
+        self._run(client, update=True)
+
+        sent = client.upserts[0]["batches"][0]["objects"][0]
+        self.assertEqual(sent["item_variation_data"]["item_id"], "SQ_ITEM")
+
+    def test_an_ungrouped_blank_is_still_its_own_item(self):
+        """Everything dyed leaves catalog_group blank, and nothing about it
+        changes."""
+        recipe = make_recipe("Stormy Sea")
+        make_product(recipe, "Stormy Silk", with_image=False)
+        client = FakeSquareClient()
+        self._run(client)
+
+        items = [o for o in client.upserts[0]["batches"][0]["objects"]
+                 if o["type"] == "ITEM"]
+        self.assertEqual(len(items), 2, "the group, plus the scarf's own item")
+
+
+class PassthroughStockTakeTests(TestCase):
+    """A stock take has to land on the row that holds the pile."""
+
+    def setUp(self):
+        self.client.force_login(User.objects.create_user("staff", password="pw"))
+        self.product = make_undyed("Merino Worsted Natural", on_hand=12)
+
+    def test_counting_them_writes_through_to_the_raw_row(self):
+        """Writing the finished count instead would be writing to a mirror —
+        `save()` re-derives it, so the number snaps back and the stock take
+        looks like it never happened."""
+        self.product.set_on_hand(20)
+
+        self.product.raw_product.refresh_from_db()
+        self.assertEqual(self.product.raw_product.number_on_hand, 20)
+
+    def test_the_finished_row_agrees_afterwards(self):
+        self.product.set_on_hand(20)
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.number_on_hand, 20)
+
+    def test_a_dyed_product_is_written_directly(self):
+        dyed = make_product(make_recipe("Stormy Sea"), "Stormy Silk", with_image=False)
+        dyed.raw_product.number_on_hand = 40
+        dyed.raw_product.save()
+
+        dyed.set_on_hand(7)
+
+        dyed.refresh_from_db()
+        dyed.raw_product.refresh_from_db()
+        self.assertEqual(dyed.number_on_hand, 7)
+        self.assertEqual(dyed.raw_product.number_on_hand, 40, "raw is untouched")
+
+    def test_it_is_not_offered_for_card_backfill(self):
+        """A kanban card records a dye bath; there wasn't one."""
+        response = self.client.get(reverse("card_backfill_index"))
+
+        self.assertNotContains(response, "Merino Worsted Natural")
+
+
+class OutstandingSheetCapTests(TestCase):
+    """Only the newest few sheets stay outstanding.
+
+    Five out at once already means the reporting loop has stopped working.
+    But *blocking* a sixth print deadlocks exactly when the paper has gone
+    missing, which is the same moment a sheet gets abandoned — so the newest
+    five are kept and the rest retire. Nothing is lost by that: a run is a
+    work aid, and the record of what was actually dyed is the inventory log.
+    """
+
+    def setUp(self):
+        self.client.force_login(User.objects.create_user("staff", password="pw"))
+        make_bathable(make_recipe("Stormy Sea"), "Stormy Silk", on_hand=0, par=80, bath=4)
+        self.url = reverse("production_sheet_index")
+
+    def _print(self):
+        return self.client.post(self.url, {"baths": "2"})
+
+    def _open_runs(self):
+        return list(
+            ProductionRun.objects.filter(submitted_at__isnull=True)
+            .order_by("-created_at", "-pk")
+        )
+
+    def test_printing_is_never_refused(self):
+        for _ in range(production.MAX_OPEN_RUNS + 3):
+            self._print()
+
+        self.assertEqual(
+            ProductionRun.objects.count(), production.MAX_OPEN_RUNS + 3
+        )
+
+    def test_only_the_newest_stay_outstanding(self):
+        for _ in range(production.MAX_OPEN_RUNS + 2):
+            self._print()
+
+        self.assertEqual(len(self._open_runs()), production.MAX_OPEN_RUNS)
+
+    def test_it_is_the_oldest_that_go(self):
+        """Most recent five, not a random five."""
+        for _ in range(production.MAX_OPEN_RUNS + 2):
+            self._print()
+
+        newest = list(
+            ProductionRun.objects.order_by("-created_at", "-pk")[:production.MAX_OPEN_RUNS]
+        )
+        self.assertEqual([r.pk for r in self._open_runs()], [r.pk for r in newest])
+
+    def test_a_retired_sheet_is_closed_not_deleted(self):
+        for _ in range(production.MAX_OPEN_RUNS + 1):
+            self._print()
+
+        retired = ProductionRun.objects.exclude(submitted_at__isnull=True).get()
+        self.assertIn("Closed automatically", retired.note)
+        self.assertEqual(retired.done_count, 0)
+
+    def test_retiring_moves_no_stock(self):
+        """A sheet nobody reported describes a session that didn't happen."""
+        for _ in range(production.MAX_OPEN_RUNS + 1):
+            self._print()
+
+        self.assertEqual(InventoryLog.objects.count(), 0)
+
+    def test_one_tick_closes_a_sheet(self):
+        """Somebody is working from it, so the loop is closing — it doesn't
+        need to keep showing up as outstanding."""
+        self._print()
+        run = ProductionRun.objects.get()
+        self.client.post(
+            reverse("production_run", args=[run.token]),
+            {"done": [str(run.rows.first().pk)]},
+        )
+
+        self.assertEqual(self._open_runs(), [])
+
+    def test_a_closed_sheet_is_still_reachable_by_its_code(self):
+        """The QR is how you get back to it, and adding the rest later has
+        to keep working."""
+        self._print()
+        run = ProductionRun.objects.get()
+        rows = list(run.rows.all())
+        url = reverse("production_run", args=[run.token])
+        self.client.post(url, {"done": [str(rows[0].pk)]})
+
+        self.assertEqual(self.client.get(url).status_code, 200)
+
+        self.client.post(url, {"done": [str(rows[1].pk)]})
+        run.refresh_from_db()
+        self.assertEqual(run.done_count, 2)

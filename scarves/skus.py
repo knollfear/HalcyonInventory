@@ -29,9 +29,16 @@ def slug(text, max_len=PART_LEN):
     return re.sub(r"[^A-Z0-9]", "", (text or "").upper())[:max_len]
 
 
+#: Second half of a passthrough's SKU. It has no colorway, but the shape has
+#: to stay `SLUG6-SLUG6`: the unidentified-sales page reads the first six
+#: characters as the blank, and a SKU with no dash would narrow to nothing.
+UNDYED_PART = "UNDYED"
+
+
 def base_for(product):
     """The SKU a product wants, before any collision suffix."""
-    return f"{slug(product.raw_product.name)}-{slug(product.recipe.name)}"
+    colorway = product.recipe.name if product.recipe_id else UNDYED_PART
+    return f"{slug(product.raw_product.name)}-{slug(colorway)}"
 
 
 def unique_sku(product, taken=None):

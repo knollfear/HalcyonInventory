@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 from .models import (
     BoothPhoto,
+    CatalogGroup,
     DyeBrand,
     Dye,
     Employee,
@@ -296,6 +297,24 @@ class RawProductCategoryAdmin(admin.ModelAdmin):
     actions = [match_square_categories]
 
 
+@admin.register(CatalogGroup)
+class CatalogGroupAdmin(admin.ModelAdmin):
+    """Several raw products sold under one Square item.
+
+    Exists for undyed stock, where the item is "Undyed Yarn" and the
+    variations are the blanks — the usual blank × colorway axes swapped. See
+    the model for why. Everything dyed leaves `catalog_group` blank and is its
+    own item, which stays the default.
+    """
+    list_display = ("name", "category", "member_count", "square_item_id")
+    search_fields = ("name",)
+    ordering = ("name",)
+
+    @admin.display(description="Raw products")
+    def member_count(self, obj):
+        return obj.raw_products.count()
+
+
 @admin.register(RawProduct)
 class RawProductAdmin(admin.ModelAdmin):
     list_display = (
@@ -306,10 +325,11 @@ class RawProductAdmin(admin.ModelAdmin):
         "par_level",
         "finished_par_default",
         "is_active",
+        "catalog_group",
         "square_item_id",
     )
     list_editable = ("par_level", "finished_par_default")
-    list_filter = ("category", "is_active")
+    list_filter = ("category", "is_active", "catalog_group")
     search_fields = ("name", "category__name", "sku")
     ordering = ("category__name", "name")
     actions = [
@@ -363,7 +383,6 @@ class FinishedProductAdmin(admin.ModelAdmin):
         "is_active",
         "created_at",
     )
-    list_filter = ("is_active", "raw_product__category")
     search_fields = (
         "name",
         "raw_product__name",
@@ -372,6 +391,9 @@ class FinishedProductAdmin(admin.ModelAdmin):
     )
     autocomplete_fields = ("raw_product", "recipe")
     inlines = [FinishedProductImageInline]
+    # Blank recipe means undyed passthrough, and that is a real choice made
+    # here rather than an oversight — so it gets a filter of its own.
+    list_filter = ("is_active", "raw_product__category", ("recipe", admin.EmptyFieldListFilter))
     ordering = ("name",)
 
 

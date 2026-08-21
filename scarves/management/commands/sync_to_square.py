@@ -6,7 +6,12 @@ from datetime import datetime, timezone
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
-from scarves.models import FinishedProduct, FinishedProductImage, RawProduct
+from scarves.models import (
+    CatalogGroup,
+    FinishedProduct,
+    FinishedProductImage,
+    RawProduct,
+)
 
 
 class Command(BaseCommand):
@@ -127,6 +132,83 @@ class Command(BaseCommand):
             f"sku={data.get('sku') or '(none)':<16} ${price:.2f}"
         )
 
+    def _variation(self, fp, item_id):
+        """One ITEM_VARIATION payload, however its item was arrived at."""
+        return {
+            "type": "ITEM_VARIATION",
+            "id": fp.square_variation_id or f"#fp_{fp.pk}",
+            "item_variation_data": {
+                "item_id": item_id,
+                "name": fp.variation_name,
+                "pricing_type": "FIXED_PRICING",
+                "price_money": {
+                    "amount": int(fp.price * 100),
+                    "currency": "USD",
+                },
+                "track_inventory": True,
+                **({"sku": fp.sku} if fp.sku else {}),
+            },
+        }
+
+    @staticmethod
+    def _item_id_for(fp):
+        """The Square item this variation lives under.
+
+        A grouped raw product has no item of its own — the group holds it —
+        so reading `raw_product.square_item_id` here would send a blank item
+        id and move the variation to nowhere.
+        """
+        group = fp.raw_product.catalog_group
+        return group.square_item_id if group else fp.raw_product.square_item_id
+
+    def _grouped_objects(self, raw_products):
+        """Catalog payloads for raw products that share one Square item.
+
+        The group is the item and its members' products are the variations,
+        so an unsynced group goes up as a single ITEM carrying all of them,
+        and a group Square already knows takes only the variations that are
+        new. That mirrors the ungrouped path exactly — the difference is only
+        where the item id comes from.
+        """
+        by_group = {}
+        for raw_product in raw_products:
+            if raw_product.catalog_group_id:
+                by_group.setdefault(raw_product.catalog_group, []).append(raw_product)
+
+        objects = []
+        for group, members in by_group.items():
+            active_fps = [
+                fp
+                for raw_product in members
+                for fp in raw_product.finished_products.all()
+                if fp.is_active
+            ]
+            if not active_fps:
+                continue
+
+            if group.square_item_id:
+                objects.extend(
+                    self._variation(fp, group.square_item_id)
+                    for fp in active_fps
+                    if not fp.square_variation_id
+                )
+                continue
+
+            item_data = {
+                "name": group.name,
+                "variations": [
+                    self._variation(fp, f"#cg_{group.pk}") for fp in active_fps
+                ],
+            }
+            if group.category.square_category_id:
+                item_data["category_id"] = group.category.square_category_id
+            objects.append({
+                "type": "ITEM",
+                "id": f"#cg_{group.pk}",
+                "item_data": item_data,
+            })
+        return objects
+
     def _record_ids(self, raw_products, id_mappings):
         """Write Square's IDs onto our rows.
 
@@ -137,6 +219,18 @@ class Command(BaseCommand):
         catalogue with everything in it twice.
         """
         updated_rp = updated_fp = 0
+
+        # Groups first: their variations are recorded by the same loop below,
+        # and losing a group's item id is the expensive one — the next run
+        # would create a second "Undyed Yarn" item and split the shelf across
+        # two of them.
+        for group in CatalogGroup.objects.filter(square_item_id=""):
+            temp_id = f"#cg_{group.pk}"
+            if temp_id in id_mappings:
+                group.square_item_id = id_mappings[temp_id]
+                group.save(update_fields=["square_item_id"])
+                updated_rp += 1
+
         for raw_product in raw_products:
             temp_id = f"#rp_{raw_product.pk}"
             if temp_id in id_mappings and not raw_product.square_item_id:
@@ -181,9 +275,17 @@ class Command(BaseCommand):
 
         raw_products = (
             RawProduct.objects.filter(is_active=True)
+            .select_related("catalog_group")
             .prefetch_related("finished_products__recipe")
             .distinct()
         )
+
+        # Raw products that share a CatalogGroup share one Square item, so
+        # they are built together and the rest are built one apiece. See
+        # CatalogGroup: for undyed stock the item is the group and the
+        # variations are the blanks, which is the blank × colorway axes
+        # swapped rather than a special case bolted on.
+        grouped = self._grouped_objects(raw_products)
 
         # Two separate lists:
         # - new_items: RawProducts with no Square ID yet → upsert full ITEM + variations
@@ -192,49 +294,25 @@ class Command(BaseCommand):
         variation_objects = []
 
         for raw_product in raw_products:
+            if raw_product.catalog_group_id:
+                continue        # handled in `grouped`
+
             active_fps = [fp for fp in raw_product.finished_products.all() if fp.is_active]
             if not active_fps:
                 continue
 
             if raw_product.square_item_id:
                 # Item exists in Square — add only new variations directly
-                for fp in active_fps:
-                    if fp.square_variation_id:
-                        continue  # already linked, skip
-                    variation_objects.append({
-                        "type": "ITEM_VARIATION",
-                        "id": f"#fp_{fp.pk}",
-                        "item_variation_data": {
-                            "item_id": raw_product.square_item_id,
-                            "name": fp.recipe.name,
-                            "pricing_type": "FIXED_PRICING",
-                            "price_money": {
-                                "amount": int(fp.price * 100),
-                                "currency": "USD",
-                            },
-                            "track_inventory": True,
-                            **({"sku": fp.sku} if fp.sku else {}),
-                        },
-                    })
+                variation_objects.extend(
+                    self._variation(fp, raw_product.square_item_id)
+                    for fp in active_fps
+                    if not fp.square_variation_id     # already linked, skip
+                )
             else:
                 # New item — create full ITEM with all variations
-                variations = []
-                for fp in active_fps:
-                    variations.append({
-                        "type": "ITEM_VARIATION",
-                        "id": fp.square_variation_id or f"#fp_{fp.pk}",
-                        "item_variation_data": {
-                            "item_id": f"#rp_{raw_product.pk}",
-                            "name": fp.recipe.name,
-                            "pricing_type": "FIXED_PRICING",
-                            "price_money": {
-                                "amount": int(fp.price * 100),
-                                "currency": "USD",
-                            },
-                            "track_inventory": True,
-                            **({"sku": fp.sku} if fp.sku else {}),
-                        },
-                    })
+                variations = [
+                    self._variation(fp, f"#rp_{raw_product.pk}") for fp in active_fps
+                ]
                 item_data = {
                     "name": raw_product.name,
                     "variations": variations,
@@ -247,7 +325,7 @@ class Command(BaseCommand):
                     "item_data": item_data,
                 })
 
-        all_objects = new_item_objects + variation_objects
+        all_objects = new_item_objects + variation_objects + grouped
 
         if not all_objects:
             self.stdout.write("Nothing new to sync — all items and variations already linked.")
@@ -308,7 +386,7 @@ class Command(BaseCommand):
             FinishedProduct.objects.filter(
                 is_active=True,
                 square_variation_id__gt="",
-            ).select_related("raw_product", "recipe")
+            ).select_related("raw_product", "raw_product__catalog_group", "recipe")
         )
 
         var_ids = [fp.square_variation_id for fp in synced_fps]
@@ -334,22 +412,9 @@ class Command(BaseCommand):
                 # duplicate rather than update anything.
                 stale.append(fp)
                 continue
-            variation = {
-                "type": "ITEM_VARIATION",
-                "id": fp.square_variation_id,
-                "version": versions.get(fp.square_variation_id),
-                "item_variation_data": {
-                    "item_id": fp.raw_product.square_item_id,
-                    "name": fp.recipe.name,
-                    "pricing_type": "FIXED_PRICING",
-                    "price_money": {
-                        "amount": int(fp.price * 100),
-                        "currency": "USD",
-                    },
-                    "track_inventory": True,
-                    **({"sku": fp.sku} if fp.sku else {}),
-                },
-            }
+            variation = self._variation(fp, self._item_id_for(fp))
+            variation["id"] = fp.square_variation_id
+            variation["version"] = versions.get(fp.square_variation_id)
             objects.append(variation)
 
         if stale:

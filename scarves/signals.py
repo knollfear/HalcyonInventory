@@ -13,10 +13,10 @@ fast-delete path, so the signal really does fire for every row in a bulk delete.
 """
 import logging
 
-from django.db.models.signals import post_delete
+from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 
-from .models import FinishedProductImage, ProductImageUpload
+from .models import FinishedProduct, FinishedProductImage, ProductImageUpload, RawProduct
 
 logger = logging.getLogger(__name__)
 
@@ -57,3 +57,32 @@ def delete_upload_object(sender, instance, **kwargs):
                 default_storage.delete(instance.key)
     except Exception:
         logger.exception("Could not delete uploaded object %s", instance.key)
+
+
+@receiver(post_save, sender=RawProduct)
+def mirror_passthrough_stock(sender, instance, **kwargs):
+    """Keep an undyed product's count equal to the raw stock it *is*.
+
+    A passthrough finished product and its raw product are one physical pile
+    with two rows pointing at it, so two independently-maintained counts would
+    drift — silently, and in the direction that matters most, since the whole
+    reason for tracking these is knowing when to reorder.
+
+    So the raw row is the truth and this is its only writer. Everything
+    downstream — the Square inventory push, the "everything on hand" label
+    run, any report — keeps reading `FinishedProduct.number_on_hand` and gets
+    the right answer without knowing a passthrough exists.
+
+    A signal rather than calls at each site because the raw count moves from
+    several places (a delivery booked in, a sale off the webhook, a manual
+    correction), and the failure mode of forgetting one is a number that
+    looks fine and isn't.
+
+    `update()` on purpose: it writes the column without going through
+    `save()`, so this can't recurse and can't disturb a SKU.
+    """
+    FinishedProduct.objects.filter(
+        raw_product=instance, recipe__isnull=True
+    ).exclude(number_on_hand=instance.number_on_hand).update(
+        number_on_hand=instance.number_on_hand
+    )

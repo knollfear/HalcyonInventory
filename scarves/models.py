@@ -78,6 +78,47 @@ class RawProductCategory(models.Model):
         return self.name
 
 
+class CatalogGroup(models.Model):
+    """Several raw products sold under one Square item.
+
+    Everywhere else the catalog's two axes are blank × colorway: the Square
+    ITEM is the blank (`Silk Infinity`) and each VARIATION is a recipe. That
+    holds because one blank really does come in many colorways.
+
+    Undyed stock inverts it. A yarn we sell exactly as it arrives has no
+    colorway at all, and the thing a customer picks between is the *yarn* —
+    so the item is "Undyed Yarn" and the variations are the blanks. Same two
+    axes, swapped.
+
+    Rather than teach `RawProduct` to be sometimes-an-item, the grouping is
+    named here and pointed at. A raw product with no group is its own item,
+    which is every scarf blank and stays the default.
+    """
+
+    name = models.CharField(
+        max_length=150,
+        unique=True,
+        help_text="The Square item name, e.g. 'Undyed Yarn'.",
+    )
+    square_item_id = models.CharField(
+        max_length=100,
+        blank=True,
+        help_text="Square CatalogItem ID for the group's item.",
+    )
+    category = models.ForeignKey(
+        RawProductCategory,
+        on_delete=models.PROTECT,
+        related_name="catalog_groups",
+        help_text="Square category for the group's item.",
+    )
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
+
+
 class RawProduct(models.Model):
     """
     Represents an undyed base product: skein of yarn, silk scarf, etc.
@@ -142,6 +183,18 @@ class RawProduct(models.Model):
         max_length=100,
         blank=True,
         help_text="Square CatalogItem ID for this product.",
+    )
+    catalog_group = models.ForeignKey(
+        CatalogGroup,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="raw_products",
+        help_text=(
+            "Sell this under a shared Square item instead of one of its own. "
+            "Blank for everything dyed, which is the normal case — see "
+            "CatalogGroup for when it isn't."
+        ),
     )
 
     class Meta:
@@ -262,6 +315,18 @@ class FinishedProduct(models.Model):
         Recipe,
         on_delete=models.PROTECT,
         related_name="finished_products",
+        null=True,
+        blank=True,
+        help_text=(
+            "The colorway. **Null means this was never dyed** — an undyed "
+            "passthrough, bought and sold as it arrives. Null rather than a "
+            "sentinel 'Undyed' recipe on purpose: every dyed-only query in "
+            "the app joins through this FK, so a null row drops out of "
+            "production planning, the rainbow sheets, the colour pages and "
+            "the games by construction. A sentinel would need each of those "
+            "to remember to exclude it, and a forgotten exclusion is silent "
+            "— an undyed skein filed under a colour it doesn't have."
+        ),
     )
     price = models.DecimalField(
         max_digits=8,
@@ -320,17 +385,76 @@ class FinishedProduct(models.Model):
         Fixtures are unaffected: `loaddata` goes through `save_base(raw=True)`
         and never calls this, so a deliberately blank SKU in a fixture stays
         blank. `FixtureSkuTests` pins that.
+
+        Also settles a passthrough's count, which is not its own to hold —
+        see `is_passthrough` and the `mirror_passthrough_stock` signal. The
+        signal covers the raw row moving afterwards; this covers the row
+        being created, when there was no passthrough for the signal to find.
         """
-        if not self.sku and self.raw_product_id and self.recipe_id:
+        # No recipe is a passthrough, not a half-built object — `base_for`
+        # gives those the `UNDYED` half. Requiring a recipe here is what left
+        # every undyed yarn with a blank SKU and nothing to scan.
+        if not self.sku and self.raw_product_id:
             from .skus import unique_sku
 
             self.sku = unique_sku(self)
             # A caller passing update_fields didn't know a SKU was coming, so
             # add it — otherwise the value is set in memory and silently lost.
-            update_fields = kwargs.get("update_fields")
-            if update_fields is not None and "sku" not in update_fields:
-                kwargs["update_fields"] = list(update_fields) + ["sku"]
+            self._also_update(kwargs, "sku")
+
+        if self.is_passthrough and self.raw_product_id:
+            stock = self.raw_product.number_on_hand
+            if self.number_on_hand != stock:
+                self.number_on_hand = stock
+                self._also_update(kwargs, "number_on_hand")
+
         super().save(*args, **kwargs)
+
+    @staticmethod
+    def _also_update(kwargs, field):
+        """Add `field` to an explicit `update_fields`, if one was given."""
+        update_fields = kwargs.get("update_fields")
+        if update_fields is not None and field not in update_fields:
+            kwargs["update_fields"] = list(update_fields) + [field]
+
+    @property
+    def is_passthrough(self) -> bool:
+        """Bought and sold as it arrives — no dye step, no colorway.
+
+        The raw product and this row describe the *same physical skein*, which
+        is the whole difference. For anything dyed they are two piles and the
+        dye bath is the event that moves one to the other; here there is one
+        pile with two names for it.
+        """
+        return self.recipe_id is None
+
+    @property
+    def variation_name(self) -> str:
+        """What Square should call this variation.
+
+        A colorway when there is one. For a passthrough the item is the group
+        ("Undyed Yarn") and the thing being chosen between is the blank, so
+        the blank's name is what belongs on the variation.
+        """
+        return self.recipe.name if self.recipe_id else self.raw_product.name
+
+    def set_on_hand(self, value):
+        """Write a counted quantity to whichever row actually holds it.
+
+        For anything dyed that is this row. For a passthrough it is the raw
+        product — the two describe one pile, and writing here instead would
+        be writing to a mirror: `save()` re-derives it, so the number would
+        snap back and the stock take would look like it hadn't taken.
+        """
+        value = max(int(value), 0)
+        if self.is_passthrough:
+            raw = self.raw_product
+            raw.number_on_hand = value
+            raw.save(update_fields=["number_on_hand"])   # signal mirrors down
+            self.refresh_from_db(fields=["number_on_hand"])
+        else:
+            self.number_on_hand = value
+            self.save(update_fields=["number_on_hand"])
 
     @property
     def shortage(self) -> int:
