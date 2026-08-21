@@ -7009,3 +7009,162 @@ class ProductionPickerFeedbackTests(TestCase):
         response = self.client.get(self.url, {"baths": "10"})
 
         self.assertEqual(len(response.context["baths"]), 2)
+
+
+def link_dye(recipe, name, brand_name="Jacquard", hex_color="#3355aa", in_stock=True, order=1):
+    brand, _ = DyeBrand.objects.get_or_create(name=brand_name)
+    dye, _ = Dye.objects.get_or_create(
+        name=name, brand=brand,
+        defaults={"hex_color": hex_color, "in_stock": in_stock},
+    )
+    Dye.objects.filter(pk=dye.pk).update(in_stock=in_stock)
+    dye.refresh_from_db()
+    RecipeDye.objects.create(recipe=recipe, dye=dye, order=order)
+    return dye
+
+
+class DyePlanTests(TestCase):
+    """The shelf list: one walk instead of twenty.
+
+    The field that matters most is `unrecorded`. A recipe with no dyes on
+    file contributes nothing, so an unannounced short list is worse than no
+    list at all — you collect what it says, walk to the dye room, and find
+    baths whose requirements were never written down.
+    """
+
+    def setUp(self):
+        # No dyes to start with, so each test says exactly what is on file.
+        self.stormy = make_recipe("Stormy Sea", hexes=())
+        self.aegean = make_recipe("Aegean", hexes=())
+
+    def test_a_dye_shared_by_two_baths_is_listed_once(self):
+        """The whole point — the dyes colorways share are exactly the ones
+        you don't want a second trip for."""
+        black = link_dye(self.stormy, "Black")
+        link_dye(self.aegean, "Black")
+
+        plan = production.dye_plan([self.stormy, self.aegean])
+
+        self.assertEqual([d for d, _ in plan.entries], [black])
+        self.assertEqual(plan.entries[0][1], 2, "counted per bath")
+
+    def test_repeated_baths_of_one_recipe_count_each(self):
+        """'Get the black out' and 'get a lot of the black out' are
+        different instructions."""
+        link_dye(self.stormy, "Black")
+
+        plan = production.dye_plan([self.stormy] * 3)
+
+        self.assertEqual(plan.entries[0][1], 3)
+
+    def test_dyes_come_out_in_shelf_order(self):
+        link_dye(self.stormy, "Turquoise", brand_name="Dharma")
+        link_dye(self.stormy, "Black", brand_name="Jacquard", order=2)
+
+        plan = production.dye_plan([self.stormy])
+
+        self.assertEqual(
+            [(d.brand.name, d.name) for d, _ in plan.entries],
+            [("Dharma", "Turquoise"), ("Jacquard", "Black")],
+        )
+
+    def test_a_recipe_with_no_dyes_is_named_not_skipped(self):
+        link_dye(self.stormy, "Black")
+
+        plan = production.dye_plan([self.stormy, self.aegean, self.aegean])
+
+        self.assertFalse(plan.is_complete)
+        self.assertEqual(plan.unrecorded, ["Aegean"])
+        self.assertEqual(plan.unrecorded_baths, 2, "counted per bath, not per recipe")
+
+    def test_a_fully_recorded_run_says_so(self):
+        link_dye(self.stormy, "Black")
+        link_dye(self.aegean, "Turquoise")
+
+        plan = production.dye_plan([self.stormy, self.aegean])
+
+        self.assertTrue(plan.is_complete)
+        self.assertEqual(plan.unrecorded, [])
+
+    def test_an_out_of_stock_dye_is_surfaced(self):
+        """A missing dye is a bath that can't run, and finding that out at
+        the sink is the expensive version."""
+        gone = link_dye(self.stormy, "Fuchsia", in_stock=False)
+        link_dye(self.stormy, "Black", order=2)
+
+        plan = production.dye_plan([self.stormy])
+
+        self.assertEqual(plan.out_of_stock, [gone])
+
+    def test_no_dyes_anywhere_is_not_a_crash(self):
+        plan = production.dye_plan([self.stormy])
+
+        self.assertEqual(plan.entries, [])
+        self.assertEqual(plan.unrecorded, ["Stormy Sea"])
+
+
+class DyePlanOnThePageTests(TestCase):
+    """Where the list shows up, and how the gap is framed.
+
+    Three dyes fetched in one walk is already worth printing, so the block
+    leads with what it covers. The gap is named recipe by recipe and linked
+    to the page that fixes it, because a count reads as a chore and six
+    names read as an afternoon.
+    """
+
+    def setUp(self):
+        self.client.force_login(User.objects.create_user("staff", password="pw"))
+        self.recipe = make_recipe("Stormy Sea", hexes=())
+        make_bathable(self.recipe, "Stormy Silk", on_hand=0, par=8, bath=4)
+        self.url = reverse("production_sheet_index")
+
+    def test_the_preview_lists_the_dyes(self):
+        link_dye(self.recipe, "Black")
+
+        response = self.client.get(self.url, {"baths": "10"})
+
+        self.assertContains(response, "Dyes to collect")
+        self.assertContains(response, "Black")
+        self.assertContains(response, "2 baths")
+
+    def test_a_missing_recipe_is_named_and_linked(self):
+        response = self.client.get(self.url, {"baths": "10"})
+
+        self.assertContains(response, "no dyes on file")
+        self.assertContains(response, "Stormy Sea")
+        self.assertContains(response, "missing=true")
+
+    def test_a_complete_run_shows_no_backlog_nag(self):
+        link_dye(self.recipe, "Black")
+
+        response = self.client.get(self.url, {"baths": "10"})
+
+        self.assertNotContains(response, "no dyes on file")
+
+    def test_a_printed_run_carries_the_list_too(self):
+        link_dye(self.recipe, "Black")
+        self.client.post(self.url, {"baths": "10"})
+        run = ProductionRun.objects.get()
+
+        response = self.client.get(reverse("production_run_detail", args=[run.pk]))
+
+        self.assertContains(response, "Dyes to collect")
+        self.assertContains(response, "Black")
+
+    def test_the_pdf_still_renders_with_a_dye_page(self):
+        link_dye(self.recipe, "Black")
+        self.client.post(self.url, {"baths": "10"})
+        run = ProductionRun.objects.get()
+
+        response = self.client.get(reverse("production_sheet_pdf", args=[run.pk]))
+
+        self.assertTrue(response.content.startswith(b"%PDF"))
+
+    def test_the_pdf_renders_when_no_recipe_has_dyes(self):
+        """The common case today, and it must not be the one that breaks."""
+        self.client.post(self.url, {"baths": "10"})
+        run = ProductionRun.objects.get()
+
+        response = self.client.get(reverse("production_sheet_pdf", args=[run.pk]))
+
+        self.assertTrue(response.content.startswith(b"%PDF"))

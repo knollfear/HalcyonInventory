@@ -307,7 +307,7 @@ class ProductionSheetForm(forms.Form):
         queryset=RawProductCategory.objects.none(),   # set in __init__
         required=False,
         empty_label="Everything",
-        label="Just one kind of blank?",
+        label="Just one category?",
     )
     include_overshoot = forms.BooleanField(
         required=False,

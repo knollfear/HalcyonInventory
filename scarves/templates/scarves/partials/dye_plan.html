@@ -1,0 +1,69 @@
+{% comment %}
+The shelf list, shared by the picker preview and a printed run's page.
+Extends nothing — it's an include, and inherits styling from its host.
+
+Framing matters here. It leads with what the list *does* cover, because
+three dyes fetched in one walk is already a better morning than three trips,
+and the run is worth printing whether or not every recipe is on file. The
+gap comes second, named recipe by recipe and linked to the page that fixes
+it, so "the data entry backlog" reads as a short finite list with a payoff
+attached rather than a standing chore.
+{% endcomment %}
+
+<div class="dyeplan">
+  <h2>
+    Dyes to collect
+    {% if plan.entries %}
+      — {{ plan.entries|length }} dye{{ plan.entries|length|pluralize }}
+      for {{ bath_count }} bath{{ bath_count|pluralize }}
+    {% endif %}
+  </h2>
+
+  {% if plan.entries %}
+    <p class="lead-in">Fetch these once, before you start.</p>
+    <ul class="dyes">
+      {% for dye, uses in plan.entries %}
+        <li{% if not dye.in_stock %} class="gone"{% endif %}>
+          <span class="chip" style="background: {{ dye.hex_color }}"></span>
+          <span class="who">
+            {{ dye.name }} <span class="brand">{{ dye.brand.name }}</span>
+            {% if not dye.in_stock %}<strong class="flag">not in stock</strong>{% endif %}
+          </span>
+          <span class="uses">{{ uses }} bath{{ uses|pluralize }}</span>
+        </li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+
+  {% if plan.out_of_stock %}
+    <p class="warnline">
+      {{ plan.out_of_stock|length }} of these {{ plan.out_of_stock|length|pluralize:"is,are" }}
+      marked not in stock — those baths can't run until it's restocked.
+    </p>
+  {% endif %}
+
+  {% if not plan.is_complete %}
+    <div class="gap">
+      <strong>
+        {{ plan.unrecorded_baths }} bath{{ plan.unrecorded_baths|pluralize }}
+        on this sheet {{ plan.unrecorded_baths|pluralize:"has,have" }} no dyes on file yet,
+      </strong>
+      so the list above doesn't cover {{ plan.unrecorded_baths|pluralize:"it,them" }}.
+      {% comment %}
+      Named, not just counted. A number reads as a chore; six recipe names
+      read as an afternoon, and the link goes straight to the page that
+      takes them — which can copy the dyes from a recipe that already has
+      them, so most of them are a couple of clicks rather than a lookup.
+      {% endcomment %}
+      <ul class="missing">
+        {% for name in plan.unrecorded %}<li>{{ name }}</li>{% endfor %}
+      </ul>
+      <p>
+        <a href="{% url 'recipe_showcase' %}?edit=true&amp;missing=true">
+          Fill in the missing dyes →
+        </a>
+        Each one you add shows up here, and on every sheet after it.
+      </p>
+    </div>
+  {% endif %}
+</div>

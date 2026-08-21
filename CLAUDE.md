@@ -321,6 +321,39 @@ unreported session must not be something only the person who printed it
 remembers — the failure is otherwise silent, and looks exactly like a session
 that never happened.
 
+### The dye collection page
+
+The sheet's first page is a shelf list: every dye the run needs, with a
+colour chip, the brand, and how many baths want it. One walk to the shelf
+instead of twenty, and the dyes several colorways share are exactly the ones
+you don't want a second trip for. It's a page of its own rather than a block
+above the rows so a long list can't squeeze them, and so it can be carried to
+the shelf on its own — collection and dyeing are different jobs.
+
+Counts are per *bath*, not per recipe, because "get the black out" and "get a
+lot of the black out" are different instructions.
+
+**A recipe with no dyes on file contributes nothing to that list**, which is
+the one way this feature could do harm. Most recipes are in exactly that
+state right now. An unannounced short list is worse than no list — you
+collect what it says, walk to the dye room, and find baths whose requirements
+were never written down — so both the sheet and the screen state how many
+baths aren't covered and name the recipes.
+
+The two say it differently on purpose. **On paper it's a warning**, because
+the person at the shelf needs to know the list is short. **On screen it's an
+invitation**: the missing recipes are listed by name and linked to
+`recipe_showcase?edit=true&missing=true`, which can copy dyes from a recipe
+that already has them. A count reads as a standing chore; six names read as
+an afternoon with a payoff attached, and every one added shows up on every
+sheet afterwards. That framing is the point — the backlog gets filled in by
+somebody with other demands on their time, so the app's job is to make the
+next increment look small and worth it.
+
+Dyes marked out of stock are called out in both places. A missing dye is a
+bath that can't run, and finding that out at the sink is the expensive
+version of finding it out here.
+
 ### Rows carry a barcode, and nothing reads it yet
 
 The QR flow never touches them. They are there for the next step: a photo of

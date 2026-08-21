@@ -3170,6 +3170,8 @@ def production_sheet_index(request):
     return render(request, "scarves/production_sheet_index.html", {
         "form": form,
         "baths": baths,
+        "plan": production.dye_plan_for_baths(baths),
+        "bath_count": len(baths),
         # Only a form that actually asked a question gets an answer below.
         # Keyed on validity rather than "was anything submitted", or a typo in
         # the bath count reads back as "nothing needs dyeing" — which is a
@@ -3199,12 +3201,15 @@ def production_run_detail(request, pk):
         ProductionRun.objects.prefetch_related(
             "rows__finished_product__recipe",
             "rows__finished_product__raw_product",
+            "rows__finished_product__recipe__recipe_dyes__dye__brand",
         ),
         pk=pk,
     )
     return render(request, "scarves/production_run_detail.html", {
         "run": run,
         "crew_url": _crew_run_url(request, run),
+        "plan": production.dye_plan_for_run(run),
+        "bath_count": run.rows.count(),
     })
 
 
