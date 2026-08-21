@@ -32,7 +32,7 @@ from django.core.files.storage import default_storage
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
-from . import crew, production, timesheets
+from . import crew, production, sheetscan, timesheets
 from .colorutils import (
     delta_e,
     hex_to_lab,
@@ -7601,3 +7601,344 @@ class OutstandingSheetCapTests(TestCase):
         self.client.post(url, {"done": [str(rows[1].pk)]})
         run.refresh_from_db()
         self.assertEqual(run.done_count, 2)
+
+
+def sheet_photo(rows, filled=(), ink=(190, 30, 40), token=None, scale=5.0,
+                partial=()):
+    """A synthetic photograph of a printed production sheet.
+
+    Draws the same geometry `production._draw_row` does — the box from
+    `BOX_LEFT`/`BOX_BASELINE_OFFSET`, the bars from the very symbol
+    `barcode_symbol()` returns — so a test that reads it back is exercising
+    the real agreement between what the PDF prints and what the scanner
+    looks for. `ink` is a colour rather than "black" on purpose: the whole
+    question about pen colour is answered by passing a different one.
+    """
+    from string import ascii_lowercase, ascii_uppercase
+
+    from io import BytesIO
+
+    from PIL import Image, ImageDraw
+    from reportlab.lib.pagesizes import letter
+
+    page_w, page_h = letter
+    image = Image.new("RGB", (int(page_w * scale), int(page_h * scale)), "white")
+    draw = ImageDraw.Draw(image)
+
+    def px(x, y):
+        """PDF point to image pixel — y flips, and rounds to a whole pixel.
+
+        Rounding here rather than letting PIL do it per edge is what makes
+        adjacent bars tile exactly. Left to floats, a module a few pixels
+        wide picks up half a pixel of error per edge, which is a large
+        fraction of a bar and enough to stop the symbol decoding.
+        """
+        return round(x * scale), round((page_h - y) * scale)
+
+    if token:
+        widget = __import__(
+            "reportlab.graphics.barcode.qr", fromlist=["qr"]
+        ).QrCodeWidget(f"https://x.test/scarves/secret/production/{token}/")
+        widget.qr.make()
+        count = widget.qr.getModuleCount()
+        module = production.QR_SIZE / count
+        origin_x = page_w - production.PAGE_MARGIN - production.QR_SIZE
+        origin_y = page_h - production.PAGE_MARGIN
+        for r in range(count):
+            for c in range(count):
+                if not widget.qr.isDark(r, c):
+                    continue
+                a = px(origin_x + c * module, origin_y - r * module)
+                b = px(origin_x + (c + 1) * module, origin_y - (r + 1) * module)
+                draw.rectangle([a[0], a[1], b[0] - 1, b[1] - 1], fill="black")
+
+    y = page_h - production.PAGE_MARGIN - production.HEADER_HEIGHT
+    for index, row in enumerate(rows):
+        baseline = y - production.ROW_HEIGHT + 12
+
+        box_x = production.BOX_LEFT
+        box_y = baseline + production.BOX_BASELINE_OFFSET
+        top_left = px(box_x, box_y + production.BOX_SIZE)
+        bottom_right = px(box_x + production.BOX_SIZE, box_y)
+        draw.rectangle(
+            [top_left[0], top_left[1], bottom_right[0], bottom_right[1]],
+            outline="black", width=max(int(1.6 * scale), 1),
+        )
+        if index in filled or index in partial:
+            # A partial mark is a corner smudge — enough ink to notice, not
+            # enough to be an answer.
+            pad = (production.BOX_SIZE * (0.34 if index in partial else 0.12)) * scale
+            draw.rectangle(
+                [top_left[0] + pad, top_left[1] + pad,
+                 bottom_right[0] - pad, bottom_right[1] - pad],
+                fill=ink,
+            )
+
+        symbol = production.barcode_symbol(production.row_code(row))
+        symbol.validated = symbol.validate()
+        symbol.encoded = symbol.encode()
+        left = (production.BOX_LEFT + production.BOX_SIZE
+                + production.BOX_TO_BARCODE + symbol.lquiet)
+        bar_top = baseline + production.BARCODE_BASELINE_OFFSET + production.BARCODE_HEIGHT
+        bar_bottom = baseline + production.BARCODE_BASELINE_OFFSET
+        for char in symbol.decompose():
+            if char in ascii_lowercase:
+                left += (ord(char) - ord("a") + 1) * symbol.barWidth
+            elif char in ascii_uppercase:
+                width = (ord(char) - ord("A") + 1) * symbol.barWidth
+                a = px(left, bar_top)
+                b = px(left + width, bar_bottom)
+                draw.rectangle([a[0], a[1], b[0] - 1, b[1]], fill="black")
+                left += width
+        y -= production.ROW_HEIGHT
+
+    out = BytesIO()
+    image.save(out, "PNG")
+    return out.getvalue()
+
+
+class SheetScanTests(TestCase):
+    """Reading tick boxes off a photo of a sheet.
+
+    The barcode does the hard part: every row prints one a fixed distance
+    from its box, so a decoded symbol gives the row's identity *and* the
+    position and scale of everything beside it. Finding a box is then
+    arithmetic rather than checkbox recognition.
+
+    Nothing here applies anything — the scan fills the form in and a person
+    submits it, which is what makes it safe to be approximate.
+    """
+
+    def setUp(self):
+        self.run = ProductionRun.objects.create()
+        self.rows = []
+        for i, (recipe_name, product_name) in enumerate([
+            ("Stormy Sea", "Silk Infinity"),
+            ("Aegean", "Silk Rectangle"),
+            ("Ember", "Wool Wrap"),
+            ("Moss", "Silk Square"),
+        ], start=1):
+            recipe = make_recipe(recipe_name, hexes=())
+            product = make_bathable(recipe, product_name, on_hand=0, par=8, bath=4)
+            self.rows.append(ProductionRunRow.objects.create(
+                run=self.run, finished_product=product, order=i, quantity=4,
+            ))
+        self.codes = [production.row_code(r) for r in self.rows]
+
+    def _read(self, **kwargs):
+        photo = sheet_photo(self.rows, **kwargs)
+        return sheetscan.read_sheet(photo, known_codes=self.codes)
+
+    # --- the reading ------------------------------------------------------
+
+    def test_every_row_is_found(self):
+        scan = self._read()
+
+        self.assertEqual(scan.error, "")
+        self.assertEqual(len(scan.marks), len(self.rows))
+
+    def test_a_filled_box_reads_filled_and_a_blank_one_blank(self):
+        scan = self._read(filled=(0, 2))
+
+        states = {m.code: m.state for m in scan.marks}
+        self.assertEqual(states[self.codes[0]], sheetscan.FILLED)
+        self.assertEqual(states[self.codes[1]], sheetscan.EMPTY)
+        self.assertEqual(states[self.codes[2]], sheetscan.FILLED)
+        self.assertEqual(states[self.codes[3]], sheetscan.EMPTY)
+
+    def test_a_red_pen_works(self):
+        """Luminance, not blackness — red sits far nearer black than paper."""
+        scan = self._read(filled=(0,), ink=(200, 25, 35))
+
+        self.assertEqual(len(scan.filled), 1)
+
+    def test_a_pencil_works(self):
+        scan = self._read(filled=(0,), ink=(105, 105, 108))
+
+        self.assertEqual(len(scan.filled), 1)
+
+    def test_a_blue_pen_works(self):
+        scan = self._read(filled=(0,), ink=(25, 45, 160))
+
+        self.assertEqual(len(scan.filled), 1)
+
+    def test_a_yellow_highlighter_does_not(self):
+        """It is about as bright as the page. This is why the sheet says any
+        pen but yellow, and it has to fail as 'empty' rather than 'maybe'."""
+        scan = self._read(filled=(0,), ink=(255, 246, 90))
+
+        self.assertEqual(scan.filled, [])
+
+    def test_a_smudge_is_reported_unsure_rather_than_guessed(self):
+        """There is somewhere for an ambiguous mark to go, and it is a
+        person's eyes."""
+        scan = self._read(partial=(1,))
+
+        self.assertEqual([m.code for m in scan.unsure], [self.codes[1]])
+
+    # --- scale and framing -------------------------------------------------
+
+    def test_it_does_not_care_how_close_the_phone_was(self):
+        """Scale comes off each barcode's own width, so a tighter or wider
+        frame is the same reading."""
+        for scale in (4.0, 7.0):
+            scan = sheetscan.read_sheet(
+                sheet_photo(self.rows, filled=(0, 2), scale=scale),
+                known_codes=self.codes,
+            )
+            self.assertEqual(len(scan.filled), 2, f"at scale {scale}")
+
+    def test_a_barcode_from_another_sheet_is_reported_not_ignored(self):
+        """"I photographed it and nothing happened" needs an explanation."""
+        scan = sheetscan.read_sheet(
+            sheet_photo(self.rows, filled=(0,)),
+            known_codes=self.codes[1:],
+        )
+
+        self.assertEqual(scan.unknown_codes, [self.codes[0]])
+
+    def test_junk_is_an_error_not_a_crash(self):
+        scan = sheetscan.read_sheet(b"not a photo", known_codes=self.codes)
+
+        self.assertTrue(scan.error)
+        self.assertEqual(scan.marks, [])
+
+    # --- the wrong sheet ---------------------------------------------------
+
+    def test_the_qr_confirms_which_sheet_this_is(self):
+        scan = sheetscan.read_sheet(
+            sheet_photo(self.rows, filled=(0,), token=self.run.token),
+            known_codes=self.codes, expect_token=self.run.token,
+        )
+
+        self.assertEqual(scan.wrong_sheet, "")
+        self.assertEqual(len(scan.filled), 1)
+
+    def test_a_photo_of_another_sheet_is_refused(self):
+        """Two sheets printed days apart share most of their rows, so marks
+        off the wrong one land on rows that look right."""
+        scan = sheetscan.read_sheet(
+            sheet_photo(self.rows, filled=(0, 1, 2), token="SOMEOTHERTOKEN"),
+            known_codes=self.codes, expect_token=self.run.token,
+        )
+
+        self.assertEqual(scan.wrong_sheet, "SOMEOTHERTOKEN")
+        self.assertEqual(scan.filled, [])
+
+    # --- turning marks into rows -------------------------------------------
+
+    def test_marks_become_rows_to_tick(self):
+        scan = self._read(filled=(0, 2))
+
+        ticked = sheetscan.rows_to_tick(self.run, scan)
+
+        self.assertEqual(set(ticked), {self.rows[0].pk, self.rows[2].pk})
+
+    def test_repeated_baths_of_one_colorway_are_counted_separately(self):
+        """The case a sheet is *expected* to contain — `plan_baths` groups
+        repeated baths together on purpose. A decoder returns one result per
+        distinct symbol, so SKU-only barcodes would collapse these into one
+        and report a single bath where three were marked."""
+        extra = ProductionRunRow.objects.create(
+            run=self.run, finished_product=self.rows[0].finished_product,
+            order=9, quantity=4,
+        )
+        rows = self.rows + [extra]
+        codes = [production.row_code(r) for r in rows]
+        scan = sheetscan.read_sheet(sheet_photo(rows, filled=(0, 4)), known_codes=codes)
+
+        self.assertEqual(len(scan.filled), 2)
+        ticked = sheetscan.rows_to_tick(self.run, scan)
+        self.assertEqual(set(ticked), {self.rows[0].pk, extra.pk})
+
+    def test_re_reading_the_same_photo_ticks_nothing_new(self):
+        """Somebody re-uploads the original picture after it has been acted
+        on. The marks for rows already recorded must not go looking for
+        another row to land on."""
+        scan = self._read(filled=(0, 1))
+        for pk in sheetscan.rows_to_tick(self.run, scan):
+            production.apply_row(ProductionRunRow.objects.get(pk=pk))
+
+        again = self._read(filled=(0, 1))
+
+        self.assertEqual(sheetscan.rows_to_tick(self.run, again), [])
+
+    def test_an_already_recorded_row_is_not_offered_again(self):
+        production.apply_row(self.rows[0])
+        scan = self._read(filled=(0,))
+
+        self.assertEqual(sheetscan.rows_to_tick(self.run, scan), [])
+
+
+class SheetScanPageTests(TestCase):
+    """The photo shortcut on the crew page. It fills the form in; it does
+    not submit it."""
+
+    def setUp(self):
+        self.run = ProductionRun.objects.create()
+        recipe = make_recipe("Stormy Sea", hexes=())
+        self.product = make_bathable(recipe, "Silk Infinity", on_hand=0, par=8, bath=4)
+        self.rows = [
+            ProductionRunRow.objects.create(
+                run=self.run, finished_product=self.product, order=i, quantity=4)
+            for i in (1, 2)
+        ]
+        self.url = reverse("production_run", args=[self.run.token])
+
+    def _upload(self, **kwargs):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        photo = sheet_photo(self.rows, **kwargs)
+        return self.client.post(
+            self.url,
+            {"sheet": SimpleUploadedFile("sheet.png", photo, content_type="image/png")},
+        )
+
+    def test_a_photo_records_nothing_by_itself(self):
+        """The safety argument for the whole feature."""
+        self._upload(filled=(0, 1))
+
+        self.assertEqual(InventoryLog.objects.count(), 0)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.number_on_hand, 0)
+
+    def test_it_comes_back_with_the_boxes_already_ticked(self):
+        self._upload(filled=(0,))
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.context["prefilled"], {self.rows[0].pk})
+        self.assertContains(response, "Read 1 filled in")
+
+    def test_submitting_afterwards_is_what_records_it(self):
+        self._upload(filled=(0,))
+        self.client.post(self.url, {"done": [str(self.rows[0].pk)]})
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.number_on_hand, 4)
+
+    def test_the_reading_clears_once_it_is_acted_on(self):
+        self._upload(filled=(0,))
+        self.client.post(self.url, {"done": [str(self.rows[0].pk)]})
+
+        response = self.client.get(self.url)
+
+        self.assertIsNone(response.context["scan"])
+
+    def test_a_photo_of_the_wrong_sheet_ticks_nothing(self):
+        self._upload(filled=(0, 1), token="NOTTHISRUN")
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.context["prefilled"], set())
+        self.assertContains(response, "different sheet")
+
+    def test_an_unreadable_photo_says_so_and_leaves_the_list_usable(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        self.client.post(self.url, {
+            "sheet": SimpleUploadedFile("x.png", b"junk", content_type="image/png"),
+        })
+
+        response = self.client.get(self.url)
+
+        self.assertContains(response, "Tick them below instead")
+        self.assertEqual(response.context["prefilled"], set())

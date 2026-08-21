@@ -43,7 +43,7 @@ from django.contrib import messages
 from django.shortcuts import render, redirect
 from django.template.response import TemplateResponse
 
-from . import colorbands, crew, labels, production, timesheets
+from . import colorbands, crew, labels, production, sheetscan, timesheets
 from .colorutils import nearest_by_color, pick_color_cluster
 from .forms import (
     BoothPhotoForm,
@@ -3312,6 +3312,26 @@ def production_run(request, token):
         token=token,
     )
 
+    if request.method == "POST" and "sheet" in request.FILES:
+        # The photo shortcut. Reads the marked paper and comes back with the
+        # same list already ticked — it applies nothing, which is what makes
+        # it safe to be approximate. See sheetscan.
+        scan = sheetscan.read_sheet(
+            request.FILES["sheet"].read(),
+            known_codes=[production.row_code(r) for r in run.rows.all()],
+            expect_token=run.token,
+        )
+        request.session["production_scan"] = {
+            "wrong_sheet": scan.wrong_sheet,
+            "ticked": sheetscan.rows_to_tick(run, scan),
+            "filled": len(scan.filled),
+            "unsure": len(scan.unsure),
+            "read": len(scan.marks),
+            "unknown": scan.unknown_codes,
+            "error": scan.error,
+        }
+        return redirect("production_run", token=run.token)
+
     if request.method == "POST":
         ticked = set(request.POST.getlist("done"))
         applied = 0
@@ -3332,14 +3352,21 @@ def production_run(request, token):
             run.save(update_fields=["submitted_at", "submitted_by"])
 
         request.session["production_run_applied"] = applied
+        request.session.pop("production_scan", None)
         return redirect("production_run", token=run.token)
 
     applied = request.session.pop("production_run_applied", None)
+    scan = request.session.get("production_scan")
     employee, _pin = crew.remembered(request)
     return render(request, "scarves/production_run.html", {
         "run": run,
         "just_applied": applied,
         "remembered": employee,
+        "scan": scan,
+        # Pre-ticked from the photo, if there was one. Kept in the session so
+        # the upload can post/redirect/get like everything else here — a
+        # refresh must not re-send a phone photo over a stall's signal.
+        "prefilled": set(scan["ticked"]) if scan else set(),
     })
 
 

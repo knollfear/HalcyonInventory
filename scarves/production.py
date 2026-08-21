@@ -81,6 +81,14 @@ BOX_TO_BARCODE = 16
 BARCODE_WIDTH = 150
 BARCODE_HEIGHT = 26
 
+#: Where the box and the bars sit relative to a row's text baseline. Named
+#: rather than inlined because `sheetscan` reads back along exactly these
+#: numbers — if the drawing and the reading ever disagree the scan lands on
+#: blank paper and reports every box empty, which looks like a careful person
+#: who ticked nothing.
+BOX_BASELINE_OFFSET = -4
+BARCODE_BASELINE_OFFSET = 2
+
 #: `(text, bold)` per line. Each page says what to do with *that* page.
 BATH_INSTRUCTIONS = (
     ("Fill in the box for every bath you finish. Leave the rest blank.", False),
@@ -368,6 +376,74 @@ def apply_row(row):
 # ---------------------------------------------------------------------------
 
 
+def row_code(row):
+    """What a row's barcode carries: its SKU *and* its place on the sheet.
+
+    The order matters because a decoder returns one result per distinct
+    symbol, not per printed symbol — three identical barcodes on one page
+    come back as one. A sheet routinely prints the same SKU several times
+    (`plan_baths` groups repeated baths of a colorway together on purpose),
+    so a SKU-only barcode would silently collapse them and the scan would
+    report one bath where four were marked.
+
+    Carrying the SKU as well as the position keeps the code self-describing
+    and gives the scan a second check on being pointed at the right sheet,
+    which is worth the handful of extra bars.
+    """
+    return f"{row.finished_product.sku or 'ROW'}#{row.order}"
+
+
+def barcode_symbol(value):
+    """Exactly the Code128 symbol a sheet prints for this value.
+
+    Shared with `sheetscan`, which re-derives it to know where the tick box
+    sits relative to the *bars*. That matters because the quiet zones don't
+    scale with the rest: reportlab pins them at a quarter inch, so the drawn
+    symbol is wider than `BARCODE_WIDTH` by a margin that depends on the SKU.
+    A scanner that assumed otherwise would measure a window offset by several
+    points and quietly read the wrong patch of paper.
+    """
+    from reportlab.graphics.barcode import code128
+
+    trial = code128.Code128(
+        value, barHeight=BARCODE_HEIGHT, barWidth=1.0, humanReadable=False
+    )
+    return code128.Code128(
+        value,
+        barHeight=BARCODE_HEIGHT,
+        barWidth=BARCODE_WIDTH / trial.width,
+        humanReadable=False,
+    )
+
+
+def box_geometry(value):
+    """Where the tick box is, measured from the *bars* of this row's barcode.
+
+    Returns `(right_gap, below, size)` in points:
+
+    - `right_gap`  bars' left edge back to the box's right edge
+    - `below`      how far the box's bottom sits under the bars' bottom
+    - `size`       the box, square
+
+    All three are read off the same constants the drawing uses, so there is
+    no second copy of the layout to keep in step.
+    """
+    symbol = barcode_symbol(value)
+    right_gap = BOX_TO_BARCODE + symbol.lquiet
+    below = BARCODE_BASELINE_OFFSET - BOX_BASELINE_OFFSET
+    return right_gap, below, BOX_SIZE
+
+
+def bars_width(value):
+    """Width of just the bars, with the quiet zones taken off.
+
+    This is what a decoder's bounding box actually covers, and so what the
+    scale of a photo has to be worked out from.
+    """
+    symbol = barcode_symbol(value)
+    return symbol.width - symbol.lquiet - symbol.rquiet
+
+
 def render_sheet(run, return_url) -> bytes:
     """The sheet, as PDF bytes.
 
@@ -533,31 +609,26 @@ def _draw_header(pdf, run, return_url, page_w, page_h, page_no, page_count,
 
 
 def _draw_row(pdf, row, number, y, page_w):
-    from reportlab.graphics.barcode import code128
-
     product = row.finished_product
     baseline = y - ROW_HEIGHT + 12
 
     # The box. Heavy stroke so a photo of it has something unambiguous to
     # measure against, and empty inside so "filled in" is the only ink there.
     pdf.setLineWidth(1.6)
-    pdf.rect(BOX_LEFT, baseline - 4, BOX_SIZE, BOX_SIZE)
+    pdf.rect(BOX_LEFT, baseline + BOX_BASELINE_OFFSET, BOX_SIZE, BOX_SIZE)
     pdf.setLineWidth(1)
 
     barcode_x = BOX_LEFT + BOX_SIZE + BOX_TO_BARCODE
+    drawn_width = BARCODE_WIDTH
     if product.sku:
-        symbol = code128.Code128(
-            product.sku, barHeight=BARCODE_HEIGHT, barWidth=1.0,
-            humanReadable=False,
-        )
-        scale = BARCODE_WIDTH / symbol.width
-        symbol = code128.Code128(
-            product.sku, barHeight=BARCODE_HEIGHT, barWidth=scale,
-            humanReadable=False,
-        )
-        symbol.drawOn(pdf, barcode_x, baseline + 2)
+        symbol = barcode_symbol(row_code(row))
+        symbol.drawOn(pdf, barcode_x, baseline + BARCODE_BASELINE_OFFSET)
+        # The real width, not the target: quiet zones don't scale, so the
+        # symbol runs wider than BARCODE_WIDTH and the text has to start
+        # after where it actually ends.
+        drawn_width = symbol.width
 
-    text_x = barcode_x + BARCODE_WIDTH + 14
+    text_x = barcode_x + drawn_width + 14
 
     pdf.setFont("Helvetica-Bold", 11)
     pdf.drawString(text_x, baseline + 14, f"{row.quantity} × {product.recipe.name}")

@@ -374,24 +374,64 @@ Dyes marked out of stock are called out in both places. A missing dye is a
 bath that can't run, and finding that out at the sink is the expensive
 version of finding it out here.
 
-### Rows carry a barcode, and nothing reads it yet
+### Reading the marked sheet from a photo
 
-The QR flow never touches them. They are there for the next step: a photo of
-the marked sheet filling the same confirmation page in, instead of twenty
-taps. Barcode decoding already works here and hands back each symbol's
-bounding box, which localises its row and gives scale and skew for free — so
-a tick box at a **fixed offset** from a barcode (`BOX_TO_BARCODE`,
-`BOX_SIZE`) becomes "is this known rectangle darker than blank paper?" rather
-than general checkbox recognition. Printing them now costs nothing and means
-sheets already in circulation work when that lands. When it does, it must
-**pre-tick the confirmation page, never write straight through** — same rule
-as `colorbands`: it fills the form in, a person decides.
+`secret/production/<token>/` takes a photo of the marked paper and comes back
+with the same list already ticked. `scarves/sheetscan.py` does the reading.
+
+**It applies nothing.** The scan fills the form in and a person submits it —
+the same rule `colorbands` follows, and the whole safety argument. It also
+means the photo path can never be *worse* than tapping: at worst it saves
+zero taps and they tap them anyway.
+
+**The barcode does the hard part.** Every row prints one a fixed distance
+from its box, so a decoded symbol gives the row's identity *and* the
+position, scale and orientation of everything beside it. Finding a tick box
+is then arithmetic rather than the general checkbox-recognition problem.
+Geometry comes from `production.box_geometry()`, the same constants the PDF
+draws with, because a scanner with its own copy would drift — and the symptom
+of drift is the worst available: the sample window lands on blank paper and
+every box reads empty, which is indistinguishable from a careful person who
+ticked nothing.
+
+Two subtleties in that geometry, both of which bite silently:
+
+- **Quiet zones don't scale.** reportlab pins them at a quarter inch, so a
+  drawn symbol is wider than `BARCODE_WIDTH` by a margin that depends on the
+  value. Scale is worked out from `bars_width()`, never the target width.
+- **A decoder returns one result per distinct symbol, not per printed
+  symbol.** Three identical barcodes on a page come back as one. A sheet
+  routinely prints the same SKU several times — `plan_baths` groups repeated
+  baths of a colorway together on purpose — so `row_code()` puts the row's
+  position in the barcode as well as its SKU (`RAWSIL-STORMY#3`). Without
+  that, four marked baths of one colorway report as one.
+
+**Ink, not colour.** Each barcode is full-black bars on full-white paper a
+couple of centimetres from its own box, so it doubles as a calibration
+swatch: the dark and light ends of *this row*, under this light, at this
+exposure. The box is scored on where it falls between them, which is a ratio
+and survives white balance, a tungsten bulb and a glare on one corner. Red,
+blue, green and pencil all sit far nearer black than paper; **yellow does
+not** and never will, which is why the sheet says "any pen but yellow".
+Anything between the thresholds is reported `unsure` rather than guessed.
+
+**The QR is checked too.** One decode pass finds it alongside the Code128s,
+so photographing the wrong sheet is detectable rather than silent — two runs
+printed days apart share most of their rows, and marks off the wrong one
+would land on rows that look right.
+
+**Re-reading the same photo ticks nothing new.** `rows_to_tick()` skips rows
+already applied, and because a mark maps to exactly one row it can't go
+looking for another row with the same SKU to land on instead.
+
+The photo is **not stored**. It's read in the request and discarded — it is
+an input to a form, not a record, and the record is the inventory log.
 
 **Marking is positive only.** Tick what you did; never cross out what you
 didn't. Crossing out is the tempting shorthand and it's wrong twice: pen
-through a Code128 sometimes still decodes and sometimes doesn't, so the signal
-that matters rides on the unreliable mark, and an unmarked row stops meaning
-anything definite.
+through a Code128 sometimes still decodes and sometimes doesn't, so the
+signal that matters rides on the unreliable mark, and an unmarked row stops
+meaning anything definite.
 
 ## Undyed stock: one pile, two rows, and the axes swapped
 
