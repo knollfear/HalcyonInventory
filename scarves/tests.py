@@ -29,6 +29,7 @@ from django.core.management.base import CommandError
 from django.utils import timezone
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
+from django.db.models import ProtectedError
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
@@ -8340,3 +8341,79 @@ class ProductionRunAdminTests(TestCase):
         inline = ProductionRunRowInline(ProductionRun, site)
         self.assertFalse(inline.has_add_permission(None))
         self.assertFalse(inline.can_delete)
+
+
+class RetireDontDeleteTests(TestCase):
+    """Products are retired, not deleted.
+
+    A product that ever sold is referenced by inventory logs, resolved sales
+    and production rows, and we care about that history long after we stop
+    selling the thing. `is_active` is the retire flag; the database is what
+    stops anyone taking the other route by accident.
+    """
+
+    def setUp(self):
+        self.recipe = make_recipe("Stormy Sea")
+        self.product = make_product(self.recipe, "Stormy Silk", with_image=False)
+
+    def test_a_product_with_history_cannot_be_deleted(self):
+        InventoryLog.objects.create(
+            finished_product=self.product,
+            raw_product=self.product.raw_product,
+            log_type=InventoryLog.SALE, quantity=-1,
+        )
+
+        with self.assertRaises(ProtectedError):
+            self.product.delete()
+
+        self.assertEqual(FinishedProduct.objects.count(), 1)
+
+    def test_a_product_on_a_production_sheet_cannot_be_deleted(self):
+        run = ProductionRun.objects.create()
+        ProductionRunRow.objects.create(
+            run=run, finished_product=self.product, order=1, quantity=4)
+
+        with self.assertRaises(ProtectedError):
+            self.product.delete()
+
+    def test_a_product_a_sale_resolved_to_cannot_be_deleted(self):
+        UnmatchedSale.objects.create(
+            order_id="O-1", line_uid="L1", name="Scarf", quantity=1,
+            sold_at=timezone.now(), resolved_product=self.product,
+        )
+
+        with self.assertRaises(ProtectedError):
+            self.product.delete()
+
+    def test_retiring_is_the_supported_move(self):
+        """It takes the product out of everything that matters without
+        touching a row anybody might want to read later."""
+        InventoryLog.objects.create(
+            finished_product=self.product,
+            raw_product=self.product.raw_product,
+            log_type=InventoryLog.SALE, quantity=-1,
+        )
+
+        self.product.is_active = False
+        self.product.save(update_fields=["is_active"])
+
+        self.assertEqual(production.plan_baths(20), [])
+        self.assertEqual(InventoryLog.objects.count(), 1)
+        self.assertEqual(labelmod.inventory_run().rows, [])
+
+    def test_a_raw_product_with_history_is_protected_too(self):
+        InventoryLog.objects.create(
+            finished_product=self.product,
+            raw_product=self.product.raw_product,
+            log_type=InventoryLog.PRODUCTION, quantity=4,
+        )
+
+        with self.assertRaises(ProtectedError):
+            self.product.raw_product.delete()
+
+    def test_a_mistake_row_with_no_history_still_deletes(self):
+        """Nothing points at it, so there is nothing to preserve — a product
+        typed in by accident shouldn't need retiring."""
+        self.product.delete()
+
+        self.assertEqual(FinishedProduct.objects.count(), 0)

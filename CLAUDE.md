@@ -232,6 +232,36 @@ already print in colour), and they can't be lost, misapplied, or forgotten by
 whoever reprints the sheet — the same reasoning that puts `NEXT RUN: START AT
 n` on the label sheet instead of in `localStorage`.
 
+## Retire, don't delete
+
+A product that ever sold is pointed at by inventory logs, resolved sales and
+production rows, and that history stays interesting long after the thing
+stops selling. So **`is_active = False` is how a product goes away**, on
+`FinishedProduct`, `RawProduct`, `Recipe` and `Employee` alike. Retiring
+takes it out of production planning, the reference sheets, the label runs and
+the Square sync without touching a row anyone might want to read later.
+
+This is enforced by the schema rather than left to discipline. Everything
+that records *what happened* points at a product with `on_delete=PROTECT` —
+`InventoryLog`, `ProductionRunRow`, `UnmatchedSale.resolved_product` — so a
+delete of anything with history raises `ProtectedError` instead of taking the
+history with it. `RetireDontDeleteTests` pins that.
+
+Two deliberate exceptions:
+
+- **`FinishedProductImage` cascades.** A photo is a depiction, not a record,
+  and an orphaned one has nothing left to depict. The `post_delete` signal in
+  `signals.py` drops the stored file with it.
+- **A product with no history really does delete.** Nothing points at it, so
+  there is nothing to preserve — a row typed in by mistake shouldn't need
+  retiring.
+
+The same reasoning explains what happens when a `ProductionRun` is deleted:
+its rows cascade away, but the `InventoryLog` rows they created are separate
+objects and stay. Those baths were really dyed. What goes is the trail from
+the sheet to the movement — which is fine, because the run was scaffolding
+and the log is the record.
+
 ## Inventory log dates: print `log.when`, never `log.created_at`
 
 `InventoryLog.created_at` is always a full timestamp, but it is not always
