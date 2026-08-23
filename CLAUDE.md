@@ -994,6 +994,21 @@ Items already in order are not rewritten, because otherwise every scheduled
 run bumps every version to change nothing. The sort is `casefold` and stable,
 so equal names keep the order Square has instead of churning.
 
+**Except that "already in order" can't be read off the names**, and this is
+the trap the live catalogue was actually in. Square assigns ordinals only
+when a parent item's variation list is written — and a variation added on its
+own, via the `ITEM_VARIATION` path, never is. That path is how every
+colourway after the first reached Square, so most variations here had
+`ordinal: None`. The API still hands them back in name order, so the item
+*reads* as sorted from `list_catalog`, while the till has no positions to go
+on and shows them in the order they were created. That gap is the reported
+symptom, and comparing names alone skipped exactly the items that had it.
+
+So an item missing any ordinal is rewritten even when the permutation is a
+no-op: that write is the only thing that assigns one. `Undyed Yarn`, created
+as a whole ITEM in one upsert, had ordinals 0–9 and was correctly left alone
+— which is what made the difference visible.
+
 **It runs at the end of a normal sync, not only on demand.** The run that
 creates a variation is the run that appends it, and `--update` renames
 variations when a recipe is renamed — those are the two moments the order

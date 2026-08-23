@@ -5565,6 +5565,29 @@ class SquareVariationOrderTests(TestCase):
         self._run(client, reorder=True)
         self.assertEqual(client.upserts, [])
 
+    def test_an_item_with_no_positions_is_written_even_when_it_reads_sorted(self):
+        """The state most of the live catalogue was found in.
+
+        Square assigns ordinals only when a parent item's list is written, and
+        a variation added on its own never is — which is how every colourway
+        after the first reached Square. The API hands those back in name
+        order, so the item reads as sorted while the till, with no positions
+        to go on, shows them as they were created. Comparing names alone would
+        skip exactly the items with the reported symptom.
+        """
+        response = self._item(("Amber", "SQ_VAR_A"), ("Zinnia", "SQ_VAR_Z"))
+        for variation in response.body["objects"][0]["item_data"]["variations"]:
+            del variation["item_variation_data"]["ordinal"]
+        client = FakeSquareClient(retrieve_results=[response])
+        output = self._run(client, reorder=True)
+
+        sent = client.upserts[0]["batches"][0]["objects"][0]
+        self.assertEqual(
+            [v["id"] for v in sent["item_data"]["variations"]],
+            ["SQ_VAR_A", "SQ_VAR_Z"],
+        )
+        self.assertIn("no positions", output)
+
     def test_an_item_already_in_order_is_not_rewritten(self):
         """Otherwise every run bumps every version for nothing."""
         client = FakeSquareClient(retrieve_results=[

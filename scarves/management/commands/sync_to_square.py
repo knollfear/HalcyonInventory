@@ -504,12 +504,17 @@ class Command(BaseCommand):
         return list(dict.fromkeys(ids))     # dedupe, keep order
 
     def _reordered_item(self, obj):
-        """The item with its variations alphabetised, or None to leave it be.
+        """`(payload, why)` for an item worth writing, or None to leave it be.
 
         Returns None both when the order is already right and when the object
         can't be safely rewritten — the caller can't tell those apart and
         doesn't need to, because the action is the same. What it must never
         get is a partial variation list.
+
+        `why` is `resorted` when the names were out of order and `positions`
+        when they weren't but Square holds no ordinals to say so. Both need
+        the same write; only the second is invisible from the API's own
+        answer, so it is worth naming in the output.
         """
         item_data = obj.get("item_data") or {}
         variations = item_data.get("variations") or []
@@ -532,7 +537,22 @@ class Command(BaseCommand):
         # Stable, so equal names keep the order Square already has and an
         # already-sorted item is left alone rather than churned every run.
         ordered = sorted(variations, key=self._variation_sort_key)
-        if [v["id"] for v in ordered] == [v["id"] for v in variations]:
+        same_order = [v["id"] for v in ordered] == [v["id"] for v in variations]
+
+        # ...except when the variations have no ordinal at all, which is the
+        # state most of this catalogue was found in. Square only assigns
+        # ordinals when a parent item's list is written, and a variation added
+        # on its own — the ITEM_VARIATION path, which is how every colourway
+        # after the first reached Square — is never part of such a write. The
+        # API still hands those back in name order, so the item reads as
+        # sorted here while the till, having no positions to read, shows them
+        # in the order they were created. That is the reported symptom, and a
+        # comparison of names alone would skip exactly the items that have it.
+        unpositioned = any(
+            v.get("item_variation_data", {}).get("ordinal") is None
+            for v in variations
+        )
+        if same_order and not unpositioned:
             return None
 
         payload = dict(obj)
@@ -541,7 +561,7 @@ class Command(BaseCommand):
             **item_data,
             "variations": [self._strip_ordinal(v) for v in ordered],
         }
-        return payload
+        return payload, ("positions" if same_order else "resorted")
 
     @staticmethod
     def _strip_ordinal(variation):
@@ -592,14 +612,16 @@ class Command(BaseCommand):
                 f"recognise and were skipped: {', '.join(missing[:5])}"
             ))
 
-        payloads = []
+        payloads, reasons = [], []
         for item_id in item_ids:
             obj = objects.get(item_id)
             if obj is None:
                 continue
-            payload = self._reordered_item(obj)
-            if payload is not None:
+            outcome = self._reordered_item(obj)
+            if outcome is not None:
+                payload, why = outcome
                 payloads.append(payload)
+                reasons.append(why)
 
         if not payloads:
             self.stdout.write("Variation order: already alphabetical.")
@@ -609,13 +631,14 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING(
                 f"DRY RUN — would reorder {len(payloads)} item(s):"
             ))
-            for payload in payloads:
+            for payload, why in zip(payloads, reasons):
                 item_data = payload["item_data"]
                 names = ", ".join(
                     v["item_variation_data"]["name"]
                     for v in item_data["variations"]
                 )
-                self.stdout.write(f"  {item_data.get('name')}: {names}")
+                note = " (no positions recorded)" if why == "positions" else ""
+                self.stdout.write(f"  {item_data.get('name')}{note}: {names}")
             return
 
         # Chunked by objects rather than by items, because each item carries
@@ -631,8 +654,14 @@ class Command(BaseCommand):
                 self._fail("Variation reorder failed", result)
             reordered += len(chunk)
 
+        positions = reasons.count("positions")
+        detail = (
+            f" ({positions} of them already read alphabetically but had no "
+            f"positions at the till)"
+            if positions else ""
+        )
         self.stdout.write(self.style.SUCCESS(
-            f"Variation order: {reordered} item(s) alphabetised."
+            f"Variation order: {reordered} item(s) alphabetised{detail}."
         ))
 
     @staticmethod
