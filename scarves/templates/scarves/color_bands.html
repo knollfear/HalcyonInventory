@@ -131,15 +131,16 @@ never letting the exploration read as what the app actually does.
 
 {% block content %}
   <p class="lede">
-    Every scarf on the rainbow reference sheet has to be filed under a colour, and
-    that decision starts from one number: the hue of each dye that went into it.
-    <strong>Hue alone gets it wrong constantly</strong> &mdash; it calls black red, and
-    <code>#000001</code> blue &mdash; so saturation asks whether a thing is a colour at all,
-    and lightness catches the tints and shades nobody names by hue.
+    Chartreuse. Avocado. Lichen. <strong>Are those green, or are they yellow?</strong>
+    Everyone in this shop has an answer and not everyone has the same one, which is
+    awkward, because a scarf has to be filed under one colour or the other before it
+    can go on a reference sheet.
   </p>
   <p class="lede">
-    What follows is all {{ dye_count }} dyes on file. Pick a boundary, drag it, and watch
-    which jars change sides.
+    Below are all {{ dye_count }} dyes we have, laid out by hue. Pick a boundary, drag
+    it to where you think it belongs, and watch the jars change sides. If you get one
+    you feel strongly about, the address bar holds your answer &mdash; send it to
+    somebody who disagrees.
   </p>
 
   <div class="sec">
@@ -222,7 +223,7 @@ never letting the exploration read as what the app actually does.
   const DYES = JSON.parse(document.getElementById("dye-data").textContent);
   const BANDS = JSON.parse(document.getElementById("band-data").textContent);
   const EDGES = JSON.parse(document.getElementById("edge-data").textContent);
-  const SLUG = "{{ edge.slug }}", HOME = EDGES[SLUG];
+  const SLUG = "{{ edge.slug }}", HOME = EDGES[SLUG], AT = {{ at|floatformat:"-1" }};
 
   const COLOR = {}, LABEL = {}, ORDER = [];
   BANDS.forEach(function (b) { ORDER.push(b[0]); LABEL[b[0]] = b[1]; COLOR[b[0]] = b[2]; });
@@ -354,9 +355,18 @@ never letting the exploration read as what the app actually does.
   const reach = Math.max(window_(HOME) + 10, 30);
   cut.min = Math.max(0, HOME - reach);
   cut.max = Math.min(360, HOME + reach);
-  cut.value = HOME;
+  cut.value = Math.min(Math.max(AT, cut.min), cut.max);
 
   cut.addEventListener("input", render);
+  /* On release, not on every pixel of the drag: the address bar is for handing
+     the argument to somebody, and a hundred history writes per drag is a
+     back button nobody can use. */
+  cut.addEventListener("change", function () {
+    const url = new URL(window.location);
+    url.searchParams.set("edge", SLUG);
+    url.searchParams.set("cut", cut.value);
+    history.replaceState(null, "", url);
+  });
   document.getElementById("presets").addEventListener("click", function (e) {
     const b = e.target.closest("button");
     if (!b) { return; }

@@ -5552,6 +5552,33 @@ class ColorBandsPageTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.context["edge"]["slug"])
 
+    def test_where_the_slider_sits_rides_in_the_url_too(self):
+        """The page's job is to start an argument, and an argument you can't
+        send is one you have to win in person."""
+        response = self.client.get(
+            reverse("color_bands_page"), {"edge": "yellow-green", "cut": "64.5"}
+        )
+        self.assertEqual(response.context["at"], 64.5)
+
+    def test_a_hand_edited_position_lands_somewhere_readable(self):
+        """Same rule as `done=`: a stale or mangled link degrades to the page
+        rather than to an error."""
+        for bad in ("banana", "", "-40", "999"):
+            with self.subTest(bad):
+                response = self.client.get(
+                    reverse("color_bands_page"), {"edge": "yellow-green", "cut": bad}
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.context["at"], 61.0)
+
+    def test_a_position_snaps_to_the_sliders_own_step(self):
+        """Otherwise a link carries a number the control can't return to, and
+        the page opens somewhere the sender was never standing."""
+        response = self.client.get(
+            reverse("color_bands_page"), {"edge": "yellow-green", "cut": "64.31"}
+        )
+        self.assertEqual(response.context["at"], 64.5)
+
     def test_a_line_no_mid_tone_can_see_across_is_not_offered(self):
         """345 separates two zones differing only in how light a colour has to
         be to read pink. Offering it would be a slider that does nothing."""

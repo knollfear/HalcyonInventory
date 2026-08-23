@@ -2824,6 +2824,21 @@ def color_bands_page(request):
     wanted = request.GET.get("edge")
     edge = next((e for e in edges if e["slug"] == wanted), None) or edges[0]
 
+    # Where the slider is sitting rides in the URL beside which line it is,
+    # because the page's job is to start an argument and an argument you can't
+    # send is one you have to win in person. Parsed defensively for the same
+    # reason `done=` is: a hand-edited or stale link should land somewhere
+    # readable rather than erroring. The name is the slider's own, so the URL
+    # is what the form would have serialised.
+    at = edge["degrees"]
+    try:
+        typed = float(request.GET["cut"])
+    except (KeyError, TypeError, ValueError):
+        pass
+    else:
+        if 0 <= typed <= 360:
+            at = round(typed * 2) / 2       # the slider's half-degree step
+
     dyes = []
     for dye in Dye.objects.select_related("brand"):
         rgb = hex_to_rgb(dye.hex_color)
@@ -2850,6 +2865,7 @@ def color_bands_page(request):
         "edges": edges,
         "edges_json": {e["slug"]: e["degrees"] for e in edges},
         "edge": edge,
+        "at": at,
         "dye_count": len(dyes),
     })
 
