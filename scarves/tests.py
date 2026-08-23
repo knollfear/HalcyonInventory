@@ -5463,6 +5463,43 @@ class SyncToSquareTests(TestCase):
         self.assertEqual(sent["item_variation_data"]["sku"], self.product.sku)
 
 
+class EdgesMatchTheRuleTests(TestCase):
+    """`HUE_EDGES` restates numbers that live as literals in `band_for_hsl`.
+
+    Threading seven constants through that function would cost more clarity
+    than it buys, so the list is pinned by probing the classifier either side
+    of each line instead. That tests the real thing rather than restating it:
+    if somebody moves a boundary in the rule and not in the list, the page
+    starts drawing its line in the wrong place and this fails.
+    """
+
+    def test_every_listed_edge_is_a_real_edge(self):
+        from .colorbands import EDGE_PROBE, HUE_EDGES, band_for_hsl
+
+        sat, light = EDGE_PROBE
+        for slug, degrees in HUE_EDGES:
+            if slug == "pink-red":
+                # Real in the rule, invisible at any single lightness: the two
+                # zones differ only in how pale a colour must be to read pink.
+                continue
+            with self.subTest(slug):
+                self.assertNotEqual(
+                    band_for_hsl(degrees - 0.5, sat, light),
+                    band_for_hsl(degrees + 0.5, sat, light),
+                    f"{slug} at {degrees} divides nothing",
+                )
+
+    def test_the_probe_avoids_the_brown_and_grey_rules(self):
+        """A duller or darker probe gets caught by them first and would label
+        half the lines 'brown', which is true of the probe and not of the line."""
+        from .colorbands import EDGE_PROBE, HUE_EDGES, band_for_hsl
+
+        sat, light = EDGE_PROBE
+        for _slug, degrees in HUE_EDGES:
+            for h in (degrees - 0.5, degrees + 0.5):
+                self.assertNotIn(band_for_hsl(h, sat, light), ("brown", "grey", "black"))
+
+
 class ColorBandsPageTests(TestCase):
     """The public piece about the classifier.
 
@@ -5494,14 +5531,32 @@ class ColorBandsPageTests(TestCase):
             self.assertEqual(row["band"], band_for_hex(row["hex"]), name)
         self.assertEqual(rows["461 Avocado"]["band"], "green")
 
-    def test_the_boundary_comes_from_the_code(self):
+    def test_the_boundaries_come_from_the_code(self):
         """A page quoting 70 after somebody moved it to 61 would be worse than
         no page at all."""
         from .colorbands import YELLOW_ENDS
 
         response = self.client.get(reverse("color_bands_page"))
-        self.assertEqual(response.context["yellow_ends"], YELLOW_ENDS)
-        self.assertContains(response, "61")
+        offered = response.context["edges_json"]
+        self.assertEqual(offered["yellow-green"], YELLOW_ENDS)
+
+    def test_which_boundary_rides_in_the_query_string(self):
+        """So a particular argument is a link somebody can send, rather than a
+        state of the session they happen to be in."""
+        response = self.client.get(reverse("color_bands_page"), {"edge": "green-blue"})
+        self.assertEqual(response.context["edge"]["slug"], "green-blue")
+
+    def test_an_unknown_edge_falls_back_rather_than_erroring(self):
+        """A hand-edited or stale link lands on a working page."""
+        response = self.client.get(reverse("color_bands_page"), {"edge": "chartreuse-ish"})
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context["edge"]["slug"])
+
+    def test_a_line_no_mid_tone_can_see_across_is_not_offered(self):
+        """345 separates two zones differing only in how light a colour has to
+        be to read pink. Offering it would be a slider that does nothing."""
+        response = self.client.get(reverse("color_bands_page"))
+        self.assertNotIn("pink-red", response.context["edges_json"])
 
     def test_a_dye_with_no_colour_is_left_out(self):
         """It contributes nothing to a band, a palette or a rainbow sheet, and

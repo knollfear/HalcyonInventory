@@ -92,6 +92,44 @@ CHROMATIC = tuple(s for s in BAND_SLUGS if s not in NEUTRALS)
 YELLOW_ENDS = 61.0
 
 
+#: Every hue line `band_for_hsl` draws, going round the wheel. Listed here so
+#: `public/color-bands/` can offer them all rather than only the one that got
+#: examined. The numbers are restated rather than shared, because threading
+#: seven constants through the function below would cost more clarity than it
+#: buys — `EdgesMatchTheRuleTests` pins them by probing the classifier either
+#: side of each line, which catches drift without anyone restating anything.
+HUE_EDGES = (
+    ("red-orange", 15.0),
+    ("orange-yellow", 45.0),
+    ("yellow-green", YELLOW_ENDS),
+    ("green-blue", 178.0),
+    ("blue-purple", 250.0),
+    ("purple-pink", 330.0),
+    ("pink-red", 345.0),
+)
+
+#: Saturation and lightness for asking "which bands does this line divide?".
+#: Deliberately saturated and mid-toned, so the answer is about hue: a duller
+#: or darker probe gets caught by the brown and grey rules first and would
+#: label half the lines "brown".
+EDGE_PROBE = (0.90, 0.50)
+
+
+def edge_bands(degrees):
+    """The two bands a hue line divides, at `EDGE_PROBE`.
+
+    Computed rather than written down, so a label on the page can't disagree
+    with what the classifier does. The red end genuinely splits by lightness
+    as well — above 330 a pale colour is pink and a dark one red — so this
+    reports what a mid-tone gets and the page says as much.
+    """
+    sat, light = EDGE_PROBE
+    return (
+        band_for_hsl(degrees - 0.5, sat, light),
+        band_for_hsl(degrees + 0.5, sat, light),
+    )
+
+
 def band_for_hsl(h, s, ll, *, black=0.12, grey=0.18, brown_l=0.60,
                  yellow_ends=YELLOW_ENDS):
     """The band for one color, given hue (0-360) and HLS saturation/lightness.

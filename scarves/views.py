@@ -2781,11 +2781,11 @@ def game_board(request):
 @page_meta(
     title="Colour Bands",
     description="How a dye's hex becomes a section of the rainbow reference "
-                "sheet. Every dye on file as a swatch, plotted by hue, with the "
-                "yellow/green boundary draggable so the judgement calls are "
-                "visible rather than asserted.",
+                "sheet. Every dye on file as a swatch, plotted by hue, with any "
+                "of the boundaries draggable so the judgement calls are visible "
+                "rather than asserted.",
     category="Public",
-    note="No login required. Explores the classifier; changes nothing.",
+    note="No login required. ?edge=green-blue picks the boundary. Changes nothing.",
 )
 def color_bands_page(request):
     """A piece about the colour classifier, readable by anyone.
@@ -2793,14 +2793,37 @@ def color_bands_page(request):
     Almost all template — but not a static file, for two reasons. The dyes are
     read live, so the page picks up whatever gets bought next week rather than
     freezing at the catalogue as it stood the day it was written. And the
-    boundary is read from `colorbands.YELLOW_ENDS`, so a page quoting 70 after
+    boundaries come from `colorbands.HUE_EDGES`, so a page quoting 70 after
     somebody moved it to 61 can't happen.
+
+    Which boundary you're looking at rides in the query string rather than a
+    session, so a particular argument is a link somebody can send.
 
     Each dye carries the band *Python* gave it. The slider re-classifies in the
     browser for the sake of exploring, and the page says so when the two
     disagree — the same rule the rest of the colour code follows: show the
     guess, never let it pass as the answer.
     """
+    edges = []
+    for slug, degrees in colorbands.HUE_EDGES:
+        below, above = colorbands.edge_bands(degrees)
+        if below == above:
+            # A line the classifier draws that no mid-tone can see across:
+            # 345 separates two zones that differ only in how light a colour
+            # has to be to read pink. Offering it would be a slider that
+            # appears to do nothing.
+            continue
+        edges.append({
+            "slug": slug,
+            "degrees": degrees,
+            "below": below,
+            "above": above,
+            "label": f"{colorbands.BAND_LABELS[below]} / {colorbands.BAND_LABELS[above]}",
+        })
+
+    wanted = request.GET.get("edge")
+    edge = next((e for e in edges if e["slug"] == wanted), None) or edges[0]
+
     dyes = []
     for dye in Dye.objects.select_related("brand"):
         rgb = hex_to_rgb(dye.hex_color)
@@ -2824,7 +2847,9 @@ def color_bands_page(request):
     return render(request, "scarves/color_bands.html", {
         "dyes_json": dyes,
         "bands": colorbands.BANDS,
-        "yellow_ends": colorbands.YELLOW_ENDS,
+        "edges": edges,
+        "edges_json": {e["slug"]: e["degrees"] for e in edges},
+        "edge": edge,
         "dye_count": len(dyes),
     })
 

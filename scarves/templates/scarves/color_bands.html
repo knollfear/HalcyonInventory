@@ -87,11 +87,19 @@ never letting the exploration read as what the app actually does.
       font-size: .64rem; padding: .1rem .45rem; border-radius: 3px; white-space: nowrap;
       font-variant-numeric: tabular-nums;
   }
-  .gap { position: absolute; bottom: 35px; top: 0; background: #f0f2f5; z-index: 0; }
-  .gap em {
-      position: absolute; bottom: 6px; left: 50%; transform: translateX(-50%);
-      font-style: normal; font-size: .64rem; color: #889; white-space: nowrap;
+  select {
+      font: inherit; font-size: .88rem; padding: .25rem .45rem;
+      border: 1px solid #d5dbe1; border-radius: 4px; background: #fff; color: #223;
   }
+  select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .go {
+      font: inherit; font-size: .8rem; padding: .3rem .8rem; cursor: pointer;
+      border: 1px solid var(--accent); border-radius: 4px;
+      background: var(--accent); color: #fff;
+  }
+  /* With script, changing the select is the submit — the button is the
+     no-script path and would otherwise read as a step you had to take. */
+  .js .go { display: none; }
 
   /* --- cards --- */
   .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(178px, 1fr)); gap: .7rem; }
@@ -125,42 +133,48 @@ never letting the exploration read as what the app actually does.
   <p class="lede">
     Every scarf on the rainbow reference sheet has to be filed under a colour, and
     that decision starts from one number: the hue of each dye that went into it.
-    <strong>Hue alone gets it wrong constantly</strong> — it calls black red, and
-    <code>#000001</code> blue — so saturation asks whether a thing is a colour at all,
+    <strong>Hue alone gets it wrong constantly</strong> &mdash; it calls black red, and
+    <code>#000001</code> blue &mdash; so saturation asks whether a thing is a colour at all,
     and lightness catches the tints and shades nobody names by hue.
   </p>
   <p class="lede">
-    What follows is all {{ dye_count }} dyes on file, laid out by hue. The boundary
-    between yellow and green currently sits at <strong>{{ yellow_ends|floatformat:"-1" }}&deg;</strong>.
-    Drag it and watch which jars change sides.
+    What follows is all {{ dye_count }} dyes on file. Pick a boundary, drag it, and watch
+    which jars change sides.
   </p>
 
   <div class="sec">
     <div class="panel">
+      <form method="get" class="ctl" id="pick">
+        <label for="edge">Boundary</label>
+        <select name="edge" id="edge">
+          {% for e in edges %}
+            <option value="{{ e.slug }}" {% if e.slug == edge.slug %}selected{% endif %}>
+              {{ e.label }} &mdash; {{ e.degrees|floatformat:"-1" }}&deg;
+            </option>
+          {% endfor %}
+        </select>
+        <button type="submit" class="go">Show</button>
+      </form>
+
       <div class="ctl">
-        <label for="cut">Yellow ends at</label>
-        <input type="range" id="cut" min="45" max="100" step="0.5"
-               value="{{ yellow_ends|floatformat:'-1' }}"
-               aria-label="Yellow to green boundary, in degrees of hue">
+        <label for="cut">{{ edge.label }} at</label>
+        <input type="range" id="cut" step="0.5"
+               aria-label="Boundary between {{ edge.label }}, in degrees of hue">
         <span class="readout" id="out"></span>
-      </div>
-      <div class="ctl">
         <div class="presets" id="presets"></div>
-        <span class="tally" id="tally"></span>
       </div>
+      <span class="tally" id="tally"></span>
     </div>
 
     <div class="rulerbox"><div class="ruler" id="ruler"></div></div>
   </div>
 
   <div class="sec">
-    <h2>Why this boundary and not another</h2>
+    <h2>Either side of the line</h2>
     <p>
-      Sorted by hue, the catalogue has a stretch from 69.2&deg; to 79.3&deg; with
-      <strong>no dye in it at all</strong>. A boundary anywhere inside that gap classifies
-      nothing — which is how the old line at 70&deg; survived without anyone seeing it be
-      wrong. Below the gap sits a cluster that reads green to anyone holding it, and the
-      nearest true yellow underneath is Fluorescent Lemon at exactly 60.0&deg;.
+      The jars nearest the boundary, the same distance out in both directions &mdash; at
+      least three a side, and further out when the catalogue is thin there. A ring means
+      the jar changes section at the line you&rsquo;ve set.
     </p>
     <div class="cards" id="focus"></div>
   </div>
@@ -169,8 +183,8 @@ never letting the exploration read as what the app actually does.
     <h2>The whole catalogue</h2>
     <p>
       Every dye sorted into its section by the same three-axis rule. Hover a square for
-      its name. Grey and black are working colours here — they ground the colours beside
-      them — so a recipe only gets filed under one of them when it is the <em>only</em>
+      its name. Grey and black are working colours here &mdash; they ground the colours beside
+      them &mdash; so a recipe only gets filed under one of them when it is the <em>only</em>
       thing there.
     </p>
     <div id="cat"></div>
@@ -196,111 +210,151 @@ never letting the exploration read as what the app actually does.
 
   {{ dyes_json|json_script:"dye-data" }}
   {{ bands|json_script:"band-data" }}
+  {{ edges_json|json_script:"edge-data" }}
 {% endblock %}
 
 {% block scripts %}
 <script>
 (function () {
   "use strict";
+  document.documentElement.classList.add("js");
+
   const DYES = JSON.parse(document.getElementById("dye-data").textContent);
   const BANDS = JSON.parse(document.getElementById("band-data").textContent);
+  const EDGES = JSON.parse(document.getElementById("edge-data").textContent);
+  const SLUG = "{{ edge.slug }}", HOME = EDGES[SLUG];
+
   const COLOR = {}, LABEL = {}, ORDER = [];
   BANDS.forEach(function (b) { ORDER.push(b[0]); LABEL[b[0]] = b[1]; COLOR[b[0]] = b[2]; });
 
-  const DEFAULT_CUT = {{ yellow_ends|floatformat:"-1" }};
-
   /* A second copy of scarves.colorbands.band_for_hsl, and the only reason it is
      tolerable is that it never decides anything: each dye already carries the
-     band Python gave it, and this runs only while the slider is being moved.
-     The moment the two disagree the page says it is exploring. */
-  function band(h, s, ll, cut) {
+     band Python gave it, and this runs only while a slider is being moved. The
+     moment the two disagree the page says it is exploring. */
+  function band(h, s, ll, e) {
     if (ll <= 0.12) return "black";
     if (ll >= 0.88 && s < 0.50) return "grey";
     if (s < 0.18) return "grey";
-    /* Not the band boundary: this 70 is how far up the warm end cream reaches. */
+    /* Not a band boundary: this 70 is how far up the warm end cream reaches. */
     if (ll >= 0.78 && s < 0.65 && h < 70) return "grey";
     if (ll < 0.35 && s < 0.55 && (h < 45 || h > 340)) return "brown";
     if (h >= 20 && h < 45 && ll < 0.60 && s < 0.75) return "brown";
-    if (h < 15 || h >= 345) return ll > 0.62 ? "pink" : "red";
-    if (h < 45) return "orange";
-    if (h < cut) return "yellow";
-    if (h < 178) return "green";
-    if (h < 250) return "blue";
-    if (h < 330) return "purple";
+    if (h < e["red-orange"] || h >= e["pink-red"]) return ll > 0.62 ? "pink" : "red";
+    if (h < e["orange-yellow"]) return "orange";
+    if (h < e["yellow-green"]) return "yellow";
+    if (h < e["green-blue"]) return "green";
+    if (h < e["blue-purple"]) return "blue";
+    if (h < e["purple-pink"]) return "purple";
     return ll > 0.55 ? "pink" : "red";
   }
-  const at = (d, cut) => cut === DEFAULT_CUT ? d.band : band(d.hue, d.sat, d.light, cut);
+  function edgesAt(v) {
+    const e = Object.assign({}, EDGES);
+    e[SLUG] = v;
+    /* `pink-red` is filtered off the picker because no mid-tone can see across
+       it, but the rule still reads it, so it has to be present. */
+    if (e["pink-red"] === undefined) { e["pink-red"] = 345; }
+    return e;
+  }
+  const at = (d, v) => v === HOME ? d.band : band(d.hue, d.sat, d.light, edgesAt(v));
 
-  const LO = 40, HI = 100, pos = h => ((h - LO) / (HI - LO)) * 100;
   const cut = document.getElementById("cut"), out = document.getElementById("out");
   const tally = document.getElementById("tally"), focus = document.getElementById("focus");
-  const cat = document.getElementById("cat");
+  const cat = document.getElementById("cat"), ruler = document.getElementById("ruler");
 
-  /* Fixed furniture, drawn once. */
-  let html = '<div class="axis"></div>';
-  const g0 = pos(69.2), g1 = pos(79.3);
-  html += '<div class="gap" style="left:' + g0 + '%;width:' + (g1 - g0) +
-          '%"><em>no dye here</em></div>';
-  for (let h = LO; h <= HI; h += 10) {
-    html += '<div class="tk" style="left:' + pos(h) + '%">' + h + '°</div>';
+  /* The window either side of the line: widen it until three jars sit on each
+     side, because a fixed span is empty where the catalogue is thin and a wall
+     of swatches where it is dense. Symmetric, so the two sides stay comparable
+     — an uneven window would make one look better stocked than it is. */
+  function window_(v) {
+    let w = 5;
+    while (w < 180) {
+      const lo = DYES.filter(d => d.hue < v && d.hue >= v - w).length;
+      const hi = DYES.filter(d => d.hue >= v && d.hue <= v + w).length;
+      if (lo >= 3 && hi >= 3) { break; }
+      w += 2.5;
+    }
+    return w;
   }
-  DYES.filter(d => d.hue >= LO && d.hue <= HI).forEach(function (d) {
-    html += '<div class="chip" style="left:' + pos(d.hue) + '%;background:' + d.hex +
-            '" title="' + d.name + ' — ' + d.hue + '°"><b>' +
-            d.name.replace(/^\d+\s/, "") + '</b></div>';
-  });
-  html += '<div class="bound" id="bound"><i id="boundlbl"></i></div>';
-  document.getElementById("ruler").innerHTML = html;
-  const bound = document.getElementById("bound"), boundlbl = document.getElementById("boundlbl");
-
-  const near = DYES.filter(d => d.hue >= 60 && d.hue <= 70);
-  focus.innerHTML = near.map(d =>
-    '<div class="card" data-hue="' + d.hue + '">' +
-      '<div class="sw" style="background:' + d.hex + '"></div>' +
-      '<div class="meta"><div class="nm">' + d.name + '</div>' +
-      '<div class="row"><span class="hx">' + d.hue.toFixed(1) + '°</span>' +
-      '<span class="pill" data-pill></span></div></div></div>').join("");
 
   document.getElementById("presets").innerHTML =
-    [[DEFAULT_CUT, DEFAULT_CUT + "° — today"], [70, "70° — the old line"]]
-      .map(p => '<button type="button" data-v="' + p[0] + '">' + p[1] + '</button>').join("");
+    '<button type="button" data-v="' + HOME + '">' + HOME + '\u00b0 \u2014 today</button>';
+
+  let lastSpan = null;
+
+  function drawRuler(v, w) {
+    const span = Math.max(w + 6, 22);
+    const lo = Math.max(0, v - span), hi = Math.min(360, v + span);
+    const key = lo + ":" + hi;
+    if (key !== lastSpan) {
+      lastSpan = key;
+      const pos = h => ((h - lo) / (hi - lo)) * 100;
+      let html = '<div class="axis"></div>';
+      const step = span > 60 ? 20 : 10;
+      for (let h = Math.ceil(lo / step) * step; h <= hi; h += step) {
+        html += '<div class="tk" style="left:' + pos(h) + '%">' + h + '\u00b0</div>';
+      }
+      DYES.filter(d => d.hue >= lo && d.hue <= hi).forEach(function (d) {
+        html += '<div class="chip" style="left:' + pos(d.hue) + '%;background:' + d.hex +
+                '" title="' + d.name + ' \u2014 ' + d.hue + '\u00b0"><b>' +
+                d.name.replace(/^\d+\s/, "") + '</b></div>';
+      });
+      html += '<div class="bound" id="bound"><i id="boundlbl"></i></div>';
+      ruler.innerHTML = html;
+      ruler.dataset.lo = lo;
+      ruler.dataset.hi = hi;
+    }
+    const bound = document.getElementById("bound");
+    bound.style.left = ((v - ruler.dataset.lo) /
+      (ruler.dataset.hi - ruler.dataset.lo)) * 100 + "%";
+    document.getElementById("boundlbl").textContent = fmt(v);
+  }
+
+  const fmt = v => (v % 1 ? v.toFixed(1) : v.toFixed(0)) + "\u00b0";
 
   function render() {
-    const c = parseFloat(cut.value);
-    const label = (c % 1 ? c.toFixed(1) : c.toFixed(0)) + "°";
-    out.textContent = label;
-    boundlbl.textContent = label;
-    bound.style.left = pos(c) + "%";
-    bound.style.display = (c >= LO && c <= HI) ? "" : "none";
+    const v = parseFloat(cut.value), w = window_(v);
+    out.textContent = fmt(v);
+    drawRuler(v, w);
 
-    focus.querySelectorAll(".card").forEach(function (card) {
-      const d = near.find(x => x.hue === parseFloat(card.dataset.hue));
-      const b = at(d, c), pill = card.querySelector("[data-pill]");
-      pill.textContent = LABEL[b];
-      pill.style.background = COLOR[b];
-      card.classList.toggle("moved", b !== d.band);
-    });
+    const near = DYES.filter(d => d.hue >= v - w && d.hue <= v + w);
+    focus.innerHTML = near.map(function (d) {
+      const b = at(d, v);
+      return '<div class="card' + (b !== d.band ? " moved" : "") + '">' +
+        '<div class="sw" style="background:' + d.hex + '"></div>' +
+        '<div class="meta"><div class="nm">' + d.name + '</div>' +
+        '<div class="row"><span class="hx">' + d.hue.toFixed(1) + '\u00b0</span>' +
+        '<span class="pill" style="background:' + COLOR[b] + '">' + LABEL[b] +
+        '</span></div></div></div>';
+    }).join("");
 
-    const moved = DYES.filter(d => at(d, c) !== d.band);
+    const moved = DYES.filter(d => at(d, v) !== d.band);
     tally.classList.toggle("exploring", moved.length > 0);
     tally.textContent = moved.length === 0
       ? "This is what the app does."
-      : "Exploring — " + moved.length + (moved.length > 1 ? " dyes" : " dye") +
+      : "Exploring \u2014 " + moved.length + (moved.length > 1 ? " dyes" : " dye") +
         " would change section: " + moved.map(d => d.name.replace(/^\d+\s/, "")).join(", ");
 
     const by = {};
     ORDER.forEach(b => { by[b] = []; });
-    DYES.forEach(d => { by[at(d, c)].push(d); });
+    DYES.forEach(d => { by[at(d, v)].push(d); });
     cat.innerHTML = ORDER.filter(b => by[b].length).map(b =>
       '<div class="bandblock"><div class="bandhead"><h3>' + LABEL[b] + '</h3><span>' +
       by[b].length + '</span></div><div class="strip">' +
       by[b].map(d => '<div class="dot" style="background:' + d.hex + '" title="' +
-                     d.name + ' — ' + d.hue + '°"></div>').join("") +
+                     d.name + ' \u2014 ' + d.hue + '\u00b0"></div>').join("") +
       '</div></div>').join("");
 
     document.querySelectorAll("#presets button").forEach(btn =>
-      btn.setAttribute("aria-pressed", parseFloat(btn.dataset.v) === c));
+      btn.setAttribute("aria-pressed", parseFloat(btn.dataset.v) === v));
   }
+
+  /* The slider's reach follows the boundary rather than being fixed 0-360:
+     half a degree of step is useless across the whole wheel, and the argument
+     is always local to the line. */
+  const reach = Math.max(window_(HOME) + 10, 30);
+  cut.min = Math.max(0, HOME - reach);
+  cut.max = Math.min(360, HOME + reach);
+  cut.value = HOME;
 
   cut.addEventListener("input", render);
   document.getElementById("presets").addEventListener("click", function (e) {
@@ -308,6 +362,9 @@ never letting the exploration read as what the app actually does.
     if (!b) { return; }
     cut.value = b.dataset.v;
     render();
+  });
+  document.getElementById("edge").addEventListener("change", function () {
+    document.getElementById("pick").submit();
   });
   render();
 }());
