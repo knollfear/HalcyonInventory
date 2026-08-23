@@ -73,6 +73,11 @@ ALIASES = {
     "Forest": "452 Forest Green",
     "Pist": "434 Pistachio",
     "Avo": "Avocado",
+    # The notebook's "L." reads as *light*, and neither catalogue sells a
+    # light version of either of these — there is one avocado and one mauve
+    # on file. So the prefix is a description of the bath, not of the jar.
+    "L. Avoc": "Avocado",
+    "L. Mauve": "432 Antique Mauve",
     "Ecru": "600 Ecru",
     "Aub": "475 Aubergine",
     "Saffr": "460 Saffron Spice",
@@ -81,10 +86,12 @@ ALIASES = {
     "Rus": "616 Russet",
     "Brown": "635 Brown",
     "Champ": "486 Champagne",
+    "Cham": "486 Champagne",
     "Cab": "458 Cabernet",
     "Ochre": "636 Golden Ochre",
     "Salm": "607 Salmon",
     "Scar": "609 Bright Scarlet",
+    "Ballet": "481 Ballerina Pink",
     "Orch": "412 Pink Orchid",
     "Electric Violet": "444 Electric Violet",
     "Gun": "637 Gun Metal",
