@@ -45,6 +45,7 @@ from .colorutils import (
 )
 from .forms import HoursForm, LabelRunForm, QuickRecipeRowForm, RecipeDyesForm
 from . import labels as labelmod
+from . import views as viewsmod
 from .models import (
     UNCATEGORIZED_BRAND,
     BoothPhoto,
@@ -9837,3 +9838,115 @@ class BothSetsTests(TestCase):
 
         html = self.client.get(reverse("label_index")).content.decode()
         self.assertIn(f'value="{labelmod.NAME_AND_BARCODE}"', html)
+
+
+class BulkReasonPresetTests(TestCase):
+    """A list of reasons, because a free box gets left blank.
+
+    Asking someone to compose a sentence at the moment they want to be
+    finished reliably produces nothing, which is the state the field exists to
+    end. A short list makes the common answer one click, and the box is still
+    there for the one nobody predicted.
+
+    Presets are stored as their own text rather than as codes: the value of a
+    reason is that it reads back plainly in `InventoryLog.notes` two seasons
+    later, and a code would need this list to still exist and still mean the
+    same thing.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user("preset-staff", password="pw")
+        self.client.force_login(self.user)
+        self.a = make_product(make_recipe("Stormy Sea"), "Stormy Silk",
+                              with_image=False)
+        self.b = FinishedProduct.objects.create(
+            name="Ember Silk", raw_product=self.a.raw_product,
+            recipe=make_recipe("Ember"), price="30.00",
+        )
+        for p in (self.a, self.b):
+            p.number_on_hand = 4
+            p.save()
+        self.raw_ids = str(self.a.raw_product_id)
+
+    def _save(self, **post):
+        return self.client.post(
+            f"{reverse('bulk_inventory_update')}?raw_ids={self.raw_ids}",
+            {
+                f"count_{self.a.id}": str(self.a.number_on_hand),
+                f"count_{self.b.id}": str(self.b.number_on_hand),
+                **post,
+            },
+        )
+
+    def _note(self, product):
+        return InventoryLog.objects.get(finished_product=product).notes
+
+    def test_a_preset_alone_becomes_the_reason(self):
+        self._save(**{f"count_{self.a.id}": "6"}, reason_preset="Found items")
+
+        self.assertIn("Found items", self._note(self.a))
+
+    def test_a_preset_and_free_text_read_as_one_line(self):
+        """The category and the detail. Neither substitutes for the other."""
+        self._save(**{f"count_{self.a.id}": "6"},
+                   reason_preset="Found items",
+                   reason="under the cutting table")
+
+        self.assertIn("Found items — under the cutting table", self._note(self.a))
+
+    def test_free_text_alone_still_works(self):
+        self._save(**{f"count_{self.a.id}": "6"}, reason="sister recounted the rack")
+
+        self.assertIn("sister recounted the rack", self._note(self.a))
+
+    def test_neither_keeps_the_old_note(self):
+        self._save(**{f"count_{self.a.id}": "6"})
+
+        self.assertEqual(self._note(self.a), "Bulk inventory update.")
+
+    def test_a_row_reason_replaces_the_form_reason_whole(self):
+        """Falling back field by field would blend a row's preset with the
+        form's free text and produce a sentence nobody wrote."""
+        self._save(
+            **{
+                f"count_{self.a.id}": "6",
+                f"count_{self.b.id}": "2",
+                f"reason_preset_{self.b.id}": "Damaged or unsellable",
+            },
+            reason_preset="Recount",
+            reason="whole rack, Tuesday",
+        )
+
+        self.assertIn("Recount — whole rack, Tuesday", self._note(self.a))
+        self.assertIn("Damaged or unsellable", self._note(self.b))
+        self.assertNotIn("whole rack", self._note(self.b))
+        self.assertNotIn("Recount", self._note(self.b))
+
+    def test_an_unknown_preset_is_rejected_not_stored(self):
+        """It is a ChoiceField, so a hand-built POST can't write arbitrary
+        text through the dropdown — the free box is the way to say something
+        new, and it is length-capped."""
+        response = self._save(**{f"count_{self.a.id}": "6"},
+                              reason_preset="Fell off a truck")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(InventoryLog.objects.exists())
+
+    def test_both_directions_are_offered(self):
+        """A bulk count moves either way, and the pair that gets confused is
+        'more than I thought' versus 'these came back'."""
+        html = self.client.get(
+            f"{reverse('bulk_inventory_update')}?raw_ids={self.raw_ids}"
+        ).content.decode()
+
+        for preset in ("Found items", "Recount", "Damaged or unsellable"):
+            self.assertIn(preset, html)
+
+    def test_blank_stays_the_first_option(self):
+        """A count with no reason is still worth having."""
+        self.assertEqual(viewsmod.BULK_REASON_CHOICES[0][0], "")
+
+    def test_the_combiner_trims_and_drops_empties(self):
+        self.assertEqual(viewsmod.bulk_reason("  Found items ", "  "), "Found items")
+        self.assertEqual(viewsmod.bulk_reason("", " typed  "), "typed")
+        self.assertEqual(viewsmod.bulk_reason("", ""), "")

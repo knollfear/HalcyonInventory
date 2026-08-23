@@ -23,8 +23,11 @@
   }
   input[type="number"] { width: 6em; padding: 3px 4px; font: inherit; }
 
-  .row-reason { width: 100%; padding: 3px 4px; font: inherit; }
+  .row-reason-preset { width: 100%; padding: 2px; font: inherit; }
+  .row-reason { width: 100%; padding: 3px 4px; font: inherit; margin-top: 3px; }
+  .form-reason-preset { padding: 4px; font: inherit; }
   .form-reason { width: 32em; max-width: 100%; padding: 4px; font: inherit; }
+  .reason-pair { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 {% endblock %}
 
 {% block content %}
@@ -104,7 +107,10 @@
                       <div class="err">{{ row.field.errors }}</div>
                     {% endif %}
                   </td>
-                  <td>{{ row.reason_field }}</td>
+                  <td>
+                    {{ row.reason_preset_field }}
+                    {{ row.reason_field }}
+                  </td>
                   <td class="small muted">{{ row.fp.name }}</td>
                 </tr>
               {% endfor %}
@@ -114,15 +120,18 @@
       {% endfor %}
 
       <div class="card">
-        <label for="{{ form.reason.id_for_label }}">
-          <strong>{{ form.reason.label }}</strong>
+        <label for="{{ form.reason_preset.id_for_label }}">
+          <strong>{{ form.reason_preset.label }}</strong>
         </label>
-        {{ form.reason }}
+        <div class="reason-pair">
+          {{ form.reason_preset }}
+          {{ form.reason }}
+        </div>
         <p class="small muted" style="margin-top: 6px;">
-          Written onto every log row this save creates. A row with its own
-          reason keeps that one instead. Worth a sentence whenever the count
-          moved for something other than production or a sale — found stock, a
-          recount, breakage — because six months on this is the only thing
+          Written onto every log row this save creates. A row that fills in its
+          own reason keeps that one instead. Pick a reason, type one, or both —
+          both reads as <em>Found items — under the cutting table</em>, which
+          is the category and the detail. Six months on this is the only thing
           separating a correction from a typo.
         </p>
       </div>

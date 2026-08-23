@@ -1519,6 +1519,43 @@ def _bulk_inventory_picker_products():
     )
 
 
+#: The handful of reasons a counted number actually differs from a recorded
+#: one. Offered as a list because a free box asks someone to compose a
+#: sentence at the exact moment they want to be finished, and what you get
+#: back is blank — which is the state this whole field exists to end.
+#:
+#: They are stored as their own text, not as codes. The value of a reason is
+#: that it reads back plainly in `InventoryLog.notes` two seasons later, and a
+#: code would need this list to still exist and still mean the same thing.
+#:
+#: Both directions are here because a bulk count moves either way, and the
+#: pair that gets confused is "we have more than I thought" versus "these came
+#: back" — same arithmetic, different stories.
+BULK_REASON_PRESETS = [
+    "Found items",
+    "Recount",
+    "Returned from display",
+    "Damaged or unsellable",
+    "Lost or missing",
+]
+
+#: Blank is a real answer and stays first — a count with no reason is still
+#: worth having, and demanding one would cost the correction to punish the
+#: omission.
+BULK_REASON_CHOICES = [("", "—")] + [(r, r) for r in BULK_REASON_PRESETS]
+
+
+def bulk_reason(preset, free_text):
+    """One reason line from a picked preset and anything typed beside it.
+
+    Both, when there are both: "Found items" says which kind of thing
+    happened and "under the cutting table" says which one. Neither is a
+    substitute for the other, so joining them keeps the categorisation a list
+    gives you without throwing away the detail only a person has.
+    """
+    return " — ".join(p for p in (preset.strip(), free_text.strip()) if p)
+
+
 def build_bulk_inventory_form_class(finished_products):
     """
     Dynamically builds a Form with one optional count field per finished
@@ -1536,22 +1573,34 @@ def build_bulk_inventory_form_class(finished_products):
         # the rack recounted, and one row that moved for its own reason. A
         # single form-level box would make the rarer one either unsayable or
         # a lie about every other row it lands on.
+        fields[f"reason_preset_{fp.id}"] = forms.ChoiceField(
+            required=False,
+            choices=BULK_REASON_CHOICES,
+            label=f"Why {fp.name} changed",
+            widget=forms.Select(attrs={"class": "row-reason-preset"}),
+        )
         fields[f"reason_{fp.id}"] = forms.CharField(
             required=False,
             max_length=200,
-            label=f"Why {fp.name} changed",
+            label=f"More about {fp.name}",
             widget=forms.TextInput(attrs={
-                "placeholder": "why? (optional)",
+                "placeholder": "or say it yourself",
                 "class": "row-reason",
             }),
         )
     # And once for the whole save, since a bulk count is usually a single act
     # — you walked the rack once. Rows fall back to this, so the common case
-    # is one sentence rather than forty.
+    # is one choice rather than forty.
+    fields["reason_preset"] = forms.ChoiceField(
+        required=False,
+        choices=BULK_REASON_CHOICES,
+        label="Why (applies to every row you change)",
+        widget=forms.Select(attrs={"class": "form-reason-preset"}),
+    )
     fields["reason"] = forms.CharField(
         required=False,
         max_length=200,
-        label="Why (applies to every row you change)",
+        label="Anything to add",
         widget=forms.TextInput(attrs={
             "placeholder": "e.g. counted the display rack in with the back stock",
             "class": "form-reason",
@@ -1635,7 +1684,10 @@ def bulk_inventory_update(request):
         form = FormClass(request.POST)
         if form.is_valid():
             changed = 0
-            form_reason = (form.cleaned_data.get("reason") or "").strip()
+            form_reason = bulk_reason(
+                form.cleaned_data.get("reason_preset") or "",
+                form.cleaned_data.get("reason") or "",
+            )
             with transaction.atomic():
                 for fp in finished_products:
                     new_val = form.cleaned_data.get(f"count_{fp.id}")
@@ -1647,13 +1699,15 @@ def bulk_inventory_update(request):
                     # lives on its raw product — see set_on_hand.
                     fp.set_on_hand(new_val)
 
-                    # The row wins over the form: it is the more specific
-                    # answer, and someone who typed one on this row meant it
-                    # to describe this row.
-                    reason = (
-                        (form.cleaned_data.get(f"reason_{fp.id}") or "").strip()
-                        or form_reason
-                    )
+                    # The row wins over the form, whole: it is the more
+                    # specific answer, and someone who filled one in on this
+                    # row meant it to describe this row. Falling back
+                    # field-by-field would blend a row's preset with the
+                    # form's free text and produce a sentence nobody wrote.
+                    reason = bulk_reason(
+                        form.cleaned_data.get(f"reason_preset_{fp.id}") or "",
+                        form.cleaned_data.get(f"reason_{fp.id}") or "",
+                    ) or form_reason
                     InventoryLog.objects.create(
                         finished_product=fp,
                         raw_product=fp.raw_product,
@@ -1682,6 +1736,7 @@ def bulk_inventory_update(request):
             {
                 "fp": fp,
                 "field": form[f"count_{fp.id}"],
+                "reason_preset_field": form[f"reason_preset_{fp.id}"],
                 "reason_field": form[f"reason_{fp.id}"],
             }
             for fp in finished_products
