@@ -5437,6 +5437,124 @@ class SyncToSquareTests(TestCase):
         self.assertEqual(sent["item_variation_data"]["sku"], self.product.sku)
 
 
+class ImportDyebookTests(TestCase):
+    """The dye book is a photograph of a notebook, and it is the only record
+    that joins a sales-floor name to a formula.
+
+    Which makes the transcription canon and the resolution the dangerous part:
+    the shorthand was written at speed, and the catalogue holds two Sapphires,
+    two Lilacs and three Blacks. A wrong jar is a wrong hex, which reaches the
+    rainbow sheet as a band the scarf was never dyed in — silent, and found by
+    a customer looking under the wrong colour. So these are mostly about
+    refusing.
+    """
+
+    def setUp(self):
+        brand, _ = DyeBrand.objects.get_or_create(name="Dharma Acid Dyes")
+        other, _ = DyeBrand.objects.get_or_create(name="Jacquard Acid Dyes")
+        self.dyes = {}
+        for name, b in [
+            ("600 Ecru", other), ("475 Aubergine", brand), ("Avocado", brand),
+            ("460 Saffron Spice", brand), ("616 Russet", other),
+            ("635 Brown", other), ("452 Forest Green", brand),
+            # Both brands sell one, which is the whole problem.
+            ("431 Lilac", brand), ("612 Lilac", other),
+        ]:
+            self.dyes[name] = Dye.objects.create(
+                name=name, brand=b, hex_color="#123456"
+            )
+
+    def _run(self, **kwargs):
+        out = StringIO()
+        call_command("import_dyebook", stdout=out, stderr=out, **kwargs)
+        return out.getvalue()
+
+    def test_a_fully_resolved_recipe_gets_its_dyes_in_page_order(self):
+        recipe = Recipe.objects.create(name="Wasteland")
+        self._run()
+        self.assertEqual(
+            [rd.dye.name for rd in recipe.recipe_dyes.order_by("order")],
+            ["600 Ecru", "475 Aubergine", "Avocado"],
+            "order is the order the page lists them, not the dye table's",
+        )
+
+    def test_an_unresolvable_word_blocks_the_whole_recipe(self):
+        """Not two dyes out of three.
+
+        A recipe short one jar prints a collection list short one jar, and the
+        person at the shelf has no way to see the gap — the same reason the
+        production sheet counts the recipes it can't cover instead of quietly
+        printing less.
+        """
+        recipe = Recipe.objects.create(name="Summer Shoals")   # Champ/Slate/Avo
+        output = self._run()
+        self.assertEqual(recipe.recipe_dyes.count(), 0)
+        self.assertIn("Slate", output)
+
+    def test_a_word_matching_two_dyes_is_refused_not_picked(self):
+        recipe = Recipe.objects.create(name="Agean Sea")   # Grey/Lilac/ElecV
+        output = self._run()
+        self.assertEqual(recipe.recipe_dyes.count(), 0)
+        self.assertIn("431 Lilac", output)
+        self.assertIn("612 Lilac", output)
+
+    def test_blocked_words_are_grouped_by_word_with_a_count(self):
+        """One answer usually unblocks several recipes, and a list of recipes
+        reads as a chore where a list of words reads as a short sitting."""
+        Recipe.objects.create(name="Agean Sea")
+        Recipe.objects.create(name="Lavendar Haze")
+        output = self._run()
+        self.assertRegex(output, r"'Lilac'[^\n]*\n\s*blocks 2:")
+
+    def test_an_existing_subset_is_completed(self):
+        """The page names three, the row holds two of them. That row was an
+        earlier pass at this same page, not a disagreement with it."""
+        recipe = Recipe.objects.create(name="Autumn Leaves")
+        RecipeDye.objects.create(recipe=recipe, dye=self.dyes["616 Russet"], order=1)
+        RecipeDye.objects.create(recipe=recipe, dye=self.dyes["635 Brown"], order=2)
+        self._run()
+        self.assertEqual(
+            [rd.dye.name for rd in recipe.recipe_dyes.order_by("order")],
+            ["460 Saffron Spice", "616 Russet", "635 Brown"],
+        )
+
+    def test_a_dye_the_page_does_not_name_is_a_conflict_and_is_left_alone(self):
+        """Somebody put it there. It might be the correction, and the page is
+        a transcription of handwriting — same bargain `import_dyes` makes."""
+        recipe = Recipe.objects.create(name="Wasteland")
+        RecipeDye.objects.create(recipe=recipe, dye=self.dyes["612 Lilac"], order=1)
+        output = self._run()
+        self.assertEqual(
+            [rd.dye.name for rd in recipe.recipe_dyes.all()], ["612 Lilac"]
+        )
+        self.assertIn("Wasteland", output)
+        self.assertIn("doesn't name", output)
+
+    def test_a_dry_run_writes_nothing(self):
+        recipe = Recipe.objects.create(name="Wasteland")
+        output = self._run(dry_run=True)
+        self.assertEqual(recipe.recipe_dyes.count(), 0)
+        self.assertIn("DRY RUN", output)
+
+    def test_a_name_on_the_page_with_no_recipe_is_reported(self):
+        output = self._run()
+        self.assertIn("match no recipe", output)
+
+    def test_an_alias_pointing_at_no_dye_is_reported_in_its_own_section(self):
+        """Two causes — a typo in the table, or a catalogue nobody imported —
+        and the command can't tell them apart. Mixed in with the shorthand it
+        would read as one more thing to look up; on its own it reads as a
+        table to fix."""
+        from scarves.management.commands import import_dyebook
+
+        recipe = Recipe.objects.create(name="Wasteland")
+        with mock.patch.dict(import_dyebook.ALIASES, {"Ecru": "999 Nonexistent"}):
+            output = self._run()
+        self.assertEqual(recipe.recipe_dyes.count(), 0, "and it blocks the write")
+        self.assertIn("999 Nonexistent", output)
+        self.assertIn("database doesn't have", output)
+
+
 @override_settings(
     SQUARE_ACCESS_TOKEN="test-token",
     SQUARE_LOCATION_ID="LOC123",
