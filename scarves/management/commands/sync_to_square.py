@@ -66,6 +66,16 @@ class Command(BaseCommand):
             action="store_true",
             help="Push updated prices and SKUs to existing Square variations, then sync inventory.",
         )
+        parser.add_argument(
+            "--reorder",
+            action="store_true",
+            help=(
+                "Put every item's variations back into alphabetical order in "
+                "Square, then stop. The ordering pass runs at the end of a "
+                "normal sync too; this is how you fix a catalogue that "
+                "drifted before it did."
+            ),
+        )
 
     def _fail(self, label, result):
         detail = "; ".join(
@@ -270,7 +280,14 @@ class Command(BaseCommand):
 
         if options["update"]:
             self._update_existing(client)
+            # A renamed recipe renames its variation, which is the other way
+            # the till's ordering goes wrong.
+            self._reorder_variations(client)
             self._push_inventory(client)
+            return
+
+        if options["reorder"]:
+            self._reorder_variations(client)
             return
 
         raw_products = (
@@ -329,6 +346,7 @@ class Command(BaseCommand):
 
         if not all_objects:
             self.stdout.write("Nothing new to sync — all items and variations already linked.")
+            self._reorder_variations(client)
             self._push_inventory(client)
             return
 
@@ -341,6 +359,7 @@ class Command(BaseCommand):
             self._describe(all_objects)
             if options["verbosity"] >= 2:
                 self.stdout.write(json.dumps(all_objects, indent=2, default=str))
+            self._reorder_variations(client)
             self._push_inventory(client)
             return
 
@@ -376,6 +395,12 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(
             f"Catalog done: {updated_rp} new items, {updated_fp} new variations created."
         ))
+
+        # A new variation lands at the end of its item's list, so the run that
+        # creates one is the run that breaks the order. Fixing it here rather
+        # than in a command someone has to remember is the same lesson as SKUs
+        # being assigned on save: a step that only runs when recalled doesn't.
+        self._reorder_variations(client)
 
         self._push_inventory(client)
 
@@ -443,6 +468,185 @@ class Command(BaseCommand):
             updated += len(chunk)
 
         self.stdout.write(self.style.SUCCESS(f"Updated {updated} variations with current prices and SKUs."))
+
+    # Square decides a variation's display order from `ordinal`, and
+    # `ordinal` is read-only: on a write it is assigned from each variation's
+    # *position* in its parent item's `variations` list. So there is nothing
+    # to set — the only way to reorder is to send the item back with the list
+    # in the order you want, which is what dragging the handles in the
+    # dashboard does. Both paths below therefore upsert whole ITEMs, and that
+    # is the most dangerous call in this file: an item upsert replaces its
+    # variation list outright, so a variation left out of the list is
+    # *deleted*, taking its stock and its Square ID with it.
+    #
+    # The rule that makes it safe: this pass never builds a variation. It
+    # reads the item as Square has it, permutes the list Square returned, and
+    # sends that back. Anything it cannot read in full, it leaves alone.
+
+    @staticmethod
+    def _variation_sort_key(variation):
+        return (variation.get("item_variation_data", {}).get("name") or "").casefold()
+
+    def _items_square_knows(self):
+        """Every Square item id this app is responsible for.
+
+        Groups included: for undyed stock the group is the item, and its
+        variations are the blanks (see CatalogGroup), which is exactly the
+        list a customer scrolls at the till.
+        """
+        ids = list(
+            RawProduct.objects.filter(is_active=True, square_item_id__gt="")
+            .values_list("square_item_id", flat=True)
+        ) + list(
+            CatalogGroup.objects.filter(square_item_id__gt="")
+            .values_list("square_item_id", flat=True)
+        )
+        return list(dict.fromkeys(ids))     # dedupe, keep order
+
+    def _reordered_item(self, obj):
+        """The item with its variations alphabetised, or None to leave it be.
+
+        Returns None both when the order is already right and when the object
+        can't be safely rewritten — the caller can't tell those apart and
+        doesn't need to, because the action is the same. What it must never
+        get is a partial variation list.
+        """
+        item_data = obj.get("item_data") or {}
+        variations = item_data.get("variations") or []
+
+        # An item retrieve inlines the variations, so an empty list here is
+        # either an item with none or an answer we didn't understand. Sending
+        # it back would delete every variation the item has.
+        if len(variations) < 2:
+            return None
+
+        # A variation named by an item option carries no `name` of its own and
+        # is ordered by the option's values instead. We don't create those,
+        # but the dashboard can, and sorting them by an empty string would
+        # bunch them at the top and fight whatever set that order.
+        if any(not v.get("item_variation_data", {}).get("name") for v in variations):
+            return None
+        if any(not v.get("id") for v in variations):
+            return None
+
+        # Stable, so equal names keep the order Square already has and an
+        # already-sorted item is left alone rather than churned every run.
+        ordered = sorted(variations, key=self._variation_sort_key)
+        if [v["id"] for v in ordered] == [v["id"] for v in variations]:
+            return None
+
+        payload = dict(obj)
+        payload.pop("updated_at", None)
+        payload["item_data"] = {
+            **item_data,
+            "variations": [self._strip_ordinal(v) for v in ordered],
+        }
+        return payload
+
+    @staticmethod
+    def _strip_ordinal(variation):
+        """Drop the ordinal Square reported before sending the row back.
+
+        It is read-only and would be ignored, but leaving the *old* number
+        beside the new position makes a dry run read as though the payload
+        still asks for the order we're trying to change.
+        """
+        data = {k: v for k, v in variation.items() if k != "updated_at"}
+        data["item_variation_data"] = {
+            k: v for k, v in (variation.get("item_variation_data") or {}).items()
+            if k != "ordinal"
+        }
+        return data
+
+    def _reorder_variations(self, client):
+        """Alphabetise the variations under every item, at the till.
+
+        The POS lists variations in the order the catalogue gives them, and a
+        new variation lands at the end — so a colourway added in week three
+        sits below the ones added in week one, forever. That is fine in a
+        dashboard you scroll at leisure and useless at a stall with a queue:
+        the person ringing up is looking for a colourway by name, and an
+        unsorted list means reading all of them.
+        """
+        item_ids = self._items_square_knows()
+        if not item_ids:
+            return
+
+        objects = {}
+        for i in range(0, len(item_ids), 100):
+            result = client.catalog.batch_retrieve_catalog_objects(body={
+                "object_ids": item_ids[i:i + 100],
+            })
+            # Same reasoning as the version read in `--update`: a swallowed
+            # error here means an empty answer, and an empty answer is
+            # indistinguishable from a catalogue that is already in order.
+            if result.is_error():
+                self._fail("Could not read items to reorder", result)
+            for obj in result.body.get("objects", []) or []:
+                objects[obj.get("id")] = obj
+
+        missing = [item_id for item_id in item_ids if item_id not in objects]
+        if missing:
+            self.stdout.write(self.style.WARNING(
+                f"{len(missing)} item(s) have a Square ID that Square doesn't "
+                f"recognise and were skipped: {', '.join(missing[:5])}"
+            ))
+
+        payloads = []
+        for item_id in item_ids:
+            obj = objects.get(item_id)
+            if obj is None:
+                continue
+            payload = self._reordered_item(obj)
+            if payload is not None:
+                payloads.append(payload)
+
+        if not payloads:
+            self.stdout.write("Variation order: already alphabetical.")
+            return
+
+        if self.dry_run:
+            self.stdout.write(self.style.WARNING(
+                f"DRY RUN — would reorder {len(payloads)} item(s):"
+            ))
+            for payload in payloads:
+                item_data = payload["item_data"]
+                names = ", ".join(
+                    v["item_variation_data"]["name"]
+                    for v in item_data["variations"]
+                )
+                self.stdout.write(f"  {item_data.get('name')}: {names}")
+            return
+
+        # Chunked by objects rather than by items, because each item carries
+        # its variations inline — a hundred items is closer to a thousand
+        # objects, and the batch limit counts the children.
+        reordered = 0
+        for chunk in self._chunk_by_object_count(payloads, 100):
+            result = client.catalog.batch_upsert_catalog_objects(body={
+                "idempotency_key": str(uuid.uuid4()),
+                "batches": [{"objects": chunk}],
+            })
+            if result.is_error():
+                self._fail("Variation reorder failed", result)
+            reordered += len(chunk)
+
+        self.stdout.write(self.style.SUCCESS(
+            f"Variation order: {reordered} item(s) alphabetised."
+        ))
+
+    @staticmethod
+    def _chunk_by_object_count(payloads, limit):
+        chunk, count = [], 0
+        for payload in payloads:
+            size = 1 + len(payload["item_data"]["variations"])
+            if chunk and count + size > limit:
+                yield chunk
+                chunk, count = [], 0
+            chunk.append(payload)
+            count += size
+        if chunk:
+            yield chunk
 
     def _push_images(self, client):
         """Send product photos to Square and attach them to their variations.

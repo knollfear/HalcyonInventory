@@ -5207,7 +5207,7 @@ class FakeSquareClient:
 
     def __init__(self, upsert_results=None, retrieve_result=None,
                  inventory_result=None, locations_result=None,
-                 image_results=None):
+                 image_results=None, retrieve_results=None):
         self.upserts = []
         self.retrieves = []
         self.inventory_changes = []
@@ -5216,6 +5216,10 @@ class FakeSquareClient:
         self._image_seq = 0
         self._upsert_results = list(upsert_results or [])
         self._retrieve_result = retrieve_result or FakeSquareResult({"objects": []})
+        # A run can read Square more than once — `--update` reads versions and
+        # the ordering pass then reads whole items — so a canned sequence is
+        # sometimes needed where one answer used to do.
+        self._retrieve_results = list(retrieve_results or [])
         self._inventory_result = inventory_result or FakeSquareResult()
         self._locations_result = locations_result or FakeSquareResult(
             {"locations": [{"id": "LOC123"}]}
@@ -5236,6 +5240,8 @@ class FakeSquareClient:
 
         def batch_retrieve_catalog_objects(self, body):
             self.outer.retrieves.append(body)
+            if self.outer._retrieve_results:
+                return self.outer._retrieve_results.pop(0)
             return self.outer._retrieve_result
 
         def create_catalog_image(self, request, image_file):
@@ -5429,6 +5435,230 @@ class SyncToSquareTests(TestCase):
         self.assertEqual(sent["version"], 42)
         self.assertEqual(sent["item_variation_data"]["price_money"]["amount"], 3200)
         self.assertEqual(sent["item_variation_data"]["sku"], self.product.sku)
+
+
+@override_settings(
+    SQUARE_ACCESS_TOKEN="test-token",
+    SQUARE_LOCATION_ID="LOC123",
+    SQUARE_ENVIRONMENT="sandbox",
+)
+class SquareVariationOrderTests(TestCase):
+    """Variations come out of the till in catalogue order, not alphabetical.
+
+    A new colourway is appended, so the list at the stall ends up in the order
+    the dye baths happened — which is nobody's mental model of a colour. The
+    only lever Square offers is position in the parent item's `variations`
+    list, so the pass rewrites whole ITEMs, and an ITEM upsert deletes any
+    variation missing from that list. These tests are mostly about the second
+    sentence: what the pass refuses to touch matters more than what it sorts.
+    """
+
+    def setUp(self):
+        recipe = make_recipe("Zinnia")
+        self.product = make_product(recipe, "Zinnia Silk", with_image=False)
+        self.raw = self.product.raw_product
+        RawProduct.objects.filter(pk=self.raw.pk).update(square_item_id="SQ_ITEM")
+        FinishedProduct.objects.filter(pk=self.product.pk).update(
+            square_variation_id="SQ_VAR_Z"
+        )
+
+    def _run(self, client, **kwargs):
+        out, err = StringIO(), StringIO()
+        with mock.patch("square.client.Client", return_value=client):
+            call_command("sync_to_square", stdout=out, stderr=err, **kwargs)
+        return out.getvalue() + err.getvalue()
+
+    def _item(self, *names_and_ids, item_id="SQ_ITEM"):
+        """A retrieve response shaped the way Square answers for an ITEM."""
+        return FakeSquareResult({"objects": [{
+            "type": "ITEM",
+            "id": item_id,
+            "version": 7,
+            "updated_at": "2026-08-01T00:00:00Z",
+            "item_data": {
+                "name": "Silk Scarf",
+                "variations": [
+                    {
+                        "type": "ITEM_VARIATION",
+                        "id": var_id,
+                        "version": 11,
+                        "item_variation_data": {
+                            "item_id": item_id,
+                            "name": name,
+                            "ordinal": i,
+                        },
+                    }
+                    for i, (name, var_id) in enumerate(names_and_ids)
+                ],
+            },
+        }]})
+
+    def test_variations_go_back_alphabetised(self):
+        client = FakeSquareClient(retrieve_results=[
+            self._item(("Zinnia", "SQ_VAR_Z"), ("Amber", "SQ_VAR_A")),
+        ])
+        self._run(client, reorder=True)
+
+        sent = client.upserts[0]["batches"][0]["objects"][0]
+        self.assertEqual(sent["type"], "ITEM")
+        self.assertEqual(sent["id"], "SQ_ITEM")
+        self.assertEqual(sent["version"], 7, "an update needs the version back")
+        self.assertEqual(
+            [v["item_variation_data"]["name"] for v in sent["item_data"]["variations"]],
+            ["Amber", "Zinnia"],
+        )
+        self.assertEqual(
+            [v["id"] for v in sent["item_data"]["variations"]],
+            ["SQ_VAR_A", "SQ_VAR_Z"],
+            "the rows are Square's own, only permuted",
+        )
+        self.assertEqual(
+            [v["version"] for v in sent["item_data"]["variations"]], [11, 11]
+        )
+
+    def test_the_whole_variation_list_is_sent_back(self):
+        """The one that costs stock if it's wrong.
+
+        An ITEM upsert replaces the variation list, so a variation left out is
+        deleted along with its Square ID and its count. Three go up, three come
+        back — including the two this app has never heard of.
+        """
+        client = FakeSquareClient(retrieve_results=[
+            self._item(
+                ("Zinnia", "SQ_VAR_Z"),
+                ("Amber", "SQ_VAR_A"),
+                ("Moss", "SQ_VAR_UNKNOWN_TO_US"),
+            ),
+        ])
+        self._run(client, reorder=True)
+
+        sent = client.upserts[0]["batches"][0]["objects"][0]
+        self.assertEqual(
+            [v["id"] for v in sent["item_data"]["variations"]],
+            ["SQ_VAR_A", "SQ_VAR_UNKNOWN_TO_US", "SQ_VAR_Z"],
+        )
+
+    def test_an_item_that_came_back_without_variations_is_left_alone(self):
+        """Sending that back would empty the item.
+
+        An answer we didn't understand looks exactly like an item with nothing
+        under it, and the difference is the whole catalogue.
+        """
+        client = FakeSquareClient(retrieve_results=[FakeSquareResult({
+            "objects": [{"type": "ITEM", "id": "SQ_ITEM", "version": 7,
+                         "item_data": {"name": "Silk Scarf"}}],
+        })])
+        output = self._run(client, reorder=True)
+        self.assertEqual(client.upserts, [])
+        self.assertIn("already alphabetical", output)
+
+    def test_a_variation_named_by_an_item_option_is_left_alone(self):
+        """It carries no name of its own and is ordered by the option's values.
+
+        Sorting on the empty string would bunch those at the top and fight
+        whatever set that order.
+        """
+        response = self._item(("Zinnia", "SQ_VAR_Z"), ("Amber", "SQ_VAR_A"))
+        del response.body["objects"][0]["item_data"]["variations"][1] \
+            ["item_variation_data"]["name"]
+        client = FakeSquareClient(retrieve_results=[response])
+        self._run(client, reorder=True)
+        self.assertEqual(client.upserts, [])
+
+    def test_an_item_already_in_order_is_not_rewritten(self):
+        """Otherwise every run bumps every version for nothing."""
+        client = FakeSquareClient(retrieve_results=[
+            self._item(("Amber", "SQ_VAR_A"), ("Zinnia", "SQ_VAR_Z")),
+        ])
+        output = self._run(client, reorder=True)
+        self.assertEqual(client.upserts, [])
+        self.assertIn("already alphabetical", output)
+
+    def test_sorting_ignores_case(self):
+        client = FakeSquareClient(retrieve_results=[
+            self._item(("zinnia", "SQ_VAR_Z"), ("Amber", "SQ_VAR_A")),
+        ])
+        self._run(client, reorder=True)
+        sent = client.upserts[0]["batches"][0]["objects"][0]
+        self.assertEqual(
+            [v["id"] for v in sent["item_data"]["variations"]],
+            ["SQ_VAR_A", "SQ_VAR_Z"],
+        )
+
+    def test_the_reported_ordinal_is_not_sent_back(self):
+        """It is read-only, and the stale number beside the new position makes
+        a dry run read as though nothing was being asked for."""
+        client = FakeSquareClient(retrieve_results=[
+            self._item(("Zinnia", "SQ_VAR_Z"), ("Amber", "SQ_VAR_A")),
+        ])
+        self._run(client, reorder=True)
+        sent = client.upserts[0]["batches"][0]["objects"][0]
+        for variation in sent["item_data"]["variations"]:
+            self.assertNotIn("ordinal", variation["item_variation_data"])
+
+    def test_a_group_item_is_reordered_too(self):
+        """Undyed stock is one item whose variations are the blanks — which is
+        exactly the list somebody scrolls at the till."""
+        category = RawProductCategory.objects.get_or_create(name="Yarn")[0]
+        group = CatalogGroup.objects.create(
+            name="Undyed Yarn", category=category, square_item_id="SQ_GROUP"
+        )
+        client = FakeSquareClient(retrieve_results=[
+            self._item(("Wool", "SQ_VAR_W"), ("Alpaca", "SQ_VAR_AL"),
+                       item_id="SQ_GROUP"),
+        ])
+        self._run(client, reorder=True)
+
+        self.assertIn("SQ_GROUP", client.retrieves[0]["object_ids"])
+        self.assertEqual(group.square_item_id, "SQ_GROUP")
+        sent = client.upserts[0]["batches"][0]["objects"][0]
+        self.assertEqual(sent["id"], "SQ_GROUP")
+        self.assertEqual(
+            [v["id"] for v in sent["item_data"]["variations"]],
+            ["SQ_VAR_AL", "SQ_VAR_W"],
+        )
+
+    def test_reorder_alone_touches_no_stock(self):
+        client = FakeSquareClient(retrieve_results=[
+            self._item(("Zinnia", "SQ_VAR_Z"), ("Amber", "SQ_VAR_A")),
+        ])
+        self._run(client, reorder=True)
+        self.assertEqual(client.inventory_changes, [])
+
+    def test_a_read_error_stops_the_command(self):
+        """A swallowed read is an empty answer, and an empty answer is
+        indistinguishable from a catalogue already in order."""
+        client = FakeSquareClient(retrieve_results=[FakeSquareResult(
+            errors=[{"category": "API_ERROR", "detail": "read boom"}]
+        )])
+        with self.assertRaises(CommandError) as caught:
+            self._run(client, reorder=True)
+        self.assertIn("read boom", str(caught.exception))
+
+    def test_a_normal_sync_ends_by_putting_the_order_right(self):
+        """The run that creates a variation is the run that breaks the order,
+        so the fix can't live in a command someone has to remember."""
+        client = FakeSquareClient(retrieve_results=[
+            self._item(("Zinnia", "SQ_VAR_Z"), ("Amber", "SQ_VAR_A")),
+        ])
+        self._run(client)
+
+        self.assertEqual(client.retrieves[0]["object_ids"], ["SQ_ITEM"])
+        sent = client.upserts[-1]["batches"][0]["objects"][0]
+        self.assertEqual(
+            [v["id"] for v in sent["item_data"]["variations"]],
+            ["SQ_VAR_A", "SQ_VAR_Z"],
+        )
+        self.assertEqual(len(client.inventory_changes), 1,
+                         "and stock still goes up afterwards")
+
+    def test_a_dry_run_reorders_nothing(self):
+        client = FakeSquareClient(retrieve_results=[
+            self._item(("Zinnia", "SQ_VAR_Z"), ("Amber", "SQ_VAR_A")),
+        ])
+        output = self._run(client, reorder=True, dry_run=True)
+        self.assertEqual(client.upserts, [])
+        self.assertIn("Amber, Zinnia", output)
 
 
 @override_settings(

@@ -962,6 +962,50 @@ bucket. That last one is caught narrowly on purpose: `S3Storage` raises
 `FileNotFoundError` only on a 404 and re-raises every other `ClientError`, so
 one missing object skips one photo while bad credentials still stop the run.
 
+### Variation order: the only lever is position, and it deletes
+
+The POS lists an item's variations in catalogue order, and a new variation is
+appended — so the colourways at the till end up in the order the dye baths
+happened, which is nobody's mental model of a colour. At a stall with a queue
+that means reading the whole list every sale.
+
+`ordinal` is the field that decides it and **it is read-only**: on a write
+Square assigns each variation's ordinal from its *position* in the parent
+item's `variations` list. There is nothing to set. The only way to reorder is
+to send the whole ITEM back with the list in the order you want — which is
+what dragging the handles in the dashboard does.
+
+That makes `_reorder_variations` the most dangerous call in the file. **An
+ITEM upsert replaces the variation list outright, so a variation missing from
+it is deleted**, taking its Square ID, its stock and the sale history's link
+to it. One rule keeps that safe, and it is worth stating plainly:
+
+> The pass never *builds* a variation. It reads the item as Square has it,
+> permutes the list Square returned, and sends that back.
+
+Everything else follows from it. An item that comes back with no variations is
+skipped rather than sent — an answer we didn't understand looks exactly like
+an item with nothing under it, and only one of those is safe to echo. A
+variation with no `name` is skipped too: it is named by an item option, whose
+values already decide the order, and sorting it on the empty string would
+bunch it at the top and fight whatever set that.
+
+Items already in order are not rewritten, because otherwise every scheduled
+run bumps every version to change nothing. The sort is `casefold` and stable,
+so equal names keep the order Square has instead of churning.
+
+**It runs at the end of a normal sync, not only on demand.** The run that
+creates a variation is the run that appends it, and `--update` renames
+variations when a recipe is renamed — those are the two moments the order
+breaks, so the fix belongs at both. A `--reorder` mode exists for fixing a
+catalogue that already drifted (which is how this arrived), the same way
+`generate_skus` stayed around for backfill after SKUs moved into `save()`.
+
+Chunking counts *objects*, not items: variations ride inline, so a hundred
+items is closer to a thousand objects and the batch limit counts the children.
+
+Items themselves need nothing — the POS already lists those alphabetically.
+
 ### Colour bands are not synced, on purpose
 
 `Recipe.color_bands` stays local. The POS never displays custom attributes, so
