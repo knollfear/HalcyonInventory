@@ -9350,3 +9350,300 @@ class ImportDyesTests(TestCase):
     def test_a_missing_file_is_an_error_not_an_empty_run(self):
         with self.assertRaises(CommandError):
             call_command("import_dyes", "/nope.json", "--brand", "X", stdout=StringIO())
+
+
+class BulkInventoryReasonTests(TestCase):
+    """A bulk count says why it moved, at whichever grain fits.
+
+    Every row used to be logged as the fixed string "Bulk inventory update.",
+    which names the page and explains nothing. That is the same silence the
+    rest of the app is organised against: a count corrected for a good reason
+    is indistinguishable a month later from one that drifted, and those two
+    want opposite responses.
+
+    Two grains, because a save can hold two stories — the rack recounted, and
+    one row that moved for its own reason. The row wins where it is given.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user("staff-bulk", password="pw")
+        self.client.force_login(self.user)
+        self.recipe_a = make_recipe("Stormy Sea")
+        self.recipe_b = make_recipe("Ember")
+        self.a = make_product(self.recipe_a, "Stormy Silk", with_image=False)
+        self.b = FinishedProduct.objects.create(
+            name="Ember Silk",
+            raw_product=self.a.raw_product,
+            recipe=self.recipe_b,
+            price="30.00",
+        )
+        for p in (self.a, self.b):
+            p.number_on_hand = 4
+            p.save()
+        self.raw_ids = str(self.a.raw_product_id)
+
+    def _save(self, **post):
+        return self.client.post(
+            f"{reverse('bulk_inventory_update')}?raw_ids={self.raw_ids}",
+            {
+                f"count_{self.a.id}": str(self.a.number_on_hand),
+                f"count_{self.b.id}": str(self.b.number_on_hand),
+                **post,
+            },
+        )
+
+    def _note(self, product):
+        return InventoryLog.objects.get(finished_product=product).notes
+
+    def test_the_form_reason_lands_on_every_changed_row(self):
+        self._save(
+            **{f"count_{self.a.id}": "6", f"count_{self.b.id}": "9"},
+            reason="counted the display rack in with the back stock",
+        )
+
+        for product in (self.a, self.b):
+            self.assertIn("counted the display rack in", self._note(product))
+
+    def test_a_row_reason_wins_over_the_form_reason(self):
+        self._save(
+            **{
+                f"count_{self.a.id}": "6",
+                f"count_{self.b.id}": "9",
+                f"reason_{self.b.id}": "two damaged, pulled from sale",
+            },
+            reason="annual recount",
+        )
+
+        self.assertIn("annual recount", self._note(self.a))
+        self.assertIn("two damaged, pulled from sale", self._note(self.b))
+        self.assertNotIn("annual recount", self._note(self.b))
+
+    def test_a_row_reason_works_with_no_form_reason(self):
+        self._save(
+            **{
+                f"count_{self.a.id}": "6",
+                f"reason_{self.a.id}": "found a bag under the cutting table",
+            },
+        )
+
+        self.assertIn("found a bag under the cutting table", self._note(self.a))
+
+    def test_no_reason_keeps_the_old_note(self):
+        self._save(**{f"count_{self.a.id}": "6"})
+
+        self.assertEqual(self._note(self.a), "Bulk inventory update.")
+
+    def test_a_blank_reason_never_blocks_the_count(self):
+        """Refusing the save to extract a sentence would cost a real stock
+        correction to punish a missing one."""
+        self._save(**{f"count_{self.a.id}": "6"})
+
+        self.a.refresh_from_db()
+        self.assertEqual(self.a.number_on_hand, 6)
+
+    def test_a_reason_on_an_unchanged_row_writes_nothing(self):
+        """No movement, no row. A log entry here would be a change that never
+        happened, carrying an explanation for it."""
+        self._save(**{f"reason_{self.a.id}": "typed then thought better of it"})
+
+        self.assertFalse(InventoryLog.objects.exists())
+
+    def test_the_counts_are_number_inputs(self):
+        """The +/- controls are the browser's own, so the field has to stay a
+        number input — a widget swap would silently take them away."""
+        html = self.client.get(
+            f"{reverse('bulk_inventory_update')}?raw_ids={self.raw_ids}"
+        ).content.decode()
+
+        self.assertIn(f'type="number" name="count_{self.a.id}"', html)
+        self.assertIn("::-webkit-inner-spin-button", html)
+
+
+class LabelsIncludeAddedStockTests(TestCase):
+    """Stock counted in gets barcodes too.
+
+    `produced_since` filtered on PRODUCTION, so anything entering through
+    `bulk_inventory_update` — a bag found in a cupboard, a display rack folded
+    back into inventory, stock that predates this app — got no labels at all.
+    Nothing said so. The symptom arrives later and elsewhere: a scarf that
+    won't scan at the till, in front of a customer, with the queue waiting.
+
+    The fix errs toward printing, which is the cheap direction. A spare
+    sticker sits in a drawer; a missing one costs the sale.
+    """
+
+    def setUp(self):
+        self.recipe = make_recipe("Stormy Sea")
+        self.product = make_product(self.recipe, "Stormy Silk", with_image=False)
+        self.cutoff = timezone.localdate() - timedelta(days=7)
+
+    def _log(self, log_type, quantity):
+        return InventoryLog.objects.create(
+            finished_product=self.product,
+            raw_product=self.product.raw_product,
+            log_type=log_type,
+            quantity=quantity,
+        )
+
+    def _quantity(self):
+        run = labelmod.produced_since(self.cutoff)
+        rows = [r for r in run.rows if r.product.pk == self.product.pk]
+        return sum(r.quantity for r in rows)
+
+    def test_a_bulk_adjustment_gets_labels(self):
+        self._log(InventoryLog.ADJUSTMENT, 12)
+
+        self.assertEqual(self._quantity(), 12)
+
+    def test_dyeing_and_added_stock_add_up(self):
+        self._log(InventoryLog.PRODUCTION, 4)
+        self._log(InventoryLog.ADJUSTMENT, 12)
+
+        self.assertEqual(self._quantity(), 16)
+
+    def test_stock_leaving_asks_for_no_labels(self):
+        """A barcode answers 'what is this thing in my hand'. Nothing is in
+        anyone's hand when the count goes down."""
+        self._log(InventoryLog.ADJUSTMENT, -3)
+
+        self.assertEqual(self._quantity(), 0)
+
+    def test_a_downward_correction_does_not_eat_a_bath_s_stickers(self):
+        """The scarves from that bath exist and need labelling. A separate
+        correction in the same week is about different units."""
+        self._log(InventoryLog.PRODUCTION, 4)
+        self._log(InventoryLog.ADJUSTMENT, -3)
+
+        self.assertEqual(self._quantity(), 4)
+
+    def test_sales_are_still_ignored(self):
+        """Unchanged, and load-bearing: a sold scarf left wearing its sticker,
+        so netting sales in would subtract labels already stuck to things."""
+        self._log(InventoryLog.PRODUCTION, 5)
+        self._log(InventoryLog.SALE, -3)
+
+        self.assertEqual(self._quantity(), 5)
+
+    def test_an_old_adjustment_is_outside_the_cutoff(self):
+        log = self._log(InventoryLog.ADJUSTMENT, 9)
+        InventoryLog.objects.filter(pk=log.pk).update(
+            created_at=timezone.now() - timedelta(days=60)
+        )
+
+        self.assertEqual(self._quantity(), 0)
+
+
+class LabelStyleTests(TestCase):
+    """Three flavours of one sticker, off one pipeline.
+
+    The barcode was assumed to be the important half of a label until the
+    physical job was looked at: stickers are applied by hand, off a sheet,
+    onto a pile of scarves. You cannot apply a sticker you cannot read, so the
+    text is what makes the sheet usable and the barcode is what makes the
+    scarf usable later. Both matter; they just aren't the same job.
+
+    What the text says follows from what gets confused. Nobody mistakes a
+    rectangle for a half-circle, so the blank is visible and `BLANK-DYEBATH`
+    spends half a small label saying it. Two reds called Valentine and L Word
+    is the confusion a label can fix.
+    """
+
+    def setUp(self):
+        self.stock = LabelStock.objects.create(
+            name="Test 80up", page_width_in=Decimal("8.5"),
+            page_height_in=Decimal("11"), label_width_in=Decimal("1.75"),
+            label_height_in=Decimal("0.5"), rows=20, columns=4,
+            margin_left_in=Decimal("0.3"), margin_top_in=Decimal("0.5"),
+            pitch_x_in=Decimal("2.0"), pitch_y_in=Decimal("0.5"),
+        )
+        self.recipe = make_recipe("Stormy Sea")
+        self.product = make_product(self.recipe, "Stormy Silk", with_image=False)
+        self.product.number_on_hand = 3
+        self.product.save()
+
+    def _run(self, style):
+        return labelmod.inventory_run(style=style)
+
+    def test_the_name_style_prints_the_colorway_not_the_product(self):
+        """`variation_name` is what Square calls the variation, so the sticker
+        says the same string the crew is hunting for in the list — not a
+        translation of it."""
+        self.assertEqual(self.product.variation_name, "Stormy Sea")
+
+    def test_a_name_run_renders(self):
+        pdf = labelmod.render_run(self._run(labelmod.NAME), self.stock)
+        self.assertTrue(pdf.startswith(b"%PDF"))
+
+    def test_the_density_guard_does_not_refuse_a_run_with_no_bars(self):
+        """The guard exists because unscannable bars fail silently at the
+        till. A sticker reading 'Stormy Sea' has nothing to fail — and letting
+        this fire would refuse the very style invented to cope with stock too
+        narrow for the SKU."""
+        narrow = LabelStock.objects.create(
+            name="Too narrow", page_width_in=Decimal("8.5"),
+            page_height_in=Decimal("11"), label_width_in=Decimal("0.6"),
+            label_height_in=Decimal("0.5"), rows=20, columns=4,
+            margin_left_in=Decimal("0.3"), margin_top_in=Decimal("0.5"),
+            pitch_x_in=Decimal("0.7"), pitch_y_in=Decimal("0.5"),
+        )
+        self.assertTrue(
+            labelmod.density_problems(self._run(labelmod.BARCODE), narrow),
+            "the barcode style should still object to this stock",
+        )
+        self.assertEqual(
+            labelmod.density_problems(self._run(labelmod.NAME), narrow), [],
+        )
+
+    def test_a_product_with_no_sku_still_gets_a_name_label(self):
+        """A barcode of nothing is unprintable; "Stormy Sea" needs no SKU. The
+        two styles are independent runs, so they are free to disagree here."""
+        blank_sku = make_product(make_recipe("Nameless"), "Nameless Silk",
+                                 with_image=False)
+        blank_sku.number_on_hand = 4
+        blank_sku.save()
+        FinishedProduct.objects.filter(pk=blank_sku.pk).update(sku="")
+
+        barcode_run = self._run(labelmod.BARCODE)
+        self.assertIn(blank_sku.pk, [p.pk for p in barcode_run.skipped_no_sku])
+
+        name_run = self._run(labelmod.NAME)
+        self.assertEqual(name_run.skipped_no_sku, [])
+        self.assertIn(blank_sku.pk,
+                      [p.pk for p in name_run.flat(self.stock.columns)])
+
+    def test_the_barcode_style_is_unchanged(self):
+        """Today's sheet keeps working exactly as it does — bars with the SKU
+        underneath — and stays the default for a form that never mentions
+        style."""
+        run = self._run(labelmod.BARCODE)
+        self.assertTrue(run.needs_barcode)
+        self.assertEqual(labelmod.LabelRun([], [], 0).style, labelmod.BARCODE)
+
+    def test_a_long_colorway_is_shortened_rather_than_overflowed(self):
+        """Text running past the die-cut lands on the *next* label and
+        mislabels a second scarf, so the floor truncates instead."""
+        from reportlab.pdfgen import canvas
+        import io
+
+        pdf = canvas.Canvas(io.BytesIO())
+        size, lines = labelmod._wrap_to_fit(
+            pdf, "Extraordinarily Verbose Colorway Name That Will Never Fit",
+            max_w=40, max_pt=labelmod.NAME_MAX_PT, min_pt=labelmod.NAME_MIN_PT,
+        )
+        self.assertGreaterEqual(size, labelmod.NAME_MIN_PT)
+        for line in lines:
+            self.assertLessEqual(
+                pdf.stringWidth(line, "Helvetica-Bold", size), 40 + 0.01
+            )
+
+    def test_the_style_reaches_the_run_from_the_form(self):
+        user = User.objects.create_user("labels-staff", password="pw")
+        self.client.force_login(user)
+
+        response = self.client.get(reverse("label_index"), {
+            "dataset": "inventory", "style": labelmod.NAME,
+            "extra": "0", "start_at": "1", "stock": str(self.stock.pk),
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["run"].style, labelmod.NAME)

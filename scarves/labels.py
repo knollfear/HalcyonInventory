@@ -53,6 +53,36 @@ from .models import FinishedProduct, InventoryLog
 #: stock eats what's left. On the 1.75in stock a 14-character SKU comes out
 #: around 7.3 mil, so this is a guard against a future too-small stock or a
 #: hand-typed overlong SKU, not a limit anything currently bumps into.
+#: What goes on each sticker.
+#:
+#: The barcode and the text answer different questions, and for a while the
+#: barcode was assumed to be the important half. It isn't, and the reason is
+#: physical: labels are applied by hand, off a sheet, onto a pile of scarves.
+#: You cannot apply a sticker you cannot read — so the *text* is what makes the
+#: sheet usable at all, and the barcode is what makes the scarf usable later.
+#:
+#: What the text should say follows from what actually gets confused. Nobody
+#: mistakes a rectangle for a half-circle, so the blank is visible and the SKU
+#: spends half a small label encoding it. Two similar reds named Valentine and
+#: L Word is exactly the confusion a label can fix and eyes can't — so the text
+#: is the colorway.
+#: The two are independent runs over the same picker, not two halves of one
+#: job — print either, or both, for whatever product set is selected. Nothing
+#: pairs a sticker on one sheet with a sticker on the other.
+BARCODE = "barcode"     # bars + SKU text. Unchanged, and still the default.
+NAME = "name"           # the colorway, set as large as the stock allows.
+STYLE_CHOICES = [
+    (BARCODE, "Barcode + SKU"),
+    (NAME, "Recipe name"),
+]
+
+#: A name-only sticker has no bars, so nothing constrains it but legibility.
+#: Bounded at the top because a two-word colorway would otherwise set itself
+#: absurdly large, and at the bottom because below this it stops doing the job
+#: it exists for — being read across a booth rather than held to the light.
+NAME_MAX_PT = 20.0
+NAME_MIN_PT = 6.0
+
 MIN_MODULE_MIL = 6.0
 
 #: Inset from the die-cut edge on every side. Die cutting has its own
@@ -98,6 +128,14 @@ class LabelRun:
     skipped_no_sku: list          # products that can't be printed at all
     ambiguous_month_logs: int     # see `month_precision_ambiguity`
     row_break_on_group: bool = False
+    style: str = BARCODE
+
+    @property
+    def needs_barcode(self) -> bool:
+        """Whether this run prints bars, which decides two rules that
+        otherwise fire wrongly: the density guard, and whether a product with
+        no SKU can be printed at all."""
+        return self.style == BARCODE
 
     @property
     def total(self) -> int:
@@ -142,25 +180,38 @@ class LabelRun:
         return [p for p in self.sequence(columns) if p is not None]
 
 
-def _finish(products_and_counts, extra):
-    """Shared tail of both datasets: drop what can't be printed, apply the
+def _finish(products_and_counts, extra, style=BARCODE):
+    """Shared tail of every dataset: drop what can't be printed, apply the
     extras, sort by SKU.
 
     Sorting by SKU is what groups a bath's 3–5 identical items into one
-    contiguous clump on the sheet, matching the pile they're going onto.
+    contiguous clump on the sheet, matching the pile they're going onto. It
+    stays the sort key for a name-only run too: the clumping is the point, and
+    a SKU sorts by blank then colorway, which is the same order the pile is in.
+
+    **A missing SKU only disqualifies a product that is going to be scanned.**
+    A barcode of nothing is unprintable, but a sticker reading "Stormy Sea"
+    needs no SKU at all, and withholding one over a field it never prints
+    would be the app refusing a label it could perfectly well make. The two
+    styles are independent runs — nothing pairs a sticker on one sheet with a
+    sticker on another — so they are free to disagree about this.
+
+    Either way a skipped product is reported in `skipped_no_sku` and shown on
+    the page rather than vanishing, and `generate_skus` is the fix.
     """
     rows, skipped = [], []
     for product, base in products_and_counts:
-        if not product.sku:
+        if style == BARCODE and not product.sku:
             skipped.append(product)
             continue
         rows.append(LabelRow(product=product, base=base, quantity=base + extra))
     rows = [r for r in rows if r.quantity > 0]
-    rows.sort(key=lambda r: r.product.sku)
+    rows.sort(key=lambda r: (r.product.sku, r.product.variation_name))
     return rows, sorted(skipped, key=lambda p: p.name)
 
 
-def inventory_run(extra=0, category=None, raw_products=None, include_zero=False):
+def inventory_run(extra=0, category=None, raw_products=None, include_zero=False,
+                  style=BARCODE):
     """Every active finished product, one sticker per unit on hand.
 
     The bulk re-label case. `include_zero` is off by default because with
@@ -180,8 +231,9 @@ def inventory_run(extra=0, category=None, raw_products=None, include_zero=False)
     if not include_zero:
         qs = qs.filter(number_on_hand__gt=0)
 
-    rows, skipped = _finish(((p, p.number_on_hand) for p in qs), extra)
+    rows, skipped = _finish(((p, p.number_on_hand) for p in qs), extra, style)
     return LabelRun(
+        style=style,
         rows=rows,
         skipped_no_sku=skipped,
         ambiguous_month_logs=0,
@@ -192,7 +244,7 @@ def inventory_run(extra=0, category=None, raw_products=None, include_zero=False)
     )
 
 
-def specific_items(pairs):
+def specific_items(pairs, style=BARCODE):
     """A run built by hand: exactly these products, exactly these counts.
 
     Takes no `extra`. The bulk datasets add spares because their counts are
@@ -201,17 +253,47 @@ def specific_items(pairs):
     The page hides the extras control for this dataset rather than letting it
     sit there doing nothing.
     """
-    rows, skipped = _finish(pairs, extra=0)
-    return LabelRun(rows=rows, skipped_no_sku=skipped, ambiguous_month_logs=0)
+    rows, skipped = _finish(pairs, extra=0, style=style)
+    return LabelRun(rows=rows, skipped_no_sku=skipped, ambiguous_month_logs=0,
+                    style=style)
 
 
-def produced_since(cutoff, extra=0):
-    """One sticker per unit produced at or after `cutoff`.
+#: Log types that mean "an item arrived on the shelf and needs a sticker".
+#:
+#: PRODUCTION is the obvious one. ADJUSTMENT is the other door, and leaving it
+#: out was a hole: stock counted in through `bulk_inventory_update` — a bag
+#: found in a cupboard, a display rack folded back into inventory, anything
+#: that existed before this app did — got no labels at all, and nothing said
+#: so. The only symptom is a scarf that won't scan at the till with a queue
+#: behind it, which is the failure the whole of this module is arranged to
+#: prevent.
+#:
+#: SALE stays out deliberately. A sale doesn't reduce the need for a sticker;
+#: the item exists and left wearing one. Netting sales in would subtract
+#: labels for scarves that already have them.
+LABELLED_LOG_TYPES = (InventoryLog.PRODUCTION, InventoryLog.ADJUSTMENT)
 
-    Sums production log quantities rather than reading `number_on_hand`, so
-    what already sold still gets a sticker — the items exist, they just aren't
-    on the shelf by the time anyone prints. Negative quantities (corrections)
-    net out, and a product netting zero or less drops off entirely.
+
+def produced_since(cutoff, extra=0, style=BARCODE):
+    """One sticker per unit that arrived at or after `cutoff`.
+
+    Sums log quantities rather than reading `number_on_hand`, so what already
+    sold still gets a sticker — the items exist, they just aren't on the shelf
+    by the time anyone prints.
+
+    **Only rows that add.** A label answers "what is this thing in my hand",
+    so it is wanted by items arriving and by nothing else; stock leaving needs
+    no barcode. Negative rows are therefore skipped rather than netted, which
+    also stops a correction in one week silently eating the stickers owed to a
+    bath in the same week.
+
+    Counts both dyeing and stock counted in — see `LABELLED_LOG_TYPES`. That
+    widening prints some spares: an upward recount of items that were already
+    labelled asks for stickers they already have. It is the right side of the
+    trade by a wide margin. A spare sticker costs a fraction of a cent and
+    sits in a drawer; a missing one is discovered at the till, in front of a
+    customer, with no way to sell the thing in hand. Erring toward printing is
+    the same bargain `UnmatchedSale` makes about capture.
 
     Back-dated entries take care of themselves: a kanban backfill carries
     `created_at` set to the date on the card, not the day it was typed, so a
@@ -220,7 +302,8 @@ def produced_since(cutoff, extra=0):
     cutoff_dt = _as_datetime(cutoff)
     totals = (
         InventoryLog.objects.filter(
-            log_type=InventoryLog.PRODUCTION,
+            log_type__in=LABELLED_LOG_TYPES,
+            quantity__gt=0,
             created_at__gte=cutoff_dt,
             finished_product__is_active=True,
         )
@@ -233,8 +316,9 @@ def produced_since(cutoff, extra=0):
         .select_related("raw_product", "recipe")
     )
 
-    rows, skipped = _finish(((p, max(counts[p.pk], 0)) for p in products), extra)
+    rows, skipped = _finish(((p, max(counts[p.pk], 0)) for p in products), extra, style)
     return LabelRun(
+        style=style,
         rows=rows,
         skipped_no_sku=skipped,
         ambiguous_month_logs=month_precision_ambiguity(cutoff_dt),
@@ -254,7 +338,9 @@ def month_precision_ambiguity(cutoff_dt) -> int:
     A `month`-precision log is stored on the 1st so that it sorts — that day
     is padding, not a record (see `InventoryLog.when`). So a cutoff mid-month
     excludes a same-month row whose real date could have been either side of
-    it. The page reports the count instead of silently dropping them, which is
+    it. Scoped to exactly the rows the run itself counts — same log types,
+    same positive-only rule — so the warning can never describe rows the run
+    was never going to print anyway. The page reports the count instead of silently dropping them, which is
     the same bargain the rest of the app makes with these rows: say only what
     is actually known.
 
@@ -265,7 +351,8 @@ def month_precision_ambiguity(cutoff_dt) -> int:
     if month_start == cutoff_dt:
         return 0
     return InventoryLog.objects.filter(
-        log_type=InventoryLog.PRODUCTION,
+        log_type__in=LABELLED_LOG_TYPES,
+        quantity__gt=0,
         date_precision=InventoryLog.MONTH,
         created_at__gte=month_start,
         created_at__lt=cutoff_dt,
@@ -435,6 +522,7 @@ def barcode_for(sku, stock):
 
     reportlab computes the symbol width for us including quiet zones, so the
     scale factor is just "how many points of label per module".
+
     """
     from reportlab.graphics.barcode import code128
 
@@ -457,7 +545,17 @@ def density_problems(run, stock):
 
     Checked before rendering so the answer is "these three SKUs are too long
     for this stock" rather than eighty stickers nothing will scan.
+
+    **A run that prints no bars has no such problem**, and must not be refused
+    for one. The guard exists because unscannable bars fail silently at the
+    till; a sticker reading "Stormy Sea" has nothing to fail. Leaving this
+    unchecked would have blocked exactly the style invented to cope with a
+    stock too narrow for the SKU — refusing the fix on the grounds of the
+    thing it fixes.
     """
+    if not run.needs_barcode:
+        return []
+
     problems = []
     for sku in sorted({r.product.sku for r in run.rows}):
         _, mil = barcode_for(sku, stock)
@@ -495,7 +593,7 @@ def render_run(run, stock, start_at=0) -> bytes:
     # (slot, draw) pairs in page order, marker last. Gaps consume a position
     # and draw nothing, which is what leaves a row start free for the next
     # blank.
-    work = [(slot, lambda p, s, fp=fp: _draw_label(p, fp, s, stock))
+    work = [(slot, lambda p, s, fp=fp: _draw_label(p, fp, s, stock, run.style))
             for fp, slot in zip(sequence, positions) if fp is not None]
 
     marker = marker_index_for(stock, len(sequence), start_at)
@@ -522,10 +620,79 @@ def render_run(run, stock, start_at=0) -> bytes:
     return buf.read()
 
 
-def _draw_label(pdf, product, slot, stock):
-    barcode, _ = barcode_for(product.sku, stock)
+def _wrap_to_fit(pdf, text, max_w, max_pt, min_pt, max_lines=2):
+    """Largest size at which `text` fits `max_w` in at most `max_lines`.
+
+    Returns `(size, lines)`, and always returns something: at `min_pt` the
+    text is truncated rather than allowed to run off the sticker. A colorway
+    that spills over the die-cut is worse than one shortened, because the
+    overflow lands on the *next* label and mislabels a second scarf.
+    """
+    words = text.split()
+    size = max_pt
+    while size >= min_pt:
+        lines, current = [], ""
+        for word in words:
+            trial = f"{current} {word}".strip()
+            if pdf.stringWidth(trial, "Helvetica-Bold", size) <= max_w or not current:
+                current = trial
+            else:
+                lines.append(current)
+                current = word
+        if current:
+            lines.append(current)
+        if len(lines) <= max_lines and all(
+            pdf.stringWidth(ln, "Helvetica-Bold", size) <= max_w for ln in lines
+        ):
+            return size, lines
+        size -= 0.5
+
+    # Floor reached: keep the size legible and cut the text instead.
+    lines, current = [], text
+    while current and pdf.stringWidth(current, "Helvetica-Bold", min_pt) > max_w:
+        current = current[:-1]
+    return min_pt, [current]
+
+
+def _draw_name(pdf, product, slot, stock, top, height):
+    """The colorway, centred in `height` points above `slot.y + top`."""
     pad = _pt(PAD_IN)
     label_w = _pt(stock.label_width_in)
+    max_w = label_w - pad * 2
+
+    size, lines = _wrap_to_fit(
+        pdf, product.variation_name, max_w,
+        max_pt=min(NAME_MAX_PT, height), min_pt=NAME_MIN_PT,
+    )
+    leading = size * 1.1
+    block_h = leading * len(lines)
+    # Centre the block in its band, then walk down from its top line.
+    y = slot.y + top + (height - block_h) / 2 + block_h - size
+    pdf.setFont("Helvetica-Bold", size)
+    for line in lines:
+        pdf.drawCentredString(slot.x + label_w / 2, y, line)
+        y -= leading
+
+
+def _draw_label(pdf, product, slot, stock, style=BARCODE):
+    """One sticker, in whichever of the three styles the run asked for.
+
+    The split is here and nowhere else on purpose: everything upstream —
+    dataset, extras, SKU sort, sheet plan, marker placement, registration
+    ticks, offsets — is identical whatever ends up inside the die-cut. A style
+    is a flavour of one label, not a second label system.
+    """
+    pad = _pt(PAD_IN)
+    label_w = _pt(stock.label_width_in)
+    label_h = _pt(stock.label_height_in)
+    avail_h = label_h - pad * 2
+
+    if style == NAME:
+        # Nothing to scan, so the whole sticker is the colorway.
+        _draw_name(pdf, product, slot, stock, top=pad, height=avail_h)
+        return
+
+    barcode, _ = barcode_for(product.sku, stock)
 
     # Centre the symbol: reportlab's quiet zones are generous, so the drawn
     # width is usually a shade under the space available.

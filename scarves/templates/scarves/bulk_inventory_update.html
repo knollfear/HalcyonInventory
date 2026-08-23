@@ -10,6 +10,21 @@
       display: inline-flex; align-items: baseline; gap: 6px;
       margin: 3px 16px 3px 0; white-space: nowrap;
   }
+
+  /* The count fields are already <input type="number"> — Django's IntegerField
+     renders NumberInput — so the +/- controls have always been there. Chrome
+     and Safari just hide them until the field is hovered or focused, which on
+     a page of forty counts means they read as absent. This shows them all the
+     time, which is the whole of the fix. */
+  input[type="number"]::-webkit-inner-spin-button,
+  input[type="number"]::-webkit-outer-spin-button {
+      opacity: 1;
+      height: 26px;
+  }
+  input[type="number"] { width: 6em; padding: 3px 4px; font: inherit; }
+
+  .row-reason { width: 100%; padding: 3px 4px; font: inherit; }
+  .form-reason { width: 32em; max-width: 100%; padding: 4px; font: inherit; }
 {% endblock %}
 
 {% block content %}
@@ -71,9 +86,10 @@
           <table>
             <thead>
               <tr>
-                <th style="width: 45%;">Recipe</th>
-                <th style="width: 15%;">Current</th>
-                <th style="width: 20%;">New count</th>
+                <th style="width: 26%;">Recipe</th>
+                <th style="width: 10%;">Current</th>
+                <th style="width: 14%;">New count</th>
+                <th style="width: 30%;">Why (optional)</th>
                 <th>Finished product</th>
               </tr>
             </thead>
@@ -88,6 +104,7 @@
                       <div class="err">{{ row.field.errors }}</div>
                     {% endif %}
                   </td>
+                  <td>{{ row.reason_field }}</td>
                   <td class="small muted">{{ row.fp.name }}</td>
                 </tr>
               {% endfor %}
@@ -95,6 +112,20 @@
           </table>
         </div>
       {% endfor %}
+
+      <div class="card">
+        <label for="{{ form.reason.id_for_label }}">
+          <strong>{{ form.reason.label }}</strong>
+        </label>
+        {{ form.reason }}
+        <p class="small muted" style="margin-top: 6px;">
+          Written onto every log row this save creates. A row with its own
+          reason keeps that one instead. Worth a sentence whenever the count
+          moved for something other than production or a sale — found stock, a
+          recount, breakage — because six months on this is the only thing
+          separating a correction from a typo.
+        </p>
+      </div>
 
       <div class="actions">
         <button class="btn" type="submit">Save inventory</button>

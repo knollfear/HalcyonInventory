@@ -6,6 +6,10 @@ from django import forms
 from django.db import transaction
 from django.utils import timezone
 
+from .labels import (
+    BARCODE as LABEL_BARCODE,
+    STYLE_CHOICES as LABEL_STYLE_CHOICES,
+)
 from .models import (  # RecipeDye is the through model
     UNCATEGORIZED_BRAND,
     BoothPhoto,
@@ -557,7 +561,7 @@ class LabelRunForm(forms.Form):
     INVENTORY = "inventory"
     ITEMS = "items"
     DATASET_CHOICES = [
-        (SINCE, "Produced since a date"),
+        (SINCE, "Added to stock since a date"),
         (INVENTORY, "Everything on hand"),
         (ITEMS, "Specific items I pick"),
     ]
@@ -567,11 +571,25 @@ class LabelRunForm(forms.Form):
         initial=SINCE,
         label="What to print",
     )
+    style = forms.ChoiceField(
+        choices=LABEL_STYLE_CHOICES,
+        initial=LABEL_BARCODE,
+        required=False,
+        label="What goes on each sticker",
+        help_text="Two independent runs over the same product set — print "
+                  "either, or both. Barcodes still carry the SKU underneath "
+                  "and are what lets a photo file itself against a product, "
+                  "since that reads the bars. A recipe-name label is what you "
+                  "can read while applying it, and the recipe is what gets "
+                  "confused — nobody mixes up a rectangle and a half-circle.",
+    )
     since = forms.DateField(
         required=False,
         widget=forms.DateInput(attrs={"type": "date"}),
-        label="Produced on or after",
-        help_text="Defaults to the last time you printed from this browser.",
+        label="Added on or after",
+        help_text="Covers dyeing and stock counted in through a bulk inventory "
+                  "update — anything that arrived needs a barcode. Defaults to "
+                  "the last time you printed from this browser.",
     )
     category = forms.ModelChoiceField(
         queryset=None, required=False, empty_label="All categories",

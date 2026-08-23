@@ -1532,6 +1532,31 @@ def build_bulk_inventory_form_class(finished_products):
             initial=fp.number_on_hand,
             label=fp.recipe.name,
         )
+        # Per row, because one save can hold two different stories — most of
+        # the rack recounted, and one row that moved for its own reason. A
+        # single form-level box would make the rarer one either unsayable or
+        # a lie about every other row it lands on.
+        fields[f"reason_{fp.id}"] = forms.CharField(
+            required=False,
+            max_length=200,
+            label=f"Why {fp.name} changed",
+            widget=forms.TextInput(attrs={
+                "placeholder": "why? (optional)",
+                "class": "row-reason",
+            }),
+        )
+    # And once for the whole save, since a bulk count is usually a single act
+    # — you walked the rack once. Rows fall back to this, so the common case
+    # is one sentence rather than forty.
+    fields["reason"] = forms.CharField(
+        required=False,
+        max_length=200,
+        label="Why (applies to every row you change)",
+        widget=forms.TextInput(attrs={
+            "placeholder": "e.g. counted the display rack in with the back stock",
+            "class": "form-reason",
+        }),
+    )
     return type("BulkInventoryForm", (forms.Form,), fields)
 
 
@@ -1610,6 +1635,7 @@ def bulk_inventory_update(request):
         form = FormClass(request.POST)
         if form.is_valid():
             changed = 0
+            form_reason = (form.cleaned_data.get("reason") or "").strip()
             with transaction.atomic():
                 for fp in finished_products:
                     new_val = form.cleaned_data.get(f"count_{fp.id}")
@@ -1621,12 +1647,22 @@ def bulk_inventory_update(request):
                     # lives on its raw product — see set_on_hand.
                     fp.set_on_hand(new_val)
 
+                    # The row wins over the form: it is the more specific
+                    # answer, and someone who typed one on this row meant it
+                    # to describe this row.
+                    reason = (
+                        (form.cleaned_data.get(f"reason_{fp.id}") or "").strip()
+                        or form_reason
+                    )
                     InventoryLog.objects.create(
                         finished_product=fp,
                         raw_product=fp.raw_product,
                         log_type=InventoryLog.ADJUSTMENT,
                         quantity=delta,
-                        notes="Bulk inventory update.",
+                        notes=(
+                            f"Bulk inventory update — {reason}" if reason
+                            else "Bulk inventory update."
+                        ),
                     )
                     changed += 1
 
@@ -1643,7 +1679,11 @@ def bulk_inventory_update(request):
     groups = []
     for rp in raw_products:
         rows = [
-            {"fp": fp, "field": form[f"count_{fp.id}"]}
+            {
+                "fp": fp,
+                "field": form[f"count_{fp.id}"],
+                "reason_field": form[f"reason_{fp.id}"],
+            }
             for fp in finished_products
             if fp.raw_product_id == rp.id
         ]
@@ -3642,15 +3682,17 @@ def _label_stock_from(form):
 def _label_run_from(form):
     """Build the run described by a valid LabelRunForm."""
     data = form.cleaned_data
+    style = data.get("style") or labels.BARCODE
     if data["dataset"] == LabelRunForm.ITEMS:
-        return labels.specific_items(data["items"])
+        return labels.specific_items(data["items"], style=style)
     if data["dataset"] == LabelRunForm.SINCE:
-        return labels.produced_since(data["since"], extra=data["extra"])
+        return labels.produced_since(data["since"], extra=data["extra"], style=style)
     return labels.inventory_run(
         extra=data["extra"],
         category=data.get("category"),
         raw_products=data.get("raw_products"),
         include_zero=data.get("include_zero", False),
+        style=style,
     )
 
 

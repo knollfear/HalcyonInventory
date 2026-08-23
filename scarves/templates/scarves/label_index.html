@@ -111,6 +111,18 @@ labels get used, and what the marker sticker will say.
           {{ form.dataset }}
           {{ form.dataset.errors }}
         </div>
+        {% comment %}
+        No data-when: the style applies to every dataset. It is deliberately a
+        separate axis from *what* to print, which is what lets the same run be
+        printed twice — a barcode sheet and a name sheet for the same date,
+        row for row.
+        {% endcomment %}
+        <div class="field">
+          <label for="{{ form.style.id_for_label }}">{{ form.style.label }}</label>
+          {{ form.style }}
+          <div class="help">{{ form.style.help_text }}</div>
+          {{ form.style.errors }}
+        </div>
         <div class="field" data-when="since">
           <label for="{{ form.since.id_for_label }}">{{ form.since.label }}</label>
           {{ form.since }}
