@@ -2870,6 +2870,32 @@ class BandClassifierTests(TestCase):
         self.assertEqual(band_for_hex("#00536b"), "blue")      # 631 Teal, hue 193
         self.assertEqual(band_for_hex("#009fda"), "blue")      # 624 Turquoise
 
+    def test_the_olive_greens_are_green_not_yellow(self):
+        """Regression: at a 70-degree yellow/green line these five landed in
+        yellow, `461 Avocado` missing green by five degrees.
+
+        The catalogue has no dye at all between 69.2 and 79.3, so the old line
+        classified nothing and never got examined. `445 Fluorescent Lemon` at
+        exactly 60.0 is the nearest true yellow and has to stay one.
+        """
+        from .colorbands import band_for_hex
+
+        self.assertEqual(band_for_hex("#6f752c"), "green")     # 461 Avocado, 64.9
+        self.assertEqual(band_for_hex("#b7bb59"), "green")     # 465 Lichen, 62.4
+        self.assertEqual(band_for_hex("#d7df23"), "green")     # 628 Chartreuse (Neon)
+        self.assertEqual(band_for_hex("#c6d92c"), "green")     # 479 Radioactive, 66.6
+        self.assertEqual(band_for_hex("#b7cb48"), "green")     # 448 Chartreuse, 69.2
+        self.assertEqual(band_for_hex("#ffff00"), "yellow")    # 445 Fluor. Lemon, 60.0
+        self.assertEqual(band_for_hex("#fff200"), "yellow")    # 601 Sun Yellow, 56.9
+
+    def test_the_cream_rule_is_a_different_seventy(self):
+        """`band_for_hsl` holds two unrelated 70s. Moving the band boundary to
+        61 must not drag the cream cutoff with it, or Ivory turns yellow."""
+        from .colorbands import band_for_hex
+
+        self.assertEqual(band_for_hex("#f3ead7"), "grey")      # 488 Ivory, hue 41
+        self.assertEqual(band_for_hex("#c2b264"), "yellow")    # 435 Soft Tan, hue 50
+
     def test_light_reds_read_as_pink(self):
         from .colorbands import band_for_hex
 

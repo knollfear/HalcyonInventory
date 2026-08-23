@@ -277,6 +277,16 @@ Two judgements are baked in and are not bugs:
   has no territory between them, so the section would be empty or arbitrary.
   Pink and brown are sections instead, because both are what someone actually
   says out loud about a scarf.
+- **Yellow ends at 61 degrees, not 70.** Sorted by hue the catalogue has an
+  empty corridor from 69.2 to 79.3 — no dye lives there — so a boundary
+  anywhere inside it classifies nothing, which is how 70 survived without ever
+  being examined. Just below sit five jars everyone reads as green: Lichen
+  (62.4), Chartreuse Neon (62.6), Avocado (64.9), Radioactive (66.6) and
+  Chartreuse (69.2). The nearest true yellow is Fluorescent Lemon at exactly
+  60.0, so 61 takes the cluster and leaves the yellows a degree of room.
+  Beware that `band_for_hsl` holds a **second, unrelated 70** — the cream rule
+  that keeps Ivory out of yellow. Moving one with the other is the mistake.
+
 - **Neutral only claims a recipe when it is the *only* band.** Black, grey and
   cream are working dyes that ground the colors beside them. Every neutral-ish
   recipe in stock reads as something else too (`turq-mid-black`,

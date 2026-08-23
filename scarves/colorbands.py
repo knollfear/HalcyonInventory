@@ -102,6 +102,9 @@ def band_for_hsl(h, s, ll, *, black=0.12, grey=0.18, brown_l=0.60):
     if s < grey:
         return GREY                          # grey, ditto
     if ll >= 0.78 and s < 0.65 and h < 70:
+        # This 70 is *not* the yellow/green boundary below, which is 61. It is
+        # how far up the warm end cream reaches, and moving one with the other
+        # would drop `488 Ivory` (hue 41, but pale and dull) into yellow.
         return GREY                          # cream / ivory / champagne
 
     # --- brown: dark, dull, and warm. The only band needing all three axes ---
@@ -115,7 +118,15 @@ def band_for_hsl(h, s, ll, *, black=0.12, grey=0.18, brown_l=0.60):
         return "pink" if ll > 0.62 else "red"
     if h < 45:
         return "orange"
-    if h < 70:
+    if h < 61:
+        # 61, not 70. Sorted by hue the catalogue has an empty corridor from
+        # 69.2 to 79.3 — no dye lives there — so a line anywhere in it classifies
+        # nothing, which is how 70 survived unexamined. Below the corridor sits a
+        # tight cluster that every one of us reads as green: `465 Lichen` (62.4),
+        # `628 Chartreuse (Neon)` (62.6), `461 Avocado` (64.9), `479 Radioactive`
+        # (66.6), `448 Chartreuse` (69.2). The nearest true yellow underneath is
+        # `445 Fluorescent Lemon` at exactly 60.0, so 61 takes the whole cluster
+        # and leaves the yellows alone with a degree to spare.
         return "yellow"
     if h < 178:
         # 178, not 170: `452 Forest Green` (#0b473e) sits at hue 171 and was
