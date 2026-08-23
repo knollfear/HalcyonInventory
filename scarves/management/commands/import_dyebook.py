@@ -1,3 +1,5 @@
+import difflib
+
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
@@ -223,24 +225,34 @@ class Command(BaseCommand):
         return None, matches
 
     def _suggest(self, token, dyes_on_file):
-        """Jars a blocked token might mean — for the report, never for a write.
+        """Jars a blocked word might mean — for the report, never for a write.
 
         Resolution stays strict: an exact stem or an explicit alias, nothing
-        else. But printing "matches no dye on file" for `Saph` when the
-        catalogue holds two Sapphire Blues is the kind of true-but-useless
-        answer that makes a person go and look it up by hand. Suggesting is
-        free precisely because it decides nothing.
+        else. Suggesting is free precisely because it decides nothing, and
+        without it the report's most useful line is its most misleading one —
+        `Grey` blocks four recipes, and a substring search calls it unheard-of
+        because the catalogue spells the colour `Gray`.
+
+        So the comparison is fuzzy and per word: `Saph` finds both Sapphire
+        Blues, `L. Mauve` finds Antique Mauve. A little tail noise is the
+        price and it sorts to the bottom, where "could be" already says what
+        the list is worth.
         """
-        wanted = token.casefold().replace(".", "").replace(" ", "")
-        head = wanted[:4]
-        hits = []
+        wanted = token.casefold().replace(".", "").strip()
+        scored = []
         for dye in dyes_on_file:
-            stem = self._stem(dye.name.casefold()).replace(" ", "")
-            if wanted in stem or (head and stem.startswith(head)):
-                hits.append(dye)
-            elif head and head in stem:
-                hits.append(dye)
-        return hits[:5]
+            stem = self._stem(dye.name.casefold())
+            words = stem.replace("(", " ").replace(")", " ").split()
+            best = max(
+                [difflib.SequenceMatcher(None, wanted, w).ratio() for w in words]
+                + [difflib.SequenceMatcher(None, wanted, stem).ratio()]
+            )
+            if any(w.startswith(wanted) for w in words):
+                best = max(best, 0.9)
+            if best >= 0.6:
+                scored.append((best, dye.name, dye))
+        scored.sort(key=lambda row: (-row[0], row[1]))
+        return [dye for _score, _name, dye in scored[:4]]
 
     def _report(self, ready, blocked, blocking, conflicts, missing_recipe,
                 dry_run, dyes_on_file):

@@ -5530,6 +5530,21 @@ class ImportDyebookTests(TestCase):
         self.assertIn("Wasteland", output)
         self.assertIn("doesn't name", output)
 
+    def test_a_blocked_word_suggests_jars_across_a_spelling_difference(self):
+        """`Grey` blocks four recipes and the catalogue spells it `Gray`.
+
+        A substring search calls that unheard-of, which is the report's most
+        useful line being its most misleading one.
+        """
+        Dye.objects.create(
+            name="446 Silver Gray",
+            brand=DyeBrand.objects.get(name="Dharma Acid Dyes"),
+            hex_color="#8a8a8c",
+        )
+        Recipe.objects.create(name="Sea Smoke")     # Grey/Gun/Black
+        output = self._run()
+        self.assertIn("446 Silver Gray", output)
+
     def test_a_dry_run_writes_nothing(self):
         recipe = Recipe.objects.create(name="Wasteland")
         output = self._run(dry_run=True)
