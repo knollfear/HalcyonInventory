@@ -71,9 +71,11 @@ from .models import FinishedProduct, InventoryLog
 #: pairs a sticker on one sheet with a sticker on the other.
 BARCODE = "barcode"     # bars + SKU text. Unchanged, and still the default.
 NAME = "name"           # the colorway, set as large as the stock allows.
+NAME_AND_BARCODE = "both"   # both, at the cost of shorter bars — see MIN_BAR_PT.
 STYLE_CHOICES = [
     (BARCODE, "Barcode + SKU"),
     (NAME, "Recipe name"),
+    (NAME_AND_BARCODE, "Recipe name + barcode"),
 ]
 
 #: A name-only sticker has no bars, so nothing constrains it but legibility.
@@ -82,6 +84,26 @@ STYLE_CHOICES = [
 #: it exists for — being read across a booth rather than held to the light.
 NAME_MAX_PT = 20.0
 NAME_MIN_PT = 6.0
+
+#: The name's share of a `both` label, as a fraction of usable height. A share
+#: rather than a fixed band so the style scales onto taller stock instead of
+#: leaving the extra room to the bars, which don't need it.
+NAME_SHARE_OF_BOTH = 0.3
+
+#: Minimum bar height as a fraction of bar *width*. Below it the symbol is
+#: still scannable — module width decides that, and `MIN_MODULE_MIL` guards it
+#: separately — but it gets hard for a decoder to locate in a hurried
+#: photograph, which is the job the barcode is doing here now the till has no
+#: scanner. 15% of symbol width is the usual guidance.
+#:
+#: A ratio rather than a fixed height because the threshold has to move with
+#: the stock: wider labels make wider symbols, and a wider symbol needs more
+#: height to stay findable. A constant tuned on 1.75in stock would quietly
+#: stop meaning anything on the larger stock being considered.
+#:
+#: It warns rather than refuses. Short bars degrade, they don't fail, and
+#: whoever picked this style can see the sticker they are holding.
+MIN_BAR_RATIO = 0.15
 
 MIN_MODULE_MIL = 6.0
 
@@ -135,7 +157,7 @@ class LabelRun:
         """Whether this run prints bars, which decides two rules that
         otherwise fire wrongly: the density guard, and whether a product with
         no SKU can be printed at all."""
-        return self.style == BARCODE
+        return self.style in (BARCODE, NAME_AND_BARCODE)
 
     @property
     def total(self) -> int:
@@ -189,7 +211,7 @@ def _finish(products_and_counts, extra, style=BARCODE):
     stays the sort key for a name-only run too: the clumping is the point, and
     a SKU sorts by blank then colorway, which is the same order the pile is in.
 
-    **A missing SKU only disqualifies a product that is going to be scanned.**
+    **A missing SKU only disqualifies a product whose sticker carries bars.**
     A barcode of nothing is unprintable, but a sticker reading "Stormy Sea"
     needs no SKU at all, and withholding one over a field it never prints
     would be the app refusing a label it could perfectly well make. The two
@@ -201,7 +223,7 @@ def _finish(products_and_counts, extra, style=BARCODE):
     """
     rows, skipped = [], []
     for product, base in products_and_counts:
-        if style == BARCODE and not product.sku:
+        if style in (BARCODE, NAME_AND_BARCODE) and not product.sku:
             skipped.append(product)
             continue
         rows.append(LabelRow(product=product, base=base, quantity=base + extra))
@@ -517,7 +539,47 @@ def plan_sheets(stock, count, start_at=0, blanks=frozenset()) -> SheetPlan:
 # ---------------------------------------------------------------------------
 
 
-def barcode_for(sku, stock):
+def both_geometry(stock):
+    """How a `both` label divides its height: `(name_band_pt, bar_pt)`.
+
+    One function because the renderer and the short-bars warning have to agree
+    — a warning computed from its own copy would drift, and the failure it is
+    warning about is exactly the one nobody notices until a photo won't
+    decode.
+    """
+    avail_h = _pt(Decimal(str(stock.label_height_in)) - Decimal(str(PAD_IN)) * 2)
+    name_h = min(NAME_MAX_PT, max(NAME_MIN_PT, avail_h * NAME_SHARE_OF_BOTH))
+    return name_h, max(avail_h - name_h - 1.5, 1.0)
+
+
+def min_bar_height(run, stock):
+    """How tall the bars need to be on this stock, in points.
+
+    Derived from the widest symbol the run will actually print, since that is
+    the one hardest to find in a photo.
+    """
+    widest = 0.0
+    for sku in {r.product.sku for r in run.rows if r.product.sku}:
+        barcode, _ = barcode_for(sku, stock)
+        widest = max(widest, bars_only_width(barcode))
+    return widest * MIN_BAR_RATIO
+
+
+def short_bars(run, stock):
+    """`(bar_height_pt, needed_pt)` when a `both` run's bars come out too
+    short to find reliably in a photograph, else None.
+
+    Only `both` can hit this: the barcode-only style gives the bars everything
+    except one 5.5pt line of SKU text.
+    """
+    if run.style != NAME_AND_BARCODE:
+        return None
+    _, bar_pt = both_geometry(stock)
+    needed = min_bar_height(run, stock)
+    return (bar_pt, needed) if bar_pt < needed else None
+
+
+def barcode_for(sku, stock, bar_height=None):
     """A Code128 barcode sized to this stock, and its module width in mils.
 
     reportlab computes the symbol width for us including quiet zones, so the
@@ -528,7 +590,10 @@ def barcode_for(sku, stock):
 
     avail_w = _pt(Decimal(str(stock.label_width_in)) - Decimal(str(PAD_IN)) * 2)
     avail_h = _pt(Decimal(str(stock.label_height_in)) - Decimal(str(PAD_IN)) * 2)
-    bar_h = max(avail_h - TEXT_PT - 1.5, 1.0)
+    # An override changes only how *tall* the bars are. Module width — and so
+    # `MIN_MODULE_MIL` and whether the thing scans at all — is set by the
+    # label's width and the SKU's length, and is untouched by this.
+    bar_h = bar_height if bar_height is not None else max(avail_h - TEXT_PT - 1.5, 1.0)
 
     modules = code128.Code128(sku, barHeight=bar_h, barWidth=1.0).width
     bar_width = avail_w / modules
@@ -620,13 +685,60 @@ def render_run(run, stock, start_at=0) -> bytes:
     return buf.read()
 
 
-def _wrap_to_fit(pdf, text, max_w, max_pt, min_pt, max_lines=2):
-    """Largest size at which `text` fits `max_w` in at most `max_lines`.
+LINE_SPACING = 1.1
+
+
+def bars_only_width(barcode):
+    """The width of the bars themselves, with the quiet zones taken off.
+
+    `barcode.width` is not this and is the easy mistake: reportlab pins
+    Code128 quiet zones at a quarter inch a side and **does not scale them**,
+    so the object comes out *wider than the label* — 134.8pt of object on a
+    126pt sticker for a 13-character SKU. Centring it puts the outer sliver of
+    each quiet zone over the liner between columns, which is harmless because
+    a quiet zone is absence of ink. But it means the declared width describes
+    something bigger than the sticker, and anything measured against it is
+    measured against nothing real.
+
+    The bars are what you can see, and 1.37in of them sit on a 1.75in label.
+    """
+    return barcode.width - getattr(barcode, "lquiet", 0) - getattr(barcode, "rquiet", 0)
+
+
+def name_box_width(product, stock):
+    """How wide the text on a sticker is allowed to be: the width of the bars.
+
+    Not the label, which is what this did first and why 20pt looked like it
+    was overflowing — text was allowed 118.8pt of a 126pt sticker while the
+    bars above it used 98.8pt, so the two disagreed by a fifth of an inch a
+    side and the type ran visibly wider than the symbol.
+
+    Matching them means a name sticker and a barcode sticker for the same
+    product put their ink in the same rectangle, which is what makes a sheet
+    of mixed styles look deliberate rather than like two jobs.
+
+    Falls back to the padded label when there is no SKU. That only happens in
+    a name-only run — a barcode style skips those products — so there are no
+    bars to disagree with anyway.
+    """
+    padded = _pt(stock.label_width_in) - _pt(PAD_IN) * 2
+    if not product.sku:
+        return padded
+    barcode, _ = barcode_for(product.sku, stock)
+    return min(bars_only_width(barcode), padded)
+
+
+def _wrap_to_fit(pdf, text, max_w, max_h, max_pt, min_pt, max_lines=2):
+    """Largest size at which `text` fits `max_w` x `max_h` in <= `max_lines`.
 
     Returns `(size, lines)`, and always returns something: at `min_pt` the
     text is truncated rather than allowed to run off the sticker. A colorway
     that spills over the die-cut is worse than one shortened, because the
     overflow lands on the *next* label and mislabels a second scarf.
+
+    Height is checked as well as width because the two constrain each other —
+    wrapping to a second line to satisfy the width is what makes a block too
+    tall, so a size that passes one test can fail the other.
     """
     words = text.split()
     size = max_pt
@@ -641,14 +753,16 @@ def _wrap_to_fit(pdf, text, max_w, max_pt, min_pt, max_lines=2):
                 current = word
         if current:
             lines.append(current)
-        if len(lines) <= max_lines and all(
+        fits_width = all(
             pdf.stringWidth(ln, "Helvetica-Bold", size) <= max_w for ln in lines
-        ):
+        )
+        fits_height = size * LINE_SPACING * len(lines) <= max_h
+        if len(lines) <= max_lines and fits_width and fits_height:
             return size, lines
         size -= 0.5
 
     # Floor reached: keep the size legible and cut the text instead.
-    lines, current = [], text
+    current = text
     while current and pdf.stringWidth(current, "Helvetica-Bold", min_pt) > max_w:
         current = current[:-1]
     return min_pt, [current]
@@ -656,15 +770,14 @@ def _wrap_to_fit(pdf, text, max_w, max_pt, min_pt, max_lines=2):
 
 def _draw_name(pdf, product, slot, stock, top, height):
     """The colorway, centred in `height` points above `slot.y + top`."""
-    pad = _pt(PAD_IN)
     label_w = _pt(stock.label_width_in)
-    max_w = label_w - pad * 2
+    max_w = name_box_width(product, stock)
 
     size, lines = _wrap_to_fit(
-        pdf, product.variation_name, max_w,
+        pdf, product.variation_name, max_w, height,
         max_pt=min(NAME_MAX_PT, height), min_pt=NAME_MIN_PT,
     )
-    leading = size * 1.1
+    leading = size * LINE_SPACING
     block_h = leading * len(lines)
     # Centre the block in its band, then walk down from its top line.
     y = slot.y + top + (height - block_h) / 2 + block_h - size
@@ -690,6 +803,15 @@ def _draw_label(pdf, product, slot, stock, style=BARCODE):
     if style == NAME:
         # Nothing to scan, so the whole sticker is the colorway.
         _draw_name(pdf, product, slot, stock, top=pad, height=avail_h)
+        return
+
+    if style == NAME_AND_BARCODE:
+        # Name along the bottom where a thumb doesn't cover it, bars above.
+        name_h, bar_h = both_geometry(stock)
+        barcode, _ = barcode_for(product.sku, stock, bar_height=bar_h)
+        x = slot.x + (label_w - barcode.width) / 2
+        barcode.drawOn(pdf, x, slot.y + pad + name_h)
+        _draw_name(pdf, product, slot, stock, top=pad, height=name_h)
         return
 
     barcode, _ = barcode_for(product.sku, stock)

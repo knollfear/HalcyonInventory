@@ -305,6 +305,19 @@ labels get used, and what the marker sticker will say.
             would come out under the readable minimum:
             {% for sku, mil in density_problems %}
               <code>{{ sku }}</code> ({{ mil|floatformat:1 }} mil){% if not forloop.last %}, {% endif %}
+
+        {% if short_bars %}
+          <div class="warn">
+            <strong>Bars will be short.</strong>
+            A name-and-barcode label on this stock leaves the barcode about
+            {{ short_bars.0|floatformat:0 }}pt tall, against the
+            {{ short_bars.1|floatformat:0 }}pt this symbol needs to be found
+            reliably in a photo. It still scans at the till — module width is
+            unchanged — but filing photos to products by barcode gets less
+            dependable. Use taller stock, or print the two styles as separate
+            runs and give each one the full sticker.
+          </div>
+        {% endif %}
             {% endfor %}.
             Shorten the SKU or use wider stock.
           </div>

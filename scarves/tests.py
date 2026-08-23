@@ -9628,7 +9628,8 @@ class LabelStyleTests(TestCase):
         pdf = canvas.Canvas(io.BytesIO())
         size, lines = labelmod._wrap_to_fit(
             pdf, "Extraordinarily Verbose Colorway Name That Will Never Fit",
-            max_w=40, max_pt=labelmod.NAME_MAX_PT, min_pt=labelmod.NAME_MIN_PT,
+            max_w=40, max_h=28.8,
+            max_pt=labelmod.NAME_MAX_PT, min_pt=labelmod.NAME_MIN_PT,
         )
         self.assertGreaterEqual(size, labelmod.NAME_MIN_PT)
         for line in lines:
@@ -9647,3 +9648,206 @@ class LabelStyleTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["run"].style, labelmod.NAME)
+
+
+class BothLabelStyleTests(TestCase):
+    """Name and barcode on one sticker, and the warning that goes with it.
+
+    The two jobs fit comfortably on tall stock and fight on short stock. The
+    thing that loses is bar *height*, and height is what a decoder needs to
+    locate a symbol in a hurried photograph — which is the job the barcode is
+    doing here, since the till has no scanner. So the page says when the stock
+    can't give it enough room.
+
+    It warns rather than refuses, unlike `density_problems`. Short bars
+    degrade; bars under `MIN_MODULE_MIL` don't scan at all. Only one of those
+    is worth taking the choice away for.
+    """
+
+    def _stock(self, name, height):
+        return LabelStock.objects.create(
+            name=name, page_width_in=Decimal("8.5"), page_height_in=Decimal("11"),
+            label_width_in=Decimal("1.75"), label_height_in=Decimal(height),
+            rows=4, columns=4, margin_left_in=Decimal("0.3"),
+            margin_top_in=Decimal("0.5"), pitch_x_in=Decimal("2.0"),
+            pitch_y_in=Decimal(height),
+        )
+
+    def setUp(self):
+        # 0.5in clears the bar-height bar; 0.3in does not. Both are printed
+        # here rather than assumed — the threshold moves with the stock.
+        self.short = self._stock("Short 0.3in", "0.3")
+        self.ok = self._stock("Current 0.5in", "0.5")
+        self.tall = self._stock("Tall 1.25in", "1.25")
+        self.product = make_product(make_recipe("Stormy Sea"), "Stormy Silk",
+                                    with_image=False)
+        self.product.number_on_hand = 3
+        self.product.save()
+
+    def _run(self, style):
+        return labelmod.inventory_run(style=style)
+
+    def test_it_renders_on_every_stock(self):
+        for stock in (self.short, self.ok, self.tall):
+            pdf = labelmod.render_run(self._run(labelmod.NAME_AND_BARCODE), stock)
+            self.assertTrue(pdf.startswith(b"%PDF"))
+
+    def test_short_stock_is_flagged_and_taller_stock_is_not(self):
+        run = self._run(labelmod.NAME_AND_BARCODE)
+        self.assertIsNotNone(labelmod.short_bars(run, self.short))
+        self.assertIsNone(labelmod.short_bars(run, self.ok))
+        self.assertIsNone(labelmod.short_bars(run, self.tall))
+
+    def test_the_threshold_scales_with_the_stock(self):
+        """A constant tuned on 1.75in stock would quietly stop meaning
+        anything on the larger stock being considered — wider labels make
+        wider symbols, and a wider symbol needs more height to stay findable
+        in a photo."""
+        run = self._run(labelmod.NAME_AND_BARCODE)
+        wide = LabelStock.objects.create(
+            name="Wide 4in", page_width_in=Decimal("8.5"),
+            page_height_in=Decimal("11"), label_width_in=Decimal("4.0"),
+            label_height_in=Decimal("0.5"), rows=4, columns=2,
+            margin_left_in=Decimal("0.25"), margin_top_in=Decimal("0.5"),
+            pitch_x_in=Decimal("4.1"), pitch_y_in=Decimal("0.5"),
+        )
+        self.assertGreater(
+            labelmod.min_bar_height(run, wide),
+            labelmod.min_bar_height(run, self.ok),
+        )
+
+    def test_the_other_styles_never_trip_the_warning(self):
+        """Barcode-only gives the bars everything but one 5.5pt line, and a
+        name-only label has none to be short."""
+        for style in (labelmod.BARCODE, labelmod.NAME):
+            self.assertIsNone(labelmod.short_bars(self._run(style), self.short))
+
+    def test_the_name_band_grows_with_the_label(self):
+        """A share rather than a fixed band, so taller stock spends the extra
+        room on readable type instead of handing it all to the bars."""
+        short_name, short_bar = labelmod.both_geometry(self.ok)
+        tall_name, tall_bar = labelmod.both_geometry(self.tall)
+
+        self.assertGreater(tall_name, short_name)
+        self.assertGreater(tall_bar, short_bar)
+        self.assertLessEqual(tall_name, labelmod.NAME_MAX_PT)
+
+    def test_short_bars_do_not_change_module_width(self):
+        """Height and scannability are different axes. Squeezing the bars must
+        not push the SKU under `MIN_MODULE_MIL` — that guard is about width,
+        and a `both` run has to stay subject to it."""
+        _, bar_pt = labelmod.both_geometry(self.ok)
+        _, mil_squeezed = labelmod.barcode_for(
+            self.product.sku, self.ok, bar_height=bar_pt)
+        _, mil_full = labelmod.barcode_for(self.product.sku, self.ok)
+
+        self.assertAlmostEqual(mil_squeezed, mil_full, places=6)
+
+    def test_a_missing_sku_is_still_skipped(self):
+        """It prints bars, so it needs something to encode."""
+        blank = make_product(make_recipe("Nameless"), "Nameless Silk",
+                             with_image=False)
+        blank.number_on_hand = 2
+        blank.save()
+        FinishedProduct.objects.filter(pk=blank.pk).update(sku="")
+
+        run = self._run(labelmod.NAME_AND_BARCODE)
+        self.assertIn(blank.pk, [p.pk for p in run.skipped_no_sku])
+
+    def test_the_style_is_offered_on_the_page(self):
+        user = User.objects.create_user("both-staff", password="pw")
+        self.client.force_login(user)
+
+        html = self.client.get(reverse("label_index")).content.decode()
+        self.assertIn(f'value="{labelmod.NAME_AND_BARCODE}"', html)
+
+
+class NameBoxWidthTests(TestCase):
+    """Text is measured against the bars, not against the label.
+
+    `barcode.width` is the trap and it is the one CLAUDE.md already warns
+    about from the production-sheet side: reportlab pins Code128 quiet zones
+    at a quarter inch a side and never scales them, so the drawn object comes
+    out *wider than the sticker* — 134.8pt of object on a 126pt label. Text
+    fitted to the label got a fifth of an inch a side more room than the bars
+    above it used, ran visibly wider than the symbol, and read as overflowing.
+    """
+
+    def setUp(self):
+        self.stock = LabelStock.objects.create(
+            name="1.75x0.5", page_width_in=Decimal("8.5"),
+            page_height_in=Decimal("11"), label_width_in=Decimal("1.75"),
+            label_height_in=Decimal("0.5"), rows=20, columns=4,
+            margin_left_in=Decimal("0.3"), margin_top_in=Decimal("0.5"),
+            pitch_x_in=Decimal("2.0"), pitch_y_in=Decimal("0.5"),
+        )
+        self.product = make_product(make_recipe("Stormy Sea"), "Stormy Silk",
+                                    with_image=False)
+
+    def test_the_object_really_is_wider_than_the_label(self):
+        """Pinned because everything else here follows from it, and because a
+        reportlab change would otherwise silently move the text box."""
+        barcode, _ = labelmod.barcode_for(self.product.sku, self.stock)
+        label_pt = float(self.stock.label_width_in) * 72
+
+        self.assertGreater(barcode.width, label_pt)
+        self.assertEqual(barcode.lquiet, 18.0)
+        self.assertEqual(barcode.rquiet, 18.0)
+
+    def test_bars_only_width_strips_the_quiet_zones(self):
+        barcode, _ = labelmod.barcode_for(self.product.sku, self.stock)
+
+        self.assertAlmostEqual(
+            labelmod.bars_only_width(barcode),
+            barcode.width - barcode.lquiet - barcode.rquiet,
+        )
+
+    def test_the_text_box_is_the_bars_and_fits_the_label(self):
+        box = labelmod.name_box_width(self.product, self.stock)
+        barcode, _ = labelmod.barcode_for(self.product.sku, self.stock)
+        label_pt = float(self.stock.label_width_in) * 72
+
+        self.assertAlmostEqual(box, labelmod.bars_only_width(barcode))
+        self.assertLess(box, label_pt)
+
+    def test_a_product_with_no_sku_falls_back_to_the_padded_label(self):
+        """Only reachable in a name-only run, where there are no bars to
+        disagree with."""
+        FinishedProduct.objects.filter(pk=self.product.pk).update(sku="")
+        self.product.refresh_from_db()
+
+        expected = float(self.stock.label_width_in) * 72 - labelmod._pt(labelmod.PAD_IN) * 2
+        self.assertAlmostEqual(
+            labelmod.name_box_width(self.product, self.stock), expected)
+
+    def test_text_never_exceeds_the_box(self):
+        from reportlab.pdfgen import canvas
+        import io
+
+        pdf = canvas.Canvas(io.BytesIO())
+        box = labelmod.name_box_width(self.product, self.stock)
+        for name in ("Stormy Sea", "Valentine", "Chartreuse Neon",
+                     "Autumn Harvest Moonrise", "Supercalifragilistic"):
+            size, lines = labelmod._wrap_to_fit(
+                pdf, name, box, 28.8,
+                max_pt=labelmod.NAME_MAX_PT, min_pt=labelmod.NAME_MIN_PT,
+            )
+            for line in lines:
+                self.assertLessEqual(
+                    pdf.stringWidth(line, "Helvetica-Bold", size), box + 0.01,
+                    f"{name!r} at {size}pt runs past the bars",
+                )
+
+    def test_a_tall_block_is_clamped_to_its_band(self):
+        """Wrapping to a second line to satisfy the width is what makes a
+        block too tall, so a size passing one test can fail the other."""
+        from reportlab.pdfgen import canvas
+        import io
+
+        pdf = canvas.Canvas(io.BytesIO())
+        size, lines = labelmod._wrap_to_fit(
+            pdf, "Autumn Harvest Moonrise", 98.8, 12.0,
+            max_pt=labelmod.NAME_MAX_PT, min_pt=labelmod.NAME_MIN_PT,
+        )
+
+        self.assertLessEqual(size * labelmod.LINE_SPACING * len(lines), 12.0)
