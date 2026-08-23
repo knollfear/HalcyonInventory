@@ -3725,10 +3725,6 @@ def label_index(request):
             "padding": len(blanks),
             "plan": labels.plan_sheets(stock, len(sequence), start_at, blanks),
             "density_problems": labels.density_problems(run, stock),
-            # Warns rather than blocks: short bars degrade in a photo, they
-            # don't stop scanning. Whoever picked this style can see the
-            # sticker they're holding.
-            "short_bars": labels.short_bars(run, stock),
             "pdf_url": f"{reverse('label_pdf')}?{request.GET.urlencode()}",
             "calibration_url": (
                 f"{reverse('label_calibration_pdf')}?stock={stock.pk}"
@@ -3773,20 +3769,6 @@ def label_pdf(request):
             f"the SKU or use wider stock.",
         )
         return redirect(f"{reverse('label_index')}?{request.GET.urlencode()}")
-
-    short = labels.short_bars(run, stock)
-    if short is not None:
-        bar_pt, needed = short
-        messages.warning(
-            request,
-            f"{stock.name} is short for a name-and-barcode label: the bars "
-            f"come out {bar_pt / 72 * 25.4:.1f}mm tall against the "
-            f"{needed / 72 * 25.4:.1f}mm this symbol needs to be found "
-            f"reliably in a photo. They still scan at the till — module width "
-            f"is unchanged — but filing photos to products by barcode gets "
-            f"less dependable. Taller stock, or print the two styles as "
-            f"separate runs.",
-        )
 
     pdf = labels.render_run(run, stock, start_at)
     response = HttpResponse(pdf, content_type="application/pdf")
