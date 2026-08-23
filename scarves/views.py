@@ -2821,8 +2821,15 @@ def color_bands_page(request):
             "label": f"{colorbands.BAND_LABELS[below]} / {colorbands.BAND_LABELS[above]}",
         })
 
+    # Yellow/green is the default because it is the argument people actually
+    # have — chartreuse and avocado are the jars two reasonable people fall out
+    # over. Opening on red/orange, first only because it is first round the
+    # wheel, buries that behind a boundary nobody disputes.
     wanted = request.GET.get("edge")
-    edge = next((e for e in edges if e["slug"] == wanted), None) or edges[0]
+    fallback = next(
+        (e for e in edges if e["slug"] == "yellow-green"), edges[0]
+    )
+    edge = next((e for e in edges if e["slug"] == wanted), None) or fallback
 
     # Where the slider is sitting rides in the URL beside which line it is,
     # because the page's job is to start an argument and an argument you can't

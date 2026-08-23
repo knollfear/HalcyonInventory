@@ -5546,11 +5546,17 @@ class ColorBandsPageTests(TestCase):
         response = self.client.get(reverse("color_bands_page"), {"edge": "green-blue"})
         self.assertEqual(response.context["edge"]["slug"], "green-blue")
 
+    def test_it_opens_on_the_argument_people_actually_have(self):
+        """Chartreuse and avocado are the jars two reasonable people fall out
+        over. Red/orange is first only because it is first round the wheel."""
+        response = self.client.get(reverse("color_bands_page"))
+        self.assertEqual(response.context["edge"]["slug"], "yellow-green")
+
     def test_an_unknown_edge_falls_back_rather_than_erroring(self):
         """A hand-edited or stale link lands on a working page."""
         response = self.client.get(reverse("color_bands_page"), {"edge": "chartreuse-ish"})
         self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.context["edge"]["slug"])
+        self.assertEqual(response.context["edge"]["slug"], "yellow-green")
 
     def test_where_the_slider_sits_rides_in_the_url_too(self):
         """The page's job is to start an argument, and an argument you can't
