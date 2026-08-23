@@ -1,4 +1,5 @@
 import base64
+import colorsys
 from urllib.parse import urlencode
 import hashlib
 import hmac
@@ -27,6 +28,7 @@ from django.views.decorators.http import require_POST, require_http_methods
 
 from .models import (
     BoothPhoto,
+    Dye,
     FinishedProduct,
     FinishedProductImage,
     InventoryLog,
@@ -45,7 +47,7 @@ from django.shortcuts import render, redirect
 from django.template.response import TemplateResponse
 
 from . import colorbands, crew, labels, production, sheetscan, timesheets
-from .colorutils import nearest_by_color, pick_color_cluster
+from .colorutils import hex_to_rgb, nearest_by_color, pick_color_cluster
 from .forms import (
     BoothPhotoForm,
     HoursForm,
@@ -2774,6 +2776,57 @@ def game_board(request):
         "instance_id": uuid.uuid4().hex[:8],
     })
     return _cors_headers(response)
+
+
+@page_meta(
+    title="Colour Bands",
+    description="How a dye's hex becomes a section of the rainbow reference "
+                "sheet. Every dye on file as a swatch, plotted by hue, with the "
+                "yellow/green boundary draggable so the judgement calls are "
+                "visible rather than asserted.",
+    category="Public",
+    note="No login required. Explores the classifier; changes nothing.",
+)
+def color_bands_page(request):
+    """A piece about the colour classifier, readable by anyone.
+
+    Almost all template — but not a static file, for two reasons. The dyes are
+    read live, so the page picks up whatever gets bought next week rather than
+    freezing at the catalogue as it stood the day it was written. And the
+    boundary is read from `colorbands.YELLOW_ENDS`, so a page quoting 70 after
+    somebody moved it to 61 can't happen.
+
+    Each dye carries the band *Python* gave it. The slider re-classifies in the
+    browser for the sake of exploring, and the page says so when the two
+    disagree — the same rule the rest of the colour code follows: show the
+    guess, never let it pass as the answer.
+    """
+    dyes = []
+    for dye in Dye.objects.select_related("brand"):
+        rgb = hex_to_rgb(dye.hex_color)
+        if not rgb:
+            # A dye with no colour contributes nothing here, exactly as it
+            # contributes nothing to a band, a palette or a rainbow sheet.
+            continue
+        r, g, b = (c / 255.0 for c in rgb)
+        h, ll, sat = colorsys.rgb_to_hls(r, g, b)
+        dyes.append({
+            "name": dye.name,
+            "hex": dye.hex_color,
+            "hue": round(h * 360, 1),
+            "sat": round(sat, 3),
+            "light": round(ll, 3),
+            "band": colorbands.band_for_hex(dye.hex_color),
+            "brand": dye.brand.name if dye.brand_id else "",
+        })
+    dyes.sort(key=lambda d: d["hue"])
+
+    return render(request, "scarves/color_bands.html", {
+        "dyes_json": dyes,
+        "bands": colorbands.BANDS,
+        "yellow_ends": colorbands.YELLOW_ENDS,
+        "dye_count": len(dyes),
+    })
 
 
 @page_meta(

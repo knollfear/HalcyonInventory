@@ -211,6 +211,7 @@ urlpatterns = [
     # two unrelated pages. Each board endpoint sits beneath its own page: the
     # boards send CORS headers and are fetched directly by any page embedding
     # a game, so they're as public as the pages themselves.
+    path("public/color-bands/", views.color_bands_page, name="color_bands_page"),
     path("public/games/match/", views.game_page, name="game_page"),
     path("public/games/match/board/", views.game_board, name="game_board"),
     path("public/games/quiz/", views.quiz_page, name="quiz_page"),

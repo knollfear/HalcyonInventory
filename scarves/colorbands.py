@@ -85,7 +85,15 @@ NEUTRALS = (GREY, BLACK)
 CHROMATIC = tuple(s for s in BAND_SLUGS if s not in NEUTRALS)
 
 
-def band_for_hsl(h, s, ll, *, black=0.12, grey=0.18, brown_l=0.60):
+#: Where yellow stops and green starts, in degrees of hue. Named rather than
+#: inlined because it is the one boundary anybody has actually examined, and
+#: `public/color-bands/` prints the number on the page — a page quoting 70
+#: while the code said 61 would be worse than no page.
+YELLOW_ENDS = 61.0
+
+
+def band_for_hsl(h, s, ll, *, black=0.12, grey=0.18, brown_l=0.60,
+                 yellow_ends=YELLOW_ENDS):
     """The band for one color, given hue (0-360) and HLS saturation/lightness.
 
     `black`, `grey` and `brown_l` are all loosened or tightened by the photo
@@ -118,7 +126,7 @@ def band_for_hsl(h, s, ll, *, black=0.12, grey=0.18, brown_l=0.60):
         return "pink" if ll > 0.62 else "red"
     if h < 45:
         return "orange"
-    if h < 61:
+    if h < yellow_ends:
         # 61, not 70. Sorted by hue the catalogue has an empty corridor from
         # 69.2 to 79.3 — no dye lives there — so a line anywhere in it classifies
         # nothing, which is how 70 survived unexamined. Below the corridor sits a

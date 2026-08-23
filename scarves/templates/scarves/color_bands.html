@@ -1,0 +1,315 @@
+{% extends "scarves/base_public.html" %}
+{% comment %}
+A piece about the colour classifier, for anyone.
+
+The page's argument is that a boundary you can drag is worth more than a
+boundary you are told about: the yellow/green line sat at 70 degrees for as
+long as it did because no dye lives between 69.2 and 79.3, so it classified
+nothing and nobody ever saw it be wrong. Showing the jars in hue order makes
+that empty corridor plain in a second.
+
+Each swatch carries the band Python gave it. The slider reclassifies in the
+browser purely to explore, and the page says so the moment the two disagree —
+never letting the exploration read as what the app actually does.
+{% endcomment %}
+
+{% block title %}Colour Bands{% endblock %}
+{% block heading %}Colour Bands{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+
+  :root { --column: 1060px; }
+
+  .lede { max-width: 62ch; color: #444; }
+  .lede + .lede { margin-top: .6rem; }
+  .sec { margin-top: 2.6rem; }
+  .sec > h2 {
+      font-size: 1.05rem; margin: 0 0 .3rem;
+      letter-spacing: -.005em;
+  }
+  .sec > p { max-width: 62ch; color: #444; font-size: .92rem; margin: 0 0 1rem; }
+
+  .panel {
+      background: #fff; border: 1px solid #e2e6ea; border-radius: 8px;
+      padding: 1rem 1.1rem; display: flex; flex-direction: column; gap: .9rem;
+  }
+  .ctl { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; }
+  .ctl label {
+      font-size: .72rem; text-transform: uppercase; letter-spacing: .1em;
+      color: #667; font-weight: 700;
+  }
+  input[type=range] { flex: 1; min-width: 200px; accent-color: var(--accent); }
+  input[type=range]:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+  .readout {
+      font-variant-numeric: tabular-nums; font-weight: 700;
+      font-size: 1.25rem; color: var(--accent); min-width: 4.5ch;
+  }
+  .presets { display: flex; gap: .4rem; flex-wrap: wrap; }
+  .presets button {
+      font: inherit; font-size: .8rem; padding: .25rem .7rem; cursor: pointer;
+      border: 1px solid #d5dbe1; border-radius: 4px; background: #fff; color: #445;
+  }
+  .presets button:hover { border-color: var(--accent); color: var(--accent); }
+  .presets button[aria-pressed="true"] {
+      background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600;
+  }
+  .presets button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .tally { font-size: .82rem; color: #556; }
+  .tally.exploring { color: #8a5a00; font-weight: 600; }
+
+  /* --- the hue ruler --- */
+  .rulerbox { overflow-x: auto; margin-top: 1.6rem; }
+  .ruler { position: relative; min-width: 660px; height: 158px; }
+  .axis { position: absolute; left: 0; right: 0; bottom: 34px; height: 1px; background: #d5dbe1; }
+  .tk {
+      position: absolute; bottom: 20px; transform: translateX(-50%);
+      font-size: .66rem; color: #889; font-variant-numeric: tabular-nums;
+  }
+  .tk::before {
+      content: ""; position: absolute; left: 50%; bottom: -10px;
+      width: 1px; height: 8px; background: #d5dbe1;
+  }
+  .chip {
+      position: absolute; bottom: 44px; transform: translateX(-50%);
+      width: 30px; height: 30px; border-radius: 50%;
+      border: 1px solid rgba(0,0,0,.22); box-shadow: 0 1px 3px rgba(0,0,0,.12);
+  }
+  .chip b {
+      position: absolute; bottom: 36px; left: 50%; font-weight: 400;
+      transform: translateX(-50%) rotate(-42deg); transform-origin: left bottom;
+      white-space: nowrap; font-size: .66rem; color: #556;
+  }
+  .bound { position: absolute; top: 0; bottom: 34px; width: 2px; background: var(--accent); z-index: 3; }
+  .bound i {
+      position: absolute; top: -20px; left: 50%; transform: translateX(-50%);
+      background: var(--accent); color: #fff; font-style: normal; font-weight: 700;
+      font-size: .64rem; padding: .1rem .45rem; border-radius: 3px; white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+  }
+  .gap { position: absolute; bottom: 35px; top: 0; background: #f0f2f5; z-index: 0; }
+  .gap em {
+      position: absolute; bottom: 6px; left: 50%; transform: translateX(-50%);
+      font-style: normal; font-size: .64rem; color: #889; white-space: nowrap;
+  }
+
+  /* --- cards --- */
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(178px, 1fr)); gap: .7rem; }
+  .card {
+      border: 1px solid #e2e6ea; border-radius: 6px; overflow: hidden; background: #fff;
+  }
+  .card.moved { box-shadow: 0 0 0 2px var(--accent); }
+  .card .sw { height: 68px; border-bottom: 1px solid rgba(0,0,0,.1); }
+  .card .meta { padding: .5rem .6rem; display: flex; flex-direction: column; gap: .35rem; }
+  .card .nm { font-size: .83rem; font-weight: 600; line-height: 1.3; }
+  .card .row { display: flex; align-items: center; justify-content: space-between; gap: .4rem; }
+  .card .hx { font-size: .7rem; color: #889; font-variant-numeric: tabular-nums; }
+  .pill {
+      font-size: .62rem; text-transform: uppercase; letter-spacing: .07em;
+      font-weight: 700; padding: .1rem .45rem; border-radius: 3px; color: #fff; white-space: nowrap;
+  }
+
+  /* --- catalogue --- */
+  .bandblock { margin-bottom: 1.1rem; }
+  .bandhead {
+      display: flex; align-items: baseline; gap: .6rem;
+      border-bottom: 1px solid #e2e6ea; padding-bottom: .25rem; margin-bottom: .45rem;
+  }
+  .bandhead h3 { margin: 0; font-size: .95rem; }
+  .bandhead span { font-size: .74rem; color: #889; font-variant-numeric: tabular-nums; }
+  .strip { display: flex; flex-wrap: wrap; gap: 4px; }
+  .dot { width: 28px; height: 28px; border-radius: 4px; border: 1px solid rgba(0,0,0,.18); }
+{% endblock %}
+
+{% block content %}
+  <p class="lede">
+    Every scarf on the rainbow reference sheet has to be filed under a colour, and
+    that decision starts from one number: the hue of each dye that went into it.
+    <strong>Hue alone gets it wrong constantly</strong> — it calls black red, and
+    <code>#000001</code> blue — so saturation asks whether a thing is a colour at all,
+    and lightness catches the tints and shades nobody names by hue.
+  </p>
+  <p class="lede">
+    What follows is all {{ dye_count }} dyes on file, laid out by hue. The boundary
+    between yellow and green currently sits at <strong>{{ yellow_ends|floatformat:"-1" }}&deg;</strong>.
+    Drag it and watch which jars change sides.
+  </p>
+
+  <div class="sec">
+    <div class="panel">
+      <div class="ctl">
+        <label for="cut">Yellow ends at</label>
+        <input type="range" id="cut" min="45" max="100" step="0.5"
+               value="{{ yellow_ends|floatformat:'-1' }}"
+               aria-label="Yellow to green boundary, in degrees of hue">
+        <span class="readout" id="out"></span>
+      </div>
+      <div class="ctl">
+        <div class="presets" id="presets"></div>
+        <span class="tally" id="tally"></span>
+      </div>
+    </div>
+
+    <div class="rulerbox"><div class="ruler" id="ruler"></div></div>
+  </div>
+
+  <div class="sec">
+    <h2>Why this boundary and not another</h2>
+    <p>
+      Sorted by hue, the catalogue has a stretch from 69.2&deg; to 79.3&deg; with
+      <strong>no dye in it at all</strong>. A boundary anywhere inside that gap classifies
+      nothing — which is how the old line at 70&deg; survived without anyone seeing it be
+      wrong. Below the gap sits a cluster that reads green to anyone holding it, and the
+      nearest true yellow underneath is Fluorescent Lemon at exactly 60.0&deg;.
+    </p>
+    <div class="cards" id="focus"></div>
+  </div>
+
+  <div class="sec">
+    <h2>The whole catalogue</h2>
+    <p>
+      Every dye sorted into its section by the same three-axis rule. Hover a square for
+      its name. Grey and black are working colours here — they ground the colours beside
+      them — so a recipe only gets filed under one of them when it is the <em>only</em>
+      thing there.
+    </p>
+    <div id="cat"></div>
+  </div>
+
+  <details>
+    <summary>What the classifier does and doesn&rsquo;t decide</summary>
+    <p>
+      Nothing on this page writes anything, and neither does the classifier itself. It
+      fills a form in and a person confirms it. That is deliberate: a wrong band is
+      <em>silent</em> — you look in the orange section, the scarf isn&rsquo;t there, and
+      nothing tells you it was filed under red. Measured against the dyes actually in use,
+      the hex path gets 85&ndash;90% right, which is nowhere near good enough to print unread.
+    </p>
+    <p>
+      There is no indigo section. The blues here run 219&ndash;248&deg; and the violets
+      254&ndash;277&deg;, so indigo has no territory of its own — the section would be empty
+      or arbitrary, and worse, you&rsquo;d never know whether to look there or in blue.
+      Pink and brown are sections for the opposite reason: both are what someone actually
+      says out loud about a scarf.
+    </p>
+  </details>
+
+  {{ dyes_json|json_script:"dye-data" }}
+  {{ bands|json_script:"band-data" }}
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  "use strict";
+  const DYES = JSON.parse(document.getElementById("dye-data").textContent);
+  const BANDS = JSON.parse(document.getElementById("band-data").textContent);
+  const COLOR = {}, LABEL = {}, ORDER = [];
+  BANDS.forEach(function (b) { ORDER.push(b[0]); LABEL[b[0]] = b[1]; COLOR[b[0]] = b[2]; });
+
+  const DEFAULT_CUT = {{ yellow_ends|floatformat:"-1" }};
+
+  /* A second copy of scarves.colorbands.band_for_hsl, and the only reason it is
+     tolerable is that it never decides anything: each dye already carries the
+     band Python gave it, and this runs only while the slider is being moved.
+     The moment the two disagree the page says it is exploring. */
+  function band(h, s, ll, cut) {
+    if (ll <= 0.12) return "black";
+    if (ll >= 0.88 && s < 0.50) return "grey";
+    if (s < 0.18) return "grey";
+    /* Not the band boundary: this 70 is how far up the warm end cream reaches. */
+    if (ll >= 0.78 && s < 0.65 && h < 70) return "grey";
+    if (ll < 0.35 && s < 0.55 && (h < 45 || h > 340)) return "brown";
+    if (h >= 20 && h < 45 && ll < 0.60 && s < 0.75) return "brown";
+    if (h < 15 || h >= 345) return ll > 0.62 ? "pink" : "red";
+    if (h < 45) return "orange";
+    if (h < cut) return "yellow";
+    if (h < 178) return "green";
+    if (h < 250) return "blue";
+    if (h < 330) return "purple";
+    return ll > 0.55 ? "pink" : "red";
+  }
+  const at = (d, cut) => cut === DEFAULT_CUT ? d.band : band(d.hue, d.sat, d.light, cut);
+
+  const LO = 40, HI = 100, pos = h => ((h - LO) / (HI - LO)) * 100;
+  const cut = document.getElementById("cut"), out = document.getElementById("out");
+  const tally = document.getElementById("tally"), focus = document.getElementById("focus");
+  const cat = document.getElementById("cat");
+
+  /* Fixed furniture, drawn once. */
+  let html = '<div class="axis"></div>';
+  const g0 = pos(69.2), g1 = pos(79.3);
+  html += '<div class="gap" style="left:' + g0 + '%;width:' + (g1 - g0) +
+          '%"><em>no dye here</em></div>';
+  for (let h = LO; h <= HI; h += 10) {
+    html += '<div class="tk" style="left:' + pos(h) + '%">' + h + '°</div>';
+  }
+  DYES.filter(d => d.hue >= LO && d.hue <= HI).forEach(function (d) {
+    html += '<div class="chip" style="left:' + pos(d.hue) + '%;background:' + d.hex +
+            '" title="' + d.name + ' — ' + d.hue + '°"><b>' +
+            d.name.replace(/^\d+\s/, "") + '</b></div>';
+  });
+  html += '<div class="bound" id="bound"><i id="boundlbl"></i></div>';
+  document.getElementById("ruler").innerHTML = html;
+  const bound = document.getElementById("bound"), boundlbl = document.getElementById("boundlbl");
+
+  const near = DYES.filter(d => d.hue >= 60 && d.hue <= 70);
+  focus.innerHTML = near.map(d =>
+    '<div class="card" data-hue="' + d.hue + '">' +
+      '<div class="sw" style="background:' + d.hex + '"></div>' +
+      '<div class="meta"><div class="nm">' + d.name + '</div>' +
+      '<div class="row"><span class="hx">' + d.hue.toFixed(1) + '°</span>' +
+      '<span class="pill" data-pill></span></div></div></div>').join("");
+
+  document.getElementById("presets").innerHTML =
+    [[DEFAULT_CUT, DEFAULT_CUT + "° — today"], [70, "70° — the old line"]]
+      .map(p => '<button type="button" data-v="' + p[0] + '">' + p[1] + '</button>').join("");
+
+  function render() {
+    const c = parseFloat(cut.value);
+    const label = (c % 1 ? c.toFixed(1) : c.toFixed(0)) + "°";
+    out.textContent = label;
+    boundlbl.textContent = label;
+    bound.style.left = pos(c) + "%";
+    bound.style.display = (c >= LO && c <= HI) ? "" : "none";
+
+    focus.querySelectorAll(".card").forEach(function (card) {
+      const d = near.find(x => x.hue === parseFloat(card.dataset.hue));
+      const b = at(d, c), pill = card.querySelector("[data-pill]");
+      pill.textContent = LABEL[b];
+      pill.style.background = COLOR[b];
+      card.classList.toggle("moved", b !== d.band);
+    });
+
+    const moved = DYES.filter(d => at(d, c) !== d.band);
+    tally.classList.toggle("exploring", moved.length > 0);
+    tally.textContent = moved.length === 0
+      ? "This is what the app does."
+      : "Exploring — " + moved.length + (moved.length > 1 ? " dyes" : " dye") +
+        " would change section: " + moved.map(d => d.name.replace(/^\d+\s/, "")).join(", ");
+
+    const by = {};
+    ORDER.forEach(b => { by[b] = []; });
+    DYES.forEach(d => { by[at(d, c)].push(d); });
+    cat.innerHTML = ORDER.filter(b => by[b].length).map(b =>
+      '<div class="bandblock"><div class="bandhead"><h3>' + LABEL[b] + '</h3><span>' +
+      by[b].length + '</span></div><div class="strip">' +
+      by[b].map(d => '<div class="dot" style="background:' + d.hex + '" title="' +
+                     d.name + ' — ' + d.hue + '°"></div>').join("") +
+      '</div></div>').join("");
+
+    document.querySelectorAll("#presets button").forEach(btn =>
+      btn.setAttribute("aria-pressed", parseFloat(btn.dataset.v) === c));
+  }
+
+  cut.addEventListener("input", render);
+  document.getElementById("presets").addEventListener("click", function (e) {
+    const b = e.target.closest("button");
+    if (!b) { return; }
+    cut.value = b.dataset.v;
+    render();
+  });
+  render();
+}());
+</script>
+{% endblock %}

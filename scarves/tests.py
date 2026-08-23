@@ -5463,6 +5463,66 @@ class SyncToSquareTests(TestCase):
         self.assertEqual(sent["item_variation_data"]["sku"], self.product.sku)
 
 
+class ColorBandsPageTests(TestCase):
+    """The public piece about the classifier.
+
+    Almost all template, so the things worth testing are the two reasons it
+    isn't a static file: the dyes are live, and the boundary is read from the
+    code rather than typed into the prose.
+    """
+
+    def setUp(self):
+        brand, _ = DyeBrand.objects.get_or_create(name="Dharma Acid Dyes")
+        self.avocado = Dye.objects.create(
+            name="461 Avocado", brand=brand, hex_color="#6f752c"
+        )
+        Dye.objects.create(name="445 Fluor. Lemon", brand=brand, hex_color="#ffff00")
+
+    def test_anyone_can_read_it(self):
+        response = self.client.get(reverse("color_bands_page"))
+        self.assertEqual(response.status_code, 200)
+
+    def test_each_dye_carries_the_band_python_gave_it(self):
+        """The slider reclassifies in the browser, so the page must ship the
+        real answer alongside — otherwise an exploration reads as what the app
+        does."""
+        from .colorbands import band_for_hex
+
+        response = self.client.get(reverse("color_bands_page"))
+        rows = {d["name"]: d for d in response.context["dyes_json"]}
+        for name, row in rows.items():
+            self.assertEqual(row["band"], band_for_hex(row["hex"]), name)
+        self.assertEqual(rows["461 Avocado"]["band"], "green")
+
+    def test_the_boundary_comes_from_the_code(self):
+        """A page quoting 70 after somebody moved it to 61 would be worse than
+        no page at all."""
+        from .colorbands import YELLOW_ENDS
+
+        response = self.client.get(reverse("color_bands_page"))
+        self.assertEqual(response.context["yellow_ends"], YELLOW_ENDS)
+        self.assertContains(response, "61")
+
+    def test_a_dye_with_no_colour_is_left_out(self):
+        """It contributes nothing to a band, a palette or a rainbow sheet, and
+        it would plot at hue zero — a red swatch nobody chose."""
+        Dye.objects.create(
+            name="Typed in at the sink",
+            brand=DyeBrand.objects.get(name="Dharma Acid Dyes"),
+            hex_color="",
+        )
+        response = self.client.get(reverse("color_bands_page"))
+        names = [d["name"] for d in response.context["dyes_json"]]
+        self.assertNotIn("Typed in at the sink", names)
+
+    def test_dyes_arrive_sorted_by_hue(self):
+        """The ruler plots them by hue; the catalogue strips read in the same
+        order, and sorting once server-side is what keeps the two agreeing."""
+        response = self.client.get(reverse("color_bands_page"))
+        hues = [d["hue"] for d in response.context["dyes_json"]]
+        self.assertEqual(hues, sorted(hues))
+
+
 class ImportDyebookTests(TestCase):
     """The dye book is a photograph of a notebook, and it is the only record
     that joins a sales-floor name to a formula.
