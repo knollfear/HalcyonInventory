@@ -35,9 +35,7 @@
   }
 
   .pickers { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
-  .colorcell { display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: center; }
-  .colorcell select { min-width: 150px; }
-  .colorcell .swatch { width: 22px; height: 22px; }
+  .pickers .dyepick { min-width: 11rem; }
   .copyrow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .copied { color: #8a5a00; font-size: 13px; }
   .rowactions { margin-top: 10px; display: flex; gap: 8px; }
@@ -165,27 +163,10 @@
 
   {% if edit_mode %}
     <script src="https://unpkg.com/htmx.org@1.9.12"></script>
-    <script>
-      const dyeHex = {{ dye_hex|safe }};
-
-      function paintSwatch(select) {
-        const swatch = select.parentElement.querySelector(".swatch");
-        if (!swatch) return;
-        const hex = dyeHex[select.value] || "#ffffff";
-        swatch.style.background = hex;
-        swatch.title = hex;
-      }
-      function paintAll(root) {
-        (root || document).querySelectorAll(".colorcell select").forEach(paintSwatch);
-      }
-
-      // Delegated so rows swapped in by htmx are covered without re-binding
-      // (a per-select listener would be lost on every swap).
-      document.addEventListener("change", (e) => {
-        if (e.target.matches(".colorcell select")) paintSwatch(e.target);
-      });
-      document.body.addEventListener("htmx:afterSwap", (e) => paintAll(e.target));
-      paintAll();
-    </script>
+    {% comment %}
+    Loaded after htmx: the picker re-scans on htmx:afterSwap, and a row
+    swapped in before it is listening would come back a plain select.
+    {% endcomment %}
+    {% include "scarves/partials/dye_picker.html" %}
   {% endif %}
 {% endblock %}

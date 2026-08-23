@@ -65,13 +65,12 @@ by htmx stays findable — a row without it would vanish from every search.
         {% endif %}
       </div>
 
+      {% comment %}
+      Each field renders as a DyeSelect, which the type-ahead takes over.
+      The picker draws its own colour chip, so there is none out here.
+      {% endcomment %}
       <div class="pickers">
-        {% for field in form %}
-          <div class="colorcell">
-            {{ field }}
-            <span class="swatch" data-for="{{ field.id_for_label }}"></span>
-          </div>
-        {% endfor %}
+        {% for field in form %}{{ field }}{% endfor %}
       </div>
 
       <div class="rowactions">
@@ -102,8 +101,15 @@ by htmx stays findable — a row without it would vanish from every search.
       {% if recipe.recipe_dyes.all %}
         <div class="swatches">
           {% for rd in recipe.recipe_dyes.all %}
-            <span class="swatch" title="{{ rd.dye.name }} — {{ rd.dye.hex_color }}"
-                  style="background: {{ rd.dye.hex_color }};"></span>
+            {% if rd.dye.hex_color %}
+              <span class="swatch" title="{{ rd.dye.name }} — {{ rd.dye.hex_color }}"
+                    style="background: {{ rd.dye.hex_color }};"></span>
+            {% else %}
+              {% comment %}Hatching, not a blank square: a dye with no
+              colour recorded has to look different from one that is
+              white.{% endcomment %}
+              <span class="dyechip unknown" title="{{ rd.dye.name }} — no colour on file yet"></span>
+            {% endif %}
           {% endfor %}
         </div>
       {% endif %}

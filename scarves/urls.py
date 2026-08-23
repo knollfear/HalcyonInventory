@@ -66,6 +66,9 @@ urlpatterns = [
     ),
 
     # --- Recipes ---
+    # POST-only, from the type-ahead in any dye picker. No @page_meta: there
+    # is no page here, only the "add this dye" the picker offers.
+    path("private/dyes/new/", views.dye_create, name="dye_create"),
     path(
         "private/quick-recipes/",
         views.quick_recipe_entry,

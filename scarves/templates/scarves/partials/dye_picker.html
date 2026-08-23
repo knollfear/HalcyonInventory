@@ -1,0 +1,344 @@
+{% comment %}
+The dye type-ahead. Include from {% templatetag openblock %} block scripts
+{% templatetag closeblock %} on any internal page rendering a `DyeSelect`;
+the styling is in base_internal.html.
+
+Two problems, one control:
+
+* Dharma and Jacquard number their dyes, so `416 Peacock Blue` sorts under 4.
+  A hundred-odd dyes in catalog order is a list nobody can read down, and the
+  browser's own type-to-jump matches the number too. So this filters as you
+  type, on the name with the number taken off as well as the name itself.
+
+* The dye that stops entry is the one that isn't on the list. Adding it takes
+  a name and nothing else — see `NewDyeForm` — and lands in every picker on
+  the page, because the row you were filling in is not the only row that
+  needs it and reloading would cost the four beside it.
+
+It drives a real `<select>` that is still what the form posts, so with the
+script blocked the page is the same form with a longer list. Nothing here
+validates anything: a hand-picked option and a typed one both come back
+through `ModelChoiceField`.
+{% endcomment %}
+<script>
+(function () {
+  var ADD_URL = "{% url 'dye_create' %}";
+  var MAX_SHOWN = 60;   // a phone-length list; past this, keep typing
+
+  function csrfToken() {
+    var field = document.querySelector("input[name=csrfmiddlewaretoken]");
+    if (field) return field.value;
+    var hit = document.cookie.match(/(^|;\s*)csrftoken=([^;]*)/);
+    return hit ? decodeURIComponent(hit[2]) : "";
+  }
+
+  function chip(hex) {
+    var span = document.createElement("span");
+    span.className = hex ? "dyechip" : "dyechip unknown";
+    if (hex) span.style.background = hex;
+    span.title = hex || "no colour on file yet";
+    return span;
+  }
+
+  function optionsOf(select) {
+    return Array.prototype.filter.call(select.options, function (o) { return o.value; });
+  }
+
+  // Every term has to appear somewhere in the option's haystack — so "blue
+  // dharma" and "dharma blue" find the same dyes, which is what someone
+  // typing half-remembered names needs.
+  function matches(option, terms) {
+    var hay = option.dataset.search || option.textContent.toLowerCase();
+    for (var i = 0; i < terms.length; i++) {
+      if (hay.indexOf(terms[i]) === -1) return false;
+    }
+    return true;
+  }
+
+  // Lower sorts first. A prefix hit beats a hit in the middle of a word,
+  // because "cay" should offer Cayenne before Biscay.
+  function rank(option, query) {
+    if (!query) return 3;
+    var sort = option.dataset.sort || "";
+    var name = (option.dataset.name || "").toLowerCase();
+    if (sort.indexOf(query) === 0) return 0;
+    if (name.indexOf(query) === 0) return 1;
+    if ((" " + sort).indexOf(" " + query) !== -1) return 2;
+    return 3;
+  }
+
+  // The same idea as `dye_match_key` server-side: a catalog number and a
+  // `(Primary)` tag are not what makes a dye a different dye. Kept simple
+  // rather than kept identical — this only decides whether to put "add it"
+  // on the menu, and `NewDyeForm` is what actually refuses the duplicate. If
+  // the two ever disagree, the add row appears, the server hands back the
+  // dye that exists, and the picker says so.
+  function matchKey(name) {
+    return (name || "")
+      .toLowerCase()
+      .replace(/^\s*#?\d+\s*[-–—.:)]?\s*/, "")
+      .replace(/\s*\([^()]*\)\s*$/, "")
+      .replace(/[^0-9a-z]+$/, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function exactly(option, query) {
+    var key = option.dataset.key || matchKey(option.dataset.name);
+    return key === matchKey(query);
+  }
+
+  function build(select) {
+    if (select.dataset.pickerReady) return;
+    select.dataset.pickerReady = "1";
+
+    var wrap = document.createElement("div");
+    wrap.className = "dyepick";
+    select.parentNode.insertBefore(wrap, select);
+    wrap.appendChild(select);
+
+    var field = document.createElement("div");
+    field.className = "dyepick-field";
+    var swatch = chip("");
+    var input = document.createElement("input");
+    input.type = "text";
+    input.className = "dyepick-input";
+    input.autocomplete = "off";
+    input.placeholder = "Type a dye…";
+    input.setAttribute("role", "combobox");
+    input.setAttribute("aria-expanded", "false");
+    input.setAttribute("aria-autocomplete", "list");
+    var clear = document.createElement("button");
+    clear.type = "button";
+    clear.className = "dyepick-clear";
+    clear.textContent = "×";
+    clear.title = "Clear this slot";
+    field.appendChild(swatch);
+    field.appendChild(input);
+    field.appendChild(clear);
+
+    var list = document.createElement("ul");
+    list.className = "dyepick-list";
+    list.setAttribute("role", "listbox");
+    list.hidden = true;
+
+    var note = document.createElement("div");
+    note.className = "dyepick-note";
+    note.hidden = true;
+
+    wrap.appendChild(field);
+    wrap.appendChild(list);
+    wrap.appendChild(note);
+
+    var active = -1;
+    var rows = [];
+
+    function chosen() {
+      return select.selectedIndex >= 0 ? select.options[select.selectedIndex] : null;
+    }
+
+    // The input is a view of the select, never the other way round: anything
+    // that ends without a pick (blur, Escape, a typo) comes back to here.
+    function show() {
+      var option = chosen();
+      var hex = option ? option.dataset.hex : "";
+      input.value = option && option.value ? (option.dataset.name || option.textContent) : "";
+      swatch.className = hex ? "dyechip" : "dyechip unknown";
+      swatch.style.background = hex || "";
+      swatch.title = option && option.value
+        ? (hex || "no colour on file yet")
+        : "nothing picked";
+    }
+
+    function close() {
+      list.hidden = true;
+      input.setAttribute("aria-expanded", "false");
+      active = -1;
+    }
+
+    function pick(value) {
+      select.value = value;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      show();
+      close();
+    }
+
+    function highlight(next) {
+      if (!rows.length) return;
+      if (active >= 0 && rows[active]) rows[active].removeAttribute("aria-selected");
+      active = (next + rows.length) % rows.length;
+      rows[active].setAttribute("aria-selected", "true");
+      // Guarded: this is a nicety on a list that mostly fits, and an
+      // exception here would take the whole picker down with it.
+      if (rows[active].scrollIntoView) rows[active].scrollIntoView({ block: "nearest" });
+    }
+
+    function row(option) {
+      var li = document.createElement("li");
+      li.setAttribute("role", "option");
+      li.appendChild(chip(option.dataset.hex));
+      var label = document.createElement("span");
+      label.textContent = option.dataset.name || option.textContent;
+      li.appendChild(label);
+      if (option.dataset.outOfStock) {
+        var oos = document.createElement("span");
+        oos.className = "dyepick-oos";
+        oos.textContent = "out of stock";
+        li.appendChild(oos);
+      }
+      var brand = document.createElement("span");
+      brand.className = "dyepick-brand";
+      brand.textContent = option.dataset.brand || "";
+      li.appendChild(brand);
+      li.addEventListener("mousedown", function (e) {
+        e.preventDefault();          // keep focus; blur would revert the input
+        pick(option.value);
+      });
+      return li;
+    }
+
+    function addRow(query) {
+      var li = document.createElement("li");
+      li.setAttribute("role", "option");
+      li.appendChild(chip(""));
+      var label = document.createElement("span");
+      label.className = "dyepick-add";
+      label.textContent = 'Add "' + query + '" as a new dye';
+      li.appendChild(label);
+      li.addEventListener("mousedown", function (e) {
+        e.preventDefault();
+        create(query);
+      });
+      return li;
+    }
+
+    function plain(text, cls) {
+      var li = document.createElement("li");
+      li.className = cls;
+      li.textContent = text;
+      return li;
+    }
+
+    function render() {
+      var query = input.value.trim().toLowerCase();
+      var terms = query ? query.split(/\s+/) : [];
+      var hits = optionsOf(select)
+        .filter(function (o) { return matches(o, terms); })
+        .map(function (o, i) { return { option: o, rank: rank(o, query), at: i }; });
+      hits.sort(function (a, b) { return a.rank - b.rank || a.at - b.at; });
+
+      list.textContent = "";
+      rows = [];
+      hits.slice(0, MAX_SHOWN).forEach(function (hit) {
+        var li = row(hit.option);
+        rows.push(li);
+        list.appendChild(li);
+      });
+      if (hits.length > MAX_SHOWN) {
+        list.appendChild(plain(
+          (hits.length - MAX_SHOWN) + " more — keep typing", "dyepick-more"));
+      }
+      // Offered whenever the typed name isn't already a dye, not only when
+      // nothing matched: "Cayenne" matching "419 Cayenne Red" must not stop
+      // you recording the plain Cayenne you actually own.
+      var duplicate = hits.some(function (hit) { return exactly(hit.option, query); });
+      if (query && !duplicate) {
+        var li = addRow(input.value.trim());
+        rows.push(li);
+        list.appendChild(li);
+      } else if (!hits.length) {
+        list.appendChild(plain("No dye matches that.", "dyepick-none"));
+      }
+
+      list.hidden = false;
+      input.setAttribute("aria-expanded", "true");
+      highlight(0);
+    }
+
+    function create(name) {
+      var body = new FormData();
+      body.append("name", name);
+      input.disabled = true;
+      fetch(ADD_URL, {
+        method: "POST",
+        headers: { "X-CSRFToken": csrfToken(), "X-Requested-With": "XMLHttpRequest" },
+        body: body,
+        credentials: "same-origin"
+      }).then(function (r) {
+        return r.json().then(function (data) { return { ok: r.ok, data: data }; });
+      }).then(function (res) {
+        input.disabled = false;
+        if (!res.ok) {
+          note.hidden = false;
+          note.textContent = res.data.error || "Couldn't add that dye.";
+          input.focus();
+          return;
+        }
+        // Into every picker on the page, not just this one. The next row
+        // needs the dye as much as this row did, and a reload to get it
+        // would take the unsaved rows with it.
+        publish(res.data);
+        pick(String(res.data.id));
+        note.hidden = false;
+        note.textContent = res.data.created
+          ? "Added — no colour or brand on file yet."
+          : "That dye already existed; picked it.";
+        input.focus();
+      }).catch(function () {
+        input.disabled = false;
+        note.hidden = false;
+        note.textContent = "Couldn't reach the server. Try again.";
+      });
+    }
+
+    input.addEventListener("focus", function () { input.select(); render(); });
+    input.addEventListener("input", function () { note.hidden = true; render(); });
+    input.addEventListener("blur", function () { show(); close(); });
+    input.addEventListener("keydown", function (e) {
+      if (e.key === "ArrowDown") { e.preventDefault(); list.hidden ? render() : highlight(active + 1); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); highlight(active - 1); }
+      else if (e.key === "Enter") {
+        if (!list.hidden && active >= 0 && rows[active]) {
+          e.preventDefault();
+          rows[active].dispatchEvent(new MouseEvent("mousedown"));
+        }
+      } else if (e.key === "Escape") {
+        if (!list.hidden) { e.stopPropagation(); show(); close(); }
+      }
+    });
+    clear.addEventListener("click", function () {
+      note.hidden = true;
+      pick("");
+      input.focus();
+    });
+    field.addEventListener("mousedown", function (e) {
+      if (e.target === field || e.target === swatch) { e.preventDefault(); input.focus(); }
+    });
+    select.addEventListener("change", show);
+
+    show();
+  }
+
+  function publish(dye) {
+    document.querySelectorAll("select[data-dye-picker]").forEach(function (select) {
+      if (select.querySelector('option[value="' + dye.id + '"]')) return;
+      var option = document.createElement("option");
+      option.value = dye.id;
+      option.textContent = dye.label;
+      Object.keys(dye.attrs).forEach(function (key) {
+        option.setAttribute(key, dye.attrs[key]);
+      });
+      select.appendChild(option);
+    });
+  }
+
+  function scan(root) {
+    (root || document).querySelectorAll("select[data-dye-picker]").forEach(build);
+  }
+
+  scan();
+  // Rows swapped in by htmx arrive as plain selects — the server has no idea
+  // the page enhanced the last set.
+  document.body.addEventListener("htmx:afterSwap", function (e) { scan(e.target); });
+})();
+</script>

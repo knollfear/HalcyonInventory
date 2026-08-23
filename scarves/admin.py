@@ -10,6 +10,7 @@ from django.template.response import TemplateResponse
 logger = logging.getLogger(__name__)
 
 from .models import (
+    UNCATEGORIZED_BRAND,
     BoothPhoto,
     CatalogGroup,
     DyeBrand,
@@ -248,10 +249,40 @@ class DyeBrandAdmin(admin.ModelAdmin):
     ordering = ("name",)
 
 
+class NeedsReviewFilter(admin.SimpleListFilter):
+    """Dyes typed in from a recipe picker and not finished off.
+
+    A dye added mid-entry is a name and nothing else — that is the trade that
+    keeps entry moving (see `NewDyeForm`). It costs nothing until somebody
+    asks a colour question of it, at which point it silently contributes
+    nothing: no band on the rainbow sheet, no chip on the dye-collection
+    page, no palette point in the games. This is the list that gets that
+    finished, and it is why the deferral is safe.
+    """
+
+    title = "needs review"
+    parameter_name = "review"
+
+    def lookups(self, request, model_admin):
+        return (("yes", "No colour or no brand yet"), ("no", "Filled in"))
+
+    def queryset(self, request, queryset):
+        unfinished = Q(hex_color="") | Q(brand__name=UNCATEGORIZED_BRAND)
+        if self.value() == "yes":
+            return queryset.filter(unfinished)
+        if self.value() == "no":
+            return queryset.exclude(unfinished)
+        return queryset
+
+
 @admin.register(Dye)
 class DyeAdmin(admin.ModelAdmin):
     list_display = ("name", "brand", "hex_color", "in_stock", "sku")
-    list_filter = ("brand", "in_stock")
+    # Editable in the list, because the cleanup this is for is a colour and a
+    # brand on each of a dozen rows — a job that is one screen here and a
+    # dozen round trips through the change form.
+    list_editable = ("brand", "hex_color", "in_stock")
+    list_filter = (NeedsReviewFilter, "brand", "in_stock")
     search_fields = ("name", "brand__name", "sku")
     ordering = ("brand__name", "name")
 

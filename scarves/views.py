@@ -50,11 +50,13 @@ from .forms import (
     BoothPhotoForm,
     HoursForm,
     LabelRunForm,
+    NewDyeForm,
     ProductionSheetForm,
     QuickRecipeRowForm,
     RecipeDyesForm,
+    dye_option_attrs,
 )
-from .models import Dye, Recipe, normalize_token
+from .models import Recipe, normalize_token
 from .s3utils import download_object, presigned_post, upload_object
 from django.db.models import Prefetch
 
@@ -483,17 +485,47 @@ def adjust_raw_stock(request, pk):
 
 
 
+@require_POST
+@login_required
+def dye_create(request):
+    """Add a dye from a recipe picker, and hand back the option for it.
+
+    Answers with the same data attributes `DyeSelect` renders, so the script
+    can put the new dye into every picker on the page without a reload —
+    which is the point. Reloading to pick up a dye you just named would throw
+    away the four rows typed either side of it.
+
+    A name that already belongs to a dye returns *that* dye with
+    `created: false` rather than an error. The script's job at that moment is
+    to select something, and the honest answer to "add Peacock Blue" when
+    peacock blue exists is to hand back the one that exists — an error would
+    leave the row empty and the person retyping a name that was right.
+    """
+    form = NewDyeForm(request.POST)
+    if not form.is_valid():
+        return JsonResponse(
+            {"error": " ".join(form.errors.get("name", ["That name won't work."]))},
+            status=400,
+        )
+
+    dye, created = form.save()
+    return JsonResponse({
+        "created": created,
+        "id": dye.pk,
+        "label": str(dye),
+        "attrs": dye_option_attrs(dye),
+    })
+
+
 @page_meta(
     title="Quick Recipe Entry",
-    description="Internal form for adding up to 5 recipes at once, with a live "
-                "dye color picker (in-stock dyes only).",
+    description="Internal form for adding up to 5 recipes at once. The dye "
+                "boxes filter as you type, and a dye that isn't on the list "
+                "can be added without leaving the page.",
     category="Recipes",
 )
 @login_required
 def quick_recipe_entry(request):
-    dyes = Dye.objects.filter(in_stock=True).select_related("brand").order_by("brand__name", "name")
-    dye_hex = {str(d.pk): str(d.hex_color) for d in dyes}
-
     forms = [QuickRecipeRowForm(prefix=f"r{i}") for i in range(1, 6)]
 
     if request.method == "POST":
@@ -515,7 +547,7 @@ def quick_recipe_entry(request):
             return render(
                 request,
                 "scarves/quick_recipe_entry.html",
-                {"forms": bound_forms, "dye_hex": dye_hex},
+                {"forms": bound_forms},
             )
 
         if saved_count:
@@ -524,7 +556,7 @@ def quick_recipe_entry(request):
         # nothing saved, but no errors → just reload
         return redirect("quick_recipe_entry")
 
-    return render(request, "scarves/quick_recipe_entry.html", {"forms": forms, "dye_hex": dye_hex})
+    return render(request, "scarves/quick_recipe_entry.html", {"forms": forms})
 
 # ---------------------------------------------------------------------------
 # Rainbow bands: which sections of the reference sheet a colorway claims.
@@ -804,10 +836,6 @@ def recipe_showcase(request):
             "missing_only": missing_only,
             "total_count": total,
             "missing_count": without,
-            # Swatch colours for the pickers, same idea as quick recipe entry.
-            "dye_hex": json.dumps(
-                {str(d.pk): str(d.hex_color) for d in Dye.objects.all()}
-            ),
         },
     )
 

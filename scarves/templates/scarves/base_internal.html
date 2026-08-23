@@ -84,6 +84,62 @@ renders bare. BaseTemplateTests guards it.
   .err, .errorlist { font-size: 12px; color: #8a2f2a; margin-top: 4px; }
   .err ul, .errorlist { margin: 0; padding-left: 1.1rem; }
 
+  /* The dye type-ahead (partials/dye_picker.html). Here rather than on the
+     two pages that use it: it is one control, and a second page copying the
+     rules is how the two drift. The plain <select> underneath is what posts,
+     so everything below is presentation. */
+  .dyepick { position: relative; }
+  .dyepick > select { position: absolute; opacity: 0; pointer-events: none; width: 100%; }
+  .dyepick-field {
+      display: flex; align-items: center; gap: 7px;
+      border: 1px solid #cfd6de; border-radius: 6px; background: #fff;
+      padding: 3px 6px;
+  }
+  .dyepick-field:focus-within {
+      border-color: var(--accent); box-shadow: 0 0 0 3px rgba(21, 88, 160, .12);
+  }
+  .dyepick-input {
+      font: inherit; border: 0; outline: none; padding: 2px 0;
+      min-width: 0; flex: 1; background: transparent;
+  }
+  .dyepick-clear {
+      border: 0; background: none; cursor: pointer; color: #8b929b;
+      font-size: 16px; line-height: 1; padding: 0 2px;
+  }
+  .dyepick-clear:hover { color: #8a2f2a; }
+
+  /* A dye with no hex on file gets hatching, never a colour. A placeholder
+     swatch is a guess somebody then reads off the screen as fact — the same
+     reason colorbands prints no band rather than its best one. */
+  .dyechip {
+      width: 20px; height: 20px; flex: 0 0 20px; border-radius: 5px;
+      border: 1px solid rgba(0,0,0,.25); background: #fff;
+  }
+  .dyechip.unknown {
+      background: repeating-linear-gradient(
+          45deg, #fff, #fff 3px, #d7dde5 3px, #d7dde5 6px);
+  }
+
+  .dyepick-list {
+      position: absolute; z-index: 40; left: 0; right: 0; top: calc(100% + 3px);
+      margin: 0; padding: 4px; list-style: none; max-height: 17rem;
+      overflow-y: auto; background: #fff; border: 1px solid #cfd6de;
+      border-radius: 8px; box-shadow: 0 6px 22px rgba(20, 40, 70, .16);
+      min-width: 16rem;
+  }
+  .dyepick-list[hidden] { display: none; }
+  .dyepick-list li {
+      display: flex; align-items: center; gap: 8px;
+      padding: 5px 7px; border-radius: 6px; cursor: pointer; font-size: 14px;
+  }
+  .dyepick-list li[aria-selected="true"] { background: #eef2f7; }
+  .dyepick-list .dyepick-brand { margin-left: auto; font-size: 11px; color: #8b929b; }
+  .dyepick-list .dyepick-oos { font-size: 11px; color: #8a5a00; }
+  .dyepick-list .dyepick-add { color: var(--accent); font-weight: 600; }
+  .dyepick-list .dyepick-more,
+  .dyepick-list .dyepick-none { color: #8b929b; font-size: 12px; cursor: default; }
+  .dyepick-note { font-size: 11px; color: #8a5a00; margin-top: 3px; }
+
   /* Two weights of button: .btn commits something, .btn-quiet is for the
      many small repeated actions (±1 stock, one dye bath) where a row of
      solid blue would drown the data it sits next to. */

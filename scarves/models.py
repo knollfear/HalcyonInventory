@@ -32,12 +32,77 @@ class DyeBrand(models.Model):
         return self.name
 
 
+#: Brand given to a dye typed in from a recipe page. The dye is real and the
+#: recipe needs it now; which brand's jar it was is a question for later, and
+#: making it a required answer up front is how the dye ends up not recorded at
+#: all. `Dye.needs_review` is what makes "later" findable.
+UNCATEGORIZED_BRAND = "Uncategorized"
+
+#: A leading catalog number, with or without punctuation after it: the `416 `
+#: of `416 Peacock Blue`, the `#25 - ` of `#25 - Sapphire`.
+_NUMBER_PREFIX = re.compile(r"^\s*#?\d+\s*[-–—.:)]?\s*")
+
+
+#: A trailing parenthetical: the `(Primary)` of `402 Fire Engine Red
+#: (Primary)`. Dharma marks its mixing primaries this way.
+_TRAILING_PAREN = re.compile(r"\s*\([^()]*\)\s*$")
+
+
+def dye_match_key(name):
+    """What makes two dye names the same dye, for "is this already on file?".
+
+    Neither the catalog number nor the `(Primary)` tag is part of what the
+    dye *is* — both are catalog furniture, and both are exactly what somebody
+    typing from memory leaves off. Matching on the full string means "Fire
+    Engine Red" doesn't find `402 Fire Engine Red (Primary)`, and the second
+    Fire Engine Red gets created beside the first. From then on the two
+    split a history that reads as complete on either row.
+
+    This is a comparison key only. Nothing is ever displayed or stored from
+    here: the name on the jar keeps its number, because that is how the jar
+    is found on the shelf.
+    """
+    key = dye_sort_name(name)
+    while True:
+        shorter = _TRAILING_PAREN.sub("", key)
+        if shorter == key or not shorter:
+            break
+        key = shorter
+    key = " ".join(key.split()).casefold()
+    # Trailing marks go the same way, for the same reason: Dharma stars a
+    # few names (`409 Dark Navy*`) and nobody types the star.
+    return re.sub(r"[^0-9a-z]+$", "", key) or key
+
+
+def dye_sort_name(name):
+    """A dye name with any leading catalog number taken off.
+
+    Dharma and Jacquard both ship their dyes numbered — `416 Peacock Blue`,
+    `402 Fire Engine Red` — and the number is worth keeping, because it is
+    what is printed on the jar. But it is also the first thing a sort or a
+    search sees, so an alphabetical list of dyes comes out in catalog order
+    and a person hunting for peacock reads all 84 entries. Filed under P
+    instead, with the number still showing.
+
+    A name that is *only* a number keeps it, since the alternative is a dye
+    with no name at all.
+    """
+    return _NUMBER_PREFIX.sub("", name).strip() or name
+
+
 class Dye(models.Model):
     """
     Represents a dye color you keep in inventory.
     """
     name = models.CharField(max_length=100)
-    hex_color = ColorField(default='#FF0000')
+    #: Blank means "nobody has recorded this dye's colour yet", and every
+    #: consumer already treats an unparseable hex as no answer: `colorutils`
+    #: leaves it out of the palette, `colorbands` claims no band for it, and
+    #: the production sheet draws an empty chip. That is the whole reason a
+    #: dye can be added mid-entry with no colour — the alternative is the old
+    #: default, a confident red that reaches the rainbow sheet, the games and
+    #: the dye-collection page as a fact nobody typed.
+    hex_color = ColorField(blank=True, default="")
     brand = models.ForeignKey(
         DyeBrand,
         on_delete=models.PROTECT,
@@ -58,6 +123,22 @@ class Dye(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.brand.name})"
+
+    @property
+    def sort_name(self):
+        """This dye's name with any leading catalog number taken off."""
+        return dye_sort_name(self.name)
+
+    @property
+    def needs_review(self):
+        """Added mid-entry and never cleaned up: no colour, or no real brand.
+
+        Not a validity check — a dye like this works everywhere, it just
+        contributes nothing to any colour question until somebody fills it
+        in. The admin's dye list, filtered to "needs review", is where
+        that gets finished.
+        """
+        return not self.hex_color or self.brand.name == UNCATEGORIZED_BRAND
 
 
 class RawProductCategory(models.Model):

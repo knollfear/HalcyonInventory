@@ -158,6 +158,97 @@ function between `@page_meta`/`@login_required` and the `def` they belong to
 silently moves the decorators onto the helper — the page still renders, but
 unauthenticated and missing from the map. `SiteMapTests` guards this.
 
+## Dye entry: the list you can read, and the dye that isn't on it
+
+The dye boxes on `private/quick-recipes/` and `private/recipes/?edit=true`
+are one control, `DyeSelect` plus `partials/dye_picker.html`. Two failures
+put it there, and both are quiet.
+
+**The catalog number ruins the alphabet.** Dharma and Jacquard number their
+dyes, so `416 Peacock Blue` sorts under 4 — an alphabetical list comes out in
+catalog order, and the browser's own type-to-jump matches the number too.
+`Dye.sort_name` drops the number for sorting and searching; the number stays
+on screen, because it is what is printed on the jar. Sorting happens in
+`DyeSelect.optgroups`, not the queryset, so the regex lives in one place.
+
+**A dye that isn't on the list stops entry.** What actually happens then is
+the recipe gets typed with the dyes that *were* on the list, and the missing
+one is lost — silently, because the recipe looks filled in. So the picker
+offers to add one, and `NewDyeForm` takes a name and nothing else. Brand and
+colour are real questions, but they are not answerable at speed with wet
+gloves on, and demanding them buys a tidy row at the price of no row at all.
+
+Three things make that deferral safe:
+
+- **A new dye has no hex, and blank is honest.** `Dye.hex_color` used to
+  default to red, which reaches the rainbow sheet, the games and the
+  dye-collection page as a fact nobody typed. Blank contributes nothing
+  anywhere instead: no band from `colorbands`, no point in
+  `colorutils.recipe_palette`, an empty chip on the production sheet. Same
+  bargain the colour classifier makes.
+- **`Dye.needs_review` is what makes the unfinished half findable**, and the
+  admin's dye list filters on it with `list_editable` for the colour, brand
+  and stock flag — a dozen rows on one screen rather than a dozen round
+  trips.
+- **`import_dyes` finishes them off wholesale** (below).
+
+**Duplicates are the thing to guard.** `dye_match_key` decides whether two
+names are the same dye: it drops the catalog number, a trailing `(Primary)`
+and a trailing mark, because those are exactly what someone typing from
+memory leaves off. Ten of the 84 acid dyes carry the tag, so getting it wrong
+duplicates the most-used dyes in the range. The picker checks it to decide
+whether to *offer* the add row; `NewDyeForm.find_existing` checks it again on
+the way in and hands back the dye that exists rather than erroring — an error
+would leave the slot empty and the person retyping a name that was right.
+
+The same reasoning made both pickers offer **out-of-stock dyes**. Hiding them
+was survivable while the list was take-it-or-leave-it; now a hidden dye is one
+somebody types in again, and the second `Peacock Blue` splits a history that
+reads as complete on either row.
+
+The plain `<select>` is still what posts and what `ModelChoiceField`
+validates — the script only puts a text box in front of it. With the script
+blocked the page is the same form with a longer list. Rows swapped in by htmx
+re-enhance on `htmx:afterSwap`, which is why the picker is included *after*
+htmx on the showcase.
+
+### `import_dyes`: re-importing the catalog over a live list
+
+`loaddata` cannot do this. The fixtures carry primary keys and `RecipeDye`
+points at a dye *by* primary key, so loading `dharma_dyes.json` over a
+database whose pks drifted rewrites the dye pk 7 refers to — every recipe
+using it changes colour, with no error and no clue, and the symptom is a
+scarf on the reference sheet under a band it was never dyed in.
+
+So `import_dyes` matches on content:
+
+```
+python manage.py import_dyes scarves/fixtures/dharma_dyes.json \
+    --brand "Dharma Acid Dyes" --dry-run
+```
+
+The two catalogs on disk are `fixtures/dharma_dyes.json` (84) and
+`fixtures/jaquard_dyes.json` (48). They are read here as data, not loaded as
+fixtures — see above for why that distinction is the whole point.
+
+- **A colour already on file is skipped**, whatever it is called. That is the
+  rule that makes a re-import safe to run twice: a name tidied up by hand
+  must not come back under the catalog's version of it.
+- **A name already on file with a different colour is a conflict, and is left
+  alone and named.** The colour in the database was put there by a person;
+  the file is a catalog scrape.
+- **A name on file with *no* colour gets filled in** — colour, catalog number
+  and brand — which is precisely the picker's half-finished row being
+  completed.
+- Name matching is scoped to the brand being imported plus the uncategorized
+  pile. Jacquard's `Peacock Blue` is a different jar from Dharma's 416.
+
+`--dry-run` prints the whole plan and says when `--brand` would create a new
+brand, because a typo there splits the range across two brands with nothing
+to say they belong together. It reads either shape: a Django fixture, or a
+plain `{name: hex}` map, which is what a fresh scrape off a supplier's page
+looks like before anyone has made it into anything.
+
 ## Rainbow bands: never print an unconfirmed guess
 
 `Recipe.color_bands` says which sections of the rainbow reference sheet a

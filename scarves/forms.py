@@ -7,14 +7,172 @@ from django.db import transaction
 from django.utils import timezone
 
 from .models import (  # RecipeDye is the through model
+    UNCATEGORIZED_BRAND,
     BoothPhoto,
     Dye,
+    DyeBrand,
     Employee,
     Recipe,
     RecipeDye,
     RawProduct,
     RawProductCategory,
+    dye_match_key,
 )
+
+def picker_dyes():
+    """Every dye, for a picker to offer.
+
+    Deliberately *not* filtered to `in_stock`. A recipe records what it was
+    dyed with, so a jar running out must not make its recipes un-editable —
+    but the sharper reason is that these pickers can now create a dye. A dye
+    hidden from the list is one somebody types in again, and the second
+    `Peacock Blue` is indistinguishable from the first everywhere except the
+    two rows it splits its history across. Out of stock is said on the row
+    instead.
+    """
+    return Dye.objects.select_related("brand").all()
+
+
+def dye_option_attrs(dye):
+    """What one dye's `<option>` carries for the type-ahead to read.
+
+    Defined once because it is produced in two places: `DyeSelect` renders it
+    into the page, and `dye_create` hands the same thing back for a dye added
+    mid-entry so the script can build a matching option without a reload. Two
+    copies drift, and the way drift shows here is a dye that is in the list
+    but can't be searched for — which reads as "it isn't there", and gets
+    typed in a second time.
+    """
+    # `sort_name` is in the haystack as well as the full name so that typing
+    # "peacock" finds "416 Peacock Blue", which by its name alone answers
+    # only to its catalog number.
+    haystack = " ".join(
+        part for part in (dye.name, dye.sort_name, dye.brand.name, dye.sku) if part
+    )
+    attrs = {
+        "data-hex": dye.hex_color or "",
+        "data-name": dye.name,
+        "data-brand": dye.brand.name,
+        "data-sort": dye.sort_name.lower(),
+        "data-key": dye_match_key(dye.name),
+        "data-search": haystack.lower(),
+    }
+    if not dye.in_stock:
+        attrs["data-out-of-stock"] = "1"
+    return attrs
+
+
+class DyeSelect(forms.Select):
+    """The dye picker: a real `<select>` the type-ahead script drives.
+
+    The script hides this and puts a text box in front of it, but the select
+    itself is what the form posts and what `ModelChoiceField` validates, so a
+    page with no JavaScript is the same form with a longer list — nothing
+    about correctness rides on the script running.
+
+    Everything the type-ahead needs rides on the options as data attributes
+    rather than a JSON map rendered beside them. That is what lets a dye
+    added mid-entry appear in *every* picker on the page: the script appends
+    one `<option>` and the option carries its own colour and search text. A
+    map is a snapshot of the moment the page rendered, and the dye you just
+    typed in is by definition not in it.
+    """
+
+    def __init__(self, attrs=None):
+        super().__init__(attrs={"class": "dye-select", "data-dye-picker": "1", **(attrs or {})})
+
+    def create_option(self, name, value, label, selected, index, subindex=None, attrs=None):
+        option = super().create_option(
+            name, value, label, selected, index, subindex=subindex, attrs=attrs
+        )
+        dye = getattr(value, "instance", None)
+        if dye is not None:
+            option["attrs"].update(dye_option_attrs(dye))
+        return option
+
+    def optgroups(self, name, value, attrs=None):
+        """Options in the order a person reads a list of dyes.
+
+        Sorted here rather than in the queryset because the key is
+        `Dye.sort_name` — the name with its catalog number taken off — which
+        is a Python property, and pushing it into SQL would mean a second
+        copy of the same regex living in the database. A few hundred dyes
+        sort in microseconds.
+
+        Django gives an ungrouped `<select>` one "group" per option, so the
+        sort is over the groups themselves; sorting inside them silently
+        does nothing, which looks exactly like the code working.
+        """
+        def key(group):
+            option = (group[1] or [{}])[0]
+            option_attrs = option.get("attrs", {})
+            return (
+                option.get("value") != "",   # the empty "---------" leads
+                option_attrs.get("data-out-of-stock", ""),   # then in stock
+                option_attrs.get("data-sort", ""),
+            )
+
+        groups = sorted(super().optgroups(name, value, attrs), key=key)
+        # Re-numbered because the index is what an option's id is built from,
+        # and ids that jump around read as a bug in whatever renders them.
+        return [(label, options, i) for i, (label, options, _) in enumerate(groups)]
+
+
+class NewDyeForm(forms.Form):
+    """Add a dye from a recipe picker, without leaving the recipe.
+
+    The dye that stops entry is the one that isn't on the list: the recipe is
+    in front of you, the jar is in your hand, and the app's answer is "go to
+    the admin, make a dye, come back and start the row again". What actually
+    happens is the recipe gets typed with the dyes that *were* on the list,
+    and the missing one is lost — silently, because the recipe looks filled
+    in.
+
+    So this asks for a name and nothing else. Brand and colour are real
+    questions with real answers, but they are not answerable at speed with
+    wet gloves on, and demanding them here buys a tidy row at the price of no
+    row at all. `Dye.needs_review` is what makes the deferred half findable,
+    and the admin's dye list, filtered to "needs review", is where it gets
+    finished.
+    """
+
+    name = forms.CharField(max_length=100)
+
+    def clean_name(self):
+        # Collapsed rather than merely stripped: "peacock  blue" and "peacock
+        # blue" are the same dye typed twice, and the duplicate check below
+        # only sees that if the spacing is normalised first.
+        name = " ".join(self.cleaned_data["name"].split())
+        if not name:
+            raise forms.ValidationError("Please give the dye a name.")
+        return name
+
+    def find_existing(self):
+        """The dye this name already refers to, if there is one.
+
+        Matched on `dye_match_key`, so "fire engine red" finds `402 Fire
+        Engine Red (Primary)` rather than making a second one beside it. The
+        catalog number and the tag are the two things somebody typing from
+        memory leaves off, and this is the last check before a duplicate
+        exists — the picker's own version of it decides where to put a row
+        on a menu, this decides what is in the database.
+        """
+        wanted = dye_match_key(self.cleaned_data["name"])
+        for dye in Dye.objects.select_related("brand"):
+            if dye_match_key(dye.name) == wanted:
+                return dye
+        return None
+
+    def save(self):
+        """The dye for this name, and whether it had to be created."""
+        existing = self.find_existing()
+        if existing:
+            return existing, False
+
+        brand, _ = DyeBrand.objects.get_or_create(name=UNCATEGORIZED_BRAND)
+        dye = Dye.objects.create(name=self.cleaned_data["name"], brand=brand)
+        return dye, True
+
 
 class RecipeDyesForm(forms.Form):
     """Edit just the dye assignments of one existing recipe.
@@ -22,20 +180,21 @@ class RecipeDyesForm(forms.Form):
     Unlike QuickRecipeRowForm this never touches the recipe's name and never
     creates recipes — it is for filling in dyes on records that already exist.
 
-    Deliberately offers *all* dyes, not just in_stock ones: this records what a
-    recipe historically used, and a dye going out of stock must not make its
-    recipes un-editable. (Every dye is in stock today, so this is a latent trap
-    rather than a current bug.)
+    Offers every dye rather than the in-stock ones — see `picker_dyes` for
+    why that matters more than it used to.
     """
 
     SLOTS = 5  # RecipeDye.order validates 1..5
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        queryset = Dye.objects.select_related("brand").order_by("brand__name", "name")
+        queryset = picker_dyes()
         for i in range(1, self.SLOTS + 1):
             self.fields[f"dye{i}"] = forms.ModelChoiceField(
-                queryset=queryset, required=False, label=f"Dye {i}"
+                queryset=queryset,
+                required=False,
+                label=f"Dye {i}",
+                widget=DyeSelect,
             )
 
     def clean(self):
@@ -75,10 +234,14 @@ class QuickRecipeRowForm(forms.Form):
     DYE_FIELDS = ("dye1", "dye2", "dye3", "dye4")
 
     name = forms.CharField(max_length=150, required=False)  # allow blank rows
-    dye1 = forms.ModelChoiceField(queryset=Dye.objects.filter(in_stock=True), required=False)
-    dye2 = forms.ModelChoiceField(queryset=Dye.objects.filter(in_stock=True), required=False)
-    dye3 = forms.ModelChoiceField(queryset=Dye.objects.filter(in_stock=True), required=False)
-    dye4 = forms.ModelChoiceField(queryset=Dye.objects.filter(in_stock=True), required=False)
+    # Every dye, not just the in-stock ones — see `picker_dyes`. This page
+    # used to offer in-stock only, which was harmless while the list was
+    # take-it-or-leave-it and becomes a duplicate factory now that a missing
+    # dye can be typed in.
+    dye1 = forms.ModelChoiceField(queryset=picker_dyes(), required=False, widget=DyeSelect)
+    dye2 = forms.ModelChoiceField(queryset=picker_dyes(), required=False, widget=DyeSelect)
+    dye3 = forms.ModelChoiceField(queryset=picker_dyes(), required=False, widget=DyeSelect)
+    dye4 = forms.ModelChoiceField(queryset=picker_dyes(), required=False, widget=DyeSelect)
 
     @property
     def dye_fields(self):

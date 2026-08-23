@@ -9,22 +9,18 @@
 
   td { vertical-align: top; }
   input[type="text"] { width: 100%; }
-  .colorcell { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
-  .swatch {
-      width: 22px; height: 22px; border-radius: 6px;
-      border: 1px solid #bbb; display: inline-block;
-  }
-  /* select2 swaps the <select> for its own markup, so it needs sizing of
-     its own rather than inheriting the plain-select rules. */
-  .select2-container { width: 100% !important; }
-{% endblock %}
-
-{% block head %}
-    <link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
+  /* The dye boxes are the widest thing on the row and the only thing being
+     read, so they get the room. */
+  .dyepick { min-width: 11rem; }
 {% endblock %}
 
 {% block content %}
-  <p class="lead">Enter up to 5 recipes at a time. Each recipe can have up to 3 dyes. Rows save on submit.</p>
+  <p class="lead">
+    Enter up to 5 recipes at a time. Each recipe can have up to 4 dyes. Rows
+    save on submit. The dye boxes filter as you type — on the name, not the
+    catalog number — and a dye that isn't there yet can be added from the
+    same box.
+  </p>
 
   <form method="post">
     {% csrf_token %}
@@ -50,10 +46,7 @@
 
               {% for field in form.dye_fields %}
                 <td>
-                  <div class="colorcell">
-                    {{ field }}
-                    <span class="swatch" data-for="{{ field.id_for_label }}"></span>
-                  </div>
+                  {{ field }}
                   {{ field.errors }}
                 </td>
               {% endfor %}
@@ -70,34 +63,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
-<script>
-  const dyeHex = {{ dye_hex|safe }};
-
-  function updateSwatch(selectEl) {
-    const swatch = document.querySelector(`.swatch[data-for="${selectEl.id}"]`);
-    if (!swatch) return;
-    const hex = dyeHex[selectEl.value] || "#ffffff";
-    swatch.style.background = hex;
-    swatch.title = hex;
-  }
-
-  // Turn all selects into type-ahead selects
-  $(function () {
-    $("select").select2({
-      width: "100%",
-      placeholder: "Select a dye…",
-      allowClear: true
-    });
-
-    // Update swatches initially
-    document.querySelectorAll("select").forEach(sel => updateSwatch(sel));
-
-    // Select2 uses its own events; listen for change
-    $("select").on("change", function () {
-      updateSwatch(this);
-    });
-  });
-</script>
+  {% include "scarves/partials/dye_picker.html" %}
 {% endblock %}

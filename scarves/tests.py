@@ -33,7 +33,7 @@ from django.db.models import ProtectedError
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
-from . import crew, production, sheetscan, timesheets
+from . import colorbands, crew, production, sheetscan, timesheets
 from .colorutils import (
     delta_e,
     hex_to_lab,
@@ -43,9 +43,10 @@ from .colorutils import (
     pick_color_cluster,
     recipe_palette,
 )
-from .forms import HoursForm, LabelRunForm, RecipeDyesForm
+from .forms import HoursForm, LabelRunForm, QuickRecipeRowForm, RecipeDyesForm
 from . import labels as labelmod
 from .models import (
+    UNCATEGORIZED_BRAND,
     BoothPhoto,
     CatalogGroup,
     Dye,
@@ -1498,7 +1499,6 @@ class ByColorSheetTests(TestCase):
         """Fixed slots are what make a gap in a printed stack mean 'this
         category has nothing in green' rather than 'the tabs shifted up'."""
         from .views import _band_tab_painter
-        from scarves import colorbands
 
         painted = []
 
@@ -8417,3 +8417,376 @@ class RetireDontDeleteTests(TestCase):
         self.product.delete()
 
         self.assertEqual(FinishedProduct.objects.count(), 0)
+
+
+class DyePickerTests(TestCase):
+    """The dye boxes on the recipe pages.
+
+    Two failures, both quiet. A hundred dyes in catalog order is a list
+    nobody reads to the end, so the dye that is there doesn't get used; and a
+    dye that isn't on the list at all can't be recorded, so the recipe gets
+    saved with the dyes that *were* on the list and looks complete.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("dyer", "d@example.test", "pw")
+        self.brand = DyeBrand.objects.create(name="Dharma Acid Dyes")
+        self.peacock = Dye.objects.create(
+            name="416 Peacock Blue", hex_color="#064e7e", brand=self.brand
+        )
+        self.aqua = Dye.objects.create(
+            name="422 Bright Aqua", hex_color="#5ccfbf", brand=self.brand
+        )
+
+    def test_the_catalog_number_does_not_decide_the_order(self):
+        """`416 Peacock Blue` files under P, not between 415 and 417."""
+        self.assertEqual(self.peacock.sort_name, "Peacock Blue")
+        self.assertEqual(self.aqua.sort_name, "Bright Aqua")
+
+        form = RecipeDyesForm()
+        html = str(form["dye1"])
+        self.assertLess(
+            html.index("422 Bright Aqua"), html.index("416 Peacock Blue"),
+            "the picker is still sorted by the number on the jar",
+        )
+
+    def test_a_name_with_only_a_number_keeps_it(self):
+        """Better a dye called `27` than a dye called nothing."""
+        odd = Dye.objects.create(name="27", brand=self.brand)
+        self.assertEqual(odd.sort_name, "27")
+
+    def test_an_option_carries_what_it_can_be_found_by(self):
+        html = str(RecipeDyesForm()["dye1"])
+
+        self.assertIn('data-search="416 peacock blue peacock blue dharma acid dyes"', html)
+        self.assertIn('data-hex="#064e7e"', html)
+
+    def test_out_of_stock_dyes_are_still_offered(self):
+        """Hiding them was survivable while the list was take-it-or-leave-it.
+
+        Now that a missing dye can be typed in, hiding one is how a second
+        `Peacock Blue` gets created beside the first.
+        """
+        Dye.objects.filter(pk=self.peacock.pk).update(in_stock=False)
+
+        html = str(QuickRecipeRowForm()["dye1"])
+
+        self.assertIn("416 Peacock Blue", html)
+        self.assertIn("data-out-of-stock", html)
+
+    def test_a_dye_with_no_colour_says_so_rather_than_showing_one(self):
+        blank = Dye.objects.create(name="Cayenne", brand=self.brand)
+
+        html = str(RecipeDyesForm()["dye1"])
+
+        self.assertIn('data-hex=""', html)
+        self.assertNotIn("#FF0000", html)
+        self.assertFalse(blank.hex_color)
+
+
+class AddADyeTests(TestCase):
+    """Adding a dye from the picker, mid-recipe.
+
+    The endpoint's job is to always leave the person with something selected:
+    the alternative is an empty slot and a recipe that reads as finished.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("adder", "a@example.test", "pw")
+        self.client.force_login(self.user)
+        self.url = reverse("dye_create")
+        self.brand = DyeBrand.objects.create(name="Dharma Acid Dyes")
+
+    def test_a_new_dye_is_a_name_and_nothing_else(self):
+        response = self.client.post(self.url, {"name": "  Muddy   Ochre "})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["created"])
+
+        dye = Dye.objects.get(pk=body["id"])
+        self.assertEqual(dye.name, "Muddy Ochre")
+        self.assertEqual(dye.brand.name, UNCATEGORIZED_BRAND)
+        self.assertEqual(dye.hex_color, "", "a made-up colour would reach the sheets")
+        self.assertTrue(dye.needs_review)
+
+    def test_it_hands_back_an_option_the_picker_can_use(self):
+        """Same attributes the widget renders, so the new dye is searchable
+        in every picker on the page without a reload."""
+        body = self.client.post(self.url, {"name": "Muddy Ochre"}).json()
+
+        self.assertEqual(body["attrs"]["data-name"], "Muddy Ochre")
+        self.assertEqual(body["attrs"]["data-sort"], "muddy ochre")
+        self.assertIn("muddy ochre", body["attrs"]["data-search"])
+        self.assertEqual(body["attrs"]["data-hex"], "")
+
+    def test_a_name_that_already_exists_picks_that_dye(self):
+        existing = Dye.objects.create(name="Cayenne", brand=self.brand)
+
+        body = self.client.post(self.url, {"name": "cayenne"}).json()
+
+        self.assertFalse(body["created"])
+        self.assertEqual(body["id"], existing.pk)
+        self.assertEqual(Dye.objects.count(), 1)
+
+    def test_the_catalog_number_is_not_what_makes_it_a_different_dye(self):
+        """Typed from memory, the number is the first thing left off."""
+        existing = Dye.objects.create(name="416 Peacock Blue", brand=self.brand)
+
+        body = self.client.post(self.url, {"name": "Peacock Blue"}).json()
+
+        self.assertFalse(body["created"])
+        self.assertEqual(body["id"], existing.pk)
+
+    def test_neither_is_the_catalog_tag(self):
+        """Dharma tags its mixing primaries; nobody types the tag.
+
+        Ten of the 84 acid dyes carry one, so getting this wrong duplicates
+        the most-used dyes in the range and nothing anywhere says so.
+        """
+        existing = Dye.objects.create(
+            name="402 Fire Engine Red (Primary)", brand=self.brand
+        )
+
+        body = self.client.post(self.url, {"name": "fire engine red"}).json()
+
+        self.assertFalse(body["created"])
+        self.assertEqual(body["id"], existing.pk)
+        self.assertEqual(Dye.objects.count(), 1)
+
+    def test_nor_a_trailing_mark(self):
+        existing = Dye.objects.create(name="409 Dark Navy*", brand=self.brand)
+
+        body = self.client.post(self.url, {"name": "Dark Navy"}).json()
+
+        self.assertFalse(body["created"])
+        self.assertEqual(body["id"], existing.pk)
+
+    def test_two_genuinely_different_dyes_stay_different(self):
+        """The key strips furniture, not words: this must not over-merge."""
+        Dye.objects.create(name="404 Sapphire Blue", brand=self.brand)
+
+        body = self.client.post(self.url, {"name": "Peacock Blue"}).json()
+
+        self.assertTrue(body["created"])
+        self.assertEqual(Dye.objects.count(), 2)
+
+    def test_a_blank_name_is_refused(self):
+        response = self.client.post(self.url, {"name": "   "})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("error", response.json())
+        self.assertEqual(Dye.objects.count(), 0)
+
+    def test_it_takes_no_anonymous_writes(self):
+        self.client.logout()
+
+        response = self.client.post(self.url, {"name": "Muddy Ochre"})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/login", response["Location"])
+        self.assertEqual(Dye.objects.count(), 0)
+
+    def test_a_dye_added_mid_entry_saves_onto_a_recipe(self):
+        """End to end: the whole point is the recipe that comes out of it."""
+        recipe = Recipe.objects.create(name="New Colorway")
+        added = self.client.post(self.url, {"name": "Muddy Ochre"}).json()
+
+        form = RecipeDyesForm({"dye1": str(added["id"])})
+        self.assertTrue(form.is_valid(), form.errors)
+        form.save(recipe)
+
+        self.assertEqual(
+            [rd.dye.name for rd in recipe.recipe_dyes.all()], ["Muddy Ochre"]
+        )
+
+    def test_a_colourless_dye_claims_no_band_and_no_palette(self):
+        """The reason a blank colour is safe to defer.
+
+        It contributes nothing anywhere rather than contributing a guess —
+        the same bargain colorbands makes on the classify page.
+        """
+        recipe = Recipe.objects.create(name="Half-known")
+        added = self.client.post(self.url, {"name": "Muddy Ochre"}).json()
+        RecipeDye.objects.create(recipe=recipe, dye_id=added["id"], order=1)
+
+        self.assertEqual(colorbands.bands_from_dyes(recipe), [])
+        self.assertEqual(recipe_palette(recipe), [])
+
+
+class ImportDyesTests(TestCase):
+    """Re-importing the catalog file over a live dye list.
+
+    `loaddata` can't do this: the fixtures carry primary keys and RecipeDye
+    points at a dye by primary key, so loading over drifted pks repoints
+    recipes at other colours with no error anywhere.
+    """
+
+    def setUp(self):
+        self.brand = DyeBrand.objects.create(name="Dharma Acid Dyes")
+        self.path = tempfile.mkdtemp() + "/dyes.json"
+
+    def write(self, entries):
+        with open(self.path, "w") as handle:
+            json.dump(entries, handle)
+        return self.path
+
+    def run_import(self, extra=(), **kwargs):
+        out = StringIO()
+        call_command(
+            "import_dyes", self.path, "--brand", "Dharma Acid Dyes",
+            *extra, stdout=out, **kwargs
+        )
+        return out.getvalue()
+
+    def test_a_colour_already_on_file_is_not_imported_again(self):
+        Dye.objects.create(
+            name="401 Brilliant Yellow", hex_color="#ffec05", brand=self.brand
+        )
+        self.write({
+            "401 Brilliant Yellow (Primary)": "#FFEC05",   # same colour, tidier name
+            "490 Tornado Gray": "#8b8b8b",
+        })
+
+        output = self.run_import()
+
+        self.assertEqual(Dye.objects.count(), 2)
+        self.assertTrue(Dye.objects.filter(name="490 Tornado Gray").exists())
+        self.assertIn("skipped 1 already on file", output)
+
+    def test_it_finds_the_hand_typed_dye_under_the_catalog_tag(self):
+        """`Fire Engine Red` and `402 Fire Engine Red (Primary)` are one dye,
+        so the file fills the first in rather than adding the second."""
+        typed = Dye.objects.create(name="Fire Engine Red", brand=self.brand)
+        self.write({"402 Fire Engine Red (Primary)": "#c41d33"})
+
+        self.run_import()
+
+        typed.refresh_from_db()
+        self.assertEqual(Dye.objects.count(), 1)
+        self.assertEqual(typed.hex_color, "#c41d33")
+        self.assertEqual(typed.name, "402 Fire Engine Red (Primary)")
+
+    def test_it_fills_in_a_dye_that_was_typed_in_by_hand(self):
+        """The picker's half-finished dye, met by the file that knows the
+        rest. This is the cleanup the deferral was banking on."""
+        typed = Dye.objects.create(name="Tornado Gray", brand=self.brand)
+        self.write({"490 Tornado Gray": "#8b8b8b"})
+
+        self.run_import()
+
+        typed.refresh_from_db()
+        self.assertEqual(typed.hex_color, "#8b8b8b")
+        self.assertEqual(typed.name, "490 Tornado Gray", "the number is on the jar")
+        self.assertEqual(Dye.objects.count(), 1)
+
+    def test_a_colour_somebody_recorded_is_never_overwritten(self):
+        mine = Dye.objects.create(
+            name="490 Tornado Gray", hex_color="#777777", brand=self.brand
+        )
+        self.write({"490 Tornado Gray": "#8b8b8b"})
+
+        output = self.run_import()
+
+        mine.refresh_from_db()
+        self.assertEqual(mine.hex_color, "#777777")
+        self.assertEqual(Dye.objects.count(), 1)
+        self.assertIn("conflict", output)
+        self.assertIn("490 Tornado Gray", output)
+
+    def test_a_dry_run_writes_nothing_and_says_what_it_would_do(self):
+        self.write({"490 Tornado Gray": "#8b8b8b"})
+
+        output = self.run_import(extra=["--dry-run"])
+
+        self.assertEqual(Dye.objects.count(), 0)
+        self.assertIn("Would add 1", output)
+        self.assertIn("490 Tornado Gray", output)
+
+    def test_running_it_twice_changes_nothing_the_second_time(self):
+        self.write({"490 Tornado Gray": "#8b8b8b", "489 Silver Gray": "#c0c0c0"})
+
+        self.run_import()
+        output = self.run_import()
+
+        self.assertEqual(Dye.objects.count(), 2)
+        self.assertIn("Added 0", output)
+        self.assertIn("skipped 2", output)
+
+    def test_a_supplier_range_can_land_out_of_stock(self):
+        self.write({"490 Tornado Gray": "#8b8b8b"})
+
+        self.run_import(extra=["--out-of-stock"])
+
+        self.assertFalse(Dye.objects.get(name="490 Tornado Gray").in_stock)
+
+    def test_it_reads_the_fixture_shape_too(self):
+        """Both files on disk hold this data; either can be pointed at it."""
+        self.write([
+            {"model": "scarves.dyebrand", "pk": 1, "fields": {"name": "Dharma Acid Dyes"}},
+            {"model": "scarves.dye", "pk": 1, "fields": {
+                "name": "490 Tornado Gray", "hex_color": "#8b8b8b", "brand": 1}},
+        ])
+
+        self.run_import()
+
+        self.assertTrue(Dye.objects.filter(name="490 Tornado Gray").exists())
+
+    def test_an_unreadable_colour_is_named_rather_than_guessed(self):
+        self.write({"490 Tornado Gray": "", "489 Silver Gray": "#c0c0c0"})
+
+        output = self.run_import()
+
+        self.assertEqual(Dye.objects.count(), 1)
+        self.assertIn("no readable colour", output)
+        self.assertIn("490 Tornado Gray", output)
+
+    def test_the_same_name_under_another_brand_is_another_jar(self):
+        """Jacquard's Peacock Blue is not Dharma's 416, and a colour typed
+        onto one must not be written over from the other's catalog."""
+        jacquard = DyeBrand.objects.create(name="Jacquard")
+        theirs = Dye.objects.create(
+            name="Peacock Blue", hex_color="#115577", brand=jacquard
+        )
+        self.write({"416 Peacock Blue (Primary)": "#064e7e"})
+
+        self.run_import()
+
+        theirs.refresh_from_db()
+        self.assertEqual(theirs.hex_color, "#115577")
+        self.assertEqual(theirs.name, "Peacock Blue")
+        self.assertEqual(Dye.objects.count(), 2)
+
+    def test_a_dye_typed_in_from_a_picker_gets_its_brand_too(self):
+        """The half-finished row the picker leaves is finished in one pass:
+        colour, catalog number and brand all come off the file."""
+        typed = Dye.objects.create(
+            name="Tornado Gray",
+            brand=DyeBrand.objects.create(name=UNCATEGORIZED_BRAND),
+        )
+        self.write({"490 Tornado Gray": "#8b8b8b"})
+
+        self.run_import()
+
+        typed.refresh_from_db()
+        self.assertEqual(typed.brand.name, "Dharma Acid Dyes")
+        self.assertEqual(typed.name, "490 Tornado Gray")
+        self.assertEqual(typed.hex_color, "#8b8b8b")
+        self.assertFalse(typed.needs_review)
+
+    def test_a_dry_run_says_when_the_brand_is_a_new_one(self):
+        """What a typo in --brand looks like, before it splits the range
+        across two brands."""
+        self.write({"490 Tornado Gray": "#8b8b8b"})
+        out = StringIO()
+        call_command(
+            "import_dyes", self.path, "--brand", "Dharma Acid Dies",
+            "--dry-run", stdout=out,
+        )
+
+        self.assertIn("Would create a new brand", out.getvalue())
+        self.assertIn("Dharma Acid Dyes", out.getvalue(), "should list what is on file")
+
+    def test_a_missing_file_is_an_error_not_an_empty_run(self):
+        with self.assertRaises(CommandError):
+            call_command("import_dyes", "/nope.json", "--brand", "X", stdout=StringIO())
