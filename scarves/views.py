@@ -16,7 +16,7 @@ from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.forms import formset_factory
 from django import forms
-from django.http import HttpResponse, JsonResponse
+from django.http import FileResponse, HttpResponse, JsonResponse
 from django.urls import reverse
 from django.db import transaction
 from django.db.models import F, Count, Sum, Max, Case, When, IntegerField, ExpressionWrapper, Q, Value
@@ -53,6 +53,7 @@ from .colorutils import hex_to_rgb, nearest_by_color, pick_color_cluster
 from .forms import (
     BoothPhotoForm,
     CloseStartForm,
+    CrewHandbookForm,
     HoursForm,
     LabelRunForm,
     NewDyeForm,
@@ -3210,6 +3211,98 @@ HOURS_PIN_ATTEMPT_LIMIT = 8
 
 
 @page_meta(
+    title="Crew Handbook",
+    description=(
+        "What the crew needs to know to work the booth — the till, the "
+        "look-up books, sending photos in, and reporting hours. Ends by "
+        "handing that person their faire pass. No login: name and PIN, the "
+        "same as the other crew pages."
+    ),
+    category="Booth",
+    note="Passes are uploaded per employee in the admin.",
+)
+@require_http_methods(["GET", "POST"])
+def crew_handbook(request):
+    """The handbook, and the pass at the bottom of it.
+
+    Two submissions to the same view. The first is the name and PIN, which
+    unlocks the text; the second is the "Give me my pass" button at the
+    bottom, which additionally wants the box ticked. Putting the button at
+    the end of the page is the whole of the scroll enforcement, deliberately
+    — anything cleverer means JavaScript, and JavaScript failing here means
+    somebody standing at the gate without a pass because their phone had one
+    bar. A checkbox costs a tap and can't fail closed.
+
+    Nothing is recorded. There is no read-receipt, no timestamp, no per-season
+    version: the tick is a speed bump asking somebody to look at the page, not
+    evidence to be produced later. Storing it would invite exactly that use.
+
+    The pass is *downloaded and kept*. Coming back for a lost one means coming
+    back through this page, which is cheap — `crew.initial` has already filled
+    the name and PIN in on the phone that fetched it the first time.
+    """
+    if crew.asked_to_forget(request):
+        return crew.forget(redirect("crew_handbook"))
+
+    def page(form, *, unlocked, no_pass=False):
+        return render(request, "scarves/crew_handbook.html", {
+            "form": form,
+            "unlocked": unlocked,
+            "no_pass": no_pass,
+            "remembered": crew.remembered(request)[0],
+            "forget_param": crew.FORGET,
+        })
+
+    if request.method != "POST":
+        form = CrewHandbookForm(user=request.user, initial=crew.initial(request))
+        # A signed-in person has already answered the only question the gate
+        # asks, so it doesn't get asked. Opening straight onto the text is the
+        # point of the login — a screen whose single control is "yes, it's
+        # me" is the paperwork this was supposed to remove.
+        return page(form, unlocked=form.signed_in_as is not None)
+
+    wants_pass = "want_pass" in request.POST
+    form = CrewHandbookForm(request.POST, wants_pass=wants_pass, user=request.user)
+
+    if not form.is_valid():
+        # A missing tick is not a reason to throw somebody back to the top of
+        # a page they just read. Only a name or PIN we can't place re-locks
+        # it; everything else re-renders in place with the error on the box.
+        identified = not (form.has_error("employee") or form.has_error("pin"))
+        return page(form, unlocked=wants_pass and identified)
+
+    employee = form.cleaned_data["employee"]
+    # Absent for a signed-in person, whose PIN was never asked for. There is
+    # nothing to remember in that case and nothing to remember it for — the
+    # session already does this job, and better.
+    pin = form.cleaned_data.get("pin")
+
+    def keep(response):
+        return crew.remember(request, response, employee, pin) if pin else response
+
+    if not wants_pass:
+        # After the PIN has been checked, never before — see crew.remember.
+        return keep(page(form, unlocked=True))
+
+    if not employee.pass_pdf:
+        # Named, not a dead button. Whoever is looking at this is legitimate
+        # and already knows how to reach Michael; what they need is to be
+        # told that waiting for the page to work is not the answer.
+        return keep(page(form, unlocked=True, no_pass=True))
+
+    # Streamed rather than handed over as a bucket URL. The bucket is private,
+    # so an unsigned `.url` would simply 403 — but even where it wouldn't, a
+    # link to somebody's pass outlives the page that produced it, and this one
+    # dies with the response.
+    response = FileResponse(
+        employee.pass_pdf.open("rb"),
+        as_attachment=True,
+        filename=f"{employee.name} - faire pass.pdf",
+    )
+    return keep(response)
+
+
+@page_meta(
     title="Report Hours",
     description=(
         "Where staff report the hours they worked: name, PIN, how long, which "
@@ -3921,7 +4014,7 @@ def _booth_photo_file(upload):
 @page_meta(
     title="Send a Photo",
     description="Send a photo in from the booth — something worth sharing, or "
-                "a scarf nobody could identify that sold anyway. Name and PIN, "
+                "a colorway nobody could identify that sold anyway. Name and PIN, "
                 "no account needed.",
     category="Booth",
     note="Unlisted: hand out the URL, don't advertise it.",

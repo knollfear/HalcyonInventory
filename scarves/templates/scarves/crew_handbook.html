@@ -1,0 +1,403 @@
+{% extends "scarves/base_public.html" %}
+{% comment %}
+The crew handbook, with a faire pass at the bottom of it.
+
+Public shell because there is no login. Off the public site map for the same
+reason the hours form is: this isn't for customers, it's for the people
+working the table, and it reaches them as a bookmark or a link they were sent.
+
+Written to be true next season as well as this one — no "new", no "we've
+changed", no "last year". The reader may have worked here for years and still
+never have seen any of this, and a page that half-describes a world that has
+moved on gives them no way to tell which half. If something here stops being
+true, edit it; the revised date below is what carries the time information.
+{% endcomment %}
+
+{% block title %}Crew Handbook{% endblock %}
+{% block heading %}Working the booth{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 620px; }
+
+  .field { margin-bottom: 18px; }
+  .field label {
+      display: block; font-weight: 600; font-size: .95rem; margin-bottom: 6px;
+  }
+  /* 16px minimum, or iOS zooms the page in on focus. */
+  .field select, .field input {
+      font: inherit; font-size: 16px; width: 100%;
+      padding: 12px; border: 1px solid #c8cfd8; border-radius: 8px;
+      background: #fff; color: var(--ink);
+  }
+  .field select:focus, .field input:focus {
+      outline: none; border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(35, 70, 107, .14);
+  }
+  .field .errorlist {
+      margin: 6px 0 0; padding-left: 1.1rem;
+      font-size: .85rem; color: #8a2f2a;
+  }
+
+  .btn {
+      width: 100%; padding: 14px; font: inherit; font-size: 1rem;
+      font-weight: 600; border: 1px solid var(--accent);
+      background: var(--accent); color: #fff; border-radius: 8px;
+      cursor: pointer;
+  }
+  .btn:hover { background: var(--accent-dark); border-color: var(--accent-dark); }
+
+  .panel {
+      border: 1px solid #e2e6ea; border-radius: 10px;
+      padding: 16px; margin-bottom: 22px; background: #f8fafc;
+  }
+  .panel.warn { background: #fff6e0; border-color: #f0e0b0; }
+  .panel.stop { background: #fdf2f1; border-color: #f0c8c4; }
+  .panel h2 { margin: 0 0 8px; font-size: 1rem; }
+  .panel p { margin: 0 0 8px; font-size: .92rem; line-height: 1.55; }
+  .panel p:last-child { margin-bottom: 0; }
+
+  .doc h2 {
+      font-size: 1.15rem; margin: 34px 0 10px;
+      padding-top: 14px; border-top: 1px solid #e2e6ea;
+  }
+  .doc h2:first-child { border-top: none; padding-top: 0; margin-top: 6px; }
+  .doc h3 { font-size: .98rem; margin: 20px 0 6px; }
+  .doc p, .doc li { font-size: .95rem; line-height: 1.6; }
+  .doc ul { padding-left: 1.2rem; }
+  .doc li { margin-bottom: 6px; }
+  .doc strong { font-weight: 650; }
+
+  .revised { font-size: .82rem; color: #6b7580; margin: 0 0 4px; }
+
+  .pass {
+      margin-top: 34px; padding: 20px;
+      border: 2px solid var(--accent); border-radius: 12px;
+      background: #f4f8fb;
+  }
+  .pass h2 { margin: 0 0 10px; font-size: 1.1rem; border: none; padding: 0; }
+  .tick { display: flex; gap: 10px; align-items: flex-start; margin: 16px 0; }
+  .tick input { width: 22px; height: 22px; flex: none; margin-top: 1px; }
+  .tick label { font-size: .95rem; font-weight: 600; }
+{% endblock %}
+
+{% block content %}
+
+{% if not unlocked %}
+
+  {# ---------------------------------------------------------------- gate #}
+  <div class="panel">
+    <p>
+      This page covers what you need to know to work the booth. Your faire
+      pass is at the bottom of it — read down and it's yours to download.
+    </p>
+    <p>
+      Pick your name and type your PIN. That's not protecting anything; it's
+      how the page knows whose pass to hand over.
+    </p>
+  </div>
+
+  <form method="post">
+    {% csrf_token %}
+
+    {% if form.employee %}
+      <div class="field">
+        {{ form.employee.label_tag }}
+        {{ form.employee }}
+        {{ form.employee.errors }}
+      </div>
+    {% endif %}
+
+    {% if form.pin %}
+      <div class="field">
+        {{ form.pin.label_tag }}
+        {{ form.pin }}
+        {{ form.pin.errors }}
+      </div>
+    {% endif %}
+
+    <button type="submit" class="btn">Open the handbook</button>
+  </form>
+
+  {% if remembered %}
+    <p class="revised" style="margin-top:14px;">
+      Filled in for you as <strong>{{ remembered.name }}</strong> —
+      <a href="?{{ forget_param }}=1">not you?</a>
+    </p>
+  {% endif %}
+
+{% else %}
+
+  {# ------------------------------------------------------------- handbook #}
+  <div class="doc">
+
+    <p class="revised">Revised August 2026</p>
+
+    <h2>Your pass</h2>
+    <p>
+      It's at the bottom of this page. <strong>Download it and keep it</strong>
+      — save it to your phone, or print it. If you lose it, come back here and
+      sign in again and you can fetch it as many times as you need.
+    </p>
+
+    <h2>Ringing up a sale</h2>
+    <p>
+      Every sale goes through the Square terminal as a
+      <strong>product</strong>, and
+      products come in two parts:
+    </p>
+    <ul>
+      <li>The <strong>item</strong> is the style. Five of them cover almost
+          everything we make: <strong>infinity scarves</strong>,
+          <strong>sash belts</strong>, <strong>half circle veils</strong>,
+          <strong>rectangle veils</strong> and <strong>triangle fringe
+          scarves</strong>. The four yarns are items too —
+          <strong>Heavenly</strong>, <strong>Homespun</strong>,
+          <strong>Artisan</strong> and <strong>Noble</strong>.</li>
+      <li>The <strong>variation</strong> is the colorway — the actual colour
+          of the thing in the customer's hand. There are a lot of these: the
+          yarns alone run to about forty colorways each.</li>
+    </ul>
+    <p>
+      <strong>The variation is the part that matters, and it is the part
+      that's easy to get wrong.</strong> Every scarf under one item rings up
+      at the same price, so a wrong colorway looks completely fine on the
+      Square terminal and balances at the end of the day. What it quietly does is take
+      one off the count of a colour that's still on the table and leave one
+      on the count of a colour that's gone. Nobody finds out until we're
+      making more of something we already have and none of what sold out.
+    </p>
+    <p>
+      The variations are listed <strong>in alphabetical order</strong> by
+      colour name, so you can find the one you want by reading rather than by
+      hunting. If you can't tell which colorway a scarf is, don't guess — that is
+      exactly what the look-up book is for.
+    </p>
+
+    <h2>The look-up books</h2>
+    <p>
+      There's a look-up book at the booth, and it's printed <strong>two
+      ways</strong>. Both halves cover the same scarves — the difference is
+      how they're sorted, and which question each one answers quickly.
+    </p>
+    <ul>
+      <li><strong>By colorway.</strong> A page per colour, with a photo and
+          the barcodes of every style we dye in it. Use this when you have a
+          scarf in your hand and need to know what it is.</li>
+      <li><strong>By colour.</strong> The same pages, sorted into rainbow
+          sections. Use this when a customer asks
+          <em>"what have you got in green?"</em> — which is what they
+          actually ask.</li>
+    </ul>
+    <p>
+      Every page has a <strong>coloured tab down the right-hand edge</strong>.
+      Fan the stack with your thumb and the sections show from the side, so
+      you can get to red without reading a single page. A scarf that's two
+      colours is printed in both sections on purpose — it's genuinely in
+      both, so don't be surprised to see it twice.
+    </p>
+
+    <h3>Learning the names</h3>
+    <p>
+      The book is the fallback, and there's nothing wrong with using it all
+      season. But the fastest way to stop needing it is the two games on the
+      public site — they're built for customers, and they work just as well
+      for getting the colorway names into your head:
+    </p>
+    <ul>
+      <li><a href="{% url 'game_page' %}">The matching game</a> — pairs of
+          scarves to match by sight.</li>
+      <li><a href="{% url 'quiz_page' %}">The name quiz</a> — a photo and
+          four names, pick the right one.</li>
+    </ul>
+    <p>
+      Ten minutes of the quiz on a quiet morning is worth a lot of page
+      flipping later.
+    </p>
+
+    <h2>Sending a photo in</h2>
+    <p>
+      There's one page for sending photos from the booth: pick your name,
+      type your PIN, take the picture, send. Before it sends, it asks
+      <strong>what the photo is for</strong>, and the answer decides what
+      happens to it. There are two reasons, and they're unrelated jobs that
+      share a page because there's only ever one moment when a phone comes
+      out at a stall.
+    </p>
+
+    <h3>Something to share</h3>
+    <p>
+      The table looking good, a scarf in decent light, someone wearing one.
+    </p>
+
+    <h3>Permission is two separate questions</h3>
+    <p>
+      This is the bit worth reading twice, because it's about other people
+      rather than about the app.
+    </p>
+    <ul>
+      <li><strong>Your tick is your permission</strong> — that you're happy
+          for the photo to be used.</li>
+      <li><strong>It is not the permission of whoever is in it.</strong> If
+          there's a recognisable person in the shot, you have to actually ask
+          them, and then say on the form that you asked and they said yes.</li>
+    </ul>
+    <p>
+      <strong>Website and Instagram are separate ticks</strong>, because
+      they're separate answers. One is a shop page; the other is a feed with
+      an audience and a comment box, and people really do say yes to one and
+      no to the other. Ask which, don't assume both.
+    </p>
+    <p>
+      And sending a photo with <em>nothing</em> ticked is a perfectly good
+      answer. "Here, your call" is allowed and it still sends — you're never
+      stuck choosing between over-promising on someone's behalf and not
+      sending the picture at all.
+    </p>
+
+    <h3>A colorway nobody could identify</h3>
+    <p>
+      Sometimes something sells and nobody can say <em>which</em> one it was.
+      The tag is gone, or it's a colorway none of us recognise. It's the same
+      problem whether it's a scarf or a skein of yarn — the question is only
+      ever "which colorway is this?"
+    </p>
+    <p>
+      Check the book first; that's what it's for. But if it sells and you
+      still couldn't name it, <strong>don't just let it go</strong>. Send a
+      photo with that reason picked, and add:
+    </p>
+    <ul>
+      <li><strong>Roughly when it sold</strong> — near enough is fine.</li>
+      <li><strong>The first six characters of the barcode</strong>, if any of
+          the tag is still readable. That's the style, and it narrows a few
+          hundred products down to a few dozen. Leave it blank if you can't
+          read it.</li>
+    </ul>
+    <p>
+      The sale itself goes through Square perfectly normally — that's not
+      what's broken. What's missing is which colorway actually left the
+      table, so our count for that colour stays wrong until somebody works it
+      out. <strong>A photo taken at the time is the only thing that makes
+      that possible.</strong> A week later there is nothing left to go on.
+    </p>
+    <p>
+      Send it even if you're not sure it's worth sending. One that turns out
+      to be nothing takes a single click to clear at this end; one that never
+      gets sent leaves a number quietly wrong for the rest of the season.
+    </p>
+
+    <h2>Reporting your hours</h2>
+    <p>
+      You report your own hours, on your own phone, on the hours page. Pick
+      your name, type your PIN, choose the day and how long you worked.
+    </p>
+    <p>
+      <strong>There are QR codes around the booth that open that page.</strong>
+      Point your camera at one — there's nothing to look up, bookmark or
+      remember, and you don't need the link from anybody.
+    </p>
+    <ul>
+      <li><strong>The pay week runs Saturday to Friday</strong>, not Monday
+          to Sunday. It's set up that way on purpose: a faire weekend falls
+          <em>inside</em> one pay week, so the Saturday and the Sunday you
+          work always land on the same timesheet instead of being split
+          across two.</li>
+      <li><strong>Hours go in quarter-hours</strong> off a dropdown — 6.25,
+          6.5, 6.75. There's no clocking in or out and no start time to fill
+          in, so round to the nearest quarter and move on.</li>
+      <li><strong>Booth hours during faire days only.</strong> Helping out
+          with dyeing or prep back at the shop doesn't go here.</li>
+      <li><strong>Report it the same day if you can.</strong> Reporting the
+          same day twice is treated as a correction, not a second shift, so
+          it's safe to fix a number you got wrong — it'll ask you before it
+          replaces the old one.</li>
+    </ul>
+    <p>
+      Long days and long weeks get <strong>flagged for review</strong>, and a
+      flag is not a complaint or an error. A thirteen-hour day at a festival
+      is a normal thing that happens; the flag just means a person looks at
+      the week before it goes to payroll. <strong>Put down what you
+      worked.</strong>
+    </p>
+
+    <h2>Your name and your PIN</h2>
+    <p>
+      Your PIN is four digits and it isn't a secret — it stops the wrong name
+      getting tapped, and that's the whole job. If you forget it, ask and
+      it'll be read back to you.
+    </p>
+    <p>
+      These pages <strong>remember you on the phone you use</strong>, so
+      after the first time your name and PIN are already filled in. That's
+      built on the assumption that everyone uses their own phone. If you're
+      ever holding somebody else's, use the
+      <strong>"not you?"</strong> link before you type anything, or your
+      hours will go in under their name.
+    </p>
+
+    <h2>If something's wrong</h2>
+    <p>
+      Tell Michael. A mistake mentioned the same day is a two-minute fix; the
+      same mistake found six weeks later means unpicking everything that
+      happened after it. Nobody is in trouble for a wrong tap — the only
+      expensive version is the one nobody hears about.
+    </p>
+  </div>
+
+  {# ----------------------------------------------------------------- pass #}
+  <div class="pass">
+    <h2>Your faire pass</h2>
+
+    {% if form.signed_in_as %}
+      <p class="revised">Signed in as <strong>{{ form.signed_in_as.name }}</strong>.</p>
+    {% endif %}
+
+    {% if no_pass %}
+      <div class="panel stop">
+        <p>
+          <strong>There's no pass on file for you yet.</strong>
+        </p>
+        <p>
+          Nothing has gone wrong at your end and waiting won't fix it —
+          <strong>contact Michael</strong> and he'll sort it out. Then come
+          back here and it'll be waiting.
+        </p>
+      </div>
+    {% else %}
+      <p style="font-size:.95rem; line-height:1.6;">
+        Tick the box and the pass downloads. Keep hold of it — but if it goes
+        missing, you can come back here any time and get it again.
+      </p>
+    {% endif %}
+
+    <form method="post">
+      {% csrf_token %}
+      {% comment %}
+      Already checked on the submission that unlocked the page. Carried
+      rather than re-typed: the PIN is not a secret, and asking for it a
+      second time at the bottom of a long page is how people give up.
+      {% endcomment %}
+      {% if form.employee %}
+        <input type="hidden" name="employee" value="{{ form.employee.value }}">
+      {% endif %}
+      {% if form.pin %}
+        <input type="hidden" name="pin" value="{{ form.pin.value }}">
+      {% endif %}
+
+      <div class="tick">
+        <input type="checkbox" name="read_it" id="id_read_it"
+               {% if form.read_it.value %}checked{% endif %}>
+        <label for="id_read_it">I've read this page</label>
+      </div>
+      {{ form.read_it.errors }}
+
+      <button type="submit" name="want_pass" value="1" class="btn">
+        Give me my pass
+      </button>
+    </form>
+  </div>
+
+{% endif %}
+
+{% endblock %}

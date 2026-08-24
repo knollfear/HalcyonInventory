@@ -207,6 +207,14 @@ urlpatterns = [
     # — silently, because the symptom is only that nobody ever reports. The
     # PIN is what guards it, in the page. The two office pages are private/.
     path("secret/booth/", views.booth_photo, name="booth_photo"),
+
+    # --- The crew handbook ---
+    # Same bucket and the same reasoning again: no accounts, so no login. The
+    # name and PIN are here to pick which pass comes back rather than to guard
+    # anything — the page's own text is not a secret, and a faire pass is a
+    # barcode and a photograph. What makes secret/ right is that customers
+    # have no business tripping over the crew's instructions.
+    path("secret/handbook/", views.crew_handbook, name="crew_handbook"),
     path("private/booth-photos/", views.booth_photos, name="booth_photos"),
     path(
         "private/unidentified-sales/",

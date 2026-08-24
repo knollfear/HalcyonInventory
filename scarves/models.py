@@ -877,6 +877,18 @@ class Employee(models.Model):
             "authenticated for. Blank is the normal case and changes nothing."
         ),
     )
+    pass_pdf = models.FileField(
+        upload_to="crew_passes/",
+        blank=True,
+        help_text=(
+            "This person's faire pass, as the PDF that gets handed out. It is "
+            "served by `secret/handbook/` once they have read the page, which "
+            "is the only reason the handbook has a name and a PIN on it at "
+            "all — not to guard the pass, but to know whose to hand over. "
+            "Blank tells them to contact Michael rather than showing a dead "
+            "button."
+        ),
+    )
     notes = models.TextField(blank=True)
 
     class Meta:
@@ -1113,7 +1125,7 @@ class BoothPhoto(models.Model):
     REASON_UNIDENTIFIED = "unidentified"
     REASON_CHOICES = [
         (REASON_SHARE, "Something to share"),
-        (REASON_UNIDENTIFIED, "A scarf nobody could identify"),
+        (REASON_UNIDENTIFIED, "A colorway nobody could identify"),
     ]
 
     image = models.ImageField(

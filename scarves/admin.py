@@ -573,7 +573,10 @@ class EmployeeAdmin(admin.ModelAdmin):
     # `user` is here so linking one is discoverable — it is the only way a
     # signed-in person stops being asked to pick their own name off the booth
     # form. Blank for almost everybody, which is the normal case.
-    list_display = ("name", "pin", "is_active", "user", "entry_count", "last_reported")
+    list_display = (
+        "name", "pin", "is_active", "user", "has_pass",
+        "entry_count", "last_reported",
+    )
     list_editable = ("pin", "is_active")
     list_filter = ("is_active",)
     autocomplete_fields = ("user",)
@@ -585,6 +588,17 @@ class EmployeeAdmin(admin.ModelAdmin):
             _entries=Count("time_entries"),
             _last=Max("time_entries__work_date"),
         )
+
+    @admin.display(description="Pass", boolean=True)
+    def has_pass(self, obj):
+        """Whether `secret/handbook/` has anything to hand this person.
+
+        A column rather than something you check per-row, because the useful
+        question is "who is going to reach the bottom of the handbook and be
+        told to contact me" — and that is only answerable by looking down the
+        whole roster at once.
+        """
+        return bool(obj.pass_pdf)
 
     @admin.display(description="Days reported", ordering="_entries")
     def entry_count(self, obj):

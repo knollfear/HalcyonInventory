@@ -6,6 +6,7 @@ from django import forms
 from django.db import transaction
 from django.utils import timezone
 
+from . import crew
 from .labels import (
     BARCODE as LABEL_BARCODE,
     STYLE_CHOICES as LABEL_STYLE_CHOICES,
@@ -798,12 +799,15 @@ class BoothPhotoForm(forms.Form):
             # being hidden, because a field that is present but not shown is
             # one a bad POST can still fill in.
             del self.fields["pin"]
-            self.signed_in_as = Employee.objects.filter(
-                user=user, is_active=True
-            ).first()
-            # The name picker only goes when the app actually knows which
-            # employee this login is. Unlinked, it genuinely doesn't — and
-            # guessing would put somebody else's name on a permission.
+            # Resolves to a row, creating one for a login that has never been
+            # seen here — see crew.employee_for. This used to fall back to the
+            # picker instead, on the grounds that an unlinked login genuinely
+            # isn't any known employee and guessing would put the wrong name
+            # on a permission. Still true, and the resolver doesn't guess: it
+            # makes a row for the person who is actually signed in. What the
+            # old behaviour produced was a signed-in person being shown their
+            # colleagues' names and asked which one they were.
+            self.signed_in_as = crew.employee_for(user)
             if self.signed_in_as is not None:
                 del self.fields["employee"]
 
@@ -923,9 +927,8 @@ class CloseStartForm(forms.Form):
             # Removed, not hidden: a field that is present but invisible is
             # one a hand-built POST can still fill in.
             del self.fields["pin"]
-            self.signed_in_as = Employee.objects.filter(
-                user=user, is_active=True
-            ).first()
+            # Same resolver as the booth form, for the same reason.
+            self.signed_in_as = crew.employee_for(user)
             if self.signed_in_as is not None:
                 del self.fields["employee"]
 
@@ -976,3 +979,96 @@ def build_close_count_form_class(rows):
         for row in rows
     }
     return type("CloseCountForm", (forms.Form,), fields)
+
+
+class CrewHandbookForm(forms.Form):
+    """Who is reading the handbook, so the right pass comes back.
+
+    The name and PIN here are doing a different job from the ones on the
+    hours and booth forms, and it is worth being plain about it: they are not
+    guarding the passes. A pass is a barcode and a photograph, trivially
+    faked by anyone who wanted one, and the people who can reach this page
+    are the people who are getting a pass anyway. What the pair actually buys
+    is knowing *whose* PDF to hand over, and the PIN stops the wrong name
+    being tapped — which here means walking off with somebody else's face.
+
+    So there is deliberately no attempt-throttle, unlike the hours form. The
+    thing behind that lock is worth locking; this one isn't, and a lockout
+    lands on somebody standing at the gate without their pass.
+    """
+
+    employee = forms.ModelChoiceField(
+        queryset=Employee.objects.none(),   # set in __init__, as HoursForm does
+        empty_label="— choose your name —",
+        label="Your name",
+    )
+    pin = forms.CharField(
+        max_length=4,
+        label="Your PIN",
+        widget=forms.TextInput(attrs={
+            "inputmode": "numeric",
+            "pattern": "[0-9]*",
+            "autocomplete": "off",
+            "placeholder": "····",
+        }),
+    )
+    #: Required only on the submission that asks for the pass — see `clean`.
+    #: Unlocking the page to read it asks for nothing but the name and PIN,
+    #: because ticking "I've read this" before reading it is the one order
+    #: the box can't be asked in.
+    read_it = forms.BooleanField(
+        required=False,
+        label="I've read this page",
+    )
+
+    def __init__(self, *args, **kwargs):
+        # Whether this POST is the "Give me my pass" button rather than the
+        # unlock. Popped before super(), which would reject the kwarg.
+        self.wants_pass = kwargs.pop("wants_pass", False)
+        user = kwargs.pop("user", None)
+        super().__init__(*args, **kwargs)
+
+        # Evaluated per-instance so somebody added this morning is on the
+        # list without a redeploy. Rows with no PIN are left off: those are
+        # the ones that sign in through Django, and picking one is a dead end
+        # because `clean_pin` can never be satisfied for a blank PIN.
+        self.fields["employee"].queryset = (
+            Employee.objects.filter(is_active=True).exclude(pin="")
+        )
+
+        self.signed_in_as = None
+        if user is not None and user.is_authenticated:
+            # A login outranks a four-digit PIN, so asking for the PIN on top
+            # of it buys nothing. Both fields *go* rather than being hidden:
+            # a field that is present but not shown is one a hand-built POST
+            # can still fill in, and here that means handing over somebody
+            # else's pass.
+            del self.fields["pin"]
+            self.signed_in_as = crew.employee_for(user)
+            if self.signed_in_as is not None:
+                del self.fields["employee"]
+
+    def clean_pin(self):
+        pin = (self.cleaned_data.get("pin") or "").strip()
+        if not pin.isdigit() or len(pin) != 4:
+            raise forms.ValidationError("Your PIN is four digits.")
+        return pin
+
+    def clean(self):
+        cleaned = super().clean()
+        # One of the two answered: the picker, or the login. Normalising here
+        # means the view reads `cleaned_data["employee"]` either way and never
+        # has to know which door somebody came through.
+        employee = cleaned.get("employee") or self.signed_in_as
+        cleaned["employee"] = employee
+
+        pin = cleaned.get("pin")
+        if "pin" in self.fields and employee and pin and pin != employee.pin:
+            self.add_error("pin", "That PIN doesn't match that name.")
+
+        if self.wants_pass and not cleaned.get("read_it"):
+            self.add_error(
+                "read_it",
+                "Tick the box to say you've read the page, then ask again.",
+            )
+        return cleaned

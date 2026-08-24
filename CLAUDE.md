@@ -15,6 +15,50 @@ container, so edits are picked up live.
 - Don't try to run `manage.py` on the host — settings require PG env vars and
   psycopg, neither of which is available locally.
 
+## What the shop actually makes
+
+Nothing in the schema says this, and it explains the shape of most of what
+follows.
+
+**The dyeing is the value add.** Everything is dyed here — that is the
+business, and it is why the colorway rather than the style is the axis
+everything is organised around. (The one documented exception is the small
+amount of stock sold exactly as it arrives; see *Undyed stock* below, where a
+null `recipe` is what marks it.)
+
+Five styles cover about 99% of what gets made and sold, and **the scarves are
+silk**:
+
+- infinity scarves
+- sash belts
+- half circle veils
+- rectangle veils
+- triangle fringe scarves
+
+Alongside them are **four base yarns** — Heavenly, Homespun, Artisan and
+Noble — each carried in roughly **forty colorways**. The yarns are *not*
+silk: they are other natural fibers, and **which fiber varies from product to
+product**, so nothing should assume a single material for them or derive one
+from the style. There are odd other things; they are not worth special-casing
+and no code should assume they exist.
+
+**The catalogue is narrow in styles and very wide in colour**, and that one
+fact drives a lot of the design. A handful of blanks times a few hundred
+recipes is what produces the product count, which is why:
+
+- SKUs are `BLANK-DYEBATH` and `private/unidentified-sales/` can narrow on
+  the first six characters — the style is the small half of the identifier;
+- the Square axis is ITEM = style, VARIATION = colorway, and variation
+  ordering matters enough to have its own pass (a till list forty deep is
+  unreadable in creation order);
+- reference sheets are printed per colorway rather than per style, and the
+  by-colour ordering exists at all;
+- a dye bath is one blank plus one recipe, so label runs clump by SKU.
+
+Worth stating plainly because the intuition it corrects is the common one: a
+new product is almost never a new *style*. It is another colour of something
+that already exists.
+
 ## URL layout: `private/`, `public/`, `secret/`, `webhooks/`
 
 The first path segment under `/scarves/` says who a route is for, so exposure
@@ -969,17 +1013,41 @@ feel like paperwork.
 
 `Employee.user` is the link, and it is blank for almost everybody — the crew
 are deliberately account-less. It only exists so the few people with a login
-are recognised. The degradation matters:
+are recognised.
 
-| Who                        | Name picker | PIN |
-|----------------------------|-------------|-----|
-| Not signed in (the crew)   | yes         | yes |
-| Signed in, `user` linked   | no          | no  |
-| Signed in, not linked      | **yes**     | no  |
+| Who                      | Name picker | PIN |
+|--------------------------|-------------|-----|
+| Not signed in (the crew) | yes         | yes |
+| Signed in                | no          | no  |
 
-The third row is the honest one. Without a link the app genuinely does not
-know which `Employee` a login is, and guessing would put somebody else's name
-on a sharing permission — so it still asks, and only drops the PIN.
+**A signed-in person is never asked who they are** — not here, not on the
+close, not on the handbook. `crew.employee_for` is the one resolver all three
+use, and an unlinked login gets a row made for it, named after the username
+and linked, so it happens once per person.
+
+That third state used to exist and be defended: an unlinked login fell back
+to the name picker, on the grounds that the app genuinely doesn't know which
+`Employee` a login is and guessing would put somebody else's name on a
+sharing permission. The premise is still true and the conclusion was still
+wrong. What it produced was somebody signed in being shown a list of their
+colleagues and asked which one they were, on a page they had already
+authenticated for — and the picker is itself a thing to mis-tap, so it was
+*worse* for attribution than having no picker at all. The resolver doesn't
+guess; it makes a row for the person demonstrably signed in.
+
+**A created row has a blank PIN**, and that is load-bearing rather than
+unfinished. These people sign in through Django, so a PIN would be a second
+credential for the same person that nobody has been told. `clean_pin` wants
+four digits, so nothing submittable matches a blank one — the row cannot be
+used to walk in through the name-and-PIN door. Blank-PIN rows are kept off
+the name pickers for the same reason: picking one is a dead end. Type a PIN
+into the admin and the row joins the picker, which is the whole of what that
+field now means.
+
+One guess is allowed: a same-named row that isn't linked yet gets linked
+rather than duplicated. An exact username against an exact employee name is
+narrow, and the alternatives are an `IntegrityError` on a unique name or two
+rows for one person.
 
 **The fields are removed from the form, not hidden in the template.** A field
 that is present but invisible is one a hand-built POST can still fill in, and
@@ -1022,6 +1090,13 @@ and when, which is the part that is worth anything later.
 of the tent, and left no trace: Square had the money, this app still had the
 stock, and nothing in either said they disagreed. **The silence was the whole
 failure** — the count was wrong and looked fine.
+
+The reason on the booth form is **"A colorway nobody could identify"**, not
+"a scarf" — it is one problem wearing two coats. A skein of yarn and a silk
+scarf raise exactly the same question ("which colorway is this?"), and a
+label naming only one of them invites a hesitation over whether the other
+counts. (The undyed yarns sit outside this and need no special wording: in
+practice they are unmistakable on the table.)
 
 Now every unplaceable line becomes an `UnmatchedSale`, whatever the reason (no
 `catalog_object_id` at all, an unsynced variation, a custom amount). Erring
@@ -1069,6 +1144,70 @@ on a print shop is time-bound and would want telling; this isn't.
 What makes none safe here is that the queue can't quietly empty itself. Every
 unplaceable line lands in it, dismissal keeps it readable, and it is still
 there on Monday. That is the whole of the guarantee, and it is enough.
+
+## The crew handbook: read it, then take your pass
+
+`secret/handbook/` is what the crew are given instead of being told things at
+eight in the morning on the first day. It covers the till, the look-up books,
+sending photos in and reporting hours, and it ends by handing that person
+their faire pass as a PDF.
+
+**The pass is the reason anyone comes back**, and that is the design. A page
+of instructions is read once and never again; a page you have to return to
+when you lose your pass is a page whose contents stay reachable. It is also
+the one crew page that can be relied on to be found, which makes it the right
+place to list the other `secret/` URLs — they are off the public map and off
+the staff map the crew can't see, so their only way in is a bookmark or a
+text message.
+
+**The gate is not protecting the passes.** A pass is a barcode and a
+photograph, trivially faked by anyone who wanted one, and everybody who can
+reach this URL is getting one anyway. The name and PIN are there to pick
+*whose* PDF comes back. That is why there is no attempt-throttle here unlike
+the hours form: the thing behind that lock is worth locking, this one isn't,
+and a lockout lands on somebody standing at the gate without a pass.
+
+**The button at the bottom is the whole of the scroll enforcement**, plus a
+checkbox. Anything cleverer means JavaScript, and JavaScript failing here
+means a crew member at the gate on one bar of signal with no pass — the same
+reasoning that keeps the booth form's toggle in CSS. A checkbox costs a tap
+and cannot fail closed.
+
+**Nothing is recorded.** No read-receipt, no timestamp, no per-season
+version. The tick is a speed bump asking somebody to look at the page, not
+evidence to be produced later, and storing it would invite exactly that use —
+which a checkbox on an unauthenticated page cannot support. The pass is
+downloaded and kept; fetching it again just means coming back, and
+`crew.initial` has already filled the form in on the phone that fetched it
+the first time.
+
+**A missing PDF names a person to contact rather than showing a dead
+button.** Nothing the reader can do will make the page work, so the page has
+to stop them waiting on it. `EmployeeAdmin` carries a `Pass` column for the
+other side of that: the useful question is "who is going to reach the bottom
+and be told to contact me", and it is only answerable by looking down the
+whole roster at once.
+
+**The PDF is streamed, never linked.** The bucket is private, so an unsigned
+`.url` would simply 403 — but even where it wouldn't, a link to somebody's
+pass outlives the page that produced it.
+
+### Write it as if it were always true
+
+The handbook carries **no temporal language**: no "new this year", no "we've
+changed", no "previously". The reader may have worked here for years and
+still never have seen any of it, and a page half-describing a world that has
+moved on gives nobody a way to tell which half. A revised date at the top
+carries all the time information there is. Sections run in the shape of a day
+— the till, the books, photos, hours — rather than in the shape of the
+software, because someone reading it cold is working out what happens to
+them.
+
+Two things in it are worth keeping accurate because they are the ones that
+cost money when wrong: **the variation is the colorway** and a wrong one
+balances perfectly at the till while corrupting the count of two colours, and
+**the pay week runs Saturday to Friday**, which is what keeps a faire weekend
+inside a single pay week instead of splitting it across two.
 
 ## The PIN is remembered, and remembering is not authorising
 

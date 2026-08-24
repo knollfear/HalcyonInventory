@@ -131,3 +131,55 @@ def forget(response):
 def asked_to_forget(request):
     """Whether this GET is the "not you?" link."""
     return request.method == "GET" and FORGET in request.GET
+
+
+def employee_for(user):
+    """The `Employee` a signed-in user *is* — created if they are new here.
+
+    A login is a stronger claim than four digits, so a signed-in person is
+    never asked to pick their own name off a list or type a PIN. That much
+    the booth form already did. What it did not do was cover the person with
+    a login and no `Employee` row, who fell back to the picker — and being
+    shown a list of your colleagues' names and asked which one you are is
+    exactly the paperwork a login was supposed to have settled.
+
+    So an unlinked login gets a row made for it, named after the username and
+    linked, which means it only ever happens once. The rows this creates are
+    real employees; they were always going to need one the moment anybody
+    wanted to hand them a pass or read their hours.
+
+    **The created row has no PIN**, deliberately. These people authenticate
+    through Django's own user management, so a PIN would be a second
+    credential for the same person, invented by the app, that nobody has been
+    told. Blank means "this one signs in" — and because `clean_pin` rejects
+    anything that isn't four digits, a blank PIN cannot be submitted, so the
+    row can never be used to walk in through the name-and-PIN door.
+
+    One judgement is baked in: a same-named row that isn't linked yet gets
+    linked rather than duplicated. That is a guess, and it is the one guess
+    allowed here — matching an exact username against an exact employee name
+    is narrow, and the alternatives are an `IntegrityError` on a unique name
+    or a second row for a person who already has one.
+    """
+    if user is None or not user.is_authenticated:
+        return None
+
+    employee = Employee.objects.filter(user=user).first()
+    if employee is not None:
+        # Returned even when inactive: retiring somebody doesn't stop them
+        # being who they are, and the pages that shouldn't serve them filter
+        # on `is_active` themselves.
+        return employee
+
+    name = (user.get_username() or "").strip()
+    if not name:
+        return None
+
+    employee, created = Employee.objects.get_or_create(
+        name=name,
+        defaults={"user": user},
+    )
+    if not created and employee.user_id is None:
+        employee.user = user
+        employee.save(update_fields=["user"])
+    return employee

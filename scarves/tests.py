@@ -45,7 +45,13 @@ from .colorutils import (
     pick_color_cluster,
     recipe_palette,
 )
-from .forms import HoursForm, LabelRunForm, QuickRecipeRowForm, RecipeDyesForm
+from .forms import (
+    CrewHandbookForm,
+    HoursForm,
+    LabelRunForm,
+    QuickRecipeRowForm,
+    RecipeDyesForm,
+)
 from . import labels as labelmod
 from . import views as viewsmod
 from .models import (
@@ -7497,28 +7503,47 @@ class BoothSignedInTests(TestCase):
         self.assertEqual(photo.employee, self.employee)
         self.assertTrue(photo.share_website)
 
-    def test_an_unlinked_login_still_picks_a_name(self):
-        """The app genuinely doesn't know which employee this is, and
-        guessing would put someone else's name on a permission."""
+    def test_an_unlinked_login_is_asked_for_neither_either(self):
+        """An unlinked login used to fall back to the name picker.
+
+        The old reasoning was that the app genuinely doesn't know which
+        employee this is and guessing would put someone else's name on a
+        permission. The first half is still true; the conclusion was wrong.
+        What it produced was a signed-in person being shown a list of their
+        colleagues and asked which one they were — the exact paperwork a
+        login is supposed to settle.
+
+        `crew.employee_for` doesn't guess. It makes a row for the person who
+        is demonstrably signed in, so there is no longer an unlinked case to
+        fall back from.
+        """
         other = User.objects.create_user("stranger", password="pw")
         self.client.force_login(other)
 
         form = self.client.get(self.url).context["form"]
 
-        self.assertIn("employee", form.fields)
+        self.assertNotIn("employee", form.fields)
         self.assertNotIn("pin", form.fields, "the login already proved more than a PIN")
 
-    def test_an_unlinked_login_can_still_send(self):
+    def test_an_unlinked_login_sends_as_itself(self):
+        """And the photo is attributed to the new row, not to a picked name.
+
+        This is the safety property the old fallback was reaching for, and it
+        holds more firmly now: there is no picker to mis-tap, so a permission
+        can only ever carry the name of whoever was actually signed in.
+        """
         other = User.objects.create_user("stranger", password="pw")
         self.client.force_login(other)
 
         self.client.post(self.url, {
-            "employee": self.employee.pk,
             "reason": BoothPhoto.REASON_SHARE,
             "photo": self._photo(),
         })
 
-        self.assertEqual(BoothPhoto.objects.get().employee, self.employee)
+        photo = BoothPhoto.objects.get()
+        self.assertEqual(photo.employee.name, "stranger")
+        self.assertEqual(photo.employee.user, other)
+        self.assertNotEqual(photo.employee, self.employee)
 
     def test_the_crew_are_unaffected(self):
         """Anonymous is still name plus PIN, and a wrong PIN still stops."""
@@ -10989,3 +11014,382 @@ class InventoryLogSourceTests(TestCase):
             ).count(),
             0,
         )
+
+
+@override_settings(MEDIA_ROOT=tempfile.mkdtemp())
+class CrewHandbookTests(TestCase):
+    """The handbook, and the pass it hands out at the bottom.
+
+    The page has an unusual shape for this app: a gate that is deliberately
+    not protecting the thing behind it. A faire pass is a barcode and a
+    photograph, and anyone who can reach this URL is getting one anyway — so
+    the name and PIN are there to pick *whose* PDF comes back, and the tick
+    box is there to ask somebody to look at the page. Neither is a lock, and
+    the tests below are mostly about the ways that could quietly stop being
+    true.
+
+    The one failure that actually costs something is a crew member standing
+    at the gate unable to get their pass, so the cases that matter most are
+    the ones where the page refuses: a missed tick must not throw away the
+    read, and a missing PDF must say who to ask.
+    """
+
+    def setUp(self):
+        self.sam = make_employee("Sam", pin="4821")
+        self.url = reverse("crew_handbook")
+
+    def _attach_pass(self, employee=None, content=b"%PDF-1.4 fake pass"):
+        employee = employee or self.sam
+        employee.pass_pdf.save("pass.pdf", ContentFile(content), save=True)
+        return employee
+
+    def _unlock(self, **overrides):
+        data = {"employee": self.sam.pk, "pin": "4821"}
+        data.update(overrides)
+        return self.client.post(self.url, data)
+
+    def _ask_for_pass(self, **overrides):
+        data = {
+            "employee": self.sam.pk,
+            "pin": "4821",
+            "read_it": "on",
+            "want_pass": "1",
+        }
+        data.update(overrides)
+        return self.client.post(self.url, data)
+
+    # --- the gate -------------------------------------------------------
+
+    def test_anonymous_get_is_served(self):
+        """A `secret/` page must not redirect to a login.
+
+        The crew have no accounts. A login here locks out exactly the people
+        the page is for, and the only symptom is that nobody ever reads it.
+        """
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.context["unlocked"])
+
+    def test_locked_page_withholds_the_handbook(self):
+        """Not a security boundary — but the gate has to actually gate.
+
+        If the text renders behind the form, the button at the bottom is no
+        longer at the bottom of anything and the tick means nothing.
+        """
+        body = self.client.get(self.url).content.decode()
+        self.assertNotIn("The pay week runs Saturday to Friday", body)
+
+    def test_wrong_pin_does_not_unlock(self):
+        response = self._unlock(pin="0000")
+        self.assertFalse(response.context["unlocked"])
+        self.assertTrue(response.context["form"].has_error("pin"))
+
+    def test_correct_pin_unlocks(self):
+        response = self._unlock()
+        self.assertTrue(response.context["unlocked"])
+        self.assertIn(
+            "The pay week runs Saturday to Friday", response.content.decode()
+        )
+
+    def test_inactive_employee_is_not_offered(self):
+        gone = make_employee("Gone", pin="1111", active=False)
+        response = self.client.get(self.url)
+        self.assertNotIn(gone, response.context["form"].fields["employee"].queryset)
+
+    # --- the tick box ---------------------------------------------------
+
+    def test_pass_requires_the_tick(self):
+        self._attach_pass()
+        response = self._ask_for_pass(read_it="")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context["form"].has_error("read_it"))
+
+    def test_a_missed_tick_does_not_relock_the_page(self):
+        """The expensive version of this is losing somebody's place.
+
+        They have just read the page. Bouncing them back to the name-and-PIN
+        form to do it again is how a two-tap fix becomes a page nobody
+        finishes.
+        """
+        self._attach_pass()
+        response = self._ask_for_pass(read_it="")
+        self.assertTrue(response.context["unlocked"])
+        self.assertIn(
+            "The pay week runs Saturday to Friday", response.content.decode()
+        )
+
+    def test_bad_pin_on_the_pass_request_does_relock(self):
+        """A name we can't place is the one case that must go back to the top.
+
+        Everything below depends on knowing who this is, so there is nothing
+        useful to re-render.
+        """
+        self._attach_pass()
+        response = self._ask_for_pass(pin="0000")
+        self.assertFalse(response.context["unlocked"])
+
+    # --- the pass -------------------------------------------------------
+
+    def test_ticking_downloads_the_pass(self):
+        self._attach_pass(content=b"%PDF-1.4 sam")
+        response = self._ask_for_pass()
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("attachment", response["Content-Disposition"])
+        self.assertEqual(b"".join(response.streaming_content), b"%PDF-1.4 sam")
+
+    def test_the_pass_can_be_fetched_again(self):
+        """Lost passes are the reason the page stays reachable.
+
+        Nothing is recorded when one is handed out, so nothing can decide a
+        second request is a duplicate — which is the intended behaviour, not
+        an oversight.
+        """
+        self._attach_pass()
+        first = self._ask_for_pass()
+        second = self._ask_for_pass()
+        self.assertEqual(
+            b"".join(first.streaming_content), b"".join(second.streaming_content)
+        )
+
+    def test_you_get_your_own_pass(self):
+        """The PIN's actual job: not a lock, but the right file.
+
+        Its failure mode is somebody walking off with another person's face
+        on their pass, which is discovered at the gate by a stranger.
+        """
+        self._attach_pass(content=b"%PDF-1.4 sam")
+        alex = make_employee("Alex", pin="9090")
+        self._attach_pass(alex, content=b"%PDF-1.4 alex")
+
+        response = self.client.post(self.url, {
+            "employee": alex.pk, "pin": "9090",
+            "read_it": "on", "want_pass": "1",
+        })
+        self.assertEqual(b"".join(response.streaming_content), b"%PDF-1.4 alex")
+
+    def test_no_pass_on_file_names_a_person_to_contact(self):
+        """A dead button is the failure this replaces.
+
+        Nothing the reader can do will make the page work, so it has to stop
+        them waiting on it.
+        """
+        response = self._ask_for_pass()
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context["no_pass"])
+        self.assertIn("contact Michael", response.content.decode())
+
+    def test_no_pass_still_leaves_the_page_readable(self):
+        self._ask_for_pass()
+        response = self._ask_for_pass()
+        self.assertTrue(response.context["unlocked"])
+
+    # --- remembering, which is not authorising --------------------------
+
+    def test_unlocking_remembers_the_phone(self):
+        self._unlock()
+        form = self.client.get(self.url).context["form"]
+        self.assertEqual(form.initial.get("employee"), self.sam.pk)
+        self.assertEqual(form.initial.get("pin"), "4821")
+
+    def test_the_cookie_does_not_stand_in_for_the_pin(self):
+        """Same guarantee as the hours and booth forms.
+
+        A remembered PIN types the field in. It has never authorised
+        anything, and a page that hands out a file is exactly where that
+        would start to look tempting.
+        """
+        self._attach_pass()
+        self._unlock()          # writes the cookie
+        response = self._ask_for_pass(pin="0000")
+        self.assertFalse(response.context["unlocked"])
+        self.assertTrue(response.context["form"].has_error("pin"))
+
+    def test_forget_link_clears_the_prefill(self):
+        self._unlock()
+        self.client.get(self.url, {crew.FORGET: "1"})
+        form = self.client.get(self.url).context["form"]
+        self.assertIsNone(form.initial.get("employee"))
+
+    # --- nothing is recorded --------------------------------------------
+
+    def test_reading_records_nothing(self):
+        """There is deliberately no read-receipt.
+
+        The tick is a speed bump, not evidence. Storing it would invite it to
+        be used as evidence later, which a checkbox on an unauthenticated
+        page cannot support.
+        """
+        self._attach_pass()
+        self._ask_for_pass()
+        self.sam.refresh_from_db()
+        self.assertEqual(self.sam.notes, "")
+
+
+class EmployeeForLoginTests(TestCase):
+    """Resolving a signed-in user to an `Employee`, creating one if needed.
+
+    The rule this enforces is small and worth stating plainly: **a signed-in
+    person is never asked who they are.** Not on the booth form, not on the
+    close, not on the handbook. The case that used to break it was a login
+    with no `Employee` row, which fell back to the name picker — and the
+    symptom was being shown your colleagues' names and asked which one you
+    were, on a page you had already authenticated for.
+    """
+
+    def test_anonymous_resolves_to_nobody(self):
+        from django.contrib.auth.models import AnonymousUser
+        self.assertIsNone(crew.employee_for(AnonymousUser()))
+        self.assertIsNone(crew.employee_for(None))
+
+    def test_a_linked_login_resolves_to_its_row(self):
+        employee = make_employee("Robin", pin="1111")
+        user = User.objects.create_user("robin", password="pw")
+        employee.user = user
+        employee.save()
+
+        self.assertEqual(crew.employee_for(user), employee)
+
+    def test_an_unlinked_login_gets_a_row_named_after_it(self):
+        user = User.objects.create_user("stranger", password="pw")
+
+        employee = crew.employee_for(user)
+
+        self.assertEqual(employee.name, "stranger")
+        self.assertEqual(employee.user, user)
+
+    def test_the_created_row_has_no_pin(self):
+        """These people sign in through Django, so a PIN would be a second
+        credential for the same person that nobody has been told."""
+        user = User.objects.create_user("stranger", password="pw")
+
+        self.assertEqual(crew.employee_for(user).pin, "")
+
+    def test_a_pinless_row_cannot_walk_in_through_the_pin_door(self):
+        """Blank is not a PIN that happens to be easy to guess.
+
+        `clean_pin` wants four digits, so there is nothing submittable that
+        matches a blank one — the row exists to be linked and paid, not to be
+        picked off a list at the stall.
+        """
+        user = User.objects.create_user("stranger", password="pw")
+        employee = crew.employee_for(user)
+
+        form = CrewHandbookForm(data={"employee": employee.pk, "pin": ""})
+
+        self.assertFalse(form.is_valid())
+        self.assertTrue(form.has_error("pin"))
+
+    def test_a_pinless_row_is_kept_off_the_name_picker(self):
+        """Picking it is a dead end, so it isn't offered."""
+        user = User.objects.create_user("stranger", password="pw")
+        created = crew.employee_for(user)
+        crew_member = make_employee("Sam", pin="4821")
+
+        offered = CrewHandbookForm().fields["employee"].queryset
+
+        self.assertIn(crew_member, offered)
+        self.assertNotIn(created, offered)
+
+    def test_resolving_twice_does_not_make_two_rows(self):
+        user = User.objects.create_user("stranger", password="pw")
+
+        first = crew.employee_for(user)
+        second = crew.employee_for(user)
+
+        self.assertEqual(first, second)
+        self.assertEqual(Employee.objects.filter(name="stranger").count(), 1)
+
+    def test_a_same_named_row_is_linked_rather_than_duplicated(self):
+        """The one guess allowed here, and it is a narrow one.
+
+        An exact username against an exact employee name. The alternatives
+        are an IntegrityError on a unique name, or a second row for somebody
+        who already has one.
+        """
+        existing = make_employee("stranger", pin="2222")
+        user = User.objects.create_user("stranger", password="pw")
+
+        resolved = crew.employee_for(user)
+
+        self.assertEqual(resolved, existing)
+        self.assertEqual(Employee.objects.filter(name="stranger").count(), 1)
+        existing.refresh_from_db()
+        self.assertEqual(existing.user, user)
+        self.assertEqual(existing.pin, "2222", "an existing PIN is left alone")
+
+    def test_an_inactive_link_still_resolves(self):
+        """Retiring somebody doesn't stop them being who they are.
+
+        Pages that shouldn't serve a retired employee filter on `is_active`
+        themselves; resolving identity is a different question from deciding
+        access, and conflating them here would silently hand a retired person
+        the name picker instead.
+        """
+        employee = make_employee("Gone", pin="1111", active=False)
+        user = User.objects.create_user("gone", password="pw")
+        employee.user = user
+        employee.save()
+
+        self.assertEqual(crew.employee_for(user), employee)
+
+
+@override_settings(MEDIA_ROOT=tempfile.mkdtemp())
+class CrewHandbookSignedInTests(TestCase):
+    """The handbook for somebody with a staff login.
+
+    A login already answers the only question the gate asks, so the gate
+    isn't shown: the page opens on the text. The tick box stays, because it
+    is asking something the login can't answer — whether this person has read
+    the page.
+    """
+
+    def setUp(self):
+        self.url = reverse("crew_handbook")
+        self.user = User.objects.create_user("michael", password="pw")
+
+    def test_a_login_opens_straight_onto_the_handbook(self):
+        self.client.force_login(self.user)
+
+        response = self.client.get(self.url)
+
+        self.assertTrue(response.context["unlocked"])
+        self.assertIn(
+            "The pay week runs Saturday to Friday", response.content.decode()
+        )
+
+    def test_a_login_is_asked_for_neither_name_nor_pin(self):
+        self.client.force_login(self.user)
+
+        form = self.client.get(self.url).context["form"]
+
+        self.assertNotIn("employee", form.fields)
+        self.assertNotIn("pin", form.fields)
+        self.assertEqual(form.signed_in_as.name, "michael")
+
+    def test_a_login_still_has_to_tick_the_box(self):
+        """The one thing authentication cannot assert on somebody's behalf."""
+        self.client.force_login(self.user)
+
+        response = self.client.post(self.url, {"want_pass": "1"})
+
+        self.assertTrue(response.context["form"].has_error("read_it"))
+        self.assertTrue(response.context["unlocked"], "and doesn't lose their place")
+
+    def test_a_login_gets_its_own_pass(self):
+        employee = crew.employee_for(self.user)
+        employee.pass_pdf.save("pass.pdf", ContentFile(b"%PDF-1.4 michael"), save=True)
+        self.client.force_login(self.user)
+
+        response = self.client.post(self.url, {"read_it": "on", "want_pass": "1"})
+
+        self.assertEqual(
+            b"".join(response.streaming_content), b"%PDF-1.4 michael"
+        )
+
+    def test_a_login_with_no_pass_is_told_who_to_ask(self):
+        self.client.force_login(self.user)
+
+        response = self.client.post(self.url, {"read_it": "on", "want_pass": "1"})
+
+        self.assertTrue(response.context["no_pass"])
+        self.assertIn("contact Michael", response.content.decode())
