@@ -124,6 +124,11 @@ ALIASES = {
     "Turq": "624 Turquoise (Primary)",
     "Saph": "622 Sapphire Blue",
     "Lilac": "612 Lilac",
+    "J Purple": "613 Purple",
+    # "Chartreuse", plainly — so the Dharma jar. Jacquard's is catalogued
+    # as `628 Chartreuse (Neon)`, and a neon is the sort of thing somebody
+    # names as a neon rather than leaving to be inferred.
+    "Chart": "448 Chartreuse",
     "Em": "629 Emerald",
     # Not a collision, and that is why it is here. Dharma spells theirs
     # `408 Teal Green` and Jacquard `631 Teal`, so the stems never clashed and
@@ -140,6 +145,25 @@ ALIASES = {
     "MidEm": ("415 Midnight Blue", "629 Emerald"),
     "AmNavy": ("425 Amethyst", "409 Dark Navy*"),
     "AmNav": ("425 Amethyst", "409 Dark Navy*"),
+}
+
+# Words left open on purpose, and why. Not a backlog.
+#
+# A blocked word normally means "nobody has got round to answering this", and
+# the report is a to-do list that shrinks. These two are a different thing:
+# there is no answer to write down, because the jar genuinely changes. Filing
+# them with the unanswered ones makes the largest number in the report the one
+# that will never move, which teaches whoever reads it to stop reading it.
+#
+# So they stay blocked — the recipes are still skipped and still named, and
+# nothing is guessed — but the report says which kind of blocked they are.
+# Recording a decision not to decide is still recording a decision.
+UNSETTLED = {
+    "Grey": (
+        "the grey in use is in flux, so there is no one jar to name. "
+        "Three Dharma greys are plausible and the answer moves."
+    ),
+    "Gray": "the other spelling of the same unsettled word (Furiosa).",
 }
 
 
@@ -351,15 +375,30 @@ class Command(BaseCommand):
                 self.stdout.write(f"  {token!r} -> {alias!r}")
 
         if blocked:
+            parked = [
+                row for row in blocked
+                if all(token in UNSETTLED for token, _ in row[2])
+            ]
+            note = ""
+            if parked:
+                note = (
+                    f" {len(parked)} of those wait on a word left open on "
+                    f"purpose and are not a to-do."
+                )
             self.stdout.write(self.style.WARNING(
                 f"\n{len(blocked)} recipe(s) blocked on shorthand nobody has "
-                f"settled. Grouped by the word, because one answer usually "
-                f"unblocks several:"
+                f"settled.{note} Grouped by the word, because one answer "
+                f"usually unblocks several:"
             ))
+            # Parked words sort to the bottom: the report should open on
+            # what an answer would actually buy.
             for token, (recipes, candidates) in sorted(
-                blocking.items(), key=lambda kv: (-len(kv[1][0]), kv[0])
+                blocking.items(),
+                key=lambda kv: (kv[0] in UNSETTLED, -len(kv[1][0]), kv[0]),
             ):
-                if candidates:
+                if token in UNSETTLED:
+                    detail = f"left open on purpose — {UNSETTLED[token]}"
+                elif candidates:
                     detail = "matches " + ", ".join(d.name for d in candidates)
                 else:
                     guesses = self._suggest(token, dyes_on_file)
