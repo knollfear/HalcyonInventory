@@ -61,13 +61,27 @@ NOTEBOOK = [
 #
 # What is deliberately *not* here is the interesting part: a token whose
 # shorthand matches two dyes equally well gets no entry, and the recipes using
-# it are skipped and named. Nearly all of those are the same question asked
+# it are skipped and named. Nearly all of those were the same question asked
 # repeatedly — Dharma and Jacquard both sell a Turquoise, a Sapphire, an
 # Emerald, a Teal, a Lilac, a Chartreuse, a Navy and a Black, and the page
 # never says which jar. Guessing costs a wrong hex, which reaches the rainbow
 # sheets as a band the scarf was never dyed in, and the symptom is a customer
 # looking under red for something filed in orange. Answer the question once
 # here and every recipe that was waiting on it goes in on the next run.
+#
+# Note where those answers came from: the shelf. Nothing in the database can
+# settle a brand — both catalogues are imported whole and every one of the 132
+# rows is flagged in stock, which is the importer's default and not a count
+# anybody took. The formula-named recipes look like evidence and are not; two
+# of them agreed with the answers below and two contradicted them, which is
+# what a coin does.
+#
+# A value may name *two* jars. Almost every token is one word for one jar, and
+# the dyes in a colourway normally stay distinct — the scarf flows between
+# them, which is why nothing here ever averages a recipe to one colour. Two
+# tokens genuinely break that: `MidEm` and `AmNavy` are baths where the two
+# dyes are mixed before they touch the cloth. Recording both is the honest
+# option; picking one would drop the other with nothing to say so.
 ALIASES = {
     "Sage": "450 Sage Leaf",
     "Forest": "452 Forest Green",
@@ -102,6 +116,25 @@ ALIASES = {
     # `turq-mid-black` holds 415 Midnight Blue and 413 True Black.
     "Mid": "415 Midnight Blue",
     "Blue Eyes": "466 Baby Blue Eyes",
+
+    # Which brand's jar, answered off the shelf. Dharma numbers 4xx, Jacquard
+    # 6xx, so the number in each value is also the answer to the question.
+    "Black": "413 True Black (Primary)*",
+    "Navy": "409 Dark Navy*",
+    "Turq": "624 Turquoise (Primary)",
+    "Saph": "622 Sapphire Blue",
+    "Lilac": "612 Lilac",
+    "Em": "629 Emerald",
+    # Same "light touch" as the two above: the obvious jar, used sparingly.
+    # The formula row for this colourway is named `ecru-Lmauve-brown`, so
+    # whoever named it read the page the same way.
+    "Light Brown": "635 Brown",
+
+    # The two mixed baths. See the note above the table for why these are a
+    # pair rather than a pick.
+    "MidEm": ("415 Midnight Blue", "629 Emerald"),
+    "AmNavy": ("425 Amethyst", "409 Dark Navy*"),
+    "AmNav": ("425 Amethyst", "409 Dark Navy*"),
 }
 
 
@@ -166,11 +199,11 @@ class Command(BaseCommand):
 
             dyes, unresolved = [], []
             for token in tokens:
-                dye, candidates = self._resolve_with(token, by_name, stems)
-                if dye is None:
+                found, candidates = self._resolve_with(token, by_name, stems)
+                if found is None:
                     unresolved.append((token, candidates))
                 else:
-                    dyes.append(dye)
+                    dyes.extend(found)
 
             if unresolved:
                 blocked.append((recipe, page_name, unresolved))
@@ -209,26 +242,37 @@ class Command(BaseCommand):
         ))
 
     def _resolve_with(self, token, by_name, stems):
+        """The jar or jars this word means, or the candidates it is stuck on.
+
+        Returns a *list* even for the ordinary one-word-one-jar case, because
+        two tokens name a mixed bath and the caller must not have to know
+        which kind it is holding.
+        """
         alias = ALIASES.get(token)
         if alias:
-            dye = by_name.get(alias.casefold())
-            if dye is None:
-                # Two causes, and the command can't tell them apart: a typo in
-                # the table, or a catalogue this database never imported.
-                # Neither is worth dying over — both are worth *saying*, in a
-                # section of their own, because a typo mixed in with the
-                # shorthand list reads as one more thing to look up later.
-                self.alias_gaps[token] = alias
-                return None, []
-            return dye, None
+            names = [alias] if isinstance(alias, str) else list(alias)
+            dyes = []
+            for name in names:
+                dye = by_name.get(name.casefold())
+                if dye is None:
+                    # Two causes, and the command can't tell them apart: a
+                    # typo in the table, or a catalogue this database never
+                    # imported. Neither is worth dying over — both are worth
+                    # *saying*, in a section of their own, because a typo
+                    # mixed in with the shorthand list reads as one more thing
+                    # to look up later.
+                    self.alias_gaps[token] = name
+                    return None, []
+                dyes.append(dye)
+            return dyes, None
 
         wanted = token.casefold()
         exact = by_name.get(wanted)
         if exact is not None:
-            return exact, None
+            return [exact], None
         matches = stems.get(wanted, [])
         if len(matches) == 1:
-            return matches[0], None
+            return matches, None
         return None, matches
 
     def _suggest(self, token, dyes_on_file):
