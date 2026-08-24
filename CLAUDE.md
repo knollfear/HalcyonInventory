@@ -707,6 +707,168 @@ hand-keyed price, which carries no `catalog_object_id` at all — so every one
 landed in `private/unidentified-sales/` (or, before that existed, vanished).
 Selling them as real variations fixes that at the source.
 
+## The Sunday close: the app's zeros against the tags in hand
+
+`secret/close/` is the end-of-weekend check. The app says which products are
+out; the crew are holding a kanban tag for each one that really is. Three
+answers, and the two disagreements are the output:
+
+| App | Tag  | Means                                              |
+|-----|------|----------------------------------------------------|
+| 0   | held | agree — genuinely out, nothing moves               |
+| 0   | not held | app **undercounts**: count the bag, true it up |
+| n>0 | held | app **overcounts**: adjust to zero                 |
+
+`scarves/closing.py` holds all of it. Only the middle row asks anybody for a
+number; the other two are a tick and a search result.
+
+**Zero is the trigger because the clamp makes it one.** `number_on_hand`
+clamps at zero on every sale, so a row undercounted all season eventually
+funnels into that one unambiguous state — the clamp turns a diffuse error
+into a discrete list. The work is self-limiting, and it verifies at the point
+of consequence, since zero is what leads the production sheet and sends
+somebody to the dye room.
+
+**The extra tag is the half the zero-trigger can never find.** An overstated
+row never reaches zero to be checked, which is exactly the shape a swapped
+sale leaves behind. It is also a **webhook health check**: a dropped sale
+physically becomes an extra tag about a week later, so a dead integration
+shows up here with no cross-check against Square at all.
+
+**Absolute counts, never a rate.** Ten corrections in a weekend is ten
+corrections whether the list was twelve products long or two hundred.
+Nothing computes `4 / 50`, because putting the reassuring number beside the
+actionable one is how the actionable one stops being read. The agreements are
+stored — a ticked row has to stop coming back at somebody working down a pile
+— but they are not a denominator, and `tally()` deliberately has no `rate`
+key. The two directions are also never summed: a bad intake would cancel out
+a dead webhook.
+
+**A tag for a product already at zero is an agreement, not an extra.** A
+product can be at zero and still miss the expected list (`par` of 0), and
+filing its tag as an overcount would put a fault into the one number this
+page produces — in the direction that reads as "the till is losing sales".
+`closing.add_tag` checks the live count and records `confirmed` instead.
+
+**A tick comes back off; a correction doesn't.** Confirming a row moves no
+stock, so it stays reversible — untick it and the row rejoins the count list.
+That is not a nicety: the worked case is a bag turning up under the table at
+seven that was confirmed as gone at four, and the answer has to be typeable
+without an admin. The moment a count is typed and stock moves, the row is
+settled for good, because taking a movement back is an inventory adjustment
+with a reason attached rather than an untick on a page with no login — the
+same rule the production sheet applies.
+
+A found bag lands as `missing`, and the label repays a careful reading: the
+tag *was* in hand, so "no tag" is not literally what happened. What the
+outcome records is the **direction** — the app was under, the
+stock-arrived-unrecorded end of the pipeline — and the direction is what is
+being counted.
+
+### A run is a calendar day, and yesterday's is a record
+
+`CloseRun.day` is unique. Reopening the page the same evening lands back in
+the same run and picks up where it stopped, which is what the job needs — it
+happens in a car park in the dark and gets interrupted. Come back tomorrow
+and nothing on that day can be ticked, counted or adjusted; a correction goes
+through `private/bulk-inventory/` with a reason attached.
+
+There is deliberately **no finish button**, because the button is exactly
+what doesn't get pressed: the van gets loaded, the phone goes in a pocket,
+and a run left open forever reads identically to one that found nothing. The
+day is the boundary instead, and rows still `pending` when it ends are what
+distinguishes "got through the pile" from "walked away" — which is why the
+history page has a column for them.
+
+`is_open` compares against `timezone.localdate()`, so a run locks at midnight
+rather than when anyone leaves. Considered and accepted rather than softened
+to a 4am cutoff: still packing at midnight means several other things have
+already gone wrong, and the cost is only that the next run rechecks what was
+already checked. The truing-up itself is unchanged.
+
+Expect the page to be worked in **several passes across an evening** — four
+o'clock, seven, and once more before leaving — rather than in one sitting.
+That is the usage the row states and the growing list are shaped around, and
+it is what caught the prefetch bug below.
+
+**The expected list only ever grows.** `sync_expected` folds in new zeros
+each time the page is opened, so a close started at noon still asks about the
+scarf that sold out at four. Rows already on the run are never removed or
+rewritten — `on_hand_before` is what the disagreement was measured against,
+and re-reading it would read back the number this close already corrected.
+
+**Read the rows live — don't `prefetch_related` them on the way in.** The
+sync adds rows *after* the run is fetched, so a prefetch cache built at that
+point won't contain them, and the new products stay invisible until some
+later request happens to rebuild it. That is the failure the sync exists to
+prevent, wearing a disguise: the page reads as a complete list, and the scarf
+that went at four o'clock is simply never asked about. This is a real bug
+that was caught by working the page in three passes across one evening, which
+is how it actually gets used. `close_history` still prefetches, correctly —
+it reads past runs and mutates nothing.
+
+**Unlike a `ProductionRun`, this is a record.** A production run is
+scaffolding: the `InventoryLog` is what survives it. Here the count of things
+found wrong *is* the deliverable, which is why the rows are kept, why the
+admin is read-only, and why nothing deletes.
+
+### It never reaches Square
+
+The close runs at a field on one bar of signal. A step that needs the network
+is a step that sometimes doesn't happen — the same reasoning that keeps the
+booth form's toggle in CSS, and why the unexpected-tag search is a plain form
+submit rather than a type-ahead.
+
+Reconciling against Square's own counts is a desk job for afterwards, and
+doing it *first* would be worse than not doing it at all: `_push_inventory`
+sends `PHYSICAL_COUNT`, an absolute set that overwrites, so a push makes app
+and Square agree by construction and every close comes back clean — which
+reads like good news. If anything is ever scheduled to run `sync_to_square`
+on a timer, check it can't fire between the weekend and the close.
+
+Run `import_square_sales` **before** any physical true-up, never after.
+
+The worked case is a day the webhooks were down while Square itself was fine:
+no sales recorded, nothing zeroes out, and the crew finish the day holding a
+fistful of tags for products the app still believes are in stock. The
+recovery is import first, then close — and `WebhookOutageRecoveryTests` pins
+both halves of what happens if you don't.
+
+**Stock survives either order**, because `set_on_hand` clamps at zero. What
+doesn't survive is the ledger: close first and the same physical sale is
+booked twice, once as a `sunday_close` adjustment and once as a
+`square_import` sale. The import's dedupe cannot prevent that — it matches on
+`sale_reference`, and a close adjustment has none, because the close was
+never told an order id. Teaching it to guess would mean suppressing a real
+sale whenever the guess was wrong, which is the more expensive error.
+
+One consequence worth expecting: done in the right order, a catastrophic day
+shows **zero disagreements** on the close, because the import zeroed
+everything out before anyone ticked a box. The incident is not lost — it is
+in `InventoryLog` as a run of `square_import` rows on a day that normally
+carries `square_webhook` ones, which is `source` doing precisely the job it
+was added for.
+
+### `InventoryLog.source`: provenance you can count
+
+Provenance was already being recorded, in `notes`, as a readable English
+sentence — and that stays, because a person reading one row wants the
+sentence. But *counting* rows is a different question, and answering it off
+prose means a `LIKE` over wording nothing promised to hold still: one
+reworded message drops rows out of a total with nothing to show it happened.
+
+So every `InventoryLog` names the flow that wrote it — `sunday_close`,
+`bulk_update`, `production_sheet`, `square_webhook`, and the rest. That is
+what makes "are the close's corrections going up or down, and how do they
+compare with the ways stock is meant to move" a `values("source")` away.
+`InventoryLogSourceTests` walks the AST of every module that creates one and
+fails on a site that forgot, because a missing source doesn't error — it just
+drops out of every total, which is the same silence the notes-matching had.
+
+Blank means "predates the field", and it was deliberately **not** back-filled
+by pattern-matching the old notes: a guessed provenance counts identically to
+a recorded one, and there would be nothing on the row to say which it was.
+
 ## Timekeeping: the pay week, and the two totals
 
 The hours form (`secret/hours/`) and the timesheet (`private/timesheet/`)

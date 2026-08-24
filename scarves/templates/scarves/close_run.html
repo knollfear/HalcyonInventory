@@ -1,0 +1,250 @@
+{% extends "scarves/base_public.html" %}
+{% comment %}
+One day's close, worked from top to bottom in the order the physical job
+happens: tick the tags in your hand, count the bags for the ones you can't
+find, then add anything you're holding that wasn't predicted.
+
+Big tap targets, no JavaScript, and the unexpected-tag search is a plain form
+submit rather than a type-ahead. This is a phone, standing up, in a car park,
+on one bar of signal — the same reasoning as the booth form and the
+production run page.
+{% endcomment %}
+
+{% block title %}Close {{ run.day|date:"d M Y" }}{% endblock %}
+{% block heading %}Close — {{ run.day|date:"D d M Y" }}{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 520px; }
+
+  .row {
+      display: flex; gap: 14px; align-items: flex-start;
+      padding: 14px; margin-bottom: 10px;
+      border: 1px solid #c8cfd8; border-radius: 10px; background: #fff;
+      cursor: pointer;
+  }
+  /* 28px boxes: tapped with a thumb, not clicked with a mouse. */
+  .row input[type=checkbox] { width: 28px; height: 28px; flex: none; margin: 0; }
+  .row .what { font-size: 16px; font-weight: 600; }
+  .row .detail { font-size: 13px; color: #667; margin-top: 3px; }
+  .row.settled { background: #f2f8f2; border-color: #b9d3b9; }
+  /* Read-only rows only: a confirmed row up top is still tickable. */
+  .row.settled:not(:has(input)) { cursor: default; }
+  .row.over { background: #fbf5ee; border-color: #ddc7a8; cursor: default; }
+  .row .tag {
+      font-size: 12px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .04em; margin-top: 4px; color: #2f6b34;
+  }
+  .row.over .tag { color: #8a5a1f; }
+
+  .countrow { display: flex; gap: 12px; align-items: center; }
+  .countrow input[type=number] {
+      width: 90px; font: inherit; font-size: 16px; padding: 10px;
+      border: 1px solid #c8cfd8; border-radius: 8px; background: #fff;
+  }
+
+  h2 { font-size: 1.05rem; margin: 28px 0 6px; }
+  h2 .step { color: #889; font-weight: 400; }
+  .lead { font-size: .92rem; color: #556; margin: 0 0 12px; }
+
+  .btn {
+      width: 100%; padding: 16px; font: inherit; font-size: 1.05rem;
+      font-weight: 600; border: 1px solid var(--accent); border-radius: 10px;
+      background: var(--accent); color: #fff; cursor: pointer;
+  }
+  .btn.quiet { background: #fff; color: var(--accent); }
+
+  .search { display: flex; gap: 8px; margin-bottom: 12px; }
+  .search input {
+      flex: 1; min-width: 0; font: inherit; font-size: 16px; padding: 12px;
+      border: 1px solid #c8cfd8; border-radius: 8px; background: #fff;
+  }
+  .search .btn { width: auto; padding: 12px 18px; font-size: 1rem; }
+  .result {
+      display: block; width: 100%; text-align: left; font: inherit;
+      padding: 13px; margin-bottom: 8px; background: #fff; cursor: pointer;
+      border: 1px solid #c8cfd8; border-radius: 8px;
+  }
+  .result .muted { color: #778; font-size: .85rem; }
+
+  .banner {
+      border: 1px solid #c8cfd8; border-radius: 10px; background: #fff;
+      padding: 14px; margin-bottom: 18px;
+  }
+  .banner.shut { background: #f4f5f7; }
+  .score { font-size: 1.6rem; font-weight: 700; line-height: 1.15; }
+{% endblock %}
+
+{% block content %}
+
+  {% comment %}
+  Messages are rendered here rather than inherited. base_public carries no
+  messages block — it is the shell the games and the embeds use, where staff
+  notices have no business — so a page under it that calls messages.success
+  and doesn't print it loses the notice entirely. That is the whole feedback
+  for "adjusted to zero", which must not be the thing that disappears.
+  {% endcomment %}
+  {% if messages %}
+    {% for message in messages %}
+      <div class="banner">{{ message }}</div>
+    {% endfor %}
+  {% endif %}
+
+  {% if not run.is_open %}
+    {% comment %}
+    A finished day, shown read-only rather than 404'd or redirected away —
+    the record is worth reading, and a page that vanishes reads as a lost
+    close rather than a closed one.
+    {% endcomment %}
+    <div class="banner shut">
+      <strong>This close is finished.</strong>
+      A run covers one day, and {{ run.day|date:"D d M Y" }} is a record now.
+      Anything still wrong goes through a
+      bulk inventory update, where the reason gets written down.
+    </div>
+  {% endif %}
+
+  {% comment %}
+  The count of things found wrong, up top, because it is the output. No
+  percentage and no "x of y" — ten fixed is ten fixed whether the list was
+  twelve long or two hundred.
+  {% endcomment %}
+  <div class="banner">
+    <div class="score">{{ tally.disagreements }}</div>
+    put right so far{% if tally.missing %} — {{ tally.missing }} the app had
+    too low{% endif %}{% if tally.extra %}{% if tally.missing %},{% endif %}
+    {{ tally.extra }} it had too high{% endif %}.
+    {% if run.employee %}<br><span class="muted">Started by {{ run.employee.name }}.</span>{% endif %}
+  </div>
+
+  {% if run.is_open %}
+
+    <h2><span class="step">Step 1.</span> Tags you're holding</h2>
+    <p class="lead">
+      These are the products the app says have sold out, so you should be
+      holding a tag for each. Tick the ones you've got.
+    </p>
+
+    {% if open_rows %}
+      {% comment %}
+      One loop in one order. Rendering the ticked ones first would reorder
+      the list every time it is saved, and this is worked down a physical
+      pile — the person's place in it is on the table, not on the screen.
+      {% endcomment %}
+      <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="step" value="confirm">
+        {% for row in open_rows %}
+          <label class="row{% if row.outcome == 'confirmed' %} settled{% endif %}">
+            <input type="checkbox" name="held" value="{{ row.pk }}"
+                   {% if row.outcome == 'confirmed' %}checked{% endif %}>
+            <div>
+              <div class="what">{{ row.finished_product.name }}</div>
+              <div class="detail">{{ row.finished_product.sku }}</div>
+            </div>
+          </label>
+        {% endfor %}
+        <button class="btn" type="submit">Save what I'm holding</button>
+      </form>
+    {% else %}
+      <p class="lead">Nothing at zero right now — nothing to check off.</p>
+    {% endif %}
+
+    {% if count_fields %}
+      <h2><span class="step">Step 2.</span> Tags you can't find</h2>
+      <p class="lead">
+        No tag means the bag still has stock in it and the app is under.
+        Count what's actually in the bag. Leave any you haven't got to yet
+        blank — you can come back to them.
+      </p>
+      <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="step" value="count">
+        {% for entry in count_fields %}
+          <div class="row">
+            <div class="countrow">
+              {{ entry.field }}
+              <div>
+                <div class="what">{{ entry.row.finished_product.name }}</div>
+                <div class="detail">{{ entry.row.finished_product.sku }}</div>
+                {% for error in entry.field.errors %}
+                  <div class="detail" style="color:#8a2f2a">{{ error }}</div>
+                {% endfor %}
+              </div>
+            </div>
+          </div>
+        {% endfor %}
+        <button class="btn" type="submit">Save these counts</button>
+      </form>
+    {% endif %}
+
+    <h2><span class="step">Step 3.</span> A tag nobody predicted</h2>
+    <p class="lead">
+      Holding a tag that isn't on the list above means the app thinks there's
+      still stock. Find it here and it gets set to zero.
+    </p>
+
+    <form class="search" method="get">
+      <input type="search" name="q" value="{{ query }}"
+             placeholder="Name or barcode" autocomplete="off">
+      <button class="btn" type="submit">Search</button>
+    </form>
+
+    {% if results is not None %}
+      <form method="post" action="{% url 'close_add_tag' run.token %}">
+        {% csrf_token %}
+        {% for p in results %}
+          <button class="result" type="submit" name="product_id" value="{{ p.id }}">
+            {{ p.name }}
+            <span class="muted">{{ p.sku }} — app says {{ p.number_on_hand }} on hand</span>
+          </button>
+        {% empty %}
+          <p class="lead">Nothing matches “{{ query }}”.</p>
+        {% endfor %}
+      </form>
+    {% endif %}
+
+  {% endif %}
+
+  {% comment %}
+  Everything already settled, shown rather than hidden. A row that vanished
+  once it was answered reads as one that never got answered — the same
+  reasoning the production run page applies to its recorded rows. Not
+  re-tickable either: stock has moved, and taking a movement back is an
+  adjustment with a reason on it.
+  {% endcomment %}
+  {% if missing_rows or extra_rows %}
+    <h2>Already put right</h2>
+    {% for row in missing_rows %}
+      <div class="row settled">
+        <div>
+          <div class="what">{{ row.finished_product.name }}</div>
+          <div class="detail">{{ row.finished_product.sku }}</div>
+          <div class="tag">No tag — counted {{ row.counted }}, app said {{ row.on_hand_before }}</div>
+        </div>
+      </div>
+    {% endfor %}
+    {% for row in extra_rows %}
+      <div class="row over">
+        <div>
+          <div class="what">{{ row.finished_product.name }}</div>
+          <div class="detail">{{ row.finished_product.sku }}</div>
+          <div class="tag">Tag held — app said {{ row.on_hand_before }}, set to zero</div>
+        </div>
+      </div>
+    {% endfor %}
+  {% endif %}
+
+  {% if not run.is_open and confirmed_rows %}
+    <h2>Agreed</h2>
+    {% for row in confirmed_rows %}
+      <div class="row settled">
+        <div>
+          <div class="what">{{ row.finished_product.name }}</div>
+          <div class="detail">{{ row.finished_product.sku }}</div>
+        </div>
+      </div>
+    {% endfor %}
+  {% endif %}
+
+{% endblock %}

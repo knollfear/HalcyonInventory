@@ -29,6 +29,7 @@ class Command(BaseCommand):
             InventoryLog.objects.create(
                 finished_product=fp,
                 log_type=InventoryLog.SALE,
+                source=InventoryLog.SOURCE_TEST,
                 quantity=-qty,
                 sale_reference="FAKE-SALE-TEST",
                 notes="Simulated sale via fake_sale management command.",

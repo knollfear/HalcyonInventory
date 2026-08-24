@@ -174,6 +174,20 @@ urlpatterns = [
         name="production_run",
     ),
 
+    # --- The Sunday close ---
+    # Whoever is holding the physical tags runs this, in a car park, on one
+    # bar of signal — so it is secret/ and a PIN, the same bargain the hours
+    # and booth forms make. The PIN is asked once and the day's token carries
+    # the steps after it. The history is a desk page and staff-only.
+    path("secret/close/", views.close_index, name="close_index"),
+    path("secret/close/<str:token>/", views.close_run, name="close_run"),
+    path(
+        "secret/close/<str:token>/tag/",
+        views.close_add_tag,
+        name="close_add_tag",
+    ),
+    path("private/closes/", views.close_history, name="close_history"),
+
     # --- Timekeeping ---
     # The two halves sit in different buckets on purpose. Reporting your own
     # hours needs no account — that is the entire point — but it isn't for

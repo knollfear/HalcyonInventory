@@ -391,6 +391,7 @@ def apply_row(row):
         finished_product=product,
         raw_product=raw,
         log_type=InventoryLog.PRODUCTION,
+        source=InventoryLog.SOURCE_PRODUCTION_SHEET,
         quantity=row.quantity,
         notes=f"Dye bath reported from production sheet run {row.run_id}.",
     )

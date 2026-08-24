@@ -876,3 +876,103 @@ class BoothPhotoForm(forms.Form):
             cleaned["sold_at"] = self.now
 
         return cleaned
+
+
+class CloseStartForm(forms.Form):
+    """Who is running tonight's close.
+
+    The PIN is asked once, here, and the run's token carries every step after
+    it. That is a different bargain from the hours and booth forms, which
+    check on every POST — and the reason is what the two are protecting. Those
+    attribute a claim to a person: hours that reach payroll, a permission to
+    post someone's face. This attributes a stock correction, which is visible
+    on the run's own page, reversible through the ordinary adjustment route,
+    and made by whoever is holding the physical tags. Asking four digits four
+    times while somebody packs a van in the dark is how the close stops
+    happening, and a close that doesn't happen is the failure that matters.
+
+    Same degradation as the booth form for the few people with a login: a
+    staff session is a stronger claim than four digits, so the PIN goes. The
+    name picker only goes when the app actually knows which employee that
+    login is.
+    """
+
+    employee = forms.ModelChoiceField(
+        queryset=Employee.objects.none(),   # set in __init__, as HoursForm does
+        empty_label="— choose your name —",
+        label="Your name",
+    )
+    pin = forms.CharField(
+        max_length=4,
+        label="Your PIN",
+        widget=forms.TextInput(attrs={
+            "inputmode": "numeric",
+            "pattern": "[0-9]*",
+            "autocomplete": "off",
+            "placeholder": "····",
+        }),
+    )
+
+    def __init__(self, *args, **kwargs):
+        user = kwargs.pop("user", None)
+        super().__init__(*args, **kwargs)
+        self.fields["employee"].queryset = Employee.objects.filter(is_active=True)
+
+        self.signed_in_as = None
+        if user is not None and user.is_authenticated:
+            # Removed, not hidden: a field that is present but invisible is
+            # one a hand-built POST can still fill in.
+            del self.fields["pin"]
+            self.signed_in_as = Employee.objects.filter(
+                user=user, is_active=True
+            ).first()
+            if self.signed_in_as is not None:
+                del self.fields["employee"]
+
+    def clean_pin(self):
+        pin = (self.cleaned_data.get("pin") or "").strip()
+        if not pin.isdigit() or len(pin) != 4:
+            raise forms.ValidationError("Your PIN is four digits.")
+        return pin
+
+    def clean(self):
+        cleaned = super().clean()
+        if self.signed_in_as is not None:
+            cleaned["employee"] = self.signed_in_as
+        if "pin" in self.fields:
+            employee = cleaned.get("employee")
+            pin = cleaned.get("pin")
+            if employee and pin and pin != employee.pin:
+                self.add_error("pin", "That PIN doesn't match the name you picked.")
+        return cleaned
+
+
+def build_close_count_form_class(rows):
+    """One optional number per unanswered row: what the bag actually holds.
+
+    Optional, every one of them, because a close gets interrupted. Somebody
+    counts four bags, the van is loaded, and the rest goes in ten minutes
+    later — so a blank means "not yet", not zero, and only the rows with a
+    number typed in are recorded. A required field here would make the
+    all-or-nothing submission the only one available, which on a phone in a
+    field is the same as no submission.
+
+    Zero is a real answer and is kept: no tag and no stock means the tag
+    protocol broke rather than the count did, and that is worth recording as
+    the disagreement it is.
+    """
+    fields = {
+        f"counted_{row.pk}": forms.IntegerField(
+            required=False,
+            min_value=0,
+            max_value=9999,
+            label=row.finished_product.name,
+            widget=forms.NumberInput(attrs={
+                "inputmode": "numeric",
+                "min": 0,
+                "placeholder": "count",
+            }),
+        )
+        for row in rows
+    }
+    return type("CloseCountForm", (forms.Form,), fields)

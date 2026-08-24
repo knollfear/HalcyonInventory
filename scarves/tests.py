@@ -35,7 +35,7 @@ from django.db.models import ProtectedError
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
-from . import colorbands, crew, production, sheetscan, timesheets
+from . import closing, colorbands, crew, production, sheetscan, timesheets
 from .colorutils import (
     delta_e,
     hex_to_lab,
@@ -52,6 +52,8 @@ from .models import (
     UNCATEGORIZED_BRAND,
     BoothPhoto,
     CatalogGroup,
+    CloseRun,
+    CloseRunRow,
     Dye,
     DyeBrand,
     Employee,
@@ -10106,3 +10108,739 @@ class ImportSquareSalesTests(TestCase):
         output = self._run([row])
 
         self.assertIn("1 skipped (no SKU)", output)
+
+
+def make_close_product(name, on_hand=0, par=3):
+    """A finished product with a known count, for the close tests."""
+    product = make_product(make_recipe(f"{name} Recipe"), name, with_image=False)
+    FinishedProduct.objects.filter(pk=product.pk).update(
+        number_on_hand=on_hand, par=par
+    )
+    product.refresh_from_db()
+    return product
+
+
+class SundayCloseTests(TestCase):
+    """The close's three answers, and what each one is allowed to move.
+
+    The expensive failures here are all silent. A tag filed as the wrong kind
+    of disagreement corrupts the only number the page produces; an adjustment
+    applied twice takes stock the shelf still has; a closed day that still
+    accepts answers rewrites a record somebody already read.
+    """
+
+    def setUp(self):
+        self.employee = Employee.objects.create(name="Close Tester", pin="4321")
+
+    # --- what lands on the list -------------------------------------------
+
+    def test_expected_list_is_the_zeros_and_only_the_zeros(self):
+        out = make_close_product("Out Of Stock", on_hand=0)
+        in_stock = make_close_product("Still Has Some", on_hand=2)
+
+        expected = list(closing.expected_products())
+        self.assertIn(out, expected)
+        self.assertNotIn(in_stock, expected)
+
+    def test_a_passthrough_never_asks_for_a_tag(self):
+        """Undyed stock is ordered, not made, and has no kanban card.
+
+        It is excluded by the null recipe it always has — the same test every
+        dyed-only query in the app relies on.
+        """
+        category, _ = RawProductCategory.objects.get_or_create(name="Yarn")
+        raw = RawProduct.objects.create(
+            name="Undyed Sock Yarn", category=category, price="12.00"
+        )
+        passthrough = FinishedProduct.objects.create(
+            name="Undyed Sock Yarn", raw_product=raw, recipe=None, price="18.00"
+        )
+        FinishedProduct.objects.filter(pk=passthrough.pk).update(
+            number_on_hand=0, par=5
+        )
+
+        self.assertNotIn(passthrough, list(closing.expected_products()))
+
+    def test_a_retired_product_is_not_asked_about(self):
+        product = make_close_product("Retired", on_hand=0)
+        FinishedProduct.objects.filter(pk=product.pk).update(is_active=False)
+        self.assertNotIn(product, list(closing.expected_products()))
+
+    # --- one run per day ---------------------------------------------------
+
+    def test_opening_the_close_twice_in_a_day_is_one_run(self):
+        """Reopening is resuming. Two rows would split one night's findings."""
+        make_close_product("Zeroed", on_hand=0)
+        first, created_first = closing.run_for_today(employee=self.employee)
+        second, created_second = closing.run_for_today(employee=self.employee)
+
+        self.assertTrue(created_first)
+        self.assertFalse(created_second)
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(CloseRun.objects.count(), 1)
+
+    def test_a_product_that_sells_out_later_joins_the_open_run(self):
+        """A close started at noon still has to ask about the four o'clock sale."""
+        make_close_product("Sold Out At Noon", on_hand=0)
+        run, _ = closing.run_for_today(employee=self.employee)
+        self.assertEqual(run.rows.count(), 1)
+
+        afternoon = make_close_product("Sold Out At Four", on_hand=0)
+        closing.sync_expected(run)
+
+        self.assertEqual(run.rows.count(), 2)
+        self.assertIn(afternoon, [row.finished_product for row in run.rows.all()])
+
+    def test_syncing_never_rewrites_a_row_that_was_already_answered(self):
+        """The frozen `on_hand_before` is what the disagreement was measured
+        against — re-reading it would read back the number this close fixed."""
+        product = make_close_product("Answered", on_hand=0)
+        run, _ = closing.run_for_today(employee=self.employee)
+        row = run.rows.get()
+        closing.record_missing(run, row, 4)
+
+        closing.sync_expected(run)
+        row.refresh_from_db()
+
+        self.assertEqual(row.on_hand_before, 0)
+        self.assertEqual(row.counted, 4)
+        self.assertEqual(run.rows.count(), 1)
+
+    # --- the three answers -------------------------------------------------
+
+    def test_a_confirmed_tag_moves_nothing_and_logs_nothing(self):
+        """Agreement is the common case and must be free. Recorded, not logged."""
+        make_close_product("Agrees", on_hand=0)
+        run, _ = closing.run_for_today()
+        row = run.rows.get()
+
+        closing.confirm(run, row)
+        row.refresh_from_db()
+
+        self.assertEqual(row.outcome, CloseRunRow.CONFIRMED)
+        self.assertIsNone(row.applied_log)
+        self.assertEqual(InventoryLog.objects.count(), 0)
+
+    def test_a_missing_tag_trues_the_count_up_and_tags_the_source(self):
+        product = make_close_product("Undercounted", on_hand=0)
+        run, _ = closing.run_for_today()
+        row = run.rows.get()
+
+        closing.record_missing(run, row, 5)
+        product.refresh_from_db()
+        row.refresh_from_db()
+
+        self.assertEqual(product.number_on_hand, 5)
+        self.assertEqual(row.outcome, CloseRunRow.MISSING)
+        self.assertEqual(row.counted, 5)
+
+        log = row.applied_log
+        self.assertIsNotNone(log)
+        self.assertEqual(log.quantity, 5)
+        self.assertEqual(log.log_type, InventoryLog.ADJUSTMENT)
+        self.assertEqual(log.source, InventoryLog.SOURCE_SUNDAY_CLOSE)
+
+    def test_no_tag_and_an_empty_bag_is_recorded_but_moves_nothing(self):
+        """The tag protocol broke rather than the count did — still an answer."""
+        product = make_close_product("Empty Bag", on_hand=0)
+        run, _ = closing.run_for_today()
+        row = run.rows.get()
+
+        closing.record_missing(run, row, 0)
+        row.refresh_from_db()
+        product.refresh_from_db()
+
+        self.assertEqual(row.outcome, CloseRunRow.MISSING)
+        self.assertEqual(row.counted, 0)
+        self.assertIsNone(row.applied_log)
+        self.assertEqual(product.number_on_hand, 0)
+
+    def test_an_unpredicted_tag_zeroes_the_count_and_tags_the_source(self):
+        product = make_close_product("Overcounted", on_hand=3)
+        run, _ = closing.run_for_today()
+
+        row, created = closing.add_tag(run, product)
+        product.refresh_from_db()
+
+        self.assertTrue(created)
+        self.assertEqual(row.outcome, CloseRunRow.EXTRA)
+        self.assertEqual(row.on_hand_before, 3)
+        self.assertEqual(product.number_on_hand, 0)
+        self.assertEqual(row.applied_log.quantity, -3)
+        self.assertEqual(row.applied_log.source, InventoryLog.SOURCE_SUNDAY_CLOSE)
+
+    def test_a_tag_for_something_already_at_zero_is_an_agreement(self):
+        """The trap this page could most easily set for itself.
+
+        A product at zero that never made the expected list (no par, say)
+        still has a tag. Filing that as an overcount would put a fault into
+        the one number the close exists to produce, and it would be a fault
+        in the direction that reads as "the till is losing sales".
+        """
+        product = make_close_product("Zero But Unlisted", on_hand=0, par=0)
+        run, _ = closing.run_for_today()
+        self.assertEqual(run.rows.count(), 0)   # par 0, so not predicted
+
+        row, created = closing.add_tag(run, product)
+
+        self.assertTrue(created)
+        self.assertEqual(row.outcome, CloseRunRow.CONFIRMED)
+        self.assertIsNone(row.applied_log)
+        self.assertEqual(InventoryLog.objects.count(), 0)
+
+    def test_an_unpredicted_passthrough_tag_writes_to_the_raw_row(self):
+        """One pile, one count. Writing the mirror would snap back on save."""
+        category, _ = RawProductCategory.objects.get_or_create(name="Yarn")
+        raw = RawProduct.objects.create(
+            name="Undyed DK", category=category, price="12.00", number_on_hand=6
+        )
+        passthrough = FinishedProduct.objects.create(
+            name="Undyed DK", raw_product=raw, recipe=None, price="18.00"
+        )
+        run, _ = closing.run_for_today()
+
+        closing.add_tag(run, passthrough)
+        raw.refresh_from_db()
+        passthrough.refresh_from_db()
+
+        self.assertEqual(raw.number_on_hand, 0)
+        self.assertEqual(passthrough.number_on_hand, 0)
+
+    # --- applying twice ----------------------------------------------------
+
+    def test_a_row_that_moved_stock_is_never_applied_again(self):
+        """The page gets reopened and the button gets double-tapped."""
+        product = make_close_product("Double Tap", on_hand=0)
+        run, _ = closing.run_for_today()
+        row = run.rows.get()
+
+        closing.record_missing(run, row, 4)
+        closing.record_missing(run, row, 9)
+        product.refresh_from_db()
+
+        self.assertEqual(product.number_on_hand, 4)
+        self.assertEqual(InventoryLog.objects.count(), 1)
+
+    def test_the_same_tag_added_twice_adjusts_once(self):
+        product = make_close_product("Scanned Twice", on_hand=2)
+        run, _ = closing.run_for_today()
+
+        closing.add_tag(run, product)
+        row, created = closing.add_tag(run, product)
+        product.refresh_from_db()
+
+        self.assertFalse(created)
+        self.assertEqual(product.number_on_hand, 0)
+        self.assertEqual(InventoryLog.objects.filter(quantity=-2).count(), 1)
+
+    def test_a_tick_can_be_taken_back_but_a_correction_cannot(self):
+        """Un-ticking is safe precisely because nothing moved."""
+        make_close_product("Mis-tapped", on_hand=0)
+        run, _ = closing.run_for_today()
+        row = run.rows.get()
+
+        closing.confirm(run, row)
+        closing.unconfirm(run, row)
+        row.refresh_from_db()
+        self.assertEqual(row.outcome, CloseRunRow.PENDING)
+
+        closing.record_missing(run, row, 2)
+        closing.unconfirm(run, row)
+        row.refresh_from_db()
+        self.assertEqual(row.outcome, CloseRunRow.MISSING)
+
+    # --- yesterday is a record ---------------------------------------------
+
+    def test_yesterdays_close_takes_no_more_answers(self):
+        product = make_close_product("Yesterday", on_hand=0)
+        run, _ = closing.run_for_today()
+        row = run.rows.get()
+
+        CloseRun.objects.filter(pk=run.pk).update(
+            day=timezone.localdate() - timedelta(days=1)
+        )
+        run.refresh_from_db()
+        self.assertFalse(run.is_open)
+
+        closing.confirm(run, row)
+        closing.record_missing(run, row, 7)
+        added, created = closing.add_tag(run, make_close_product("Late", on_hand=4))
+        row.refresh_from_db()
+        product.refresh_from_db()
+
+        self.assertEqual(row.outcome, CloseRunRow.PENDING)
+        self.assertEqual(product.number_on_hand, 0)
+        self.assertIsNone(added)
+        self.assertFalse(created)
+
+    def test_syncing_a_finished_day_adds_nothing(self):
+        run, _ = closing.run_for_today()
+        CloseRun.objects.filter(pk=run.pk).update(
+            day=timezone.localdate() - timedelta(days=1)
+        )
+        run.refresh_from_db()
+
+        make_close_product("Sold Out Tomorrow", on_hand=0)
+        self.assertEqual(closing.sync_expected(run), [])
+        self.assertEqual(run.rows.count(), 0)
+
+    # --- the tally ---------------------------------------------------------
+
+    def test_the_tally_counts_failures_and_keeps_the_directions_apart(self):
+        """Never a net figure: a bad intake would cancel out a dead webhook."""
+        under = make_close_product("Under", on_hand=0)
+        agreed = make_close_product("Agreed", on_hand=0)
+        over = make_close_product("Over", on_hand=2)
+        run, _ = closing.run_for_today()
+
+        closing.confirm(run, run.rows.get(finished_product=agreed))
+        closing.record_missing(run, run.rows.get(finished_product=under), 3)
+        closing.add_tag(run, over)
+
+        tally = closing.tally(run)
+        self.assertEqual(tally["missing"], 1)
+        self.assertEqual(tally["extra"], 1)
+        self.assertEqual(tally["confirmed"], 1)
+        self.assertEqual(tally["disagreements"], 2)
+        self.assertEqual(tally["under_units"], 3)
+        self.assertEqual(tally["over_units"], 2)
+        self.assertNotIn("rate", tally)
+
+
+class SundayClosePageTests(TestCase):
+    """The pages, including the PIN and the parts a stale tab can reach."""
+
+    def setUp(self):
+        self.employee = Employee.objects.create(name="Page Tester", pin="1234")
+
+    def test_the_close_opens_for_someone_with_no_account(self):
+        """secret/ means unlisted, not logged in — a redirect here is the bug."""
+        response = self.client.get(reverse("close_index"))
+        self.assertEqual(response.status_code, 200)
+
+    def test_a_wrong_pin_starts_no_close(self):
+        response = self.client.post(reverse("close_index"), {
+            "employee": self.employee.pk,
+            "pin": "9999",
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(CloseRun.objects.count(), 0)
+
+    def test_the_right_pin_opens_the_day_and_redirects_to_it(self):
+        make_close_product("On The List", on_hand=0)
+        response = self.client.post(reverse("close_index"), {
+            "employee": self.employee.pk,
+            "pin": "1234",
+        })
+        run = CloseRun.objects.get()
+        self.assertRedirects(response, reverse("close_run", args=[run.token]))
+        self.assertEqual(run.employee, self.employee)
+        self.assertEqual(run.rows.count(), 1)
+
+    def test_ticking_confirms_and_leaving_blank_does_not_guess(self):
+        """An unticked box means "not counted yet", never "I have none"."""
+        make_close_product("Ticked", on_hand=0)
+        make_close_product("Untouched", on_hand=0)
+        run, _ = closing.run_for_today()
+        ticked = run.rows.first()
+
+        self.client.post(reverse("close_run", args=[run.token]), {
+            "step": "confirm",
+            "held": [str(ticked.pk)],
+        })
+
+        ticked.refresh_from_db()
+        self.assertEqual(ticked.outcome, CloseRunRow.CONFIRMED)
+        self.assertEqual(
+            run.rows.filter(outcome=CloseRunRow.PENDING).count(), 1
+        )
+        self.assertEqual(InventoryLog.objects.count(), 0)
+
+    def test_a_product_that_sold_out_since_appears_on_the_very_next_load(self):
+        """The four o'clock sale has to be on the seven o'clock page.
+
+        Not the one after it. The close gets worked in passes across an
+        evening, and a row that arrives one request late is one nobody is
+        asked about while they are standing in front of the tags — the list
+        reads as complete and the scarf is simply missing from it.
+
+        This is a regression test for a prefetch cache: the rows were being
+        read into memory before `sync_expected` added to them.
+        """
+        first = make_close_product("Out At Four", on_hand=0)
+        run, _ = closing.run_for_today()
+        self.client.get(reverse("close_run", args=[run.token]))
+
+        later = make_close_product("Out At Seven", on_hand=0)
+        html = self.client.get(
+            reverse("close_run", args=[run.token])
+        ).content.decode()
+
+        row = run.rows.get(finished_product=later)
+        self.assertIn(f'value="{row.pk}"', html)
+        self.assertIn(later.name, html)
+
+    def test_only_the_tags_nobody_found_are_asked_for_a_count(self):
+        """Step 2 asks about the rows step 1 left unanswered, and no others.
+
+        A confirmed row is one the tag was in hand for. Drawing a count box
+        beside it invites a number that contradicts the answer already given,
+        and taking that number would reclassify an agreement as a
+        disagreement — in the one table whose whole output is the count of
+        disagreements.
+        """
+        held = make_close_product("Tag In Hand", on_hand=0)
+        absent = make_close_product("Tag Missing", on_hand=0)
+        run, _ = closing.run_for_today()
+        held_row = run.rows.get(finished_product=held)
+        absent_row = run.rows.get(finished_product=absent)
+
+        self.client.post(reverse("close_run", args=[run.token]), {
+            "step": "confirm",
+            "held": [str(held_row.pk)],
+        })
+        html = self.client.get(
+            reverse("close_run", args=[run.token])
+        ).content.decode()
+
+        self.assertIn(f"counted_{absent_row.pk}", html)
+        self.assertNotIn(f"counted_{held_row.pk}", html)
+
+    def test_a_lost_bag_turns_up_and_the_tick_comes_back_off(self):
+        """Confirmed at four, a bag of them found at seven.
+
+        This is the whole reason a confirmed row stays un-frozen: ticking one
+        moves no stock, so the tick can come back off, and the row rejoins the
+        count list where the bag's real contents get typed in. A correction
+        that had already moved stock could not be walked back this way — that
+        is an adjustment with a reason on it.
+
+        It lands as `missing`, and the label is worth reading carefully: the
+        tag was in hand, so "no tag" isn't literally what happened. What the
+        outcome records is the *direction* — the app was under, which is the
+        stock-arrived-unrecorded end of the pipeline — and that is what the
+        count is counting.
+        """
+        product = make_close_product("Lost Bag", on_hand=0)
+        run, _ = closing.run_for_today()
+        row = run.rows.get()
+        url = reverse("close_run", args=[run.token])
+
+        # Four o'clock: tag in hand, the app agrees, nothing to count.
+        self.client.post(url, {"step": "confirm", "held": [str(row.pk)]})
+        row.refresh_from_db()
+        self.assertEqual(row.outcome, CloseRunRow.CONFIRMED)
+        html = self.client.get(url).content.decode()
+        self.assertNotIn(f"counted_{row.pk}", html)
+
+        # Seven o'clock: a bag of six turns up under the table. Untick it.
+        self.client.post(url, {"step": "confirm", "held": []})
+        row.refresh_from_db()
+        self.assertEqual(row.outcome, CloseRunRow.PENDING)
+
+        html = self.client.get(url).content.decode()
+        self.assertIn(f"counted_{row.pk}", html)
+
+        self.client.post(url, {"step": "count", f"counted_{row.pk}": "6"})
+        row.refresh_from_db()
+        product.refresh_from_db()
+
+        self.assertEqual(row.outcome, CloseRunRow.MISSING)
+        self.assertEqual(row.counted, 6)
+        self.assertEqual(product.number_on_hand, 6)
+        self.assertEqual(row.applied_log.quantity, 6)
+        self.assertEqual(row.applied_log.source, InventoryLog.SOURCE_SUNDAY_CLOSE)
+        self.assertEqual(closing.tally(run)["missing"], 1)
+        self.assertEqual(closing.tally(run)["confirmed"], 0)
+
+    def test_unticking_after_the_count_cannot_take_the_stock_back(self):
+        """Once stock has moved, the box is not the way to undo it.
+
+        The asymmetry is deliberate and it is the same rule the production
+        sheet applies: taking a movement back is an inventory adjustment with
+        a reason attached, not an untick on a page with no login.
+        """
+        product = make_close_product("Already Moved", on_hand=0)
+        run, _ = closing.run_for_today()
+        row = run.rows.get()
+        url = reverse("close_run", args=[run.token])
+
+        self.client.post(url, {"step": "count", f"counted_{row.pk}": "5"})
+        self.client.post(url, {"step": "confirm", "held": []})
+
+        row.refresh_from_db()
+        product.refresh_from_db()
+        self.assertEqual(row.outcome, CloseRunRow.MISSING)
+        self.assertEqual(product.number_on_hand, 5)
+        self.assertEqual(InventoryLog.objects.count(), 1)
+
+    def test_a_count_posted_for_a_confirmed_row_is_refused(self):
+        """The same rule, enforced where a hand-built POST would arrive."""
+        held = make_close_product("Confirmed Then Counted", on_hand=0)
+        run, _ = closing.run_for_today()
+        row = run.rows.get(finished_product=held)
+        closing.confirm(run, row)
+
+        self.client.post(reverse("close_run", args=[run.token]), {
+            "step": "count",
+            f"counted_{row.pk}": "8",
+        })
+
+        row.refresh_from_db()
+        held.refresh_from_db()
+        self.assertEqual(row.outcome, CloseRunRow.CONFIRMED)
+        self.assertEqual(held.number_on_hand, 0)
+        self.assertEqual(InventoryLog.objects.count(), 0)
+
+    def test_a_blank_count_is_left_for_later_rather_than_read_as_zero(self):
+        product = make_close_product("Not Counted Yet", on_hand=0)
+        run, _ = closing.run_for_today()
+        row = run.rows.get()
+
+        self.client.post(reverse("close_run", args=[run.token]), {
+            "step": "count",
+            f"counted_{row.pk}": "",
+        })
+
+        row.refresh_from_db()
+        product.refresh_from_db()
+        self.assertEqual(row.outcome, CloseRunRow.PENDING)
+        self.assertEqual(product.number_on_hand, 0)
+
+    def test_counting_through_the_page_moves_stock_and_tags_the_log(self):
+        product = make_close_product("Counted", on_hand=0)
+        run, _ = closing.run_for_today()
+        row = run.rows.get()
+
+        self.client.post(reverse("close_run", args=[run.token]), {
+            "step": "count",
+            f"counted_{row.pk}": "6",
+        })
+
+        product.refresh_from_db()
+        self.assertEqual(product.number_on_hand, 6)
+        self.assertEqual(
+            InventoryLog.objects.get().source, InventoryLog.SOURCE_SUNDAY_CLOSE
+        )
+
+    def test_adding_a_tag_through_the_page_zeroes_it(self):
+        product = make_close_product("Held", on_hand=4)
+        run, _ = closing.run_for_today()
+
+        response = self.client.post(reverse("close_add_tag", args=[run.token]), {
+            "product_id": product.pk,
+        })
+
+        self.assertRedirects(response, reverse("close_run", args=[run.token]))
+        product.refresh_from_db()
+        self.assertEqual(product.number_on_hand, 0)
+
+    def test_a_stale_tab_cannot_write_to_a_finished_day(self):
+        """The van is unpacked by now — this is a bookmark, not a person
+        standing in front of the tags."""
+        product = make_close_product("Yesterdays", on_hand=0)
+        run, _ = closing.run_for_today()
+        row = run.rows.get()
+        CloseRun.objects.filter(pk=run.pk).update(
+            day=timezone.localdate() - timedelta(days=1)
+        )
+
+        self.client.post(reverse("close_run", args=[run.token]), {
+            "step": "count",
+            f"counted_{row.pk}": "9",
+        })
+        self.client.post(reverse("close_add_tag", args=[run.token]), {
+            "product_id": product.pk,
+        })
+
+        row.refresh_from_db()
+        product.refresh_from_db()
+        self.assertEqual(row.outcome, CloseRunRow.PENDING)
+        self.assertEqual(product.number_on_hand, 0)
+        self.assertEqual(InventoryLog.objects.count(), 0)
+
+    def test_a_finished_day_still_reads(self):
+        """Shown read-only rather than 404'd: a page that vanishes reads as a
+        lost close rather than a closed one."""
+        make_close_product("Readable", on_hand=0)
+        run, _ = closing.run_for_today()
+        CloseRun.objects.filter(pk=run.pk).update(
+            day=timezone.localdate() - timedelta(days=1)
+        )
+
+        response = self.client.get(reverse("close_run", args=[run.token]))
+        self.assertEqual(response.status_code, 200)
+
+    def test_the_history_page_is_staff_only(self):
+        response = self.client.get(reverse("close_history"))
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/login", response["Location"])
+
+
+class WebhookOutageRecoveryTests(TestCase):
+    """The worst realistic day: Square up, webhooks down, nothing zeroes out.
+
+    Staff end the day holding a fistful of tags for products the app still
+    believes are in stock. The recovery is to import the missed sales from
+    the CSV *and then* run the close — and the order is the whole point,
+    because the close writes adjustments while the import writes sales, so
+    the import's dedupe cannot see what the close did.
+    """
+
+    def setUp(self):
+        self.employee = Employee.objects.create(name="Owner", pin="1234")
+        self.products = [
+            make_close_product("Stormy", on_hand=2),
+            make_close_product("Ember", on_hand=1),
+        ]
+
+    def _csv(self):
+        import csv
+        import tempfile
+
+        path = tempfile.NamedTemporaryFile(
+            "w", suffix=".csv", delete=False, newline=""
+        )
+        writer = csv.DictWriter(
+            path, fieldnames=["Date", "Transaction ID", "SKU", "Item", "Qty"]
+        )
+        writer.writeheader()
+        for i, product in enumerate(self.products, start=1):
+            writer.writerow({
+                "Date": "2026-08-30",
+                "Transaction ID": f"ORD{i}",
+                "SKU": product.sku,
+                "Item": product.name,
+                "Qty": product.number_on_hand,
+            })
+        path.close()
+        return path.name
+
+    def test_importing_first_leaves_the_ledger_booked_once(self):
+        """The documented recovery, end to end.
+
+        The import zeroes the products out, they join the close's expected
+        list on the next load, and every tag is then an ordinary agreement.
+        Net movement equals the stock that actually left.
+        """
+        call_command("import_square_sales", self._csv(), verbosity=0)
+
+        for product in self.products:
+            product.refresh_from_db()
+            self.assertEqual(product.number_on_hand, 0)
+
+        run, _ = closing.run_for_today(employee=self.employee)
+        self.assertEqual(run.rows.count(), len(self.products))
+
+        self.client.post(reverse("close_run", args=[run.token]), {
+            "step": "confirm",
+            "held": [str(row.pk) for row in run.rows.all()],
+        })
+
+        tally = closing.tally(run)
+        self.assertEqual(tally["confirmed"], len(self.products))
+        self.assertEqual(tally["disagreements"], 0)
+
+        movement = sum(log.quantity for log in InventoryLog.objects.all())
+        self.assertEqual(movement, -3)
+        self.assertEqual(
+            InventoryLog.objects.filter(
+                source=InventoryLog.SOURCE_SQUARE_IMPORT
+            ).count(),
+            len(self.products),
+        )
+        self.assertEqual(
+            InventoryLog.objects.filter(
+                source=InventoryLog.SOURCE_SUNDAY_CLOSE
+            ).count(),
+            0,
+        )
+
+    def test_closing_first_still_lands_on_the_right_count(self):
+        """Stock survives the wrong order — the ledger doesn't.
+
+        Zeroing the tags by hand and importing afterwards ends with exactly
+        the same shelf, because `set_on_hand` clamps at zero. What differs is
+        the trail: the same physical sale is booked twice, once as a close
+        adjustment and once as an imported sale, and the import's dedupe
+        cannot prevent it because a close adjustment carries no
+        `sale_reference` to match on.
+
+        Pinned rather than fixed. Guessing that an adjustment and a sale are
+        the same event would need the close to claim an order id it was never
+        told, and a wrong guess would suppress a real sale.
+        """
+        run, _ = closing.run_for_today(employee=self.employee)
+        for product in self.products:
+            closing.add_tag(run, product)
+
+        call_command("import_square_sales", self._csv(), verbosity=0)
+
+        for product in self.products:
+            product.refresh_from_db()
+            self.assertEqual(product.number_on_hand, 0)
+
+        movement = sum(log.quantity for log in InventoryLog.objects.all())
+        self.assertEqual(movement, -6)          # twice the -3 that really left
+
+
+class InventoryLogSourceTests(TestCase):
+    """Every flow that moves stock says which one it was.
+
+    The point of the field is that the close's corrections can be counted
+    against the ways stock is *supposed* to move. A site that forgets to set
+    it doesn't error — it just quietly drops out of every total, which is the
+    same failure the notes-matching it replaced already had.
+    """
+
+    def test_every_creation_site_names_itself(self):
+        import ast
+        import inspect
+
+        from . import production, views
+        from .management.commands import fake_sale, import_square_sales
+
+        missing = []
+        for module in (views, production, fake_sale, import_square_sales):
+            tree = ast.parse(inspect.getsource(module))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                # InventoryLog.objects.create(...)
+                if not (
+                    isinstance(func, ast.Attribute)
+                    and func.attr == "create"
+                    and isinstance(func.value, ast.Attribute)
+                    and func.value.attr == "objects"
+                    and isinstance(func.value.value, ast.Name)
+                    and func.value.value.id == "InventoryLog"
+                ):
+                    continue
+                if not any(kw.arg == "source" for kw in node.keywords):
+                    missing.append(f"{module.__name__}:{node.lineno}")
+
+        self.assertEqual(
+            missing, [],
+            "an InventoryLog written without a source drops out of every "
+            "count silently — give it one of InventoryLog.SOURCE_*",
+        )
+
+    def test_a_bulk_update_is_told_apart_from_a_close(self):
+        user = User.objects.create_superuser("src", "s@example.test", "pw")
+        self.client.force_login(user)
+        product = make_close_product("Bulk Adjusted", on_hand=1)
+
+        self.client.post(
+            f"{reverse('bulk_inventory_update')}?raw_ids={product.raw_product_id}",
+            {f"count_{product.pk}": "4", "reason_preset": "", "reason": "stock take"},
+        )
+
+        log = InventoryLog.objects.get()
+        self.assertEqual(log.source, InventoryLog.SOURCE_BULK_UPDATE)
+        self.assertEqual(
+            InventoryLog.objects.filter(
+                source=InventoryLog.SOURCE_SUNDAY_CLOSE
+            ).count(),
+            0,
+        )

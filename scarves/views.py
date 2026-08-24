@@ -28,6 +28,8 @@ from django.views.decorators.http import require_POST, require_http_methods
 
 from .models import (
     BoothPhoto,
+    CloseRun,
+    CloseRunRow,
     Dye,
     FinishedProduct,
     FinishedProductImage,
@@ -46,16 +48,18 @@ from django.contrib import messages
 from django.shortcuts import render, redirect
 from django.template.response import TemplateResponse
 
-from . import colorbands, crew, labels, production, sheetscan, timesheets
+from . import closing, colorbands, crew, labels, production, sheetscan, timesheets
 from .colorutils import hex_to_rgb, nearest_by_color, pick_color_cluster
 from .forms import (
     BoothPhotoForm,
+    CloseStartForm,
     HoursForm,
     LabelRunForm,
     NewDyeForm,
     ProductionSheetForm,
     QuickRecipeRowForm,
     RecipeDyesForm,
+    build_close_count_form_class,
     dye_option_attrs,
 )
 from .models import Recipe, normalize_token
@@ -309,6 +313,7 @@ def record_dye_bath(request, pk):
             finished_product=finished_product,
             raw_product=raw_product,
             log_type=InventoryLog.PRODUCTION,
+            source=InventoryLog.SOURCE_PRODUCTION_NEEDED,
             quantity=qty,
             notes="Dye bath recorded from production-needed page.",
         )
@@ -1062,6 +1067,7 @@ def record_recipe_production(request, pk):
                 finished_product=product,
                 raw_product=raw_product,
                 log_type=InventoryLog.PRODUCTION,
+                source=InventoryLog.SOURCE_RECIPE_PAGE,
                 quantity=quantity,
                 notes=(
                     f"{baths} dye bath{'' if baths == 1 else 's'} × {per_bath}, "
@@ -1237,6 +1243,7 @@ def card_backfill(request, pk):
                     finished_product=product,
                     raw_product=product.raw_product,
                     log_type=InventoryLog.PRODUCTION,
+                    source=InventoryLog.SOURCE_CARD_BACKFILL,
                     quantity=baths * per_bath,
                     date_precision=precision,
                     notes=(
@@ -1712,6 +1719,7 @@ def bulk_inventory_update(request):
                         finished_product=fp,
                         raw_product=fp.raw_product,
                         log_type=InventoryLog.ADJUSTMENT,
+                        source=InventoryLog.SOURCE_BULK_UPDATE,
                         quantity=delta,
                         notes=(
                             f"Bulk inventory update — {reason}" if reason
@@ -1851,6 +1859,7 @@ def square_webhook(request):
                 finished_product=fp,
                 raw_product=fp.raw_product,
                 log_type=InventoryLog.SALE,
+                source=InventoryLog.SOURCE_SQUARE_WEBHOOK,
                 quantity=-qty,
                 sale_reference=order_id,
                 notes=f"Square sale via webhook.",
@@ -2665,6 +2674,24 @@ def process_upload(request, upload_id):
                   {"upload": upload, "needs_assign": True})
 
 
+def search_products(q, limit=10):
+    """Active products matching a typed name or SKU.
+
+    One definition, three callers — the upload page's picker, the label
+    page's hand-picked list, and the close page's "I'm holding a tag for
+    this". They differ in what a result *does*, never in what counts as a
+    match, and a second copy of the query is how one of them quietly starts
+    finding a different set of products.
+    """
+    q = (q or "").strip()
+    if not q:
+        return FinishedProduct.objects.none()
+    return FinishedProduct.objects.filter(
+        Q(name__icontains=q) | Q(sku__icontains=q),
+        is_active=True,
+    ).order_by("name")[:limit]
+
+
 @login_required
 def product_search(request):
     """HTMX type-ahead: products matching the typed name or SKU."""
@@ -2672,12 +2699,7 @@ def product_search(request):
     upload_id = request.GET.get("upload_id")
     for_labels = request.GET.get("mode") == "labels"
 
-    products = FinishedProduct.objects.none()
-    if q:
-        products = FinishedProduct.objects.filter(
-            Q(name__icontains=q) | Q(sku__icontains=q),
-            is_active=True,
-        ).order_by("name")[:10]
+    products = search_products(q)
 
     # Same search, two click behaviours: the upload page assigns the product
     # to an upload, the label page adds it to a list. Only the template
@@ -4175,6 +4197,7 @@ def resolve_unmatched_sale(request, pk):
             finished_product=product,
             raw_product=product.raw_product,
             log_type=InventoryLog.SALE,
+            source=InventoryLog.SOURCE_UNMATCHED_SALE,
             quantity=-sale.quantity,
             sale_reference=sale.order_id,
             notes=(
@@ -4212,3 +4235,318 @@ def resolve_unmatched_sale(request, pk):
         f"a sale on {timezone.localtime(sale.sold_at):%d %b %Y, %H:%M}.",
     )
     return redirect(redirect_to)
+
+
+# ---------------------------------------------------------------------------
+# The Sunday close: the app's zeros, checked against the tags in hand.
+#
+# One page, three steps, in the order the physical work happens — tick the
+# tags you're holding, count the bags for the ones you aren't, then say what
+# you're holding that nobody predicted. See closing.py for what each answer
+# means and why the middle one is the only number anybody types.
+#
+# A run is a calendar day. There is no "finish" button because the button is
+# what doesn't get pressed: the van gets loaded, the phone goes in a pocket,
+# and a run left open forever reads the same as one that found nothing. Open
+# the page again the same evening and you are back in the same run; open it
+# tomorrow and yesterday is a record.
+#
+# It never reaches Square. The close runs at a field on one bar of signal
+# while a van is being packed, and a step that needs the network is a step
+# that sometimes doesn't happen — the same reasoning that keeps the booth
+# form's toggle in CSS. Reconciling against Square's own counts is a desk job
+# for afterwards, and doing it first would be worse than not doing it at all:
+# a PHYSICAL_COUNT push overwrites, so it makes the two agree by construction
+# and every close comes back clean.
+# ---------------------------------------------------------------------------
+
+
+@page_meta(
+    title="Sunday Close",
+    description="End-of-weekend check: the app's out-of-stock list against "
+                "the tags in hand. Confirm what you're holding, count the "
+                "bags for what you aren't, and add tags nobody predicted.",
+    category="Inventory",
+    note="No login — pick your name and type your PIN.",
+)
+@require_http_methods(["GET", "POST"])
+def close_index(request):
+    """Open today's close, or get back into it.
+
+    Resuming has to be exactly as easy as starting, because this is done in a
+    car park in the dark and gets interrupted. Today's run is offered back by
+    name rather than being something you needed to keep a URL for.
+    """
+    if crew.asked_to_forget(request):
+        return crew.forget(redirect("close_index"))
+
+    today = timezone.localdate()
+    existing = CloseRun.objects.filter(day=today).first()
+
+    if request.method == "POST":
+        form = CloseStartForm(request.POST, user=request.user)
+        if form.is_valid():
+            employee = form.cleaned_data["employee"]
+            run, _created = closing.run_for_today(employee=employee)
+            response = redirect("close_run", token=run.token)
+            # Only after the PIN has been checked — see crew.remember.
+            pin = form.cleaned_data.get("pin")
+            if pin:
+                crew.remember(request, response, employee, pin)
+            return response
+    else:
+        form = CloseStartForm(user=request.user, initial=crew.initial(request))
+
+    return render(request, "scarves/close_index.html", {
+        "form": form,
+        "today": today,
+        "existing": existing,
+        "existing_tally": closing.tally(existing) if existing else None,
+        # What the list would come out at right now. Said up front because
+        # "twelve products to check" and "a hundred and twelve" are different
+        # jobs, and knowing which one it is before starting decides whether
+        # it happens tonight or in the morning.
+        "expected_now": closing.expected_products().count(),
+        "recent": CloseRun.objects.exclude(day=today).select_related("employee")[:5],
+        "remembered": crew.remembered(request)[0],
+        "forget_param": crew.FORGET,
+    })
+
+
+@page_meta(
+    title="Sunday Close (one day)",
+    description="The tag-by-tag checklist for one day's close.",
+    category="Inventory",
+    show_in_index=False,
+)
+@require_http_methods(["GET", "POST"])
+def close_run(request, token):
+    """Tick and count, both on one URL.
+
+    The two POSTs are told apart by an explicit `step` field rather than by
+    guessing from which keys arrived. Guessing makes an empty step-two
+    submission indistinguishable from a step-one submission that ticked
+    nothing, and those mean opposite things: "haven't counted yet" against
+    "I'm holding none of these".
+    """
+    # Deliberately no `prefetch_related` on the rows. `sync_expected` below
+    # adds rows *after* this query, and a prefetch cache built here would not
+    # contain them — so a product that sold out since the last visit would be
+    # missing from the page until some later request happened to rebuild the
+    # cache. That is the precise failure the sync exists to prevent, wearing a
+    # disguise: the list looks complete, and the scarf that went at four
+    # o'clock is simply never asked about. `_close_run_page` reads the rows
+    # once, fresh, with its own select_related.
+    run = get_object_or_404(CloseRun.objects.select_related("employee"), token=token)
+
+    if request.method == "POST":
+        if not run.is_open:
+            messages.error(request, _CLOSED_RUN_MESSAGE)
+            return redirect("close_run", token=run.token)
+
+        step = request.POST.get("step")
+
+        if step == "confirm":
+            ticked = set(request.POST.getlist("held"))
+            for row in run.rows.all():
+                if closing.is_frozen(run, row):
+                    continue
+                # Un-ticking really is the inverse here, unlike the production
+                # sheet, and safely so: a confirmed row moved no stock, so
+                # taking the tick back costs nothing and a mis-tap on a list of
+                # twenty is an ordinary mistake. It stops being reversible the
+                # moment a count is typed and stock moves.
+                if str(row.pk) in ticked:
+                    closing.confirm(run, row)
+                else:
+                    closing.unconfirm(run, row)
+
+        elif step == "count":
+            # Only the rows nobody found a tag for. A confirmed row is one the
+            # tag *was* in hand for, so asking what the bag holds contradicts
+            # the answer already given — and accepting a number for it would
+            # quietly reclassify an agreement as a disagreement, in the one
+            # table where that is the whole output.
+            rows = [r for r in run.rows.all() if _awaiting_count(run, r)]
+            CountForm = build_close_count_form_class(rows)
+            count_form = CountForm(request.POST)
+            if count_form.is_valid():
+                recorded = 0
+                for row in rows:
+                    counted = count_form.cleaned_data.get(f"counted_{row.pk}")
+                    if counted is None:
+                        continue
+                    closing.record_missing(run, row, counted)
+                    recorded += 1
+                if recorded:
+                    messages.success(
+                        request,
+                        f"Trued up {recorded} product{'' if recorded == 1 else 's'} "
+                        f"the app had wrong.",
+                    )
+            else:
+                # Re-rendered rather than redirected, or the numbers already
+                # typed are lost along with the message saying which one was
+                # rejected.
+                return _close_run_page(request, run, count_form=count_form)
+
+        return redirect("close_run", token=run.token)
+
+    # New zeros since the page was last opened get folded in here, so a close
+    # started at noon still asks about the scarf that sold out at four.
+    closing.sync_expected(run)
+    return _close_run_page(request, run)
+
+
+#: Said the same way wherever a closed day is written to. The van has been
+#: unpacked by now, so this is somebody working from a stale tab or a
+#: bookmarked URL rather than somebody standing in front of the tags.
+_CLOSED_RUN_MESSAGE = (
+    "That close is finished — a run covers one day and yesterday's is a "
+    "record. Anything still wrong goes through a bulk inventory update, "
+    "where the reason gets written down."
+)
+
+
+def _awaiting_count(run, row):
+    """A row still waiting on "what's actually in the bag?".
+
+    Pending and not frozen: nobody has said they hold the tag, and nothing
+    has moved yet. Kept in one place because the POST handler and the render
+    have to agree about it — a field the page draws but the handler won't
+    read is a number somebody types and loses.
+    """
+    return row.outcome == CloseRunRow.PENDING and not closing.is_frozen(run, row)
+
+
+def _close_run_page(request, run, count_form=None):
+    """Render one close, its rows split by what each still needs."""
+    rows = list(
+        run.rows.select_related(
+            "finished_product__recipe", "finished_product__raw_product"
+        )
+    )
+    # Everything still answerable, in one stable order. Deliberately not
+    # ticked-first: this is worked down a physical pile, and a list that
+    # reorders itself under a thumb between submits loses somebody's place.
+    open_rows = [r for r in rows if not closing.is_frozen(run, r)]
+    counting = [r for r in rows if _awaiting_count(run, r)]
+    if count_form is None:
+        count_form = build_close_count_form_class(counting)()
+
+    # The unexpected-tag search is a plain GET rather than a type-ahead. It
+    # is the one place on this page that needs the network, and the network
+    # is a field on one bar — a search box that silently does nothing when a
+    # request is dropped is worse than one that visibly reloads.
+    query = (request.GET.get("q") or "").strip()
+
+    return render(request, "scarves/close_run.html", {
+        "run": run,
+        "query": query,
+        "results": search_products(query) if query else None,
+        "tally": closing.tally(run),
+        "rows": rows,
+        "pending_rows": [r for r in rows if r.outcome == CloseRunRow.PENDING],
+        "confirmed_rows": [r for r in rows if r.outcome == CloseRunRow.CONFIRMED],
+        "missing_rows": [r for r in rows if r.outcome == CloseRunRow.MISSING],
+        "extra_rows": [r for r in rows if r.outcome == CloseRunRow.EXTRA],
+        "open_rows": open_rows,
+        "count_fields": [
+            {"row": row, "field": count_form[f"counted_{row.pk}"]}
+            for row in counting
+            if f"counted_{row.pk}" in count_form.fields
+        ],
+        "count_form": count_form,
+    })
+
+
+@require_POST
+def close_add_tag(request, token):
+    """A tag in hand for a product the close didn't predict.
+
+    The message says which of the two things just happened, because they are
+    not the same finding: usually the app had a count and the tag contradicts
+    it, but the product may have been at zero already and simply not on the
+    list, in which case the tag agrees and reporting it as a correction would
+    put a fault in the very number this page exists to produce. See
+    `closing.add_tag`.
+    """
+    run = get_object_or_404(CloseRun, token=token)
+    if not run.is_open:
+        messages.error(request, _CLOSED_RUN_MESSAGE)
+        return redirect("close_run", token=run.token)
+
+    product = (
+        FinishedProduct.objects.filter(
+            pk=request.POST.get("product_id"), is_active=True
+        )
+        .select_related("raw_product")
+        .first()
+    )
+    if product is None:
+        messages.error(request, "Couldn't find that product — try the search again.")
+        return redirect("close_run", token=run.token)
+
+    row, created = closing.add_tag(run, product)
+    if not created:
+        messages.info(request, f"{product.name} was already on this close.")
+    elif row.outcome == CloseRunRow.EXTRA:
+        messages.success(
+            request,
+            f"{product.name}: the app had {row.on_hand_before} on hand and you "
+            f"have the tag — adjusted to zero.",
+        )
+    else:
+        messages.info(
+            request,
+            f"{product.name} was already at zero, so the tag agrees. Recorded, "
+            f"nothing adjusted.",
+        )
+    return redirect("close_run", token=run.token)
+
+
+@page_meta(
+    title="Close History",
+    description="What each Sunday close found: the products the app had "
+                "wrong, which way, and by how much.",
+    category="Inventory",
+)
+@login_required
+def close_history(request):
+    """What the closes have caught, newest day first.
+
+    Reads as a list of failures on purpose — that is the output. Extra tags
+    are stock that left without registering: a swapped sale, a hand-keyed
+    line, or a webhook that has quietly stopped delivering, which physically
+    becomes an extra tag about a week later and is findable here without
+    going near Square. Missing tags are the other end of the pipeline, stock
+    that arrived without being recorded.
+    """
+    runs = (
+        CloseRun.objects.select_related("employee")
+        .prefetch_related(
+            "rows__finished_product__recipe",
+            "rows__finished_product__raw_product",
+        )[:26]
+    )
+    entries = [{"run": run, "tally": closing.tally(run)} for run in runs]
+
+    # A product that keeps coming back is the useful reading. One weekend's
+    # disagreement is noise; the same SKU three weekends running is a cause
+    # with a name on it.
+    repeats = {}
+    for entry in entries:
+        for row in entry["tally"]["missing_rows"] + entry["tally"]["extra_rows"]:
+            repeats.setdefault(row.finished_product, []).append(row)
+    repeat_rows = sorted(
+        ({"product": p, "rows": rs} for p, rs in repeats.items() if len(rs) > 1),
+        key=lambda d: -len(d["rows"]),
+    )
+
+    return render(request, "scarves/close_history.html", {
+        "entries": entries,
+        "repeat_rows": repeat_rows,
+        "found_total": sum(e["tally"]["disagreements"] for e in entries),
+        "under_total": sum(e["tally"]["under_units"] for e in entries),
+        "over_total": sum(e["tally"]["over_units"] for e in entries),
+    })

@@ -1,0 +1,113 @@
+{% extends "scarves/base_public.html" %}
+{% comment %}
+The way into the Sunday close. Public shell because there is no login — the
+person doing this is whoever is holding the tags, and they have no account.
+
+A run is a calendar day, so this page has exactly two states: today's close
+hasn't been opened, or it has and you're going back into it. There is no list
+of runs to pick from and nothing to name, because at the moment this gets
+used the van is half loaded and the only question is "start".
+{% endcomment %}
+
+{% block title %}Sunday Close{% endblock %}
+{% block heading %}Sunday close{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 460px; }
+
+  .field { margin-bottom: 18px; }
+  .field label { display: block; font-weight: 600; font-size: .95rem; margin-bottom: 6px; }
+  .field select, .field input {
+      width: 100%; font: inherit; font-size: 16px; padding: 12px;
+      border: 1px solid #c8cfd8; border-radius: 8px; background: #fff;
+  }
+  .field .err { color: #8a2f2a; font-size: .9rem; margin-top: 6px; }
+
+  .btn {
+      width: 100%; padding: 16px; font: inherit; font-size: 1.05rem;
+      font-weight: 600; border: 1px solid var(--accent); border-radius: 10px;
+      background: var(--accent); color: #fff; cursor: pointer;
+      text-align: center; text-decoration: none; display: block;
+  }
+  .panel {
+      border: 1px solid #c8cfd8; border-radius: 10px; background: #fff;
+      padding: 14px; margin-bottom: 18px;
+  }
+  .count { font-size: 2rem; font-weight: 700; line-height: 1.1; }
+  .past { font-size: .9rem; color: #667; margin-top: 24px; }
+  .past li { margin-bottom: 4px; }
+{% endblock %}
+
+{% block content %}
+
+  <p>
+    Tick off the tags you're holding against what the app thinks has sold
+    out. Anything the two disagree about gets fixed here, and the
+    disagreements are the whole point of doing it.
+  </p>
+
+  {% comment %}
+  Said before anyone starts, because "eleven to check" and "a hundred and
+  eleven" are different jobs and knowing which decides whether this happens
+  tonight or in the morning.
+  {% endcomment %}
+  <div class="panel">
+    <div class="count">{{ expected_now }}</div>
+    product{{ expected_now|pluralize }} the app currently has at zero — so
+    that's how many tags you should be holding.
+  </div>
+
+  {% if existing %}
+    {% comment %}
+    Reopening the same day lands in the same run. Getting back in has to be
+    as easy as starting, because this gets interrupted: someone gets called
+    away to carry a table and comes back to it twenty minutes later.
+    {% endcomment %}
+    <div class="panel">
+      <strong>Today's close is already open.</strong>
+      {% if existing_tally.answered %}
+        {{ existing_tally.answered }} of {{ existing_tally.expected }} checked
+        so far{% if existing_tally.disagreements %}, {{ existing_tally.disagreements }}
+        put right{% endif %}.
+      {% else %}
+        Nothing checked off yet.
+      {% endif %}
+      {% if existing.employee %}<br>Started by {{ existing.employee.name }}.{% endif %}
+    </div>
+    <a class="btn" href="{% url 'close_run' existing.token %}">Carry on with today's close</a>
+  {% else %}
+    <form method="post">
+      {% csrf_token %}
+
+      {% if remembered %}
+        <p class="muted">
+          Filled in for you as <strong>{{ remembered.name }}</strong>.
+          <a href="?{{ forget_param }}=1">Not you?</a>
+        </p>
+      {% endif %}
+
+      {% for field in form %}
+        <div class="field">
+          <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+          {{ field }}
+          {% for error in field.errors %}<div class="err">{{ error }}</div>{% endfor %}
+        </div>
+      {% endfor %}
+
+      <button class="btn" type="submit">Start tonight's close</button>
+    </form>
+  {% endif %}
+
+  {% if recent %}
+    <div class="past">
+      Earlier closes (finished — a run covers one day):
+      <ul>
+        {% for run in recent %}
+          <li><a href="{% url 'close_run' run.token %}">{{ run.day|date:"D d M Y" }}</a></li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+
+{% endblock %}

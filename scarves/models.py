@@ -669,6 +669,50 @@ class InventoryLog(models.Model):
         blank=True,
         help_text="Square order ID for sale entries.",
     )
+
+    #: Which part of the app wrote this row. Provenance was already being
+    #: recorded — in `notes`, as a readable English sentence — and that is
+    #: worth keeping, because a person reading one row wants the sentence.
+    #: But counting them is a different question, and answering it off prose
+    #: means a `LIKE` over wording that was never promised to stay still: one
+    #: reworded message drops rows out of a total with nothing to show it
+    #: happened. The rates are the point of the Sunday close (see CloseRun),
+    #: so the axis they are counted on has to be a field.
+    SOURCE_PRODUCTION_SHEET = "production_sheet"
+    SOURCE_PRODUCTION_NEEDED = "production_needed"
+    SOURCE_RECIPE_PAGE = "recipe_page"
+    SOURCE_CARD_BACKFILL = "card_backfill"
+    SOURCE_BULK_UPDATE = "bulk_update"
+    SOURCE_SUNDAY_CLOSE = "sunday_close"
+    SOURCE_SQUARE_WEBHOOK = "square_webhook"
+    SOURCE_SQUARE_IMPORT = "square_import"
+    SOURCE_UNMATCHED_SALE = "unmatched_sale"
+    SOURCE_TEST = "test"
+    SOURCE_CHOICES = [
+        (SOURCE_PRODUCTION_SHEET, "Production sheet"),
+        (SOURCE_PRODUCTION_NEEDED, "Production-needed page"),
+        (SOURCE_RECIPE_PAGE, "Recipe page"),
+        (SOURCE_CARD_BACKFILL, "Kanban card backfill"),
+        (SOURCE_BULK_UPDATE, "Bulk inventory update"),
+        (SOURCE_SUNDAY_CLOSE, "Sunday close"),
+        (SOURCE_SQUARE_WEBHOOK, "Square webhook"),
+        (SOURCE_SQUARE_IMPORT, "Square sales import"),
+        (SOURCE_UNMATCHED_SALE, "Unidentified sale, resolved"),
+        (SOURCE_TEST, "Simulated (fake_sale)"),
+    ]
+    source = models.CharField(
+        max_length=30,
+        choices=SOURCE_CHOICES,
+        blank=True,
+        db_index=True,
+        help_text=(
+            "Which flow wrote this row. Blank means it predates the field — "
+            "not that nobody knows, since the notes usually say. Left blank "
+            "rather than back-filled by pattern-matching those notes, because "
+            "a guessed provenance counts identically to a recorded one and "
+            "there is nothing on the row to say which it was."
+        ),
+    )
     EXACT = "exact"
     DAY = "day"
     MONTH = "month"
@@ -1474,3 +1518,167 @@ class ProductionRunRow(models.Model):
     @property
     def is_applied(self) -> bool:
         return self.applied_log_id is not None
+
+
+class CloseRun(models.Model):
+    """One Sunday-night close: the app's zeros, checked against the tags in hand.
+
+    Stock that has run out is the one state the app is sure about — every
+    sale clamps at zero, so an undercounted row eventually funnels into it —
+    and the crew are trained to keep a product's tag when the last of it
+    goes to display. Two systems, one physical pile, and the close is where
+    they are read against each other while the bags are still in the van.
+
+    **The failures are the deliverable, and that is what makes this a record.**
+    A `ProductionRun` is deliberately scaffolding: it is how paper and phone
+    found each other, and what survives it is the `InventoryLog`. Here the
+    count of things found wrong *is* the output — "we fixed ten this weekend"
+    is the number that means something, and it means it on its own. There are
+    no points for the rows that agreed.
+
+    Which is why nothing here computes a rate. The agreements are stored
+    because the flow needs them — a tick is how a row stops coming back at
+    somebody working down a pile they may not finish in one go — and not
+    because they are half of a ratio. Reporting `4 / 50` would put the
+    reassuring number next to the one worth acting on, and the reassuring one
+    is not being graded.
+
+    **One run per calendar day, and yesterday's is finished.** The day is the
+    boundary rather than a button somebody presses, because the button is
+    exactly what doesn't get pressed: the van is loaded, the phone goes in a
+    pocket, and a run left open forever is indistinguishable from one that
+    found nothing. Reopening the page on the same day lands back in the same
+    run and picks up where it stopped, which is what the close actually needs
+    — it happens in a car park in the dark and gets interrupted. Come back
+    tomorrow and that day is a record: nothing on it can be ticked, counted or
+    adjusted any more, and a correction to it goes through the ordinary
+    inventory adjustment route with a reason attached, where it belongs.
+    """
+
+    day = models.DateField(
+        unique=True,
+        help_text=(
+            "The day this close covers. Unique, because a second run for the "
+            "same evening is the same evening — two rows would split one "
+            "session's findings across both and make either one readable as "
+            "the whole night's work."
+        ),
+    )
+    token = models.CharField(
+        max_length=32,
+        unique=True,
+        default=new_run_token,
+        help_text=(
+            "This close's code, in the URL. The PIN is checked once, when the "
+            "day's run is opened; the token is what carries the steps after "
+            "it, so packing up doesn't mean typing four digits four times."
+        ),
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    employee = models.ForeignKey(
+        Employee,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="close_runs",
+        help_text="Whoever's PIN opened the day's close.",
+    )
+
+    class Meta:
+        ordering = ["-day"]
+
+    def __str__(self):
+        return f"Close {self.day:%d %b %Y} ({self.token})"
+
+    @property
+    def is_open(self) -> bool:
+        """Today's run takes answers. Every other day is a record."""
+        return self.day == timezone.localdate()
+
+
+class CloseRunRow(models.Model):
+    """One product on one close: what the app believed, and what was in hand.
+
+    Three outcomes, and the two disagreements point at opposite ends of the
+    pipeline. A **missing** tag means the app undercounts — stock arrived
+    without being recorded — and it is the only outcome anybody types a
+    number for. An **extra** tag means the app overcounts, which is stock
+    that left without registering: a swapped sale, a hand-keyed line, or a
+    webhook that has quietly stopped delivering. That last one is worth the
+    page on its own, because a dropped sale physically becomes an extra tag a
+    week later and this finds it without cross-checking Square at all.
+    """
+
+    PENDING = "pending"
+    CONFIRMED = "confirmed"
+    MISSING = "missing"
+    EXTRA = "extra"
+    OUTCOME_CHOICES = [
+        (PENDING, "Not answered yet"),
+        (CONFIRMED, "Tag in hand — agrees"),
+        (MISSING, "No tag — app undercounts"),
+        (EXTRA, "Tag not predicted — app overcounts"),
+    ]
+
+    run = models.ForeignKey(
+        CloseRun,
+        on_delete=models.CASCADE,
+        related_name="rows",
+    )
+    finished_product = models.ForeignKey(
+        FinishedProduct,
+        on_delete=models.PROTECT,
+        related_name="close_rows",
+    )
+    outcome = models.CharField(
+        max_length=20,
+        choices=OUTCOME_CHOICES,
+        default=PENDING,
+    )
+    on_hand_before = models.PositiveIntegerField(
+        help_text=(
+            "What the app believed when this row was made. Frozen for the "
+            "same reason a production row freezes its bath size: it is what "
+            "the disagreement was measured against, and re-reading it later "
+            "reads back the number this close already corrected."
+        ),
+    )
+    counted = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="The bag's actual count. Only a missing tag asks for one.",
+    )
+    decided_at = models.DateTimeField(null=True, blank=True)
+    applied_log = models.ForeignKey(
+        InventoryLog,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+        help_text=(
+            "The adjustment this row caused, if it caused one. Set once and "
+            "never again — the page is reopened, the button is double-tapped, "
+            "and somebody who remembers one more tag comes back to it. Same "
+            "failure as a redelivered Square order, same fix."
+        ),
+    )
+
+    class Meta:
+        ordering = ["run", "finished_product__sku", "pk"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["run", "finished_product"],
+                name="one_close_row_per_product",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.finished_product.sku or self.finished_product.name}: {self.outcome}"
+
+    @property
+    def is_applied(self) -> bool:
+        return self.applied_log_id is not None
+
+    @property
+    def is_answered(self) -> bool:
+        return self.outcome != self.PENDING

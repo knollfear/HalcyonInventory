@@ -86,6 +86,7 @@ class Command(BaseCommand):
                     finished_product=fp,
                     raw_product=fp.raw_product,
                     log_type=InventoryLog.SALE,
+                    source=InventoryLog.SOURCE_SQUARE_IMPORT,
                     quantity=-qty,
                     sale_reference=transaction_id,
                     notes=f"Imported from CSV: {date} {item_name}",

@@ -24,6 +24,8 @@ from .models import (
     RecipeDye,
     FinishedProduct,
     FinishedProductImage,
+    CloseRun,
+    CloseRunRow,
     InventoryLog,
     ProductImageUpload,
     ProductionRun,
@@ -492,10 +494,70 @@ class ProductionRunAdmin(admin.ModelAdmin):
 
 @admin.register(InventoryLog)
 class InventoryLogAdmin(admin.ModelAdmin):
-    list_display = ("finished_product", "log_type", "quantity", "raw_product", "sale_reference", "created_at")
-    list_filter = ("log_type", "raw_product__category", "created_at")
+    """Every stock movement, filterable by which part of the app made it.
+
+    `source` is in the filters because that is the question worth asking of
+    this table: whether the corrections coming out of the Sunday close are
+    going up or down, and how they compare with the ways stock is supposed
+    to move. The notes still say it in English for whoever is reading one
+    row; the field is what makes counting them possible.
+    """
+    list_display = (
+        "finished_product", "log_type", "source", "quantity", "raw_product",
+        "sale_reference", "created_at",
+    )
+    list_filter = ("log_type", "source", "raw_product__category", "created_at")
     search_fields = ("finished_product__name", "raw_product__name", "sale_reference")
     ordering = ("-created_at",)
+
+
+class CloseRunRowInline(admin.TabularInline):
+    """A close's answers, read-only — same reasoning as the production rows.
+
+    `on_hand_before` is what the disagreement was measured against and
+    `applied_log` is what it moved. Neither is something to retype, and the
+    close is over.
+    """
+    model = CloseRunRow
+    extra = 0
+    can_delete = False
+    fields = ("finished_product", "outcome", "on_hand_before", "counted",
+              "applied_log", "decided_at")
+    readonly_fields = fields
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(CloseRun)
+class CloseRunAdmin(admin.ModelAdmin):
+    """One row per day's close.
+
+    Unlike a production run this *is* a record — the count of things it found
+    wrong is the output of the whole exercise, not scaffolding for it — so
+    there is nothing here worth deleting and the fields are read-only. The
+    day is unique and the token is in a URL somebody may still have open.
+    """
+    list_display = ("day", "employee", "checked", "put_right", "created_at")
+    list_filter = ("employee",)
+    search_fields = ("token",)
+    ordering = ("-day",)
+    readonly_fields = ("day", "token", "created_at")
+    inlines = [CloseRunRowInline]
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).prefetch_related("rows")
+
+    @admin.display(description="Checked")
+    def checked(self, obj):
+        return sum(1 for row in obj.rows.all() if row.outcome != CloseRunRow.PENDING)
+
+    @admin.display(description="Put right")
+    def put_right(self, obj):
+        return sum(
+            1 for row in obj.rows.all()
+            if row.outcome in (CloseRunRow.MISSING, CloseRunRow.EXTRA)
+        )
 
 
 @admin.register(Employee)

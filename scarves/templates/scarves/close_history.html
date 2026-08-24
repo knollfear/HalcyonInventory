@@ -1,0 +1,146 @@
+{% extends "scarves/base_internal.html" %}
+{% comment %}
+What the closes have caught. A desk page, staff-only, and a list of failures
+on purpose — that is the output of the whole exercise.
+
+No rates and no percentages anywhere. Ten corrections in a weekend is ten
+corrections whether the list was twelve products long or two hundred, and
+putting the reassuring number beside the actionable one is how the
+actionable one stops being read.
+{% endcomment %}
+
+{% block title %}Close History{% endblock %}
+{% block heading %}What the closes found{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 900px; }
+
+  .totals { display: flex; gap: 28px; flex-wrap: wrap; margin: 18px 0 28px; }
+  .totals .n { font-size: 2.2rem; font-weight: 700; line-height: 1.05; }
+  .totals .what { font-size: .9rem; color: #556; max-width: 22ch; }
+
+  table { border-collapse: collapse; width: 100%; margin-bottom: 28px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e2e6ec; }
+  th { font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; color: #667; }
+  td.n { text-align: right; font-variant-numeric: tabular-nums; }
+  .under { color: #8a5a1f; font-weight: 600; }
+  .over { color: #8a2f2a; font-weight: 600; }
+  .none { color: #99a; }
+  .why { font-size: .92rem; color: #556; max-width: 70ch; }
+  .why + .why { margin-top: 8px; }
+{% endblock %}
+
+{% block content %}
+
+  <div class="totals">
+    <div>
+      <div class="n">{{ found_total }}</div>
+      <div class="what">products put right across these closes</div>
+    </div>
+    <div>
+      <div class="n under">{{ under_total }}</div>
+      <div class="what">units the app was missing — stock that arrived without being recorded</div>
+    </div>
+    <div>
+      <div class="n over">{{ over_total }}</div>
+      <div class="what">units the app had that the shelf didn't — stock that left without registering</div>
+    </div>
+  </div>
+
+  <p class="why">
+    The two columns point at opposite ends of the pipeline, which is why they
+    are never added together. <strong>Extra tags</strong> — the app said there
+    was stock and the tag says there wasn't — are things that sold or left
+    without registering: a swapped sale, a hand-keyed line at the till, or a
+    webhook that has quietly stopped delivering.
+  </p>
+  <p class="why">
+    That last one is worth the page on its own. A dropped sale physically
+    becomes an extra tag about a week later, so a dead webhook shows up here
+    without any cross-check against Square at all.
+  </p>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Day</th>
+        <th>Who</th>
+        <th class="n">Checked</th>
+        <th class="n">App too low</th>
+        <th class="n">App too high</th>
+        <th class="n">Not answered</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for entry in entries %}
+        <tr>
+          <td><a href="{% url 'close_run' entry.run.token %}">{{ entry.run.day|date:"D d M Y" }}</a></td>
+          <td>{{ entry.run.employee.name|default:"—" }}</td>
+          <td class="n">{{ entry.tally.answered }}</td>
+          <td class="n">
+            {% if entry.tally.missing %}
+              <span class="under">{{ entry.tally.missing }}</span>
+              <span class="none">({{ entry.tally.under_units }}&nbsp;units)</span>
+            {% else %}<span class="none">0</span>{% endif %}
+          </td>
+          <td class="n">
+            {% if entry.tally.extra %}
+              <span class="over">{{ entry.tally.extra }}</span>
+              <span class="none">({{ entry.tally.over_units }}&nbsp;units)</span>
+            {% else %}<span class="none">0</span>{% endif %}
+          </td>
+          {% comment %}
+          Rows left pending when the day ended. Shown because "found nothing
+          wrong" and "never got through the pile" look identical otherwise,
+          and only one of them is good news.
+          {% endcomment %}
+          <td class="n">
+            {% if entry.tally.pending %}{{ entry.tally.pending }}{% else %}<span class="none">—</span>{% endif %}
+          </td>
+        </tr>
+      {% empty %}
+        <tr><td colspan="6" class="none">No closes recorded yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% if repeat_rows %}
+    <h2>Products that keep coming back</h2>
+    <p class="why">
+      One weekend's disagreement is noise. The same product three weekends
+      running is a cause with a name on it — worth looking at how that one
+      gets counted, sold or scanned rather than just correcting it again.
+    </p>
+    <table>
+      <thead>
+        <tr><th>Product</th><th class="n">Closes</th><th>What happened</th></tr>
+      </thead>
+      <tbody>
+        {% for entry in repeat_rows %}
+          <tr>
+            <td>{{ entry.product.name }} <span class="none">{{ entry.product.sku }}</span></td>
+            <td class="n">{{ entry.rows|length }}</td>
+            <td>
+              {% for row in entry.rows %}
+                {% if row.outcome == "missing" %}
+                  <span class="under">app too low</span>
+                {% else %}
+                  <span class="over">app too high by {{ row.on_hand_before }}</span>
+                {% endif %}
+                {% if not forloop.last %}·{% endif %}
+              {% endfor %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+
+  <p class="why">
+    Every adjustment written by a close is tagged <code>sunday_close</code> on
+    its inventory log, so it can be told apart from a bulk update, a dye bath
+    or a resolved sale without reading the notes.
+  </p>
+
+{% endblock %}
