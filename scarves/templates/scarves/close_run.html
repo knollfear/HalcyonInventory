@@ -37,6 +37,15 @@ production run page.
   }
   .row.over .tag { color: #8a5a1f; }
 
+  .row .grow { flex: 1; min-width: 0; }
+  /* A real tap target, but visibly quieter than the primary actions — undo
+     should be findable without competing with "save what I'm holding". */
+  .undo {
+      font: inherit; font-size: .95rem; padding: 10px 16px; cursor: pointer;
+      border: 1px solid #c8cfd8; border-radius: 8px;
+      background: #fff; color: #556;
+  }
+
   .countrow { display: flex; gap: 12px; align-items: center; }
   .countrow input[type=number] {
       width: 90px; font: inherit; font-size: 16px; padding: 10px;
@@ -209,30 +218,54 @@ production run page.
   {% comment %}
   Everything already settled, shown rather than hidden. A row that vanished
   once it was answered reads as one that never got answered — the same
-  reasoning the production run page applies to its recorded rows. Not
-  re-tickable either: stock has moved, and taking a movement back is an
-  adjustment with a reason on it.
+  reasoning the production run page applies to its recorded rows.
+
+  Each carries Undo, and it is here rather than behind a staff login on
+  purpose. Requiring an account to fix a mis-tap means the person who made it
+  has to go and find somebody and admit to it, and the cost of that
+  conversation is exactly what gets a wrong count left unmentioned instead.
+  Nothing is erased by it: the movement is reversed with a second log entry
+  beside the first.
   {% endcomment %}
   {% if missing_rows or extra_rows %}
     <h2>Already put right</h2>
     {% for row in missing_rows %}
       <div class="row settled">
-        <div>
+        <div class="grow">
           <div class="what">{{ row.finished_product.name }}</div>
           <div class="detail">{{ row.finished_product.sku }}</div>
           <div class="tag">No tag — counted {{ row.counted }}, app said {{ row.on_hand_before }}</div>
         </div>
+        {% if run.is_open %}
+          <form method="post" action="{% url 'close_undo' run.token row.pk %}">
+            {% csrf_token %}
+            <button class="undo" type="submit">Undo</button>
+          </form>
+        {% endif %}
       </div>
     {% endfor %}
     {% for row in extra_rows %}
       <div class="row over">
-        <div>
+        <div class="grow">
           <div class="what">{{ row.finished_product.name }}</div>
           <div class="detail">{{ row.finished_product.sku }}</div>
           <div class="tag">Tag held — app said {{ row.on_hand_before }}, set to zero</div>
         </div>
+        {% if run.is_open %}
+          <form method="post" action="{% url 'close_undo' run.token row.pk %}">
+            {% csrf_token %}
+            <button class="undo" type="submit">Undo</button>
+          </form>
+        {% endif %}
       </div>
     {% endfor %}
+    {% if run.is_open %}
+      <p class="lead">
+        Tapped the wrong one? Undo puts the stock back and needs nobody's
+        permission. Both entries stay in the log, which is the honest record
+        of a thing done and put back.
+      </p>
+    {% endif %}
   {% endif %}
 
   {% if not run.is_open and confirmed_rows %}

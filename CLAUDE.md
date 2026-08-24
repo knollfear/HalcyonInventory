@@ -750,14 +750,36 @@ filing its tag as an overcount would put a fault into the one number this
 page produces — in the direction that reads as "the till is losing sales".
 `closing.add_tag` checks the live count and records `confirmed` instead.
 
-**A tick comes back off; a correction doesn't.** Confirming a row moves no
-stock, so it stays reversible — untick it and the row rejoins the count list.
-That is not a nicety: the worked case is a bag turning up under the table at
-seven that was confirmed as gone at four, and the answer has to be typeable
-without an admin. The moment a count is typed and stock moves, the row is
-settled for good, because taking a movement back is an inventory adjustment
-with a reason attached rather than an untick on a page with no login — the
-same rule the production sheet applies.
+**A tick comes back off, and so does a correction — but by different means.**
+Confirming a row moves no stock, so unticking it just returns it to the count
+list. The worked case is a bag turning up under the table at seven that was
+confirmed gone at four.
+
+A row that *moved* stock is reversed by an explicit **Undo** button, not by
+unticking. Two separate reasons for that split. Step one's submit unconfirms
+every row it doesn't see ticked, so if unticking reversed movements, a second
+pass through the list would silently take stock back out — an undo has to be
+something somebody meant. And the reversal needs to write a compensating
+entry, which a checkbox sweep has no way to express.
+
+**Undo needs no account, and that is the point.** The rule here used to be
+that a movement could only be reversed through a bulk inventory adjustment —
+which quietly assumed the person holding the phone had a staff login and knew
+where that screen was. The crew have neither. What it produced in practice
+was an employee who mis-tapped, couldn't fix it, and had to go and tell
+somebody. That is a data-quality problem before it is a kindness one: the
+cost of admitting a mistake is exactly the pressure that gets one left
+unmentioned, and an unreported wrong count is the failure this page exists to
+catch.
+
+Nothing is erased. The original `InventoryLog` stays and a compensating entry
+is written beside it, so the ledger says a thing happened and was put back —
+which is what happened. The reversal is an inverse *delta*, never a restored
+absolute, because a sale can land between the mistake and the noticing;
+`set_on_hand` clamps at zero so the arithmetic degrades the right way. Scope
+is narrow on purpose: it reverses **this close's own movement** on **this
+close's own day**, and nothing else. Correcting anything older still goes
+through a bulk adjustment.
 
 A found bag lands as `missing`, and the label repays a careful reading: the
 tag *was* in hand, so "no tag" is not literally what happened. What the
@@ -868,6 +890,21 @@ drops out of every total, which is the same silence the notes-matching had.
 Blank means "predates the field", and it was deliberately **not** back-filled
 by pattern-matching the old notes: a guessed provenance counts identically to
 a recorded one, and there would be nothing on the row to say which it was.
+
+**Auditing `sunday_close`: sum the quantities, don't count the rows.** An
+undone mis-tap leaves a matched pair that nets to zero, so a sum is already
+the right answer while a row count reads two corrections that never happened.
+The count of things a close actually put right lives on `CloseRunRow`, not
+here — `closing.tally()` is what answers that, and an undo removes the row
+from it.
+
+Keeping the pair is deliberate, against the intuition that a mistake
+corrected in ten seconds was "zero events". It wasn't zero events to the
+*system*: the wrong number was live for that window, and a Square inventory
+push, a production sheet or another phone could have read it. A ledger that
+never mentions the excursion leaves "why did Square briefly show 50 of these"
+with no answer anywhere — the silent kind of wrong. Nothing else in this app
+deletes an `InventoryLog` either.
 
 ## Timekeeping: the pay week, and the two totals
 

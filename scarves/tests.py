@@ -10554,11 +10554,14 @@ class SundayClosePageTests(TestCase):
         self.assertEqual(closing.tally(run)["confirmed"], 0)
 
     def test_unticking_after_the_count_cannot_take_the_stock_back(self):
-        """Once stock has moved, the box is not the way to undo it.
+        """Once stock has moved, the *checkbox* is not the way to undo it.
 
-        The asymmetry is deliberate and it is the same rule the production
-        sheet applies: taking a movement back is an inventory adjustment with
-        a reason attached, not an untick on a page with no login.
+        Undo exists and needs no account (see the undo tests) — but it is a
+        deliberate per-row button rather than a side effect of the step one
+        sweep. That sweep unconfirms every row it doesn't see ticked, so if
+        unticking reversed movements, submitting step one again after
+        counting something would silently take the stock back out. An undo
+        has to be something somebody meant.
         """
         product = make_close_product("Already Moved", on_hand=0)
         run, _ = closing.run_for_today()
@@ -10573,6 +10576,148 @@ class SundayClosePageTests(TestCase):
         self.assertEqual(row.outcome, CloseRunRow.MISSING)
         self.assertEqual(product.number_on_hand, 5)
         self.assertEqual(InventoryLog.objects.count(), 1)
+
+    def test_undo_puts_a_miscount_back_without_an_account(self):
+        """The mis-tap an employee has to be able to fix themselves.
+
+        Needing a staff login here means the person who made the mistake goes
+        and tells somebody, and the cost of that conversation is what gets a
+        wrong count left unmentioned. So the client below is deliberately not
+        logged in.
+        """
+        product = make_close_product("Fat Fingered", on_hand=0)
+        run, _ = closing.run_for_today()
+        row = run.rows.get()
+        url = reverse("close_run", args=[run.token])
+
+        self.client.post(url, {"step": "count", f"counted_{row.pk}": "50"})
+        product.refresh_from_db()
+        self.assertEqual(product.number_on_hand, 50)
+
+        self.client.post(reverse("close_undo", args=[run.token, row.pk]))
+
+        row.refresh_from_db()
+        product.refresh_from_db()
+        self.assertEqual(product.number_on_hand, 0)
+        self.assertEqual(row.outcome, CloseRunRow.PENDING)
+        self.assertIsNone(row.counted)
+        self.assertIsNone(row.applied_log)
+        self.assertEqual(closing.tally(run)["disagreements"], 0)
+
+    def test_undo_writes_a_compensating_entry_and_erases_nothing(self):
+        """History is added to, never rewritten.
+
+        The ledger has to be able to say "this happened and was put back",
+        because that is what did happen. Deleting the first entry would make
+        the log claim the stock never moved.
+        """
+        product = make_close_product("Put Back", on_hand=0)
+        run, _ = closing.run_for_today()
+        row = run.rows.get()
+        url = reverse("close_run", args=[run.token])
+
+        self.client.post(url, {"step": "count", f"counted_{row.pk}": "7"})
+        original = InventoryLog.objects.get()
+
+        self.client.post(reverse("close_undo", args=[run.token, row.pk]))
+
+        self.assertTrue(InventoryLog.objects.filter(pk=original.pk).exists())
+        self.assertEqual(InventoryLog.objects.count(), 2)
+        quantities = sorted(l.quantity for l in InventoryLog.objects.all())
+        self.assertEqual(quantities, [-7, 7])
+        self.assertEqual(
+            {l.source for l in InventoryLog.objects.all()},
+            {InventoryLog.SOURCE_SUNDAY_CLOSE},
+        )
+        product.refresh_from_db()
+        self.assertEqual(product.number_on_hand, 0)
+
+    def test_undoing_an_unpredicted_tag_restores_the_stock_and_the_row_goes(self):
+        """An extra tag was a row the close invented; undone, it leaves none."""
+        product = make_close_product("Wrongly Zeroed", on_hand=4)
+        run, _ = closing.run_for_today()
+        self.client.post(reverse("close_add_tag", args=[run.token]), {
+            "product_id": product.pk,
+        })
+        product.refresh_from_db()
+        self.assertEqual(product.number_on_hand, 0)
+        row = run.rows.get(finished_product=product)
+
+        self.client.post(reverse("close_undo", args=[run.token, row.pk]))
+
+        product.refresh_from_db()
+        self.assertEqual(product.number_on_hand, 4)
+        self.assertEqual(run.rows.filter(finished_product=product).count(), 0)
+        self.assertEqual(closing.tally(run)["extra"], 0)
+        self.assertEqual(InventoryLog.objects.count(), 2)
+
+    def test_undo_reverses_a_delta_so_a_sale_in_between_survives(self):
+        """A webhook can land between the mistake and the noticing.
+
+        Restoring a remembered absolute would put back a number that was
+        already out of date. The inverse delta plus the clamp lands on the
+        right answer.
+        """
+        product = make_close_product("Sold Meanwhile", on_hand=0)
+        run, _ = closing.run_for_today()
+        row = run.rows.get()
+
+        closing.record_missing(run, row, 6)
+        product.refresh_from_db()
+        self.assertEqual(product.number_on_hand, 6)
+
+        product.set_on_hand(5)          # a sale lands
+        closing.undo(run, row)
+
+        product.refresh_from_db()
+        self.assertEqual(product.number_on_hand, 0)
+
+    def test_undo_twice_is_not_an_error(self):
+        """A double tap on a slow connection is the normal case."""
+        product = make_close_product("Double Tapped Undo", on_hand=0)
+        run, _ = closing.run_for_today()
+        row = run.rows.get()
+        self.client.post(reverse("close_run", args=[run.token]), {
+            "step": "count", f"counted_{row.pk}": "3",
+        })
+
+        first = self.client.post(reverse("close_undo", args=[run.token, row.pk]))
+        second = self.client.post(reverse("close_undo", args=[run.token, row.pk]))
+
+        self.assertEqual(second.status_code, 302)
+        product.refresh_from_db()
+        self.assertEqual(product.number_on_hand, 0)
+        self.assertEqual(InventoryLog.objects.count(), 2)
+
+    def test_undo_is_refused_on_a_finished_day(self):
+        """Same boundary as everything else — yesterday is a record."""
+        product = make_close_product("Yesterdays Mistake", on_hand=0)
+        run, _ = closing.run_for_today()
+        row = run.rows.get()
+        closing.record_missing(run, row, 9)
+        CloseRun.objects.filter(pk=run.pk).update(
+            day=timezone.localdate() - timedelta(days=1)
+        )
+
+        self.client.post(reverse("close_undo", args=[run.token, row.pk]))
+
+        row.refresh_from_db()
+        product.refresh_from_db()
+        self.assertEqual(row.outcome, CloseRunRow.MISSING)
+        self.assertEqual(product.number_on_hand, 9)
+        self.assertEqual(InventoryLog.objects.count(), 1)
+
+    def test_the_undo_button_is_on_the_page_for_a_settled_row(self):
+        """Findable without knowing it exists — the whole point."""
+        product = make_close_product("Needs An Out", on_hand=0)
+        run, _ = closing.run_for_today()
+        row = run.rows.get()
+        url = reverse("close_run", args=[run.token])
+        self.client.post(url, {"step": "count", f"counted_{row.pk}": "2"})
+
+        html = self.client.get(url).content.decode()
+        self.assertIn(reverse("close_undo", args=[run.token, row.pk]), html)
+        self.assertIn("Undo", html)
 
     def test_a_count_posted_for_a_confirmed_row_is_refused(self):
         """The same rule, enforced where a hand-built POST would arrive."""

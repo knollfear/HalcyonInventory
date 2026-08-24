@@ -186,6 +186,11 @@ urlpatterns = [
         views.close_add_tag,
         name="close_add_tag",
     ),
+    path(
+        "secret/close/<str:token>/undo/<int:pk>/",
+        views.close_undo,
+        name="close_undo",
+    ),
     path("private/closes/", views.close_history, name="close_history"),
 
     # --- Timekeeping ---

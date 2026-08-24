@@ -189,6 +189,74 @@ def record_missing(run, row, counted):
     return row
 
 
+def undo(run, product_row):
+    """Take back an answer this close applied, same day, on the page itself.
+
+    The earlier rule here was that a movement could only be reversed through
+    a bulk inventory adjustment with a reason attached. That rule quietly
+    assumed the person holding the phone had a staff login and knew where the
+    adjustment screen was — and the crew have neither. What it actually
+    produced was an employee who mis-tapped, could not fix it, and had to go
+    and tell somebody. **That is a data-quality problem before it is a
+    kindness one:** the cost of admitting a mistake is exactly the pressure
+    that gets one left unmentioned, and a wrong count nobody reports is the
+    failure this whole page exists to catch.
+
+    So the movement is reversed here, and the history is not touched. The
+    original `InventoryLog` stays exactly where it is and a **compensating
+    entry** is written beside it, so the ledger says a thing happened and was
+    put back — which is true — rather than quietly ceasing to mention it.
+    Nothing is deleted, which keeps faith with the rest of the app.
+
+    The reversal is an inverse *delta*, never a restored absolute, because a
+    sale can land between the mistake and the undo. `set_on_hand` clamps at
+    zero, so the arithmetic degrades the right way.
+
+    Scope is deliberately narrow, and this is not a general licence to edit
+    stock from an unauthenticated page: it reverses **this close's own
+    movement**, on **this close's own day**, and nothing else. Correcting
+    anything older still goes through a bulk adjustment.
+
+    Returns the row, or `None` when the row is gone (an unpredicted tag that
+    was added by mistake leaves nothing behind to be pending about).
+    """
+    if not run.is_open:
+        return product_row
+    if product_row.outcome not in (CloseRunRow.MISSING, CloseRunRow.EXTRA):
+        return product_row
+
+    with transaction.atomic():
+        log = product_row.applied_log
+        if log is not None:
+            product = FinishedProduct.objects.select_related("raw_product").get(
+                pk=product_row.finished_product_id
+            )
+            product.set_on_hand(product.number_on_hand - log.quantity)
+            _adjustment(
+                product,
+                -log.quantity,
+                f"Sunday close: answer taken back on the page "
+                f"(reverses the {log.quantity:+d} logged a moment earlier).",
+            )
+
+        # An extra tag was a row this close invented, so undoing it leaves
+        # nothing to be pending about — the page forgets, and the two log
+        # entries are what remember. Anyone genuinely holding the tag can add
+        # it again.
+        if product_row.outcome == CloseRunRow.EXTRA:
+            product_row.delete()
+            return None
+
+        product_row.outcome = CloseRunRow.PENDING
+        product_row.counted = None
+        product_row.applied_log = None
+        product_row.decided_at = None
+        product_row.save(
+            update_fields=["outcome", "counted", "applied_log", "decided_at"]
+        )
+    return product_row
+
+
 def add_tag(run, product):
     """A tag in hand for a product the close didn't predict.
 

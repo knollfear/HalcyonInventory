@@ -4505,6 +4505,38 @@ def close_add_tag(request, token):
     return redirect("close_run", token=run.token)
 
 
+@require_POST
+def close_undo(request, token, pk):
+    """Take back an answer, from the page, without an account.
+
+    Deliberately reachable by whoever made the mistake. Needing a staff login
+    to undo a mis-tap means the person who made it has to go and tell
+    somebody, and the cost of that conversation is what gets a wrong count
+    left unmentioned instead. See `closing.undo` — the movement is reversed,
+    the history is not rewritten.
+    """
+    run = get_object_or_404(CloseRun, token=token)
+    if not run.is_open:
+        messages.error(request, _CLOSED_RUN_MESSAGE)
+        return redirect("close_run", token=run.token)
+
+    row = run.rows.filter(pk=pk).select_related("finished_product").first()
+    if row is None:
+        # Already undone, most likely a double tap. Says so plainly rather
+        # than erroring, because the page is now in the state they wanted.
+        messages.info(request, "That one's already been put back.")
+        return redirect("close_run", token=run.token)
+
+    name = row.finished_product.name
+    closing.undo(run, row)
+    messages.success(
+        request,
+        f"Put {name} back the way it was. Nothing to tell anyone about — the "
+        f"log keeps both entries.",
+    )
+    return redirect("close_run", token=run.token)
+
+
 @page_meta(
     title="Close History",
     description="What each Sunday close found: the products the app had "
