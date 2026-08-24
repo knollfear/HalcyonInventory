@@ -37,10 +37,13 @@ silk**:
 
 Alongside them are **four base yarns** — Heavenly, Homespun, Artisan and
 Noble — each carried in roughly **forty colorways**. The yarns are *not*
-silk: they are other natural fibers, and **which fiber varies from product to
-product**, so nothing should assume a single material for them or derive one
-from the style. There are odd other things; they are not worth special-casing
-and no code should assume they exist.
+silk: they are some kind of wool, and **which animal it came from is neither
+tracked nor interesting at this level** — llama, alpaca, rabbit, goat, it
+varies and nobody here needs to know. Don't add a fiber field to make that
+answerable; the question hasn't been asked and a column that starts quietly
+collecting one is how a schema grows a dimension nothing reads. There are odd
+other things; they are not worth special-casing and no code should assume
+they exist.
 
 **The catalogue is narrow in styles and very wide in colour**, and that one
 fact drives a lot of the design. A handful of blanks times a few hundred
