@@ -71,11 +71,17 @@ class Command(BaseCommand):
 
             if dry_run:
                 self.stdout.write(
-                    f"  DRY  {sku} → {fp.name}  qty={qty}  on_hand={fp.number_on_hand}→{fp.number_on_hand - qty}"
+                    f"  DRY  {sku} → {fp.name}  qty={qty}  "
+                    f"on_hand={fp.number_on_hand}→{max(fp.number_on_hand - qty, 0)}"
                 )
             else:
-                fp.number_on_hand = max(fp.number_on_hand - qty, 0)
-                fp.save(update_fields=["number_on_hand"])
+                # An undyed passthrough keeps its count on the raw row and this
+                # one is the mirror, so writing here is re-derived away by
+                # save() — the row snaps back and the import prints OK having
+                # moved nothing. `set_on_hand` writes to whichever row actually
+                # holds the pile, and clamps at zero. Same reasoning the webhook
+                # applies with its own passthrough branch.
+                fp.set_on_hand(fp.number_on_hand - qty)
                 InventoryLog.objects.create(
                     finished_product=fp,
                     raw_product=fp.raw_product,

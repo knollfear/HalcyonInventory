@@ -10,9 +10,11 @@ Two things here are worth more than they look:
   Django page itself keeps working perfectly.
 """
 import base64
+import csv
 import hashlib
 import hmac
 import json
+import os
 import random
 import re
 import shutil
@@ -5644,6 +5646,30 @@ class ImportDyebookTests(TestCase):
         call_command("import_dyebook", stdout=out, stderr=out, **kwargs)
         return out.getvalue()
 
+    def _as_if_unsettled(self, *words):
+        """Run as though `words` had not been settled yet.
+
+        The tests below are about the *mechanism* — refusing a word two jars
+        answer to, grouping blockers by word, suggesting across a spelling
+        difference. Asserting that against whatever the live tables currently
+        say means finishing the transcription deletes its own coverage, which
+        is exactly what happened: `Lilac` was resolved to `612 Lilac` and
+        `Grey` was parked in UNSETTLED on purpose, and three tests went with
+        them. Pinning the input keeps the rule under test after the data moves
+        on.
+        """
+        from scarves.management.commands import import_dyebook
+
+        return mock.patch.multiple(
+            import_dyebook,
+            ALIASES={
+                k: v for k, v in import_dyebook.ALIASES.items() if k not in words
+            },
+            UNSETTLED={
+                k: v for k, v in import_dyebook.UNSETTLED.items() if k not in words
+            },
+        )
+
     def test_a_fully_resolved_recipe_gets_its_dyes_in_page_order(self):
         recipe = Recipe.objects.create(name="Wasteland")
         self._run()
@@ -5668,7 +5694,8 @@ class ImportDyebookTests(TestCase):
 
     def test_a_word_matching_two_dyes_is_refused_not_picked(self):
         recipe = Recipe.objects.create(name="Agean Sea")   # Grey/Lilac/ElecV
-        output = self._run()
+        with self._as_if_unsettled("Lilac"):
+            output = self._run()
         self.assertEqual(recipe.recipe_dyes.count(), 0)
         self.assertIn("431 Lilac", output)
         self.assertIn("612 Lilac", output)
@@ -5678,7 +5705,8 @@ class ImportDyebookTests(TestCase):
         reads as a chore where a list of words reads as a short sitting."""
         Recipe.objects.create(name="Agean Sea")
         Recipe.objects.create(name="Lavendar Haze")
-        output = self._run()
+        with self._as_if_unsettled("Lilac"):
+            output = self._run()
         self.assertRegex(output, r"'Lilac'[^\n]*\n\s*blocks 2:")
 
     def test_an_existing_subset_is_completed(self):
@@ -5717,7 +5745,8 @@ class ImportDyebookTests(TestCase):
             hex_color="#8a8a8c",
         )
         Recipe.objects.create(name="Sea Smoke")     # Grey/Gun/Black
-        output = self._run()
+        with self._as_if_unsettled("Grey"):
+            output = self._run()
         self.assertIn("446 Silver Gray", output)
 
     def test_a_dry_run_writes_nothing(self):
@@ -9950,3 +9979,130 @@ class BulkReasonPresetTests(TestCase):
         self.assertEqual(viewsmod.bulk_reason("  Found items ", "  "), "Found items")
         self.assertEqual(viewsmod.bulk_reason("", " typed  "), "typed")
         self.assertEqual(viewsmod.bulk_reason("", ""), "")
+
+
+class ImportSquareSalesTests(TestCase):
+    """The CSV recovery path, which is what runs after a webhook gap.
+
+    It is a desk tool, not a field one — a CSV export off the dashboard,
+    matched on SKU. That makes it the only reconciliation route that needs no
+    Square API token at all, so an expired token takes out the webhook and the
+    inventory push while leaving this intact.
+    """
+
+    def setUp(self):
+        self.recipe = make_recipe("Stormy Sea")
+        self.dyed = make_product(self.recipe, "Stormy Silk", with_image=False)
+        FinishedProduct.objects.filter(pk=self.dyed.pk).update(number_on_hand=10)
+        self.dyed.refresh_from_db()
+
+        self.undyed = make_undyed("Merino Worsted Natural", on_hand=12)
+
+    def _run(self, rows, **opts):
+        """Write `rows` as a Square export and import it."""
+        handle = tempfile.NamedTemporaryFile(
+            "w", suffix=".csv", newline="", delete=False, encoding="utf-8"
+        )
+        self.addCleanup(os.unlink, handle.name)
+        with handle as f:
+            writer = csv.DictWriter(
+                f, fieldnames=["Date", "Transaction ID", "Item", "SKU", "Qty"]
+            )
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(row)
+
+        out = StringIO()
+        call_command("import_square_sales", handle.name, stdout=out, **opts)
+        return out.getvalue()
+
+    def _row(self, product, qty=2, txn="ORDER-1"):
+        return {
+            "Date": "2026-08-24",
+            "Transaction ID": txn,
+            "Item": product.name,
+            "SKU": product.sku,
+            "Qty": str(qty),
+        }
+
+    def test_a_dyed_sale_comes_off_the_finished_row(self):
+        self._run([self._row(self.dyed, qty=3)])
+
+        self.dyed.refresh_from_db()
+        self.assertEqual(self.dyed.number_on_hand, 7)
+
+    def test_an_undyed_sale_comes_off_the_raw_pile(self):
+        """The bug this class was written for.
+
+        Writing `number_on_hand` on a passthrough writes to the mirror:
+        `save()` re-derives it from the raw row, the number snaps back, and the
+        command reports OK having moved nothing. The reorder signal — the whole
+        reason undyed stock is counted — never moves.
+        """
+        self._run([self._row(self.undyed, qty=2)])
+
+        self.undyed.raw_product.refresh_from_db()
+        self.assertEqual(self.undyed.raw_product.number_on_hand, 10)
+
+    def test_the_undyed_mirror_follows(self):
+        self._run([self._row(self.undyed, qty=2)])
+
+        self.undyed.refresh_from_db()
+        self.assertEqual(self.undyed.number_on_hand, 10)
+
+    def test_it_never_drives_stock_negative(self):
+        self._run([self._row(self.undyed, qty=99)])
+
+        self.undyed.raw_product.refresh_from_db()
+        self.assertEqual(self.undyed.raw_product.number_on_hand, 0)
+
+    def test_a_sale_the_webhook_already_logged_is_skipped(self):
+        """The double-dip guard, and the contract it rests on.
+
+        Square's CSV "Transaction ID" column carries the *order* id — the same
+        value `square_webhook` writes to `sale_reference`. That is what makes it
+        safe to import a period the webhook partly handled. If either side ever
+        keys off something else this fails, which is the point: the symptom
+        otherwise is every already-recorded sale decremented a second time.
+        """
+        InventoryLog.objects.create(
+            finished_product=self.dyed,
+            raw_product=self.dyed.raw_product,
+            log_type=InventoryLog.SALE,
+            quantity=-3,
+            sale_reference="ORDER-1",
+            notes="Square sale via webhook.",
+        )
+
+        output = self._run([self._row(self.dyed, qty=3, txn="ORDER-1")])
+
+        self.dyed.refresh_from_db()
+        self.assertEqual(self.dyed.number_on_hand, 10)
+        self.assertIn("1 duplicate", output)
+
+    def test_running_the_same_export_twice_changes_nothing(self):
+        rows = [self._row(self.dyed, qty=3, txn="ORDER-1")]
+        self._run(rows)
+        self._run(rows)
+
+        self.dyed.refresh_from_db()
+        self.assertEqual(self.dyed.number_on_hand, 7)
+        self.assertEqual(InventoryLog.objects.filter(log_type=InventoryLog.SALE).count(), 1)
+
+    def test_a_dry_run_moves_nothing(self):
+        self._run([self._row(self.undyed, qty=2)], dry_run=True)
+
+        self.undyed.raw_product.refresh_from_db()
+        self.assertEqual(self.undyed.raw_product.number_on_hand, 12)
+        self.assertFalse(InventoryLog.objects.exists())
+
+    def test_a_line_with_no_sku_is_counted_rather_than_dropped(self):
+        """A hand-keyed sale carries no SKU. It can't be recovered here, but
+        an unrecoverable line that says nothing is how the last one went
+        missing."""
+        row = self._row(self.dyed)
+        row["SKU"] = ""
+
+        output = self._run([row])
+
+        self.assertIn("1 skipped (no SKU)", output)
