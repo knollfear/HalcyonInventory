@@ -125,6 +125,11 @@ ALIASES = {
     "Saph": "622 Sapphire Blue",
     "Lilac": "612 Lilac",
     "Em": "629 Emerald",
+    # Not a collision, and that is why it is here. Dharma spells theirs
+    # `408 Teal Green` and Jacquard `631 Teal`, so the stems never clashed and
+    # nothing ever asked — the Jacquard jar was taken silently, which is the
+    # one outcome this table exists to prevent. Same answer, now on purpose.
+    "Teal": "631 Teal",
     # Same "light touch" as the two above: the obvious jar, used sparingly.
     # The formula row for this colourway is named `ecru-Lmauve-brown`, so
     # whoever named it read the page the same way.
