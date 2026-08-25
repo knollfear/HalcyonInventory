@@ -1281,6 +1281,37 @@ in `InventoryLog` as a run of `square_import` rows on a day that normally
 carries `square_webhook` ones, which is `source` doing precisely the job it
 was added for.
 
+### An adjustment is a measurement, not a confession
+
+The `InventoryLog` is **not a record of mistakes to be kept short.** It is the
+only account of how stock actually moves through this shop, and much of that
+movement is genuinely unknown until it shows up there — a hundred scarves
+fancied without a word, a colorway that quietly walks off the rack, a webhook
+that stopped delivering in June.
+
+This has consequences for anything built on top of it, and they run against
+the instinct:
+
+- **Never design to minimise adjustments.** A flow that produces fewer
+  correction rows because it made correcting harder has not improved the
+  stock, it has hidden the movement. Make recording cheap instead — the
+  restock walk's one tap, the fancy page's one number, the close's buttons.
+- **Never put friction in front of one to discourage it.** The Undo button
+  needs no account for exactly this reason: the cost of admitting a mistake
+  is what gets one left unmentioned, and an unmentioned movement is the only
+  kind that is actually lost.
+- **Nothing deletes an `InventoryLog`.** An undone mis-tap keeps both rows,
+  because the wrong number really was live for that window and something
+  could have read it. A ledger that never mentions the excursion answers "why
+  did Square briefly show 50 of these" with silence.
+- **Read it as a dataset, not a scorecard.** `source` exists so the flows can
+  be counted against each other; `closing.tally()` counts what a close put
+  right. Neither is a grade. This sits alongside "absolute counts, never a
+  rate" rather than against it: the rate was refused because a denominator
+  buries the actionable number, not because the numerator is shameful.
+
+The story the log tells is worth more than a tidy one would be.
+
 ### `InventoryLog.source`: provenance you can count
 
 Provenance was already being recorded, in `notes`, as a readable English
