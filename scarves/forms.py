@@ -13,6 +13,7 @@ from .labels import (
 )
 from .models import (  # RecipeDye is the through model
     UNCATEGORIZED_BRAND,
+    DisplayFixture,
     BoothPhoto,
     Dye,
     DyeBrand,
@@ -950,35 +951,164 @@ class CloseStartForm(forms.Form):
         return cleaned
 
 
-def build_close_count_form_class(rows):
-    """One optional number per unanswered row: what the bag actually holds.
+class DisplayFixtureForm(forms.ModelForm):
+    """What a board is called, and what it is for.
 
-    Optional, every one of them, because a close gets interrupted. Somebody
-    counts four bags, the van is loaded, and the rest goes in ten minutes
-    later — so a blank means "not yet", not zero, and only the rows with a
-    number typed in are recorded. A required field here would make the
-    all-or-nothing submission the only one available, which on a phone in a
-    field is the same as no submission.
+    Both live on the editor rather than only in the admin because they are
+    the two things somebody discovers wrong *while looking at the grid* — the
+    board is mislabelled, or the dropdown is offering the wrong blank's
+    colorways — and sending them to a different screen to fix it is how a
+    board keeps a name nobody meant.
 
-    Zero is a real answer and is kept: no tag and no stock means the tag
-    protocol broke rather than the count did, and that is worth recording as
-    the disagreement it is.
+    `raw_product` is a lens, never a restriction: it decides which colorways
+    the dropdown offers first and which ones the board reports as having no
+    home. A board carrying a stray from another blank stays valid, and the
+    editor keeps that stray on the menu so saving can't quietly drop it.
+
+    `capacity_per_position` is here for the same reason — a scarf rack holds
+    one per spot and a pegboard two per hook, and discovering that while
+    looking at the grid is the normal way to discover it. Rows and columns
+    stay in the admin: those change when the furniture does, which is rare,
+    and shrinking a board is worth doing somewhere more deliberate.
     """
-    fields = {
-        f"counted_{row.pk}": forms.IntegerField(
+
+    class Meta:
+        model = DisplayFixture
+        fields = ("name", "raw_product", "capacity_per_position")
+        labels = {
+            "name": "What this board is called",
+            "raw_product": "The blank it carries",
+            "capacity_per_position": "How many fit on one peg or spot",
+        }
+        help_texts = {
+            "raw_product": (
+                "Leave blank for a mixed board. Setting it scopes the "
+                "dropdowns and turns on the 'colorways with no home' report."
+            ),
+            "capacity_per_position": (
+                "Two-skein hooks on the yarn board; one per spot on a scarf "
+                "rack. Changing it recalculates every colorway's display "
+                "capacity on this board, which is what the Sunday close "
+                "reads. It is a ceiling, never a production target — a bigger "
+                "hook is somewhere to put stock, not a reason to make more."
+            ),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["raw_product"].queryset = RawProduct.objects.filter(
+            is_active=True
+        ).order_by("name")
+        self.fields["raw_product"].empty_label = "— mixed board —"
+
+
+class RestockPassForm(CloseStartForm):
+    """Who is making the promise that the display was filled.
+
+    Same name-and-PIN pair as the close, and the same degradation for a staff
+    login, because it is the same crew on the same phones. What differs is
+    what the signature is *for*: the close attributes a stock correction,
+    this attributes a completed task. "The board was full at four, and Sam
+    says so" is the whole output of a restock pass, and it is worth nothing
+    without the name on it.
+    """
+
+
+class CloseCountFormBase(forms.Form):
+    """Shared cleaning for the per-row count fields built below.
+
+    Two controls per row and one number out of them. The buttons cover the
+    whole of the ordinary case — a tag in hand means the bag is empty, so the
+    answer cannot exceed what the display holds — and the box is there for the
+    rows where it can: no tag, display refilled, and some left over.
+    """
+
+    #: Row pks this instance was built for, filled in by the factory.
+    row_slots = {}
+
+    def counts(self):
+        """`{row_pk: total}` for every row somebody actually answered.
+
+        Rows nobody has reached yet are simply absent, which is what keeps a
+        half-finished close half-finished instead of recording zeros for the
+        part that hasn't been counted.
+        """
+        out = {}
+        for pk in self.row_slots:
+            picked = self.cleaned_data.get(f"counted_{pk}")
+            typed = self.cleaned_data.get(f"more_{pk}")
+            if picked and picked != "more":
+                out[pk] = int(picked)
+            elif typed is not None:
+                # Reached either by tapping "more" or by typing in the box
+                # without tapping anything. The second is a thumb on a phone
+                # and means exactly what it looks like, so it is taken rather
+                # than rejected for the missing tap.
+                out[pk] = typed
+        return out
+
+    def clean(self):
+        cleaned = super().clean()
+        for pk in self.row_slots:
+            if cleaned.get(f"counted_{pk}") == "more" and cleaned.get(f"more_{pk}") is None:
+                self.add_error(
+                    f"more_{pk}",
+                    "Tapped 'more' — type how many there are altogether.",
+                )
+        return cleaned
+
+
+def build_close_count_form_class(rows):
+    """One count per unanswered row: how many of these are actually here.
+
+    **The count is the total** — everything on the display plus whatever is
+    left in the bag once the display has been filled. One question for all
+    three situations the close puts somebody in, because the physical act
+    differs but the quantity being reported does not, and a form that asks
+    two different questions depending on what is in your hand is a form
+    somebody answers in the wrong box.
+
+    Buttons rather than a keyboard, numbered up to what the display holds.
+    That range is not decoration: holding the tag means the bag is empty, so
+    the answer is bounded by the display, and a count that runs past the last
+    button is itself the news that there was stock in the bag after all. The
+    box handles that case and nothing else.
+
+    Every field is optional, because a close gets interrupted. Somebody
+    counts four products, the van is loaded, and the rest goes in ten minutes
+    later — so a blank means "not yet", not zero, and only the rows with an
+    answer are recorded. Required fields here would make the all-or-nothing
+    submission the only one available, which on a phone in a field is the
+    same as no submission.
+
+    Zero is a real answer and is kept. It means the display is empty and the
+    bag behind it is too, which is worth recording as the disagreement it
+    usually is.
+    """
+    fields = {}
+    slots_by_pk = {}
+    for row in rows:
+        slots = row.display_slots or 0
+        slots_by_pk[row.pk] = slots
+        fields[f"counted_{row.pk}"] = forms.ChoiceField(
+            required=False,
+            choices=[(str(n), str(n)) for n in range(slots + 1)] + [("more", "more…")],
+            widget=forms.RadioSelect,
+            label=row.finished_product.name,
+        )
+        fields[f"more_{row.pk}"] = forms.IntegerField(
             required=False,
             min_value=0,
             max_value=9999,
-            label=row.finished_product.name,
+            label="How many altogether",
             widget=forms.NumberInput(attrs={
                 "inputmode": "numeric",
                 "min": 0,
-                "placeholder": "count",
+                "placeholder": "total",
             }),
         )
-        for row in rows
-    }
-    return type("CloseCountForm", (forms.Form,), fields)
+    fields["row_slots"] = slots_by_pk
+    return type("CloseCountForm", (CloseCountFormBase,), fields)
 
 
 class CrewHandbookForm(forms.Form):

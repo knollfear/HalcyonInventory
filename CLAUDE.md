@@ -754,60 +754,401 @@ hand-keyed price, which carries no `catalog_object_id` at all — so every one
 landed in `private/unidentified-sales/` (or, before that existed, vanished).
 Selling them as real variations fixes that at the source.
 
-## The Sunday close: the app's zeros against the tags in hand
+## Display capacity is not demand
 
-`secret/close/` is the end-of-weekend check. The app says which products are
-out; the crew are holding a kanban tag for each one that really is. Three
-answers, and the two disagreements are the output:
+The northstar for everything below, and the thing most likely to be undone by
+a well-meaning change.
 
-| App | Tag  | Means                                              |
-|-----|------|----------------------------------------------------|
-| 0   | held | agree — genuinely out, nothing moves               |
-| 0   | not held | app **undercounts**: count the bag, true it up |
-| n>0 | held | app **overcounts**: adjust to zero                 |
+**The app tracks total stock. Backstock is derived and never stored.**
+`FinishedProduct.number_on_hand` counts what is hanging on the display *and*
+what is in the bag behind it, together, so that moving a skein from bag to peg
+changes nothing anywhere. `display_slots` says how many homes a product has
+when the display is full — pegs times what a peg holds, or spots on the pole —
+and `backstock` is `number_on_hand - display_slots`, read rather than recorded.
 
-`scarves/closing.py` holds all of it. Only the middle row asks anybody for a
-number; the other two are a tick and a search result.
+The reason is a failure that was actually happening. Store a backstock number
+and the shop's own furniture starts ordering dye baths: build a new rack, fill
+it from the bags, and a backstock tracker reads empty and calls for
+production, when nothing sold and the stock simply moved across the stall. The
+display grows every year. Every year that growth billed itself as demand and
+got paid for in dyeing — seven to nine weeks of it, at the pace of whatever
+sold that week.
 
-**Zero is the trigger because the clamp makes it one.** `number_on_hand`
-clamps at zero on every sale, so a row undercounted all season eventually
-funnels into that one unambiguous state — the clamp turns a diffuse error
-into a discrete list. The work is self-limiting, and it verifies at the point
-of consequence, since zero is what leads the production sheet and sends
-somebody to the dye room.
+Three rules follow, and they are load-bearing:
 
-**The extra tag is the half the zero-trigger can never find.** An overstated
-row never reaches zero to be checked, which is exactly the shape a swapped
-sale leaves behind. It is also a **webhook health check**: a dropped sale
-physically becomes an extra tag about a week later, so a dead integration
-shows up here with no cross-check against Square at all.
+- **Par is the production trigger, and par is about demand.** Nothing derives
+  production from display capacity, and nothing here writes par.
+- **Par is held fixed. It never moves because the shop got a new rack, table
+  or pegboard.** Raising a product's par is still how you ask for more of it,
+  but it is a rare, deliberate, evidence-backed decision about *that
+  product's* demand — years of data showing rainbow scarves sell as fast as
+  they can be made. Not a response to furniture.
+- **A hole in the display is not a make-more signal.** `display_hole` exists
+  and nothing consumes it. A hook that holds four is worth having precisely so
+  that three is allowed to be enough; wiring the gap to a dye bath puts
+  capacity straight back on the path to production. It is a merchandising
+  reading — and once the display is mapped, a way to see a bare peg from a
+  desk instead of by walking the stall.
+
+The goal all of this serves is **a flat year rather than a fast week**:
+pre-dyeing as much of a season as possible instead of dyeing each week what
+sold in the last one. Anything that makes production react to this week's
+sales is a regression, whatever else it improves.
+
+Two things are deferred on purpose and should stay that way until they're
+asked for. Par today bakes in display plus backstock; decomposing it into
+expected sales plus a desired buffer is a real question and today's answer
+works. And stock will eventually be **geographically scattered** — a storage
+locker, online fulfilment — so don't bake in the assumption that one number
+describes one place.
+
+## Fancy veils: countable, not plannable
+
+A fancy veil is an already-dyed scarf with extra line work added. It costs
+more, and more to the point it is often what makes the sale. Two things about
+it break assumptions the rest of the app is built on.
+
+**It has a colorway and still cannot be dyed into existence.** Undyed
+passthroughs drop off every production query by construction — a null recipe
+fails the dyed-only test each of them makes — but a fancy veil *is* a
+colorway, so it sails straight through. Hence
+`RawProduct.made_in_a_dye_bath`, set False on the blank, checked in
+`production.candidates()`, `production_needed_view` and
+`card_backfill_index`. Sending somebody to the dye room for one is asking for
+a thing that isn't made there.
+
+Not a category. Category means "which table at the stall" — that is why
+reference sheets print per category — and forking it to express "can't be
+dyed" breaks the day a fancy *shawl* exists, silently, on the dye list. Same
+argument the undyed yarns already settled.
+
+**There is no par, because supply is opportunistic**: they get made when
+there is time and inclination, and you take what you can get. Par means
+"produce until you reach this", so any number here would be a plan nobody is
+going to follow, and a production list built on it would be fiction. `par = 0`
+is the honest value and the app already reads it as "no par set".
+
+**What replaces it is a display, not a plan.** This is the distinction worth
+holding onto, because getting it wrong is what cost the project a hundred
+units: fancy veils resisted *production planning* correctly, and that
+resistance then generalised into not tracking them at all. They are perfectly
+countable. They hang on a board, they get walked, and the Sunday close asks
+about them — which works precisely because `expected_products()` gates on
+`display_slots > 0` rather than on par.
+
+So the supply stays unplannable and the **demand becomes answerable**: sales
+land in `InventoryLog` like everything else, and at the end of a season "what
+did fancy sell" is a query.
+
+### And the supply turns out to be answerable too — retroactively
+
+`private/fancy/` records a conversion: one colorway goes down on its plain
+blank, its fancy counterpart goes up, two `InventoryLog` rows tagged
+`fancy_conversion` carrying the same sentence from opposite sides.
+
+That is the **one part of fancy worth systematising** — not the planning, the
+event. And it pays off twice, because every fancy veil that exists came from
+somewhere: **the conversion rows are the fancy production history.** You still
+cannot forecast how many you will get, but "how many did we fancy this season,
+and in which colorways" stops being a guess. `source` doing its job again.
+
+**The page is optional and must stay optional.** An unrecorded conversion
+still heals — plain side overcounts at its peg, fancy side undercounts at
+its — which is exactly what makes it safe to offer rather than demand. A
+backstop is not a reason to make recording hard, and a required form is the
+thing that produces no form.
+
+**Converting more than the app believed is allowed, and reported.** Five
+really did get line work put on them; the plain count was wrong before anybody
+touched it. So the plain side floors at zero, the fancy side gets all five,
+and the discrepancy comes back as a warning — refusing would protect a wrong
+number and destroy the only evidence about it.
+
+**Designs are not a dimension.** A few patterns times a few accent colours
+times forty colorways is not a catalogue anybody can enumerate, and it is the
+fiber-field failure exactly. The axis stays blank × colorway; which pattern is
+stitched on a given scarf is a property of that object. If designs must differ
+in price, add a **tier** as another blank (Extra Fancy Veil) — finite, and
+chosen. `FinishedProduct.is_fancy` was dropped in migration 0029 for this
+reason: a boolean cannot carry a price, and it was one well-meaning afternoon
+away from becoming the design dimension.
+
+## Self-healing, and eventually concurrent
+
+The governing assumption for anything that moves stock: **nobody will
+document the movement, and the system has to be right anyway.**
+
+The worked case is fancying. Roughly a hundred scarves left plain stock to
+have extra line work added, turning them into Fancy Veils — a different
+product, a higher price, and the thing that makes the sale. Not one of those
+transfers was recorded. The obvious fix is a transfer form; what a transfer
+form actually produces is no form *and* the same hundred scarves, because the
+discipline it depends on is the discipline that was already missing.
+
+So neither half is asked for. Each heals on its own:
+
+- the **plain colorway** shows up as an overcount — its peg won't fill, or
+  fills at zero — on a restock walk or as an extra tag at the close;
+- the **Fancy Veil** shows up as an undercount, when more turns up on its own
+  peg than the app expects, possibly weeks later and on a different board.
+
+The two never meet, and they do not have to. This is *eventually concurrent,
+not guaranteed concurrent*: two independent absolute counts converging over
+passes, rather than one transaction that has to be right at the moment it
+happens.
+
+**Which is why corrections are absolute counts, never deltas.** "There are two
+of these" heals regardless of what went unrecorded in between; "take two off"
+only works if everything before it was right. `record_count`, `record` and
+`set_on_hand` all take a total for this reason.
+
+**The rule that follows: never add a step that has to be remembered to be
+correct.** A flow that only works when somebody does the extra thing does not
+work — it just fails somewhere less visible, and usually silently. If a
+movement can go unrecorded, assume it will, and make sure something later
+counts the pile.
+
+## Restocking the display: the promise, and why it comes first
+
+`secret/restock/` is the operational half of the display, and it is **not** a
+smaller version of the close. A restock is a **repeatable promise that a task
+was completed** — the board is full — made at open, at close, and at minimum
+at the end of every shift. It has no end date. The close trues the card pile
+against what the app expected and exists only while the electronic system is
+earning trust; it should get *less* important over time, not more.
+
+**Restocking generates the cards, so it runs before the close.** The crew keep
+a product's kanban tag when the last of it leaves the bag to fill a peg. If
+restocking was behind all day, most of the evening's cards don't exist until
+somebody walks the board — and a close run first is checking against a pile
+that hasn't finished being made, where every late card reads as an unpredicted
+tag.
+
+**The app predicts the shortage; the paper confirms it.** Knowing you can't
+fill Aegean Sea comes from `number_on_hand < display_slots`, never from
+reading the card pile. Driving the walk off the cards would collapse two
+measurements into one, and then a disagreement between them means nothing.
+Same shape as `colorbands` and the sheet scanner: the app fills the form in, a
+person decides.
+
+### The board, and what one tap means
+
+`DisplayFixture` is a grid plus `capacity_per_position`; `DisplayPosition` is
+one peg. Orientation is data — whether the yarn board reads 6×7 or 7×6 is a
+thing to check against the wall, not to decide in code. A position with a
+`reserved_label` and no product is **not a home** (the price tag sits in the
+middle of the top row), which is deliberately distinct from a real peg nobody
+has assigned yet.
+
+`expected_fill` is `min(stock, capacity)`, greedy in position order — what a
+person does, filling the first peg then the next until the bag runs out.
+Spreading evenly would ask for a gap on every peg of a colorway instead of a
+gap on the last one.
+
+**A tap confirms "as predicted", and a peg the app knows is empty still gets
+tapped.** You did the job; the walk confirmed it. Treating an expected gap as
+an exception would make an ordinary evening read as a list of problems.
+
+**Every number on a tile is a checkable claim.** A peg says what to put out
+and what the bag should hold afterwards (`on_hand - display_slots`), never a
+total — a total needs the peg counted, the bag counted and the two added,
+which is not something anybody falsifies at a glance. The bag figure is read
+straight off the bag as the work finishes, so a tap confirms both halves of
+the app's belief rather than only the visible one.
+
+**The finding that actually happens is "it says the bag has some, and the bag
+is empty."** Nobody counts a bag of twelve reliably and nothing asks them to.
+An empty bag is different in kind: noticed without counting, constant, and
+exact. So it is the one-tap exception — and "couldn't fill the peg" is a
+*special case* of it rather than a second finding, because a peg cannot fail
+to fill unless the bag ran out.
+
+An empty bag bounds the total at what the pegs hold, so every answer where the
+bag ends up empty is a button (0, 1 or 2 on a two-skein hook), and past that
+there is a bag and no ceiling, so it is typed.
+
+**Both controls mean the same thing — how many there are altogether — and the
+app splits it**: pegs first, remainder to the bag. That is what a person does
+with an armful of skeins.
+
+Worth knowing what this replaced, because the wrong version reads perfectly
+well. The box used to ask "how many are in the bag" and add `display_slots` on
+— which assumes the peg started full. A peg at **1 of 2** breaks it: what you
+find goes *onto the peg*, the bag stays empty, and the total comes out one
+over. Asking the total and deriving the halves has no such gap.
+
+**Direction is never a button**:
+it is the sign of the delta, because a button naming it could disagree with
+the number typed under it and then one of them is wrong with nothing to say
+which.
+
+**Adjustments are per product, never per peg.** A colorway on three pegs
+raises one correction; by the second peg there is nothing left to fix, which
+is why a repeat is a no-op rather than three adjustments for one discovery.
+
+### It is not a task master
+
+**A walk covering 23 of 40 pegs is accepted whole, and nothing scores it.**
+Refusing it loses 23 real answers or buys 17 manufactured ones from somebody
+tapping through a validator — far more expensive than the peg nobody looked
+at. Unanswered pegs keep their older baseline, which `last_walked` handles per
+position.
+
+**Nothing counts walks, tracks a skipped peg, or reports completeness.** How
+often a board gets restocked measures nothing worth knowing — five passes in
+five minutes is a good afternoon — and there is deliberately no "17 still to
+do" anywhere. `RestockPassAdmin` is read-only and a pegs-per-hour column would
+change what the page is for.
+
+**A full check is also the reset**, and that is by design: every peg gets a
+fresh baseline, so every badge clears at once. It is what open and close are
+for, and it is also the honest way to quiet a board that has got noisy.
+
+Which is why there must be **no "check all" button.** A full check is the only
+claim on this page anybody could make falsely — tap everything, the board goes
+quiet, and nothing was walked. What stops that is that it costs forty
+individual taps with a name attached. One button would make the same claim
+free, and it is precisely the convenience somebody reasonable asks for after
+the third morning. The cost *is* the evidence.
+
+The one thing said out loud is `_drained_at`: **a peg reckoned to have run
+bare while stock is still behind it**, shown as plain elapsed time with no
+threshold and no escalation. That is yarn that could be selling and isn't,
+which is the only version anybody cares about. Whether an hour matters depends
+on how busy the stall is and whether anyone is free — neither of which the app
+can see — so it states the fact and a person decides. Same rule `colorbands`
+follows.
+
+### No JavaScript, and no htmx either
+
+A tile is a `<label>` wrapping a checkbox and the tick shows through
+`:has(input:checked)` — the same mechanism as the close's count buttons and
+the booth form's reason toggle. A tap-per-peg htmx call would put a network
+round-trip behind each of forty-odd interactions on a phone at a stall on one
+bar, and a tap that silently fails to reach the server is a peg somebody
+believes they reported. One form, saved whenever, saved partially as often as
+they like. An unticked peg is "not walked yet", never "empty".
+
+The **map editor** is the exception. Drag-and-drop over the picture is a desk
+job on wifi, and that is where JavaScript earns its keep — the no-JS rule is
+about the field, not about the app. Until then the grid is hand-built in the
+admin inline, because the board gets built once and then barely changes.
+
+### `display_slots` is written by the map
+
+The map is the source; `display_slots` is what everything reads. One writer —
+a `post_save`/`post_delete` signal on `DisplayPosition` — rather than two
+numbers that agree until somebody edits one. Same bargain `save()` makes with
+SKUs.
+
+A product on no fixture keeps whatever capacity it had rather than being
+zeroed, because zero means "never goes on display" and would quietly drop it
+off the close, which is a different claim from "nobody has mapped this yet".
+
+### Which colorways belong on a board is the mapper's call
+
+`unmapped_for` lists a board's blank's colorways that have no home anywhere,
+and it appears **on the editor and nowhere else** — not on the crew's board,
+not on the picker. Deciding what ought to hang on a board is somebody's
+decision, and putting that list in front of the crew tells the wrong people
+about work they have no part in while quietly asserting the app knows what
+should be there.
+
+A **mixed board gets nothing at all.** Without a blank there is no such
+question to answer, and inventing one would be the app claiming
+responsibility nobody gave it — the scarf rack is a row per scarf type, and
+which colorways belong on it is not derivable.
+
+It is offered rather than warned about: colorways with none on hand are
+tagged as such, because "hang it" and "dye some first" are different jobs.
+
+## The Sunday close: the app's empty bags against the tags in hand
+
+`secret/close/` is the end-of-weekend check. The crew keep a product's kanban
+tag when the last of it leaves the bag and goes onto the display — **a
+statement about the bag, not the shelf.** The app's version of the same
+statement is `number_on_hand <= display_slots`, and that is what puts a product
+on the list.
+
+Three situations, one shape of answer:
+
+| Situation             | The act                                  | The number   |
+|-----------------------|------------------------------------------|--------------|
+| tag in hand           | bag's empty — count the display          | `0 … slots`  |
+| no tag                | **fill the display**, then count the bag | `slots + rest` |
+| tag nobody predicted  | count the display, same as the rest      | `0 … slots`  |
+
+`scarves/closing.py` holds all of it. **Every answered row is a count and the
+count is the total.** The tag is no longer the answer; it is what puts the
+product in front of somebody. On a phone that costs about what a tick cost,
+because the buttons only run as high as the display holds — and a count that
+runs past the last button *is* the news that there was a bag after all, which
+is the only thing the free-text box is for.
+
+**This replaced "tag in hand means set it to zero", which wrote off the one to
+three units still hanging on the pegs.** That is the mechanism in the section
+above, wearing its everyday clothes: do it all season and stock moving from
+bag to peg reads as sales. `test_counting_the_display_does_not_write_off_what_is_hanging_there`
+is the pin.
+
+**Filling the display is part of the count, not a separate chore.** The
+restocking and the measurement are the same act, which is what makes the
+no-tag answer honest and what leaves the stall full for next weekend. It is
+also why this is a *closing* task: the ritual is what makes `number_on_hand <=
+display_slots` mean "the bag is empty" all through the following weekend.
+
+**The outcome is the sign of `counted - on_hand_before`**, not what was in
+whose hand. So a predicted row can come out as an overcount, and an
+unpredicted tag can turn out to agree. Whether a row was predicted is a
+separate axis, `CloseRunRow.added_by_tag`, and conflating the two used to put
+the wrong thing into the one number this page produces.
+
+**The trigger catches drift earlier than the old one did.** Zero used to be
+the trigger because the sale clamp made it discrete. Now a drifting row is
+caught when it crosses into the display band — while the pegs are still full
+— rather than once the shelf is bare. The clamp is still there as a backstop.
+
+**An overcount is the half the trigger can never find on its own.** An
+overstated row never falls into the band to be checked, which is exactly the
+shape a swapped sale leaves behind. The unpredicted tag is what finds it, and
+it doubles as a **webhook health check**: a dropped sale physically becomes a
+tag in somebody's hand about a week later, so a dead integration shows up here
+with no cross-check against Square at all.
+
+**`display_slots` is gated on, `par` is not.** Par is a production number and
+has no business deciding what gets audited — a colorway nobody plans to make
+again can still be on the pegs this weekend. Zero slots means it never goes on
+display, so no tag will ever come up for it and the close leaves it alone.
 
 **Absolute counts, never a rate.** Ten corrections in a weekend is ten
 corrections whether the list was twelve products long or two hundred.
 Nothing computes `4 / 50`, because putting the reassuring number beside the
 actionable one is how the actionable one stops being read. The agreements are
-stored — a ticked row has to stop coming back at somebody working down a pile
-— but they are not a denominator, and `tally()` deliberately has no `rate`
-key. The two directions are also never summed: a bad intake would cancel out
-a dead webhook.
+stored — an answered row has to stop coming back at somebody working down a
+pile — but they are not a denominator, and `tally()` deliberately has no
+`rate` key. The two directions are also never summed: a bad intake would
+cancel out a dead webhook. **And there is no key for displays left short**,
+for the reason in the section above: a number here would be acted on whatever
+the caption said.
 
-**A tag for a product already at zero is an agreement, not an extra.** A
-product can be at zero and still miss the expected list (`par` of 0), and
-filing its tag as an overcount would put a fault into the one number this
-page produces — in the direction that reads as "the till is losing sales".
-`closing.add_tag` checks the live count and records `confirmed` instead.
+**An unpredicted tag moves nothing on its own.** It adds the row and stops;
+the same count everything else gets is what settles it. The old version
+adjusted straight to zero on the strength of the tag, and needed a special
+case for "already at zero, so the tag agrees" to avoid booking a fault in the
+direction that reads as "the till is losing sales". Nothing is guessed at any
+more, so the special case is gone.
 
-**A tick comes back off, and so does a correction — but by different means.**
-Confirming a row moves no stock, so unticking it just returns it to the count
-list. The worked case is a bag turning up under the table at seven that was
-confirmed gone at four.
+**An agreed answer comes back off, and a correction doesn't — by different
+means.** A row counted at exactly what the app already believed moved no
+stock, so it stays open all evening and a new number simply replaces it. The
+worked case is a bag turning up under the table at seven that was counted as
+gone at four.
 
-A row that *moved* stock is reversed by an explicit **Undo** button, not by
-unticking. Two separate reasons for that split. Step one's submit unconfirms
-every row it doesn't see ticked, so if unticking reversed movements, a second
-pass through the list would silently take stock back out — an undo has to be
-something somebody meant. And the reversal needs to write a compensating
-entry, which a checkbox sweep has no way to express.
+A row that *moved* stock is reversed by an explicit **Undo** button, never by
+retyping. The reversal has to write a compensating entry, which a number typed
+over the top of another has no way to express — and an undo has to be
+something somebody meant rather than a side effect of working down the list
+again.
 
 **Undo needs no account, and that is the point.** The rule here used to be
 that a movement could only be reversed through a bulk inventory adjustment —
@@ -839,7 +1180,7 @@ being counted.
 `CloseRun.day` is unique. Reopening the page the same evening lands back in
 the same run and picks up where it stopped, which is what the job needs — it
 happens in a car park in the dark and gets interrupted. Come back tomorrow
-and nothing on that day can be ticked, counted or adjusted; a correction goes
+and nothing on that day can be counted or adjusted any more; a correction goes
 through `private/bulk-inventory/` with a reason attached.
 
 There is deliberately **no finish button**, because the button is exactly
@@ -860,11 +1201,14 @@ o'clock, seven, and once more before leaving — rather than in one sitting.
 That is the usage the row states and the growing list are shaped around, and
 it is what caught the prefetch bug below.
 
-**The expected list only ever grows.** `sync_expected` folds in new zeros
-each time the page is opened, so a close started at noon still asks about the
-scarf that sold out at four. Rows already on the run are never removed or
+**The expected list only ever grows.** `sync_expected` folds in newly emptied
+bags each time the page is opened, so a close started at noon still asks about
+the scarf whose bag ran out at four. Rows already on the run are never removed or
 rewritten — `on_hand_before` is what the disagreement was measured against,
-and re-reading it would read back the number this close already corrected.
+and re-reading it would read back the number this close already corrected. A
+row freezes `display_slots` for the same reason the production sheet freezes
+its bath size: the buttons said "0, 1 or 2" because that is what the pegs held
+that night.
 
 **Read the rows live — don't `prefetch_related` them on the way in.** The
 sync adds rows *after* the run is fetched, so a prefetch cache built at that
@@ -898,8 +1242,8 @@ on a timer, check it can't fire between the weekend and the close.
 Run `import_square_sales` **before** any physical true-up, never after.
 
 The worked case is a day the webhooks were down while Square itself was fine:
-no sales recorded, nothing zeroes out, and the crew finish the day holding a
-fistful of tags for products the app still believes are in stock. The
+no sales recorded, no bag ever reads as empty, and the crew finish the day
+holding a fistful of tags for products the app still believes have backstock. The
 recovery is import first, then close — and `WebhookOutageRecoveryTests` pins
 both halves of what happens if you don't.
 
@@ -912,8 +1256,8 @@ never told an order id. Teaching it to guess would mean suppressing a real
 sale whenever the guess was wrong, which is the more expensive error.
 
 One consequence worth expecting: done in the right order, a catastrophic day
-shows **zero disagreements** on the close, because the import zeroed
-everything out before anyone ticked a box. The incident is not lost — it is
+shows **zero disagreements** on the close, because the import had already
+booked the sales before anyone counted a peg. The incident is not lost — it is
 in `InventoryLog` as a run of `square_import` rows on a day that normally
 carries `square_webhook` ones, which is `source` doing precisely the job it
 was added for.

@@ -160,7 +160,6 @@
                 <td>
                   {{ p.name }}
                   {% if not p.is_active %}<span class="muted small">· retired</span>{% endif %}
-                  {% if p.is_fancy %}<span class="muted small">· fancy</span>{% endif %}
                   <div class="ref">{{ p.sku|default:"" }}</div>
                 </td>
                 <td>{{ p.raw_product.name }} <span class="muted small">{{ p.raw_product.category.name }}</span></td>

@@ -143,6 +143,10 @@ def candidates(category=None, include_overshoot=False):
             # sheet would put "4 × " with no colorway on it and send somebody
             # to the dye room to make something that arrives in a box.
             recipe__isnull=False,
+            # Fancy veils are dyed scarves with extra line work added, so
+            # they carry a colorway and slip past the test above. You cannot
+            # answer a shortage of one by dyeing.
+            raw_product__made_in_a_dye_bath=True,
         )
         .select_related("raw_product", "raw_product__category", "recipe")
         # The dye plan walks every recipe on the sheet; without this it is a

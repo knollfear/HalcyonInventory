@@ -174,6 +174,33 @@ urlpatterns = [
         name="production_run",
     ),
 
+    # --- Converting plain scarves to fancy ones ---
+    # The one part of fancy that is worth systematising: not the production
+    # (supply is opportunistic), but the conversion event, by colorway.
+    path("private/fancy/", views.fancy_convert, name="fancy_convert"),
+
+    # --- The display map (staff: what hangs where) ---
+    # Editing the map is a desk job and a staff decision, so it is private/
+    # and separate from the restock pages: saving an assignment must never
+    # read as somebody having checked a peg.
+    path("private/display/", views.display_map_index, name="display_map_index"),
+    path(
+        "private/display/<int:fixture_id>/",
+        views.display_map,
+        name="display_map",
+    ),
+
+    # --- Restocking the display ---
+    # Restocking generates the kanban cards, so it comes *before* the close —
+    # a close run first is checking against a pile that hasn't finished being
+    # made. See scarves/restock.py.
+    path("secret/restock/", views.restock_index, name="restock_index"),
+    path(
+        "secret/restock/<int:fixture_id>/",
+        views.restock_board,
+        name="restock_board",
+    ),
+
     # --- The Sunday close ---
     # Whoever is holding the physical tags runs this, in a car park, on one
     # bar of signal — so it is secret/ and a PIN, the same bargain the hours

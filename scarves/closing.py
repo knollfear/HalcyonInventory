@@ -1,31 +1,46 @@
-"""The Sunday-night close: the app's zeros, read against the tags in hand.
+"""The Sunday-night close: the app's empty bags, read against the tags in hand.
 
-Stock at zero is the one state the app is confident about. `number_on_hand`
-clamps there on every sale, so a row that has been undercounted all season
-eventually funnels into it — the clamp turns a diffuse error into a discrete
-list. And the crew keep a product's tag when the last of it goes out to
-display, so the paper emits its own zero signal independently. Two systems,
-one physical pile, and this is where they are read against each other while
-the bags are still in the van.
+The crew keep a product's kanban tag when the last of it leaves the bag and
+goes onto the display. **That is a statement about the bag, not the shelf.**
+There are still one to three units hanging on the pegs, and the close's old
+reading — tag in hand means set it to zero — deleted them.
 
-Three answers per product, and the two disagreements are the point:
+Which mattered far more than a few miscounted skeins. Once display stock is
+invisible, an inventory tracker is really a backstock tracker, and a backstock
+tracker lets the shop's own furniture order dye baths: fill a newly built rack
+out of the bags and the app sees a weekend of sales that never happened. Every
+year the display grows, and every year that growth billed itself as demand and
+got paid for in dyeing. `number_on_hand` counts display and backstock together
+so that moving a skein from bag to peg changes nothing at all.
 
-    tag in hand, app says 0     agree — genuinely out
-    no tag, app says 0          app **undercounts**: count the bag, true it up
-    tag in hand, app says n>0   app **overcounts**: adjust to zero
+So the app's version of "the bag is empty" is `number_on_hand <=
+display_slots`, and that is what puts a product on the list. Three situations,
+one shape of answer:
 
-The second is the only one anybody types a number for. The third is what the
-zero-trigger can never find on its own, because an overstated row never
-reaches zero to be checked — which is exactly the shape a swapped sale leaves
-behind, and exactly what a webhook that has quietly stopped delivering looks
-like a week later.
+    tag in hand              bag's empty — count the display        0 … slots
+    no tag                   fill the display, count the bag        slots + rest
+    tag nobody predicted     app overcounts — count the display     0 … slots
 
-**The expected list only ever grows.** New zeros are folded in each time the
-page is opened, because a scarf selling out at four o'clock has to reach the
-list that gets worked at seven; but a row already on the run is never removed
-or rewritten, so nothing shifts under somebody part-way down a pile. That
-matters more than it sounds: a row that quietly disappeared would read as one
-already checked and passed over.
+**Every answered row is a count, and the count is the total.** The tag is no
+longer the answer; it is what puts the product in front of somebody. The
+outcome is the sign of `counted - on_hand_before`, which is why a predicted
+row can come out as an overcount and an unpredicted tag doesn't have to — see
+`CloseRunRow.added_by_tag` for why those are two axes and not one.
+
+**Display capacity is not a production target.** Nothing here reports how many
+displays came up short, and `tally()` deliberately has no key for it. A hook
+that holds four is worth having precisely so that three is allowed to be
+enough; a number on this page counting the gap would be acted on whatever the
+caption said, and would put back the coupling the whole rebuild removes. Par
+stays the production trigger, par is about demand, and par does not move
+because the shop got a new rack.
+
+**The expected list only ever grows.** New rows are folded in each time the
+page is opened, because a scarf whose bag empties at four o'clock has to reach
+the list that gets worked at seven; but a row already on the run is never
+removed or rewritten, so nothing shifts under somebody part-way down a pile.
+That matters more than it sounds: a row that quietly disappeared would read as
+one already answered and get passed over.
 
 **A run is a calendar day, and yesterday's is closed.** Everything here
 refuses to touch a run that isn't today's, so the guard holds whether the
@@ -39,17 +54,24 @@ rewords a message.
 """
 
 from django.db import transaction
+from django.db.models import F
 from django.utils import timezone
 
 from .models import CloseRun, CloseRunRow, FinishedProduct, InventoryLog
 
 
 def expected_products():
-    """Everything the app believes is out, and therefore should have a tag.
+    """Everything whose bag the app believes is empty, so a tag should exist.
 
-    The same shape as the front of `production_needed_view` — below par with
-    the zeros first — narrowed to the zeros themselves, which is the only
-    part a tag says anything about.
+    `number_on_hand <= display_slots` is the app saying every unit it knows
+    about is hanging on the display. That is the same claim the crew make by
+    holding the tag, which is what makes the two comparable.
+
+    Gated on having a display at all rather than on `par`, which is what used
+    to gate it. A product with no display slots never goes out on the stall,
+    so no tag will ever come up for it and asking would be asking about a
+    pile nobody can see. Par is a production number and has no business
+    deciding what gets audited.
 
     Passthroughs are excluded by the null-recipe test they always fail: an
     undyed skein is ordered rather than made, its count lives on the raw
@@ -58,8 +80,8 @@ def expected_products():
     return (
         FinishedProduct.objects.filter(
             is_active=True,
-            number_on_hand=0,
-            par__gt=0,
+            display_slots__gt=0,
+            number_on_hand__lte=F("display_slots"),
             recipe__isnull=False,
         )
         .select_related("raw_product", "recipe")
@@ -87,12 +109,14 @@ def run_for_today(employee=None):
 
 
 def sync_expected(run):
-    """Fold any product that has since hit zero into the run. Adds only.
+    """Fold in any product whose bag has since emptied. Adds only.
 
     Called on the way into the page rather than at creation, so a close
-    started at noon still asks about the scarf that sold out at four. Rows
-    already on the run are left exactly as they are — including their frozen
-    `on_hand_before`, which is what the disagreement was measured against.
+    started at noon still asks about the scarf whose bag ran out at four.
+    Rows already on the run are left exactly as they are — including their
+    frozen `on_hand_before` and `display_slots`, which are what the
+    disagreement was measured against and what the question was asked in
+    terms of.
     """
     if not run.is_open:
         return []
@@ -103,6 +127,7 @@ def sync_expected(run):
             run=run,
             finished_product=product,
             on_hand_before=product.number_on_hand,
+            display_slots=product.display_slots,
         )
         for product in expected_products()
         if product.pk not in already
@@ -118,49 +143,40 @@ def is_frozen(run, row) -> bool:
     Two ways to be settled. **The day is over** — yesterday's close is a
     record, and every answer on it is final whatever it was. Or **stock has
     moved**, which is permanent even today: taking a movement back is an
-    inventory adjustment with a reason on it, not a re-tick of a box on a page
-    with no login.
+    explicit Undo that writes a compensating entry, not a number retyped over
+    the top of one that already moved the shelf.
 
-    A row that is merely *confirmed* moved nothing, so within the day it stays
-    open to correction — a mis-tapped tick on a list of twenty is an ordinary
-    mistake, and letting it back costs nothing.
+    A row counted at exactly what the app already believed moved nothing, so
+    within the day it stays open to correction — a fat-fingered number on a
+    list of twenty is an ordinary mistake, and letting it be retyped costs
+    nothing.
     """
     if not run.is_open:
         return True
-    return row.is_applied or row.outcome in (CloseRunRow.MISSING, CloseRunRow.EXTRA)
+    return row.is_applied
 
 
-def confirm(run, row):
-    """Tag in hand, app says zero: the two agree. Nothing moves."""
-    if is_frozen(run, row):
-        return row
-    row.outcome = CloseRunRow.CONFIRMED
-    row.decided_at = timezone.now()
-    row.save(update_fields=["outcome", "decided_at"])
-    return row
+def record_count(run, row, counted):
+    """The one answer this page takes: how many of these are actually here.
 
+    `counted` is the **total** — the display plus whatever is left in the bag
+    once the display has been filled. It is one number whichever situation
+    the person is in, because the physical acts differ but the quantity being
+    reported does not, and a form that asks two different questions depending
+    on a tag is a form somebody answers in the wrong box.
 
-def unconfirm(run, row):
-    """Back to unanswered. Only ever reachable while nothing has moved."""
-    if is_frozen(run, row):
-        return row
-    row.outcome = CloseRunRow.PENDING
-    row.decided_at = None
-    row.save(update_fields=["outcome", "decided_at"])
-    return row
-
-
-def record_missing(run, row, counted):
-    """No tag for a product the app calls out: count the bag and true it up.
+    Filling the display *first* is what makes the no-tag case honest: the
+    restocking and the measurement are the same act, so the count is taken
+    from a display that is now in the state next weekend needs it in.
 
     The delta is measured against the **live** count, not the number frozen
     on the row. The frozen one is what the disagreement was measured against
     and is worth keeping for that; but the log has to say what actually
     moved, or the ledger stops adding up to the shelf.
 
-    A count of zero is allowed and recorded. It means the tag protocol broke
-    rather than the app did — no tag, no stock — and it is a real answer, so
-    it writes an outcome and no log, because nothing moved.
+    An answer equal to what the app already believed is a real answer and is
+    recorded as an agreement. It moves nothing, writes no log, and so stays
+    correctable for the rest of the day.
     """
     if is_frozen(run, row):
         return row
@@ -172,16 +188,27 @@ def record_missing(run, row, counted):
         )
         delta = counted - product.number_on_hand
         log = None
+        if delta > 0:
+            outcome = CloseRunRow.MISSING
+            note = (
+                f"Sunday close: counted {counted} in hand against the app's "
+                f"{product.number_on_hand}. The app was under by {delta}."
+            )
+        elif delta < 0:
+            outcome = CloseRunRow.EXTRA
+            note = (
+                f"Sunday close: counted {counted} in hand against the app's "
+                f"{product.number_on_hand}. The app was over by {-delta}."
+            )
+        else:
+            outcome = CloseRunRow.CONFIRMED
+            note = None
+
         if delta:
             product.set_on_hand(counted)
-            log = _adjustment(
-                product,
-                delta,
-                f"Sunday close: no tag held, bag counted at {counted}. "
-                f"The app was under by {delta}.",
-            )
+            log = _adjustment(product, delta, note)
 
-        row.outcome = CloseRunRow.MISSING
+        row.outcome = outcome
         row.counted = counted
         row.applied_log = log
         row.decided_at = timezone.now()
@@ -217,33 +244,32 @@ def undo(run, product_row):
     movement**, on **this close's own day**, and nothing else. Correcting
     anything older still goes through a bulk adjustment.
 
-    Returns the row, or `None` when the row is gone (an unpredicted tag that
-    was added by mistake leaves nothing behind to be pending about).
+    Returns the row, or `None` when the row is gone — an unpredicted tag that
+    was added by mistake leaves nothing behind to be pending about.
     """
     if not run.is_open:
         return product_row
-    if product_row.outcome not in (CloseRunRow.MISSING, CloseRunRow.EXTRA):
+    if not product_row.is_applied:
         return product_row
 
     with transaction.atomic():
         log = product_row.applied_log
-        if log is not None:
-            product = FinishedProduct.objects.select_related("raw_product").get(
-                pk=product_row.finished_product_id
-            )
-            product.set_on_hand(product.number_on_hand - log.quantity)
-            _adjustment(
-                product,
-                -log.quantity,
-                f"Sunday close: answer taken back on the page "
-                f"(reverses the {log.quantity:+d} logged a moment earlier).",
-            )
+        product = FinishedProduct.objects.select_related("raw_product").get(
+            pk=product_row.finished_product_id
+        )
+        product.set_on_hand(product.number_on_hand - log.quantity)
+        _adjustment(
+            product,
+            -log.quantity,
+            f"Sunday close: answer taken back on the page "
+            f"(reverses the {log.quantity:+d} logged a moment earlier).",
+        )
 
-        # An extra tag was a row this close invented, so undoing it leaves
-        # nothing to be pending about — the page forgets, and the two log
-        # entries are what remember. Anyone genuinely holding the tag can add
-        # it again.
-        if product_row.outcome == CloseRunRow.EXTRA:
+        # A row the close never predicted was invented by somebody holding a
+        # tag, so undoing it leaves nothing to be pending about — the page
+        # forgets, and the two log entries are what remember. Anyone
+        # genuinely holding the tag can add it again.
+        if product_row.added_by_tag:
             product_row.delete()
             return None
 
@@ -258,17 +284,19 @@ def undo(run, product_row):
 
 
 def add_tag(run, product):
-    """A tag in hand for a product the close didn't predict.
+    """A tag in hand for a product the close didn't predict. Moves nothing.
 
-    Two different things arrive here and telling them apart is the reason
-    this isn't a plain "set it to zero". Usually the app has a count above
-    zero and the tag says otherwise — that is the overcount this step exists
-    to catch. But the product may be at zero already and simply not have made
-    the expected list (no par set, say), in which case the tag and the app
-    *agree* and filing it as a disagreement would put a fault in the metric
-    that the metric exists to measure.
+    It adds the row and stops. The old version adjusted straight to zero on
+    the strength of the tag alone, which was wrong twice over: the tag says
+    the *bag* is empty, not the shelf, and there are still units on the
+    display to be counted. Now the tag only puts the product on the list, and
+    the same count everything else gets is what settles it.
 
-    Returns `(row, created)`. An already-answered row comes back untouched,
+    Which also dissolves a special case that used to live here — a product
+    already at zero whose tag therefore "agreed". There is nothing to guess
+    at any more, because nothing is decided before somebody counts.
+
+    Returns `(row, created)`. An already-listed product comes back untouched,
     because the second scan of the same tag is a person being thorough.
     """
     if not run.is_open:
@@ -278,25 +306,14 @@ def add_tag(run, product):
     if row is not None:
         return row, False
 
-    with transaction.atomic():
-        product = FinishedProduct.objects.select_related("raw_product").get(pk=product.pk)
-        on_hand = product.number_on_hand
-        row = CloseRunRow.objects.create(
-            run=run,
-            finished_product=product,
-            on_hand_before=on_hand,
-            decided_at=timezone.now(),
-            outcome=CloseRunRow.EXTRA if on_hand else CloseRunRow.CONFIRMED,
-        )
-        if on_hand:
-            product.set_on_hand(0)
-            row.applied_log = _adjustment(
-                product,
-                -on_hand,
-                f"Sunday close: tag held but the app had {on_hand} on hand. "
-                f"Adjusted to zero.",
-            )
-            row.save(update_fields=["applied_log"])
+    product = FinishedProduct.objects.select_related("raw_product").get(pk=product.pk)
+    row = CloseRunRow.objects.create(
+        run=run,
+        finished_product=product,
+        on_hand_before=product.number_on_hand,
+        display_slots=product.display_slots,
+        added_by_tag=True,
+    )
     return row, True
 
 
@@ -321,23 +338,36 @@ def tally(run):
     and dividing by the rows that were already right converts a number worth
     acting on into a reassuring one. Nobody is being graded on the saves.
 
-    `confirmed` is here because the flow needs it (a ticked row stops coming
-    back), not as a denominator. The two disagreements are kept apart rather
-    than summed: they point at opposite ends of the pipeline, and a net figure
-    lets a bad intake cancel out a dead webhook.
+    `confirmed` is here because the flow needs it (an answered row stops
+    coming back), not as a denominator. The two disagreements are kept apart
+    rather than summed: they point at opposite ends of the pipeline, and a net
+    figure lets a bad intake cancel out a dead webhook.
+
+    **Predicted and unpredicted is a different axis from over and under**, and
+    they used to be the same one. `expected` counts the rows the close asked
+    about; the direction buckets count which way the app was wrong, wherever
+    the row came from.
+
+    There is no key for displays left short, and that is a decision rather
+    than an omission. See the module docstring: capacity is not a target, and
+    a gap counted here would be acted on.
     """
     rows = list(run.rows.all())
-    expected = [r for r in rows if r.outcome != CloseRunRow.EXTRA]
-    confirmed = [r for r in expected if r.outcome == CloseRunRow.CONFIRMED]
-    missing = [r for r in expected if r.outcome == CloseRunRow.MISSING]
+    expected = [r for r in rows if not r.added_by_tag]
+    unpredicted = [r for r in rows if r.added_by_tag]
+    confirmed = [r for r in rows if r.outcome == CloseRunRow.CONFIRMED]
+    missing = [r for r in rows if r.outcome == CloseRunRow.MISSING]
     extra = [r for r in rows if r.outcome == CloseRunRow.EXTRA]
-    pending = [r for r in expected if r.outcome == CloseRunRow.PENDING]
+    pending = [r for r in rows if r.outcome == CloseRunRow.PENDING]
 
-    answered = len(confirmed) + len(missing)
+    answered = len(confirmed) + len(missing) + len(extra)
     disagreements = len(missing) + len(extra)
     return {
         "expected": len(expected),
+        "unpredicted": len(unpredicted),
+        "unpredicted_rows": unpredicted,
         "confirmed": len(confirmed),
+        "confirmed_rows": confirmed,
         "missing": len(missing),
         "missing_rows": missing,
         "extra": len(extra),
@@ -346,6 +376,10 @@ def tally(run):
         "pending_rows": pending,
         "answered": answered,
         "disagreements": disagreements,
-        "under_units": sum(r.counted or 0 for r in missing),
-        "over_units": sum(r.on_hand_before for r in extra),
+        "under_units": sum(
+            max((r.counted or 0) - r.on_hand_before, 0) for r in missing
+        ),
+        "over_units": sum(
+            max(r.on_hand_before - (r.counted or 0), 0) for r in extra
+        ),
     }

@@ -42,9 +42,14 @@ used the van is half loaded and the only question is "start".
 {% block content %}
 
   <p>
-    Tick off the tags you're holding against what the app thinks has sold
-    out. Anything the two disagree about gets fixed here, and the
+    Count what you actually have of everything the app thinks has run out of
+    backstock, and true up whatever the two disagree about. The
     disagreements are the whole point of doing it.
+
+    <strong>Fill each display before you count it.</strong> The count is the
+    total — what's hanging up plus whatever is left in the bag behind it —
+    so restocking the display and measuring it are the same job, and the
+    stall starts next weekend full.
   </p>
 
   {% comment %}
@@ -54,8 +59,8 @@ used the van is half loaded and the only question is "start".
   {% endcomment %}
   <div class="panel">
     <div class="count">{{ expected_now }}</div>
-    product{{ expected_now|pluralize }} the app currently has at zero — so
-    that's how many tags you should be holding.
+    product{{ expected_now|pluralize }} whose bag the app thinks is empty —
+    so that's how many tags you should be holding.
   </div>
 
   {% if existing %}

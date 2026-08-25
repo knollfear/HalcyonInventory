@@ -1,8 +1,13 @@
 {% extends "scarves/base_public.html" %}
 {% comment %}
 One day's close, worked from top to bottom in the order the physical job
-happens: tick the tags in your hand, count the bags for the ones you can't
-find, then add anything you're holding that wasn't predicted.
+happens: count what you actually have of each product on the list, then add
+anything you're holding a tag for that wasn't predicted.
+
+One question per row, and the answer is the **total** — the display plus
+whatever is left in the bag once the display has been filled. Holding the tag
+means the second half is nothing, which is why the buttons only run as high as
+the display holds and why answering is a tap rather than typing.
 
 Big tap targets, no JavaScript, and the unexpected-tag search is a plain form
 submit rather than a type-ahead. This is a phone, standing up, in a car park,
@@ -52,6 +57,29 @@ production run page.
       border: 1px solid #c8cfd8; border-radius: 8px; background: #fff;
   }
 
+  /* The count buttons. Rendered from a plain radio group so the page works
+     with no JavaScript at all — the label is the tap target and the radio
+     itself is only visually hidden, never removed, so it stays reachable by
+     keyboard and by a screen reader. */
+  .counts { list-style: none; margin: 10px 0 0; padding: 0;
+            display: flex; flex-wrap: wrap; gap: 8px; }
+  .counts li { margin: 0; }
+  .counts label {
+      display: block; min-width: 52px; padding: 12px 10px; cursor: pointer;
+      text-align: center; font-size: 1.05rem; font-weight: 600;
+      border: 1px solid #c8cfd8; border-radius: 8px; background: #fff;
+      color: #334;
+  }
+  .counts input { position: absolute; opacity: 0; pointer-events: none; }
+  .counts input:checked + span,
+  .counts label:has(input:checked) {
+      background: var(--accent); border-color: var(--accent); color: #fff;
+  }
+  .counts input:focus-visible + span,
+  .counts label:has(input:focus-visible) { outline: 2px solid #334; outline-offset: 2px; }
+  .morebox { margin-top: 10px; }
+  .morebox label { font-size: .85rem; color: #667; display: block; margin-bottom: 4px; }
+
   h2 { font-size: 1.05rem; margin: 28px 0 6px; }
   h2 .step { color: #889; font-weight: 400; }
   .lead { font-size: .92rem; color: #556; margin: 0 0 12px; }
@@ -91,7 +119,7 @@ production run page.
   messages block — it is the shell the games and the embeds use, where staff
   notices have no business — so a page under it that calls messages.success
   and doesn't print it loses the notice entirely. That is the whole feedback
-  for "adjusted to zero", which must not be the thing that disappears.
+  for "trued up four products", which must not be the thing that disappears.
   {% endcomment %}
   {% if messages %}
     {% for message in messages %}
@@ -128,55 +156,57 @@ production run page.
 
   {% if run.is_open %}
 
-    <h2><span class="step">Step 1.</span> Tags you're holding</h2>
+    <h2><span class="step">Step 1.</span> Count what you've got</h2>
     <p class="lead">
-      These are the products the app says have sold out, so you should be
-      holding a tag for each. Tick the ones you've got.
+      The app thinks the bag is empty for each of these, so you should be
+      holding a tag. <strong>Fill the display first</strong>, then say how
+      many you have altogether — display and bag together. Holding the tag
+      means the bag's empty, so the answer is one of the buttons. No tag
+      means there was stock in it after all: fill the display, count what's
+      left, and put the total in the box.
+    </p>
+    <p class="lead">
+      Leave any you haven't got to yet blank. You can come back to them —
+      blank means "not yet", not zero.
     </p>
 
-    {% if open_rows %}
+    {% if count_fields %}
       {% comment %}
-      One loop in one order. Rendering the ticked ones first would reorder
+      One loop in one order. Rendering the answered ones first would reorder
       the list every time it is saved, and this is worked down a physical
       pile — the person's place in it is on the table, not on the screen.
+
+      An answered row stays in this list with its number showing, because it
+      moved no stock if it agreed and a bag found under the table at seven
+      has to be able to correct what was counted at four.
       {% endcomment %}
       <form method="post">
         {% csrf_token %}
-        <input type="hidden" name="step" value="confirm">
-        {% for row in open_rows %}
-          <label class="row{% if row.outcome == 'confirmed' %} settled{% endif %}">
-            <input type="checkbox" name="held" value="{{ row.pk }}"
-                   {% if row.outcome == 'confirmed' %}checked{% endif %}>
-            <div>
-              <div class="what">{{ row.finished_product.name }}</div>
-              <div class="detail">{{ row.finished_product.sku }}</div>
-            </div>
-          </label>
-        {% endfor %}
-        <button class="btn" type="submit">Save what I'm holding</button>
-      </form>
-    {% else %}
-      <p class="lead">Nothing at zero right now — nothing to check off.</p>
-    {% endif %}
-
-    {% if count_fields %}
-      <h2><span class="step">Step 2.</span> Tags you can't find</h2>
-      <p class="lead">
-        No tag means the bag still has stock in it and the app is under.
-        Count what's actually in the bag. Leave any you haven't got to yet
-        blank — you can come back to them.
-      </p>
-      <form method="post">
-        {% csrf_token %}
-        <input type="hidden" name="step" value="count">
         {% for entry in count_fields %}
-          <div class="row">
-            <div class="countrow">
-              {{ entry.field }}
-              <div>
-                <div class="what">{{ entry.row.finished_product.name }}</div>
-                <div class="detail">{{ entry.row.finished_product.sku }}</div>
-                {% for error in entry.field.errors %}
+          <div class="row{% if entry.row.outcome == 'confirmed' %} settled{% endif %}">
+            <div class="grow">
+              <div class="what">{{ entry.row.finished_product.name }}</div>
+              <div class="detail">
+                {{ entry.row.finished_product.sku }} —
+                app says {{ entry.row.finished_product.number_on_hand }} on hand,
+                display holds {{ entry.row.display_slots }}
+              </div>
+
+              <ul class="counts">
+                {% for choice in entry.field %}
+                  <li>{{ choice }}</li>
+                {% endfor %}
+              </ul>
+              {% for error in entry.field.errors %}
+                <div class="detail" style="color:#8a2f2a">{{ error }}</div>
+              {% endfor %}
+
+              <div class="morebox">
+                <label for="{{ entry.more.id_for_label }}">
+                  More than {{ entry.row.display_slots }}? Total here:
+                </label>
+                {{ entry.more }}
+                {% for error in entry.more.errors %}
                   <div class="detail" style="color:#8a2f2a">{{ error }}</div>
                 {% endfor %}
               </div>
@@ -185,12 +215,18 @@ production run page.
         {% endfor %}
         <button class="btn" type="submit">Save these counts</button>
       </form>
+    {% else %}
+      <p class="lead">
+        Nothing to count right now — the app thinks every display still has a
+        bag behind it.
+      </p>
     {% endif %}
 
-    <h2><span class="step">Step 3.</span> A tag nobody predicted</h2>
+    <h2><span class="step">Step 2.</span> A tag nobody predicted</h2>
     <p class="lead">
-      Holding a tag that isn't on the list above means the app thinks there's
-      still stock. Find it here and it gets set to zero.
+      Holding a tag that isn't on the list above means the app still thinks
+      there's a bag behind that display. Find it here and it joins the list
+      to be counted like the rest — adding it on its own changes nothing.
     </p>
 
     <form class="search" method="get">
@@ -227,29 +263,20 @@ production run page.
   Nothing is erased by it: the movement is reversed with a second log entry
   beside the first.
   {% endcomment %}
-  {% if missing_rows or extra_rows %}
+  {% if applied_rows %}
     <h2>Already put right</h2>
-    {% for row in missing_rows %}
-      <div class="row settled">
+    {% for row in applied_rows %}
+      <div class="row{% if row.outcome == 'extra' %} over{% else %} settled{% endif %}">
         <div class="grow">
           <div class="what">{{ row.finished_product.name }}</div>
           <div class="detail">{{ row.finished_product.sku }}</div>
-          <div class="tag">No tag — counted {{ row.counted }}, app said {{ row.on_hand_before }}</div>
-        </div>
-        {% if run.is_open %}
-          <form method="post" action="{% url 'close_undo' run.token row.pk %}">
-            {% csrf_token %}
-            <button class="undo" type="submit">Undo</button>
-          </form>
-        {% endif %}
-      </div>
-    {% endfor %}
-    {% for row in extra_rows %}
-      <div class="row over">
-        <div class="grow">
-          <div class="what">{{ row.finished_product.name }}</div>
-          <div class="detail">{{ row.finished_product.sku }}</div>
-          <div class="tag">Tag held — app said {{ row.on_hand_before }}, set to zero</div>
+          <div class="tag">
+            {% if row.outcome == 'missing' %}
+              Counted {{ row.counted }} — app said {{ row.on_hand_before }}, it was under
+            {% else %}
+              Counted {{ row.counted }} — app said {{ row.on_hand_before }}, it was over
+            {% endif %}
+          </div>
         </div>
         {% if run.is_open %}
           <form method="post" action="{% url 'close_undo' run.token row.pk %}">
@@ -274,7 +301,10 @@ production run page.
       <div class="row settled">
         <div>
           <div class="what">{{ row.finished_product.name }}</div>
-          <div class="detail">{{ row.finished_product.sku }}</div>
+          <div class="detail">
+            {{ row.finished_product.sku }} — counted {{ row.counted }}, which is
+            what the app had
+          </div>
         </div>
       </div>
     {% endfor %}

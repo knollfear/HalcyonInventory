@@ -16,7 +16,15 @@ import logging
 from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 
-from .models import FinishedProduct, FinishedProductImage, ProductImageUpload, RawProduct
+from .models import (
+    DisplayFixture,
+    DisplayPosition,
+    FinishedProduct,
+    FinishedProductImage,
+    ProductImageUpload,
+    RawProduct,
+    sync_display_slots,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -86,3 +94,45 @@ def mirror_passthrough_stock(sender, instance, **kwargs):
     ).exclude(number_on_hand=instance.number_on_hand).update(
         number_on_hand=instance.number_on_hand
     )
+
+
+@receiver(post_save, sender=DisplayPosition)
+@receiver(post_delete, sender=DisplayPosition)
+def keep_display_slots_in_step(sender, instance, **kwargs):
+    """The map is the source; `display_slots` is what everything reads.
+
+    A signal rather than calls at each site, for the same reason
+    `mirror_passthrough_stock` is one: assignments change from the admin
+    inline, from a bulk edit and eventually from a drag-and-drop editor, and a
+    site that forgot to recompute would leave a number that looks fine and
+    isn't. The symptom would be the Sunday close asking about the wrong
+    products — silently, because a capacity nobody can see is wrong is
+    indistinguishable from one that's right.
+    """
+    sync_display_slots(instance.finished_product)
+
+
+@receiver(post_save, sender=DisplayFixture)
+def give_a_new_board_its_pegs(sender, instance, **kwargs):
+    """A board is unusable until its positions exist — so they follow it.
+
+    Created in the admin, in a shell, by the seed command or by anything
+    else: a fixture with no positions renders as a grid of dashes with no
+    dropdowns, which looks like a board and does nothing. A signal rather
+    than a call at each site, because the site that forgets produces exactly
+    that failure and nothing says so.
+
+    Also fills in after a board is made taller or wider, which is the normal
+    reason to edit one.
+    """
+    instance.ensure_positions()
+
+    # Capacity is part of what `display_slots` is computed from, so a hook
+    # swap has to reach every colorway on the board. Without this, changing
+    # it left every product's capacity at the old number — and the symptom is
+    # the Sunday close asking about the wrong products, silently, which is
+    # the failure `sync_display_slots` exists to prevent wearing a disguise.
+    for position in instance.positions.select_related(
+        "finished_product"
+    ).filter(finished_product__isnull=False):
+        sync_display_slots(position.finished_product)

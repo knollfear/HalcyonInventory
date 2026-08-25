@@ -6,7 +6,7 @@ import hmac
 import json
 import random
 import uuid
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone as dt_timezone
 from decimal import Decimal
 from io import BytesIO
 
@@ -29,6 +29,7 @@ from django.views.decorators.http import require_POST, require_http_methods
 from .models import (
     BoothPhoto,
     CloseRun,
+    DisplayFixture,
     CloseRunRow,
     Dye,
     FinishedProduct,
@@ -48,11 +49,16 @@ from django.contrib import messages
 from django.shortcuts import render, redirect
 from django.template.response import TemplateResponse
 
-from . import closing, colorbands, crew, labels, production, sheetscan, timesheets
+from . import (
+    closing, colorbands, crew, fancy, labels, production, restock, sheetscan,
+    timesheets,
+)
 from .colorutils import hex_to_rgb, nearest_by_color, pick_color_cluster
 from .forms import (
     BoothPhotoForm,
     CloseStartForm,
+    DisplayFixtureForm,
+    RestockPassForm,
     CrewHandbookForm,
     HoursForm,
     LabelRunForm,
@@ -242,6 +248,10 @@ def production_needed_view(request):
             # more, you don't dye more. `private/raw-inventory/` is where its
             # shortfall belongs.
             recipe__isnull=False,
+            # And a fancy veil *has* a colorway but still isn't dyed into
+            # existence — the work added to it is line work on a scarf that
+            # already exists.
+            raw_product__made_in_a_dye_bath=True,
         )
         .select_related("raw_product", "raw_product__category", "recipe")
         .prefetch_related("recipe__recipe_dyes__dye")
@@ -1160,9 +1170,15 @@ def parse_card_date(text):
 def card_backfill_index(request):
     """Pick a card to type up, and see how far through the stack you are."""
     products = (
-        # A kanban card records a dye bath, so an undyed passthrough has
-        # nothing to backfill and shouldn't be offered.
-        FinishedProduct.objects.filter(is_active=True, recipe__isnull=False)
+        # A kanban card records a dye bath, so anything not made in one has
+        # nothing to backfill and shouldn't be offered: an undyed passthrough
+        # (no recipe) or a fancy veil (a colorway, but line work rather than
+        # a bath).
+        FinishedProduct.objects.filter(
+            is_active=True,
+            recipe__isnull=False,
+            raw_product__made_in_a_dye_bath=True,
+        )
         .select_related("recipe", "raw_product")
         .annotate(
             backfilled=Count(
@@ -4398,12 +4414,501 @@ def close_index(request):
         # What the list would come out at right now. Said up front because
         # "twelve products to check" and "a hundred and twelve" are different
         # jobs, and knowing which one it is before starting decides whether
-        # it happens tonight or in the morning.
+        # it happens tonight or in the morning. It is a wider list than the
+        # zeros it replaced — everything whose bag the app thinks is empty,
+        # not just what it thinks is gone — which is the point: a drifting
+        # count is caught while the display is still full, not once the shelf
+        # is bare.
         "expected_now": closing.expected_products().count(),
         "recent": CloseRun.objects.exclude(day=today).select_related("employee")[:5],
         "remembered": crew.remembered(request)[0],
         "forget_param": crew.FORGET,
     })
+
+
+@page_meta(
+    title="Fancy Conversions",
+    description="Record scarves that had line work added: one colorway goes "
+                "down, its fancy counterpart goes up.",
+    category="Production",
+)
+@login_required
+@require_http_methods(["GET", "POST"])
+def fancy_convert(request):
+    """Say that some plain scarves became fancy ones.
+
+    Optional, and safe to be optional — the plain side turns up as an
+    overcount on its peg and the fancy side as an undercount on its, so an
+    unrecorded conversion still heals. What this buys over the healing is
+    *what happened*: the two halves get tied together at the moment somebody
+    knows they belong together, which is the only way "how many did we fancy
+    this season" is ever answerable.
+    """
+    blanks = list(fancy.fancy_blanks())
+    if not blanks:
+        messages.info(
+            request,
+            "No fancy blanks set up yet — a blank with 'made in a dye bath' "
+            "unticked is what a scarf can be converted into.",
+        )
+
+    if request.method == "POST" and blanks:
+        source = FinishedProduct.objects.filter(
+            pk=request.POST.get("source"), is_active=True
+        ).select_related("raw_product", "recipe").first()
+        blank = RawProduct.objects.filter(
+            pk=request.POST.get("blank"), made_in_a_dye_bath=False
+        ).first()
+        try:
+            quantity = int(request.POST.get("quantity") or 0)
+        except ValueError:
+            quantity = 0
+
+        if source is None or blank is None or quantity < 1:
+            messages.error(request, "Pick a colorway, a fancy blank and how many.")
+            return redirect("fancy_convert")
+
+        target, shortfall = fancy.convert(source, blank, quantity)
+        if target is None:
+            messages.error(
+                request,
+                f"There's no {blank.name} in {source.recipe.name} to convert "
+                f"into. Create it first — the colorway has to exist on both "
+                f"blanks.",
+            )
+            return redirect("fancy_convert")
+
+        messages.success(
+            request,
+            f"{quantity} × {source.recipe.name}: {source.raw_product.name} → "
+            f"{target.raw_product.name}.",
+        )
+        if shortfall:
+            # Reported, never refused. Five really did get line work put on
+            # them; the plain count was wrong before anybody touched it, and
+            # this is the only evidence of that.
+            messages.warning(
+                request,
+                f"The app only had {quantity - shortfall} of the plain "
+                f"{source.raw_product.name} — it was under by {shortfall}, "
+                f"and is now at zero. Worth a count.",
+            )
+        return redirect("fancy_convert")
+
+    return render(request, "scarves/fancy_convert.html", {
+        "blanks": blanks,
+        "sources": fancy.convertible(),
+        "recent": InventoryLog.objects.filter(
+            source=InventoryLog.SOURCE_FANCY_CONVERSION, quantity__gt=0
+        ).select_related("finished_product__recipe", "finished_product__raw_product")[:15],
+    })
+
+
+@page_meta(
+    title="Display Map",
+    description="Pick a board to say what hangs where. Staff only — editing "
+                "the map is a desk job, not something done at the stall.",
+    category="Inventory",
+)
+@login_required
+def display_map_index(request):
+    """The boards, for editing rather than walking.
+
+    Separate from `restock_index` because they are different jobs for
+    different people. Walking a board happens at the stall, on a phone, with
+    no account; deciding what hangs where happens sitting down, rarely, and
+    is a staff decision — so it gets a login and lives under `private/`.
+    """
+    return render(request, "scarves/display_map_index.html", {
+        "fixtures": DisplayFixture.objects.filter(is_active=True).select_related(
+            "raw_product"
+        ),
+    })
+
+
+@page_meta(
+    title="Display Map (one board)",
+    description="A dropdown on every peg: say what hangs there.",
+    category="Inventory",
+    show_in_index=False,
+)
+@login_required
+@require_http_methods(["GET", "POST"])
+def display_map(request, fixture_id):
+    """Say what hangs on each peg. **Saving here is not a check.**
+
+    That is the whole reason this is a second page rather than a mode on the
+    restock board. Assigning a colorway to a peg is a statement about the
+    *map*; ticking a peg is a statement about the *stock*, made by somebody
+    standing in front of it. A single Save that quietly did both would record
+    forty confirmations nobody made — and those are what the whole restock
+    page is built to be trustworthy about.
+
+    So this writes assignments, opens no `RestockPass`, moves no stock, and
+    says so on the button.
+    """
+    fixture = get_object_or_404(DisplayFixture, pk=fixture_id, is_active=True)
+    # Read before the form exists. A ModelForm bound to this instance writes
+    # the submitted values onto it during `is_valid()`, so by the time the
+    # POST branch runs, `fixture.raw_product` is already the *new* blank and
+    # comparing against it would say nothing ever changed.
+    was_blank_id = fixture.raw_product_id
+    positions = list(
+        fixture.positions.select_related("finished_product__recipe").order_by(
+            "row", "column"
+        )
+    )
+
+    # **Two controls, chosen by whether the board carries one blank.**
+    #
+    # A scoped board gets a plain `<select>`: forty colorways is a readable
+    # menu and nothing needs typing. A mixed board can't — the scarf rack is
+    # a row per scarf type, so its dropdown would have to carry the whole
+    # catalogue, which is unreadable *and* renders the same few hundred
+    # options once per peg (that page was 936KB).
+    #
+    # So a mixed board gets a `<datalist>`: native type-ahead, **no
+    # JavaScript**, and the list is rendered once for the page instead of
+    # once per peg. Without the browser's support it degrades to a text box
+    # holding a SKU, which still posts and still resolves.
+    choices = FinishedProduct.objects.filter(is_active=True, recipe__isnull=False)
+    if fixture.raw_product_id:
+        choices = choices.filter(
+            Q(raw_product_id=fixture.raw_product_id)
+            # A board scoped to one blank can still be carrying a stray, and
+            # a menu that omitted it would drop that assignment the first
+            # time anybody saved.
+            | Q(pk__in=[p.finished_product_id for p in positions if p.finished_product_id])
+        )
+    choices = list(
+        choices.select_related("recipe", "raw_product").order_by(
+            "raw_product__name", "recipe__name"
+        )
+    )
+    by_token = {_peg_token(product): product for product in choices}
+
+    # Built from the board as it was *rendered*, so a save that also changes
+    # the blank still validates the pegs against the menu the person was
+    # actually looking at. The new scope applies from the next load.
+    form = DisplayFixtureForm(
+        request.POST or None, instance=fixture, prefix="board"
+    )
+
+    if request.method == "POST":
+        if not form.is_valid():
+            return render(request, "scarves/display_map.html", {
+                "fixture": fixture, "form": form,
+                "rows": _map_rows(fixture, positions),
+                "choices": choices,
+                "tokens": {p.pk: _peg_token(p) for p in choices},
+                "boards": DisplayFixture.objects.filter(is_active=True),
+                "unmapped": restock.unmapped_for(fixture),
+            })
+
+        # **A save that changes the blank never also assigns pegs.**
+        #
+        # The menus on screen were built for the *old* blank, and colorway
+        # names repeat across blanks — every blank has an Aegean Sea. So
+        # somebody who switches the blank and then picks "Aegean Sea" from
+        # the stale list gets a different product with an identical label,
+        # and nothing on the page looks wrong. That is the worst shape a bug
+        # can have here.
+        #
+        # Telling them to save first would leave the hazard in place for
+        # whoever doesn't read it. Refusing instead makes it structurally
+        # impossible: the blank is applied, the menus come back rebuilt, and
+        # the pegs are untouched and said to be. Works with the script below
+        # or without it.
+        picked = form.cleaned_data.get("raw_product")
+        switching = (picked.pk if picked else None) != was_blank_id
+        form.save()
+
+        if switching:
+            messages.info(
+                request,
+                "Blank changed — the colorway menus have been rebuilt for it. "
+                "Pegs were left exactly as they were, because the menus you "
+                "were looking at belonged to the old blank.",
+            )
+            return redirect("display_map", fixture_id=fixture.pk)
+
+        changed = 0
+        unplaceable = []
+        for position in positions:
+            if not position.is_home:
+                continue
+            raw = (request.POST.get(f"peg_{position.pk}") or "").strip()
+            wanted = None
+            if raw:
+                # Only what the page offered is accepted, so the scoping
+                # above is a rule and not merely a convenience — a hand-built
+                # POST can name anything.
+                product = by_token.get(raw)
+                if product is None:
+                    # Named rather than dropped. A typed box invites a typo,
+                    # and a peg that silently stayed as it was reads exactly
+                    # like one that saved.
+                    unplaceable.append((position, raw))
+                    continue
+                wanted = product.pk
+            if position.finished_product_id != wanted:
+                position.finished_product_id = wanted
+                position.save(update_fields=["finished_product"])  # signal → slots
+                changed += 1
+
+        messages.success(
+            request,
+            f"Board saved — {changed} peg{'' if changed == 1 else 's'} changed. "
+            f"Nothing was counted and no stock moved."
+            if changed
+            else "Board saved — no pegs changed.",
+        )
+        if unplaceable:
+            messages.error(
+                request,
+                "Couldn't place "
+                + ", ".join(f"“{raw}” (r{p.row}c{p.column})" for p, raw in unplaceable)
+                + " — those pegs were left as they were.",
+            )
+        return redirect("display_map", fixture_id=fixture.pk)
+
+    return render(request, "scarves/display_map.html", {
+        "fixture": fixture,
+        "form": form,
+        "rows": _map_rows(fixture, positions),
+        "choices": choices,
+        "tokens": {p.pk: _peg_token(p) for p in choices},
+        "boards": DisplayFixture.objects.filter(is_active=True),
+        "unmapped": restock.unmapped_for(fixture),
+    })
+
+
+def _peg_token(product):
+    """What a peg's box holds for one product.
+
+    The SKU, because it is unique, already means `BLANK-DYEBATH` to anybody
+    reading it, and is the same string on the sticker and in Square. A pk
+    would be a number nobody could check against anything.
+    """
+    return product.sku or f"#{product.pk}"
+
+
+def _map_rows(fixture, positions):
+    """The grid, with the holes filled in — see `DisplayFixture.grid`."""
+    by_cell = {(p.row, p.column): p for p in positions}
+    return [
+        [by_cell.get((r, c)) for c in range(1, fixture.columns + 1)]
+        for r in range(1, fixture.rows + 1)
+    ]
+
+
+@page_meta(
+    title="Restock the Display",
+    description="Pick a fixture and walk it: fill every peg, confirm each "
+                "one, and say where the app was wrong. Open, close, and the "
+                "end of every shift.",
+    category="Inventory",
+)
+def restock_index(request):
+    """The fixtures, and the last time each was walked.
+
+    The picker for `restock_board`, and the answer to the only question worth
+    asking from a distance: when was this board last filled, and by whom. A
+    promise nobody has made in six hours is the finding.
+    """
+    if crew.asked_to_forget(request):
+        return crew.forget(redirect("restock_index"))
+
+    fixtures = []
+    for fixture in DisplayFixture.objects.filter(is_active=True).select_related(
+        "raw_product"
+    ):
+        last = fixture.restock_passes.select_related("employee").first()
+        fixtures.append({
+            "fixture": fixture,
+            "last": last,
+            "last_summary": restock.summary(last) if last else None,
+            # Stated, never judged. "Last full check: yesterday 6:40pm" is
+            # what somebody arriving in the morning needs; whether that makes
+            # them late depends on things this page cannot see.
+            "last_full": restock.last_full_check(fixture),
+            # What is waiting, which is what decides which rack to do next.
+            # Deliberately *not* the count of colorways with no home: that
+            # answers "what should we build one day", and it lives on the
+            # board page where the empty pegs are in view.
+            "status": restock.board_status(fixture),
+        })
+
+    # The order to work the stall in, and it stops where usefulness stops.
+    # Most bare pegs first, because that is yarn not selling; then most to top
+    # up; then whichever board has gone longest without a full check, a board
+    # never fully checked counting as longest. Past that there is nothing to
+    # choose between them, so it falls back to the name rather than inventing
+    # a fourth criterion.
+    #
+    # Ordering rather than badging: the top of a list is a recommendation
+    # somebody can ignore without being told off.
+    fixtures.sort(key=_restock_priority)
+
+    return render(request, "scarves/restock_index.html", {
+        "fixtures": fixtures,
+        # One trip to the backstock for the whole stall.
+        "pull": restock.pull_list(),
+        # No "colorways with no home" here. Which colorways belong on a board
+        # is the mapper's decision, so that list lives on the editor and is
+        # shown to nobody else.
+        # The one way the map fails quietly: a colorway with no home
+        # contributes no display capacity, so the Sunday close stops asking
+        # about it and nothing says why.
+        "remembered": crew.remembered(request)[0],
+        "forget_param": crew.FORGET,
+    })
+
+
+def _restock_priority(entry):
+    """Most bare, then most to top up, then longest since a full check.
+
+    A board with no full check on record sorts as the longest, because that
+    is what it is — and a sentinel date rather than `None` so the comparison
+    never has two nulls to order.
+    """
+    status = entry["status"]
+    full = entry["last_full"]
+    return (
+        -status["bare"],
+        -status["topup"],
+        full.created_at if full else _NEVER,
+        entry["fixture"].name,
+    )
+
+
+@page_meta(
+    title="Restock a Fixture",
+    description="One board, drawn as it hangs: tap each peg you filled.",
+    category="Inventory",
+    show_in_index=False,
+)
+@require_http_methods(["GET", "POST"])
+def restock_board(request, fixture_id):
+    """Walk one board. One form, saved as often as you like.
+
+    Deliberately not an htmx tap-per-peg. Every interaction here would be a
+    network round-trip on a phone at a stall on one bar, and the house rule
+    that keeps the booth form's toggle in CSS applies with more force to
+    forty-two of them: a tap that silently fails to reach the server is a peg
+    somebody believes they reported. One form that submits when they say so —
+    and submits partially, as many times as they like — is both fewer moving
+    parts and more robust.
+
+    An unanswered peg is "not walked yet", never "empty". Same distinction the
+    close draws, and for the same reason: the walk gets interrupted.
+    """
+    fixture = get_object_or_404(DisplayFixture, pk=fixture_id, is_active=True)
+
+    if request.method == "POST":
+        form = RestockPassForm(request.POST, user=request.user)
+        if form.is_valid():
+            positions = {
+                p.pk: p
+                for p in fixture.positions.select_related(
+                    "fixture", "finished_product__raw_product"
+                )
+            }
+            answers = _restock_answers(request.POST, positions)
+            if answers:
+                walk = restock.open_pass(fixture, employee=form.cleaned_data["employee"])
+                moved = 0
+                for pk, counted in answers.items():
+                    check = restock.record(walk, positions[pk], counted=counted)
+                    if check is not None and check.applied_log_id is not None:
+                        moved += 1
+                # A full check is named; a partial one is never counted
+                # against. Covering the whole board is worth recognising —
+                # afterwards every peg has a fresh baseline, so everything the
+                # board predicts is trustworthy — but nine pegs at four
+                # o'clock is a completed piece of work, not a failed full
+                # check. "17 still to do" is the sentence that would turn this
+                # page into a task master.
+                full = restock.close_pass(walk)
+                done = (
+                    "Full check — the whole board."
+                    if full
+                    else f"{len(answers)} peg"
+                    f"{'' if len(answers) == 1 else 's'} confirmed."
+                )
+                messages.success(
+                    request,
+                    done
+                    + (
+                        f" {moved} put right where the app was wrong."
+                        if moved
+                        else ""
+                    ),
+                )
+                response = redirect("restock_board", fixture_id=fixture.pk)
+                pin = form.cleaned_data.get("pin")
+                if pin:
+                    crew.remember(request, response, form.cleaned_data["employee"], pin)
+                return response
+            messages.info(request, "Nothing ticked, so nothing recorded.")
+            return redirect("restock_board", fixture_id=fixture.pk)
+    else:
+        form = RestockPassForm(user=request.user, initial=crew.initial(request))
+
+    return render(request, "scarves/restock_board.html", {
+        "fixture": fixture,
+        "rows": restock.board(fixture),
+        "form": form,
+        "recent": fixture.restock_passes.select_related("employee")[:5],
+        "last_full": restock.last_full_check(fixture),
+        "homes": len(restock.assigned_homes(fixture)),
+        # Every board, so the walk can move from one to the next without
+        # going back out to the picker. The stall is walked in one circuit,
+        # not board-by-board with a trip to a menu in between.
+        "boards": DisplayFixture.objects.filter(is_active=True),
+        "remembered": crew.remembered(request)[0],
+        "forget_param": crew.FORGET,
+    })
+
+
+def _restock_answers(post, positions):
+    """`{position_pk: counted-or-None}` for every peg somebody answered.
+
+    A number wins over a tick, because typing one is the more deliberate act:
+    somebody who ticked the tile and then found the peg wouldn't fill meant
+    the number. A peg with neither is absent, which is what leaves a walk
+    half-finished instead of recording zeros for the part nobody reached.
+    """
+    answers = {}
+    for pk, position in positions.items():
+        if not position.is_home or position.finished_product_id is None:
+            continue
+        picked = (post.get(f"count_{pk}") or "").strip()
+        typed = (post.get(f"more_{pk}") or "").strip()
+
+        # **Both controls mean the same thing: how many there are altogether.**
+        # The buttons are the fast path for the bounded case (everything fits
+        # on the pegs, so the bag ends up empty); the box is for when it
+        # doesn't. The app does the splitting — pegs first, remainder to the
+        # bag — because that is what a person does with them.
+        #
+        # An earlier version had the box mean "how many in the bag" and added
+        # the display's capacity on. That assumed the peg started full, and a
+        # peg at 1 of 2 breaks it: what you found goes *on the peg*, the bag
+        # stays empty, and the total comes out one too high.
+        counted = None
+        source = picked if picked and picked != "more" else typed
+        if source:
+            try:
+                counted = max(int(source), 0)
+            except ValueError:
+                counted = None
+
+        if counted is not None:
+            answers[pk] = counted
+        elif post.get(f"done_{pk}"):
+            answers[pk] = None
+    return answers
 
 
 @page_meta(
@@ -4414,13 +4919,18 @@ def close_index(request):
 )
 @require_http_methods(["GET", "POST"])
 def close_run(request, token):
-    """Tick and count, both on one URL.
+    """One list, one question per row: how many of these are actually here.
 
-    The two POSTs are told apart by an explicit `step` field rather than by
-    guessing from which keys arrived. Guessing makes an empty step-two
-    submission indistinguishable from a step-one submission that ticked
-    nothing, and those mean opposite things: "haven't counted yet" against
-    "I'm holding none of these".
+    The page used to be two POSTs — tick the tags, then count the bags for
+    the ones with no tag — because a tag in hand *was* the answer. It isn't
+    any more: holding it says the bag is empty, not that the shelf is, and
+    the units still hanging on the display have to be counted or they get
+    written off. So there is one step, and every answered row carries a
+    number. On a phone that costs about what a tick cost, because the buttons
+    only run as high as the display holds.
+
+    A blank row is "not got to yet" rather than zero. That distinction is the
+    whole reason a partly-worked close survives the van being loaded.
     """
     # Deliberately no `prefetch_related` on the rows. `sync_expected` below
     # adds rows *after* this query, and a prefetch cache built here would not
@@ -4437,58 +4947,52 @@ def close_run(request, token):
             messages.error(request, _CLOSED_RUN_MESSAGE)
             return redirect("close_run", token=run.token)
 
-        step = request.POST.get("step")
+        # Everything still answerable, freshly read: `sync_expected` may have
+        # added rows since this page was drawn, and a submit that only knew
+        # about the older ones would leave the newcomers out of the form it
+        # validates against.
+        rows = [r for r in run.rows.all() if not closing.is_frozen(run, r)]
+        CountForm = build_close_count_form_class(rows)
+        count_form = CountForm(request.POST)
+        if not count_form.is_valid():
+            # Re-rendered rather than redirected, or the numbers already
+            # typed are lost along with the message saying which one was
+            # rejected.
+            return _close_run_page(request, run, count_form=count_form)
 
-        if step == "confirm":
-            ticked = set(request.POST.getlist("held"))
-            for row in run.rows.all():
-                if closing.is_frozen(run, row):
-                    continue
-                # Un-ticking really is the inverse here, unlike the production
-                # sheet, and safely so: a confirmed row moved no stock, so
-                # taking the tick back costs nothing and a mis-tap on a list of
-                # twenty is an ordinary mistake. It stops being reversible the
-                # moment a count is typed and stock moves.
-                if str(row.pk) in ticked:
-                    closing.confirm(run, row)
-                else:
-                    closing.unconfirm(run, row)
-
-        elif step == "count":
-            # Only the rows nobody found a tag for. A confirmed row is one the
-            # tag *was* in hand for, so asking what the bag holds contradicts
-            # the answer already given — and accepting a number for it would
-            # quietly reclassify an agreement as a disagreement, in the one
-            # table where that is the whole output.
-            rows = [r for r in run.rows.all() if _awaiting_count(run, r)]
-            CountForm = build_close_count_form_class(rows)
-            count_form = CountForm(request.POST)
-            if count_form.is_valid():
-                recorded = 0
-                for row in rows:
-                    counted = count_form.cleaned_data.get(f"counted_{row.pk}")
-                    if counted is None:
-                        continue
-                    closing.record_missing(run, row, counted)
-                    recorded += 1
-                if recorded:
-                    messages.success(
-                        request,
-                        f"Trued up {recorded} product{'' if recorded == 1 else 's'} "
-                        f"the app had wrong.",
-                    )
-            else:
-                # Re-rendered rather than redirected, or the numbers already
-                # typed are lost along with the message saying which one was
-                # rejected.
-                return _close_run_page(request, run, count_form=count_form)
-
+        counts = count_form.counts()
+        by_pk = {row.pk: row for row in rows}
+        recorded = 0
+        for pk, counted in counts.items():
+            row = by_pk.get(pk)
+            if row is None:
+                continue
+            before = row.finished_product.number_on_hand
+            closing.record_count(run, row, counted)
+            if counted != before:
+                recorded += 1
+        if recorded:
+            messages.success(
+                request,
+                f"Trued up {recorded} product{'' if recorded == 1 else 's'} "
+                f"the app had wrong.",
+            )
+        elif counts:
+            messages.success(
+                request,
+                f"Counted {len(counts)} — all agreed with the app. Nothing moved.",
+            )
         return redirect("close_run", token=run.token)
 
     # New zeros since the page was last opened get folded in here, so a close
     # started at noon still asks about the scarf that sold out at four.
     closing.sync_expected(run)
     return _close_run_page(request, run)
+
+
+#: Older than any real timestamp, so a board nobody has fully checked sorts
+#: as the one that has gone longest without one — which is true.
+_NEVER = datetime.min.replace(tzinfo=dt_timezone.utc)
 
 
 #: Said the same way wherever a closed day is written to. The van has been
@@ -4501,17 +5005,6 @@ _CLOSED_RUN_MESSAGE = (
 )
 
 
-def _awaiting_count(run, row):
-    """A row still waiting on "what's actually in the bag?".
-
-    Pending and not frozen: nobody has said they hold the tag, and nothing
-    has moved yet. Kept in one place because the POST handler and the render
-    have to agree about it — a field the page draws but the handler won't
-    read is a number somebody types and loses.
-    """
-    return row.outcome == CloseRunRow.PENDING and not closing.is_frozen(run, row)
-
-
 def _close_run_page(request, run, count_form=None):
     """Render one close, its rows split by what each still needs."""
     rows = list(
@@ -4520,12 +5013,17 @@ def _close_run_page(request, run, count_form=None):
         )
     )
     # Everything still answerable, in one stable order. Deliberately not
-    # ticked-first: this is worked down a physical pile, and a list that
+    # answered-first: this is worked down a physical pile, and a list that
     # reorders itself under a thumb between submits loses somebody's place.
+    # An agreed row stays here with its number showing, because it moved no
+    # stock and a bag found under the table at seven has to be able to
+    # correct what was answered at four.
     open_rows = [r for r in rows if not closing.is_frozen(run, r)]
-    counting = [r for r in rows if _awaiting_count(run, r)]
+
     if count_form is None:
-        count_form = build_close_count_form_class(counting)()
+        count_form = build_close_count_form_class(open_rows)(
+            initial=_count_initial(open_rows)
+        )
 
     # The unexpected-tag search is a plain GET rather than a type-ahead. It
     # is the one place on this page that needs the network, and the network
@@ -4539,30 +5037,54 @@ def _close_run_page(request, run, count_form=None):
         "results": search_products(query) if query else None,
         "tally": closing.tally(run),
         "rows": rows,
-        "pending_rows": [r for r in rows if r.outcome == CloseRunRow.PENDING],
+        "applied_rows": [r for r in rows if r.is_applied],
         "confirmed_rows": [r for r in rows if r.outcome == CloseRunRow.CONFIRMED],
-        "missing_rows": [r for r in rows if r.outcome == CloseRunRow.MISSING],
-        "extra_rows": [r for r in rows if r.outcome == CloseRunRow.EXTRA],
-        "open_rows": open_rows,
         "count_fields": [
-            {"row": row, "field": count_form[f"counted_{row.pk}"]}
-            for row in counting
+            {
+                "row": row,
+                "field": count_form[f"counted_{row.pk}"],
+                "more": count_form[f"more_{row.pk}"],
+            }
+            for row in open_rows
             if f"counted_{row.pk}" in count_form.fields
         ],
         "count_form": count_form,
     })
 
 
+def _count_initial(rows):
+    """Show an already-given answer back on its own buttons.
+
+    A row answered at exactly what the app believed moved nothing and stays
+    editable all evening, so the page has to come back with that answer
+    visible — an unmarked row reads as one nobody has reached, and on a list
+    worked in three passes across an evening that is how a product gets
+    counted twice or skipped.
+
+    An answer above what the display holds lands on "more" with the number in
+    the box, which is where it was typed in the first place.
+    """
+    initial = {}
+    for row in rows:
+        if row.counted is None:
+            continue
+        if row.counted <= (row.display_slots or 0):
+            initial[f"counted_{row.pk}"] = str(row.counted)
+        else:
+            initial[f"counted_{row.pk}"] = "more"
+            initial[f"more_{row.pk}"] = row.counted
+    return initial
+
+
 @require_POST
 def close_add_tag(request, token):
-    """A tag in hand for a product the close didn't predict.
+    """A tag in hand for a product the close didn't predict. Adds, moves nothing.
 
-    The message says which of the two things just happened, because they are
-    not the same finding: usually the app had a count and the tag contradicts
-    it, but the product may have been at zero already and simply not on the
-    list, in which case the tag agrees and reporting it as a correction would
-    put a fault in the very number this page exists to produce. See
-    `closing.add_tag`.
+    The old version adjusted straight to zero on the strength of the tag, and
+    had to distinguish two findings to say so honestly. Both go away now: the
+    tag says the bag is empty, the display still has units on it, and what
+    settles the row is the same count every other row gets. So this puts the
+    product on the list and the person counts it like the rest.
     """
     run = get_object_or_404(CloseRun, token=token)
     if not run.is_open:
@@ -4583,17 +5105,12 @@ def close_add_tag(request, token):
     row, created = closing.add_tag(run, product)
     if not created:
         messages.info(request, f"{product.name} was already on this close.")
-    elif row.outcome == CloseRunRow.EXTRA:
+    else:
         messages.success(
             request,
-            f"{product.name}: the app had {row.on_hand_before} on hand and you "
-            f"have the tag — adjusted to zero.",
-        )
-    else:
-        messages.info(
-            request,
-            f"{product.name} was already at zero, so the tag agrees. Recorded, "
-            f"nothing adjusted.",
+            f"Added {product.name} to the list — the app has "
+            f"{row.on_hand_before} on hand. Count what's on the display and "
+            f"say how many.",
         )
     return redirect("close_run", token=run.token)
 

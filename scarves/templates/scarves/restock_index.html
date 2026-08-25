@@ -1,0 +1,167 @@
+{% extends "scarves/base_public.html" %}
+{% comment %}
+The picker for the boards, and the one question worth asking about a display
+from somewhere else: when was it last filled, and by whom.
+
+Restocking comes *before* the Sunday close, because it is what generates the
+kanban cards — a close run first is checking against a pile that hasn't
+finished being made.
+{% endcomment %}
+
+{% block title %}Restock the Display{% endblock %}
+{% block heading %}Restock the display{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 640px; }
+  .lead { font-size: .92rem; color: #556; line-height: 1.5; }
+  .card {
+      display: block; border: 1px solid #c8cfd8; border-radius: 10px;
+      background: #fff; padding: 16px; margin-bottom: 12px;
+      text-decoration: none; color: inherit;
+  }
+  .card strong { font-size: 1.05rem; }
+  .card .when { display: block; font-size: .85rem; color: #667; margin-top: 4px; }
+  .card .stale { color: #8a5a1f; font-weight: 600; }
+  .card .full { color: #2f6b34; font-weight: 600; }
+  .card .work { display: block; font-size: .9rem; margin-top: 6px; color: #334; }
+  .card .work .bare { color: #8a2f2a; }
+  .card .work .muted { color: #889; font-weight: 400; }
+  h2 { font-size: 1.05rem; margin: 30px 0 6px; }
+  table.pull { width: 100%; border-collapse: collapse; font-size: .92rem; }
+  table.pull td { padding: 8px 6px; border-bottom: 1px solid #e6e9ee; }
+  table.pull .n {
+      width: 2.5em; text-align: right; font-weight: 700; font-size: 1.05rem;
+  }
+  table.pull .where { color: #778; font-size: .84rem; text-align: right; }
+  table.pull .muted { color: #99a; font-size: .8rem; }
+  .warn {
+      border: 1px solid #ddc7a8; border-radius: 10px; background: #fbf5ee;
+      padding: 14px; margin-top: 24px; font-size: .9rem;
+  }
+  .warn ul { margin: 8px 0 0; padding-left: 20px; }
+{% endblock %}
+
+{% block content %}
+
+  <p class="lead">
+    Fill the display, then say you did. Top up whenever — as often as suits
+    the day, nothing counts them.
+  </p>
+  <p class="lead">
+    <strong>Walk the whole board at open and at close.</strong> Answering
+    every peg records a <strong>full check</strong>, which is worth doing
+    because afterwards every peg has a fresh reading and everything the board
+    tells you is current. A shorter pass is still a good pass.
+  </p>
+  <p class="lead">
+    Do this <strong>before</strong> the Sunday close. Pulling the last of
+    something out of a bag is what puts its card in your hand, so the cards
+    don't all exist until the board has been walked.
+  </p>
+
+  {% for entry in fixtures %}
+    <a class="card" href="{% url 'restock_board' entry.fixture.pk %}">
+      <strong>{{ entry.fixture.name }}</strong>
+      <span class="when">
+        {{ entry.fixture.rows }} × {{ entry.fixture.columns }},
+        {{ entry.fixture.capacity_per_position }} per peg
+      </span>
+      {% comment %}
+      Two lines because they answer two questions. "Last touched" says
+      somebody has been here; "last full check" says the whole board was
+      covered, which is what open and close are for and what makes every
+      prediction on it trustworthy.
+
+      Both are plain timestamps. Neither says overdue — whether the morning
+      check has happened yet is obvious from the time, and whether that
+      matters depends on how the day is going, which this page can't see.
+      {% endcomment %}
+      {% comment %}
+      What's waiting, which is what decides which rack to do next. Bare leads
+      because that is yarn not selling; "can't fill" is counted quietly,
+      because walking over there changes nothing about it and a board that
+      *cannot* be fixed shouldn't read like one that has been neglected.
+      {% endcomment %}
+      {% if entry.status.bare or entry.status.topup %}
+        <span class="work">
+          {% if entry.status.bare %}
+            <strong class="bare">{{ entry.status.bare }} bare</strong>
+            {% if entry.status.oldest_bare %}
+              <span class="muted">(longest {{ entry.status.oldest_bare|timesince }})</span>
+            {% endif %}
+          {% endif %}
+          {% if entry.status.topup %}
+            {% if entry.status.bare %}· {% endif %}
+            {{ entry.status.topup }} to top up
+          {% endif %}
+          {% if entry.status.units %}
+            · <strong>{{ entry.status.units }}</strong> to carry
+          {% endif %}
+        </span>
+      {% else %}
+        <span class="when">Nothing waiting.</span>
+      {% endif %}
+      {% if entry.status.unfillable %}
+        <span class="when">
+          {{ entry.status.unfillable }} peg{{ entry.status.unfillable|pluralize }}
+          can't be filled — nothing to put on {{ entry.status.unfillable|pluralize:"it,them" }}.
+        </span>
+      {% endif %}
+      {% if entry.fixture.raw_product %}
+        <span class="when">{{ entry.fixture.raw_product.name }}</span>
+      {% endif %}
+      {% if entry.last %}
+        <span class="when">
+          Last touched {{ entry.last.created_at|date:"D d M, H:i" }}{% if entry.last.employee %}
+          by {{ entry.last.employee.name }}{% endif %}
+        </span>
+      {% else %}
+        <span class="when stale">Never walked.</span>
+      {% endif %}
+      {% if entry.last_full %}
+        <span class="when full">
+          ✓ Full check {{ entry.last_full.created_at|date:"D d M, H:i" }}{% if entry.last_full.employee %}
+          by {{ entry.last_full.employee.name }}{% endif %}
+        </span>
+      {% endif %}
+    </a>
+  {% empty %}
+    <p class="lead">
+      No display fixtures set up yet. They're built in the admin — a grid,
+      how many a peg holds, and what lives on each position.
+    </p>
+  {% endfor %}
+
+  {% comment %}
+  One trip to the backstock for the whole stall, in SKU order — which is
+  BLANK-DYEBATH and so groups by blank, the order the bags are actually stood
+  in. Per product rather than per peg: a colorway on three pegs is one bag to
+  open.
+
+  The colorways-with-no-home warning used to sit here and has moved to the
+  board page. It answers "what should we build one day", which is the least
+  actionable thing on a page whose job is deciding what to do next — and on
+  the board page it sits next to the empty pegs, where it means something.
+  {% endcomment %}
+  {% if pull %}
+    <h2>Bring from backstock</h2>
+    <p class="lead">
+      Everything the boards are asking for, in one trip. Grab it all, then
+      walk the racks.
+    </p>
+    <table class="pull">
+      {% for row in pull %}
+        <tr>
+          <td class="n">{{ row.units }}</td>
+          <td>
+            {{ row.product.recipe.name|default:row.product.name }}
+            <span class="muted">{{ row.product.sku }}</span>
+          </td>
+          <td class="where">{{ row.boards|join:", " }}</td>
+        </tr>
+      {% endfor %}
+    </table>
+  {% endif %}
+
+{% endblock %}

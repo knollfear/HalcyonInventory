@@ -1,0 +1,287 @@
+{% extends "scarves/base_internal.html" %}
+{% comment %}
+Say what hangs where. **Saving here is not a check.**
+
+That is the whole reason this is a separate page from the restock board rather
+than a mode on it. Assigning a colorway to a peg is a statement about the map;
+ticking a peg is a statement about the stock, made by somebody standing in
+front of it. One Save that quietly did both would record forty confirmations
+nobody made.
+
+A desk job, on wifi, with a login — so a dropdown per peg is fine here in a
+way it would not be at the stall.
+{% endcomment %}
+
+{% block title %}Display map — {{ fixture.name }}{% endblock %}
+{% block heading %}Display map — {{ fixture.name }}{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 1200px; }
+
+  .boards { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+  .boards a, .boards .here {
+      display: block; padding: 7px 12px; border-radius: 8px; font-size: .9rem;
+      border: 1px solid #c8cfd8; background: #fff; text-decoration: none;
+  }
+  .boards .here {
+      background: var(--accent); border-color: var(--accent); color: #fff;
+      font-weight: 600;
+  }
+
+  .settings {
+      border: 1px solid #d6dbe2; border-radius: 10px; background: #fff;
+      padding: 14px 16px; margin-bottom: 18px;
+      display: flex; flex-wrap: wrap; gap: 20px;
+  }
+  .fieldrow { display: flex; flex-direction: column; min-width: 260px; }
+  .fieldrow label { font-size: .8rem; color: #667; margin-bottom: 3px; }
+  .fieldrow input, .fieldrow select {
+      font: inherit; font-size: .95rem; padding: 8px;
+      border: 1px solid #c8cfd8; border-radius: 6px; background: #fff;
+  }
+  .fieldrow .hint { font-size: .74rem; color: #99a; margin-top: 4px; max-width: 34em; }
+  .fieldrow .err { font-size: .78rem; color: #8a2f2a; margin-top: 4px; }
+
+  .grid-scroll { overflow-x: auto; padding-bottom: 8px; }
+  table.grid { border-collapse: separate; border-spacing: 5px; }
+  table.grid th {
+      font-size: .75rem; color: #889; font-weight: 600; padding: 0 0 2px;
+  }
+  table.grid td { vertical-align: top; }
+  .peg {
+      width: 165px; border: 1px solid #d6dbe2; border-radius: 8px;
+      background: #fff; padding: 6px;
+  }
+  .peg select {
+      width: 100%; font: inherit; font-size: .82rem; padding: 5px;
+      border: 1px solid #c8cfd8; border-radius: 6px; background: #fff;
+  }
+  .peg .ref { font-size: .68rem; color: #99a; margin-top: 3px; }
+  .peg .who { font-size: .72rem; color: #556; margin-top: 3px; }
+  .peg input[list] {
+      width: 100%; font: inherit; font-size: .82rem; padding: 5px;
+      border: 1px solid #c8cfd8; border-radius: 6px; background: #fff;
+  }
+  .peg.filled { border-color: #b9d3b9; background: #f5faf5; }
+  .plate {
+      width: 165px; border: 1px dashed #c8cfd8; border-radius: 8px;
+      background: #f4f5f7; padding: 14px 6px; text-align: center;
+      font-size: .78rem; color: #778;
+  }
+
+  .save {
+      position: sticky; bottom: 0; background: var(--page-bg);
+      padding: 14px 0; margin-top: 8px; border-top: 1px solid #e2e6ea;
+  }
+  .btn {
+      padding: 12px 22px; font: inherit; font-size: 1rem; font-weight: 600;
+      border: 1px solid var(--accent); border-radius: 8px;
+      background: var(--accent); color: #fff; cursor: pointer;
+  }
+  .note { font-size: .85rem; color: #667; margin-left: 12px; }
+  .gap { font-size: .9rem; color: #556; margin-top: 20px; }
+  .gap ul { columns: 3; margin-top: 6px; }
+  .gap .none { color: #99a; font-size: .82rem; }
+{% endblock %}
+
+{% load form_extras %}
+
+{% block content %}
+
+  <nav class="boards">
+    {% for board in boards %}
+      {% if board.pk == fixture.pk %}
+        <span class="here">{{ board.name }}</span>
+      {% else %}
+        <a href="{% url 'display_map' board.pk %}">{{ board.name }}</a>
+      {% endif %}
+    {% endfor %}
+  </nav>
+
+  {% comment %}
+  Straight to the board as the crew see it — photo tiles, expected fills, bag
+  counts. That view is the one you can hold up against the actual furniture,
+  which makes it the check on whether the map you just typed is the map that
+  is really hanging there.
+
+  One way only. The crew's board deliberately does not link back: it is a
+  `secret/` page with no login, and a link to a staff screen would send
+  whoever tapped it to a sign-in form they have no account for.
+  {% endcomment %}
+  <p class="lead">
+    <a href="{% url 'restock_board' fixture.pk %}">See the real board →</a>
+    — the tiles as the crew see them, to hold up against the furniture.
+  </p>
+
+  <p class="lead">
+    {{ fixture.rows }} rows × {{ fixture.columns }} columns,
+    {{ fixture.capacity_per_position }} per peg. Changing what hangs where
+    updates each colorway's display capacity, which is what the Sunday close
+    reads.
+  </p>
+
+  {% if not fixture.raw_product %}
+    {% comment %}
+    One list for the whole page. Rendering the catalogue into every peg's
+    dropdown is what made this page 936KB on a 48-peg rack.
+
+    Option value is the SKU — unique, already reads as BLANK-DYEBATH to
+    anybody looking at it, and the same string that is on the sticker and in
+    Square. The label is what a browser matches while typing.
+    {% endcomment %}
+    <datalist id="all-products">
+      {% for product in choices %}
+        <option value="{{ tokens|lookup:product.pk }}">
+          {{ product.raw_product.name }} — {{ product.recipe.name }}
+        </option>
+      {% endfor %}
+    </datalist>
+  {% endif %}
+
+  <form method="post">
+    {% csrf_token %}
+
+    {% comment %}
+    The name and the blank live here rather than only in the admin, because
+    these are the two things somebody discovers wrong *while looking at the
+    grid* — the board is mislabelled, or the dropdowns are offering the wrong
+    blank. Sending them to another screen is how a board keeps a name nobody
+    meant.
+    {% endcomment %}
+    <fieldset class="settings">
+      {% for field in form %}
+        <div class="fieldrow">
+          <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+          {{ field }}
+          {% if field.help_text %}<span class="hint">{{ field.help_text }}</span>{% endif %}
+          {% if field.name == "raw_product" %}
+            <span class="hint">
+              Changing this rebuilds the colorway menus and leaves the pegs
+              alone — every blank has an “Aegean Sea”, so a menu built for the
+              old one would quietly hang the wrong product.
+            </span>
+          {% endif %}
+          {% for error in field.errors %}<span class="err">{{ error }}</span>{% endfor %}
+        </div>
+      {% endfor %}
+    </fieldset>
+    <div class="grid-scroll">
+      <table class="grid">
+        <tr>
+          <th></th>
+          {% for _ in rows.0 %}<th>{{ forloop.counter }}</th>{% endfor %}
+        </tr>
+        {% for row in rows %}
+          <tr>
+            <th>{{ forloop.counter }}</th>
+            {% for position in row %}
+              <td>
+                {% if position is None %}
+                  <div class="plate">—</div>
+                {% elif not position.is_home %}
+                  <div class="plate">{{ position.reserved_label }}</div>
+                {% else %}
+                  <div class="peg{% if position.finished_product_id %} filled{% endif %}">
+                    {% if fixture.raw_product %}
+                      {% comment %}
+                      One blank, so forty colorways is a readable menu and
+                      nothing needs typing.
+                      {% endcomment %}
+                      <select name="peg_{{ position.pk }}">
+                        <option value="">— empty —</option>
+                        {% for product in choices %}
+                          <option value="{{ tokens|lookup:product.pk }}"
+                            {% if product.pk == position.finished_product_id %}selected{% endif %}>
+                            {{ product.recipe.name }}
+                          </option>
+                        {% endfor %}
+                      </select>
+                    {% else %}
+                      {% comment %}
+                      A mixed board — the scarf rack is a row per scarf type —
+                      so the menu would have to carry the whole catalogue.
+                      A datalist gives native type-ahead with **no
+                      JavaScript**, and is rendered once for the page rather
+                      than once per peg. Without datalist support it degrades
+                      to a text box holding a SKU, which still posts and still
+                      resolves.
+                      {% endcomment %}
+                      <input list="all-products" name="peg_{{ position.pk }}"
+                             autocomplete="off" placeholder="type to find…"
+                             value="{% if position.finished_product_id %}{{ tokens|lookup:position.finished_product_id }}{% endif %}">
+                      {% if position.finished_product %}
+                        <div class="who">
+                          {{ position.finished_product.raw_product.name }} —
+                          {{ position.finished_product.recipe.name }}
+                        </div>
+                      {% endif %}
+                    {% endif %}
+                    <div class="ref">r{{ position.row }}c{{ position.column }}</div>
+                  </div>
+                {% endif %}
+              </td>
+            {% endfor %}
+          </tr>
+        {% endfor %}
+      </table>
+    </div>
+
+    {% comment %}
+    The button says what it does and, more importantly, what it doesn't. A
+    "Save" here that read as a restock would record confirmations nobody made
+    — which is exactly the trust the walk depends on.
+    {% endcomment %}
+    <div class="save">
+      <button class="btn" type="submit">Save the board</button>
+      <span class="note">
+        Assignments only — nothing is counted, no stock moves, and this does
+        not record a restock.
+      </span>
+    </div>
+  </form>
+
+  {% comment %}
+  The mapper's own working list, and it appears on no other page. Which
+  colorways belong on a board is somebody's decision, so this sits where that
+  person is sitting — and it is offered, not warned about. It used to appear
+  on the crew's board as well, which told the wrong people about work they
+  had no part in.
+
+  Stock is noted per colorway because the two are different jobs: one is
+  "hang it", the other is "dye some first".
+  {% endcomment %}
+  {% if unmapped %}
+    <div class="gap">
+      <strong>{{ fixture.raw_product.name }} colorways with no home on any
+      board</strong> — {{ unmapped|length }} of them, if you want them up:
+      <ul>
+        {% for product in unmapped %}
+          <li>
+            {{ product.recipe.name }}
+            {% if not product.number_on_hand %}
+              <span class="none">none on hand</span>
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+  {% comment %}
+  Convenience only. The guarantee is in the view: a save that changes the
+  blank never assigns pegs, because the menus on screen belonged to the old
+  one and colorway names repeat across blanks. This just saves the person a
+  trip to the Save button — with the script blocked they press it themselves
+  and get the same result and the same message.
+  {% endcomment %}
+  <script>
+    document.querySelector('#id_board-raw_product')?.addEventListener('change', function () {
+      const form = this.form;
+      if (form.requestSubmit) { form.requestSubmit(); } else { form.submit(); }
+    });
+  </script>
+{% endblock %}

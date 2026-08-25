@@ -1,0 +1,61 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+<h1>Bulk Update Display Slots</h1>
+
+<p>Set how many units go on display for all <strong>active</strong> finished
+products belonging to the selected raw product(s):</p>
+
+<table style="margin-bottom:1em;">
+  <thead>
+    <tr>
+      <th style="text-align:left; padding-right:2em;">Raw product</th>
+      <th style="text-align:right; padding-right:2em;">Active finished products</th>
+      <th style="text-align:left;">Current display slots</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in rows %}
+    <tr>
+      <td style="padding-right:2em;"><strong>{{ row.rp.name }}</strong></td>
+      <td style="text-align:right; padding-right:2em;">{{ row.active_count }}</td>
+      <td>{{ row.current_slots }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<form method="post">
+  {% csrf_token %}
+  <input type="hidden" name="action" value="bulk_update_display_slots">
+  <input type="hidden" name="apply" value="1">
+  {% for row in rows %}
+    <input type="hidden" name="{{ action_checkbox_name }}" value="{{ row.rp.pk }}">
+  {% endfor %}
+
+  <p>
+    <label for="new_slots"><strong>Display slots:</strong></label><br>
+    <input type="number" id="new_slots" name="new_slots" step="1" min="0"
+           style="font-size:1.2em; padding:6px; width:150px;" required autofocus>
+  </p>
+
+  <p style="color:#666; font-size:0.9em;">
+    How many of each colorway hang on the display when it is full — pegs times
+    what a peg holds, or spots on the pole. <strong>This is capacity, not a
+    target.</strong> Nothing here schedules production to fill it, and par is
+    not touched: a bigger display is somewhere to put stock, never a reason to
+    make more of it.
+  </p>
+
+  <p style="color:#666; font-size:0.9em;">
+    What it changes is the Sunday close. <code>number_on_hand</code> counts the
+    display and the bag behind it together, so this number is where the app
+    thinks the bag ends — and a product is asked about when its count drops to
+    it. Zero means this never goes on display, so the close leaves it alone.
+    Inactive finished products and stock on hand are untouched.
+  </p>
+
+  <input type="submit" value="Update Display Slots" class="default" style="margin-right:8px;">
+  <a href="../" class="button cancel-link">Cancel</a>
+</form>
+{% endblock %}

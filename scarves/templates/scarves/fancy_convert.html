@@ -1,0 +1,107 @@
+{% extends "scarves/base_internal.html" %}
+{% comment %}
+Recording that some plain scarves had line work added.
+
+Optional on purpose. An unrecorded conversion still heals — the plain side
+turns up as an overcount on its peg, the fancy side as an undercount on its —
+so this never has to happen. What it buys is *what happened*, tied together at
+the moment somebody knows the two halves belong together.
+{% endcomment %}
+
+{% block title %}Fancy conversions{% endblock %}
+{% block heading %}Fancied{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 760px; }
+  form.convert {
+      border: 1px solid #c8cfd8; border-radius: 10px; background: #fff;
+      padding: 16px; margin-bottom: 20px;
+  }
+  .fieldrow { display: flex; flex-direction: column; margin-bottom: 12px; }
+  .fieldrow label { font-size: .82rem; color: #667; margin-bottom: 3px; }
+  select, input[type=number] {
+      font: inherit; font-size: 1rem; padding: 9px;
+      border: 1px solid #c8cfd8; border-radius: 6px; background: #fff;
+  }
+  input[type=number] { width: 8em; }
+  .btn {
+      padding: 11px 20px; font: inherit; font-size: 1rem; font-weight: 600;
+      border: 1px solid var(--accent); border-radius: 8px;
+      background: var(--accent); color: #fff; cursor: pointer;
+  }
+  table.recent { width: 100%; border-collapse: collapse; font-size: .9rem; }
+  table.recent td { padding: 7px 6px; border-bottom: 1px solid #e6e9ee; }
+  table.recent .n { text-align: right; font-weight: 700; width: 3em; }
+  table.recent .when { color: #889; font-size: .82rem; text-align: right; }
+{% endblock %}
+
+{% block content %}
+
+  <p class="lead">
+    A scarf that gets extra line work stops being one product and becomes
+    another. One colorway goes down, its fancy counterpart goes up.
+  </p>
+  <p class="lead">
+    <strong>You don't have to record it here.</strong> An unrecorded
+    conversion still gets found — the plain one shows up as an overcount at
+    its peg and the fancy one as an undercount at its, weeks apart. Doing it
+    here is cheaper than the correction, and it's the only thing that can
+    answer how many were fancied this season.
+  </p>
+
+  {% if blanks %}
+    <form class="convert" method="post">
+      {% csrf_token %}
+      <div class="fieldrow">
+        <label for="source">Which scarves</label>
+        <select name="source" id="source" required>
+          <option value="">— pick a colorway —</option>
+          {% for product in sources %}
+            <option value="{{ product.pk }}">
+              {{ product.recipe.name }} — {{ product.raw_product.name }}
+              ({{ product.number_on_hand }} on hand)
+            </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="fieldrow">
+        <label for="blank">Becoming</label>
+        <select name="blank" id="blank" required>
+          {% for blank in blanks %}
+            <option value="{{ blank.pk }}">{{ blank.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="fieldrow">
+        <label for="quantity">How many</label>
+        <input type="number" name="quantity" id="quantity"
+               min="1" max="999" value="1" required>
+      </div>
+      {% comment %}
+      No cap at what the app believes is on hand. If five were fancied and the
+      app had three, five really did get line work put on them — the plain
+      count was already wrong, and refusing would protect the wrong number and
+      lose the only evidence about it.
+      {% endcomment %}
+      <button class="btn" type="submit">Record it</button>
+    </form>
+  {% endif %}
+
+  {% if recent %}
+    <h2>Recently fancied</h2>
+    <table class="recent">
+      {% for log in recent %}
+        <tr>
+          <td class="n">{{ log.quantity }}</td>
+          <td>
+            {{ log.finished_product.recipe.name }}
+            — {{ log.finished_product.raw_product.name }}
+          </td>
+          <td class="when">{{ log.when }}</td>
+        </tr>
+      {% endfor %}
+    </table>
+  {% endif %}
+
+{% endblock %}

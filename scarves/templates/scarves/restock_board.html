@@ -1,0 +1,384 @@
+{% extends "scarves/base_public.html" %}
+{% comment %}
+One board, drawn as it hangs on the wall.
+
+**No JavaScript, and deliberately no htmx either.** A tile is a <label>
+wrapping a checkbox and the tick shows through :has(input:checked) — the same
+mechanism as the close's count buttons and the booth form's reason toggle. A
+tap-per-peg htmx call would put a network round-trip behind each of forty-two
+interactions, on a phone at a stall on one bar, and a tap that silently fails
+to reach the server is a peg somebody believes they reported.
+
+One form, saved whenever. Partial saves are the normal case: the walk gets
+interrupted, and an unticked peg means "not walked yet", never "empty".
+{% endcomment %}
+
+{% block title %}Restock — {{ fixture.name }}{% endblock %}
+{% block heading %}{{ fixture.name }}{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 900px; }
+
+  .lead { font-size: .92rem; color: #556; margin: 0 0 12px; line-height: 1.5; }
+
+  .up { font-size: .9rem; white-space: nowrap; }
+  .boards {
+      display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px;
+  }
+  .boards a, .boards .here {
+      display: block; padding: 9px 13px; border-radius: 8px;
+      font-size: .9rem; border: 1px solid #c8cfd8; background: #fff;
+      text-decoration: none; color: var(--accent);
+  }
+  .boards .here {
+      background: var(--accent); border-color: var(--accent); color: #fff;
+      font-weight: 600;
+  }
+
+  /* The board scrolls inside its own container rather than making the page
+     scroll sideways — a pegboard is wider than a phone and always will be. */
+  .board-scroll { overflow-x: auto; padding-bottom: 8px; margin-bottom: 18px; }
+  .board { display: table; border-spacing: 6px; }
+  .brow { display: table-row; }
+  .cell { display: table-cell; width: 116px; vertical-align: top; }
+
+  .tile {
+      display: block; position: relative; cursor: pointer;
+      border: 2px solid #c8cfd8; border-radius: 10px; background: #fff;
+      overflow: hidden; min-height: 96px;
+  }
+  .tile input { position: absolute; opacity: 0; pointer-events: none; }
+  .tile img { display: block; width: 100%; height: 66px; object-fit: cover; }
+  /* Text is the fallback, not a downgrade: a named tile is readable and a
+     grey placeholder is not, and half this board is text until the photos
+     catch up. */
+  .tile .name {
+      display: flex; align-items: center; justify-content: center;
+      height: 66px; padding: 4px; text-align: center;
+      font-size: .74rem; font-weight: 600; line-height: 1.2; color: #1a2230;
+  }
+  .tile .foot {
+      display: flex; justify-content: space-between; gap: 4px;
+      padding: 4px 6px; font-size: .72rem; color: #556;
+      border-top: 1px solid #e3e7ec;
+  }
+  .tile .foot .n { font-weight: 700; }
+
+  /* Done. The tick is the whole feedback and it has to read at arm's length,
+     because this is checked by glancing at the board, not by reading it. */
+  .tile:has(input:checked) { border-color: #2f6b34; background: #f2f8f2; }
+  .tile:has(input:checked)::after {
+      content: "✓"; position: absolute; top: 4px; right: 6px;
+      font-size: 1.3rem; font-weight: 700; color: #2f6b34;
+      text-shadow: 0 0 4px #fff, 0 0 4px #fff;
+  }
+  .tile:has(input:focus-visible) { outline: 2px solid #334; outline-offset: 2px; }
+
+  /* The app's own prediction of a gap. It is here so nobody walks off to
+     look for a colorway there was never any of — and it comes from the
+     app's numbers, never from the card pile, so the card stays an
+     independent witness when the close compares the two. */
+  .cell.short .tile { border-color: #c08a3e; }
+  .cell.short .tile .foot { background: #fdf6ec; color: #8a5a1f; }
+
+  /* **A peg that needs skeins is work; a peg that can't be filled is not.**
+     Nothing done at the board fixes the second, so they must not share a
+     colour — one is a job to do and the other is somebody else's decision
+     about what gets dyed. */
+  .cell.needs .tile { border-color: var(--accent); }
+  .badge {
+      position: absolute; top: 4px; left: 5px; z-index: 1;
+      padding: 1px 6px; border-radius: 9px;
+      font-size: .7rem; font-weight: 700; line-height: 1.5;
+      background: var(--accent); color: #fff;
+  }
+  .cell.short .badge { background: #8a5a1f; }
+  /* An empty peg with stock behind it: yarn that could be selling and isn't.
+     A plain elapsed time, with no threshold and no escalation — whether an
+     hour matters depends on how busy the stall is and whether anybody is
+     free, neither of which this page can see. It states the fact; a person
+     decides. */
+  .badge.bare { background: #8a2f2a; }
+
+  .cell.reserved .plate {
+      display: flex; align-items: center; justify-content: center;
+      min-height: 96px; padding: 6px; text-align: center;
+      border: 2px dashed #c8cfd8; border-radius: 10px; background: #f4f5f7;
+      font-size: .74rem; color: #778;
+  }
+  .cell.empty .plate {
+      display: flex; align-items: center; justify-content: center;
+      min-height: 96px; border: 2px dashed #dfe4ea; border-radius: 10px;
+      color: #aab; font-size: .74rem;
+  }
+
+  /* The exception, behind one neutral toggle. It presupposes nothing about
+     the bag because the question behind it is the same either way — how many
+     have you got altogether — and the app splits that into pegs and bag. A
+     label that guessed the finding ("couldn't fill it", "found more") ends up
+     contradicting the tile above it in half the cases. */
+  .exc { margin-top: 4px; }
+  .exc > input { position: absolute; opacity: 0; pointer-events: none; }
+  .exc > label {
+      display: block; padding: 6px 4px; cursor: pointer; text-align: center;
+      font-size: .68rem; color: #556; border: 1px solid #d8dee6;
+      border-radius: 7px; background: #fff;
+  }
+  .exc .panel { display: none; margin-top: 4px; }
+  .exc:has(> input:checked) > label { background: #eef2f7; border-color: #9fb0c4; }
+  .exc:has(> input:checked) .panel { display: block; }
+  .exc .panel input[type=number] {
+      width: 100%; font: inherit; font-size: 16px; padding: 8px;
+      border: 1px solid #c8cfd8; border-radius: 7px; background: #fff;
+  }
+  .exc .panel .hint { font-size: .66rem; color: #778; margin-top: 3px; }
+  .exc .counts { list-style: none; display: flex; flex-wrap: wrap; gap: 4px;
+                 margin: 4px 0; padding: 0; }
+  .exc .counts li { margin: 0; }
+  .exc .counts label {
+      display: block; min-width: 30px; padding: 8px 6px; cursor: pointer;
+      text-align: center; font-size: .72rem; font-weight: 700;
+      border: 1px solid #c8cfd8; border-radius: 7px; background: #fff;
+      color: #334;
+  }
+  .exc .counts input { position: absolute; opacity: 0; pointer-events: none; }
+  .exc .counts label:has(input:checked) {
+      background: var(--accent); border-color: var(--accent); color: #fff;
+  }
+
+  .signoff {
+      border: 1px solid #c8cfd8; border-radius: 10px; background: #fff;
+      padding: 14px; margin-bottom: 14px;
+  }
+  .signoff label { display: block; font-size: .85rem; margin-bottom: 4px; }
+  .signoff select, .signoff input[type=text] {
+      width: 100%; font: inherit; font-size: 16px; padding: 10px;
+      border: 1px solid #c8cfd8; border-radius: 8px; background: #fff;
+      margin-bottom: 10px;
+  }
+  .errors { color: #8a2f2a; font-size: .85rem; margin-bottom: 8px; }
+
+  .btn {
+      width: 100%; padding: 16px; font: inherit; font-size: 1.05rem;
+      font-weight: 600; border: 1px solid var(--accent); border-radius: 10px;
+      background: var(--accent); color: #fff; cursor: pointer;
+  }
+  .banner {
+      border: 1px solid #c8cfd8; border-radius: 10px; background: #fff;
+      padding: 14px; margin-bottom: 18px;
+  }
+  .past { font-size: .85rem; color: #667; margin-top: 24px; }
+{% endblock %}
+
+{% block heading_actions %}
+  <a class="up" href="{% url 'restock_index' %}">All boards</a>
+{% endblock %}
+
+{% block content %}
+
+  {% comment %}
+  Board to board without going back out to a menu. The stall gets walked as
+  one circuit — rack, then pegboard, then the next — and a trip to the picker
+  between each is three taps for a thing that is one move in the room.
+
+  Plain links, all of them rendered: no dropdown, because a <select> that
+  needs a script to navigate is one that does nothing on a bad connection,
+  and four names fit on a phone.
+  {% endcomment %}
+  {% if boards|length > 1 %}
+    <nav class="boards">
+      {% for board in boards %}
+        {% if board.pk == fixture.pk %}
+          <span class="here">{{ board.name }}</span>
+        {% else %}
+          <a href="{% url 'restock_board' board.pk %}">{{ board.name }}</a>
+        {% endif %}
+      {% endfor %}
+    </nav>
+  {% endif %}
+
+  {% if messages %}
+    {% for message in messages %}
+      <div class="banner">{{ message }}</div>
+    {% endfor %}
+  {% endif %}
+
+  <p class="lead">
+    Each peg says <strong>how many to put out</strong> and
+    <strong>how many should be left in the bag</strong> afterwards. Fill it,
+    glance in the bag, and tap the tile if both look right. A peg the app
+    already knows is empty still gets tapped — <strong>you did the job</strong>,
+    and saying so is the point of the walk.
+  </p>
+  <p class="lead">
+    A <strong>blue peg with +2 on it</strong> sold two since it was last
+    filled, so two go back on it — that's the work. <strong>Amber</strong>
+    means the app doesn't think you have enough to fill it, which isn't work:
+    nothing you do at the board fixes it. Worth a very quick look either way —
+    if it fills, say so.
+  </p>
+  <p class="lead">
+    <strong>“empty 2 hours”</strong> means that peg has probably had nothing
+    on it since then, and there's yarn in the bag that could be. It's the one
+    thing here worth hurrying about — and it's just the elapsed time, not a
+    telling-off. Do as many passes a day as suit you; nothing counts them.
+  </p>
+  <p class="lead">
+    Answering all {{ homes }} peg{{ homes|pluralize }} records a <strong>full check</strong> —
+    what open and close are for. A shorter pass is still a good pass and
+    nothing is held against it.
+  </p>
+  {% comment %}
+  Deliberately says nothing about *which way* the numbers are wrong. An
+  earlier version led with "the bag is empty", which is the common case but
+  quietly tells somebody who expected ten and found three that this isn't for
+  them — and a peg the app calls full that is actually bare is the most
+  expensive miss on the board and mentions the bag not at all.
+  {% endcomment %}
+  <p class="lead">
+    <strong>If what you're holding doesn't match the tile, tap
+    <em>count it</em></strong> and say how many you've got altogether — pegs
+    and bag. More than it said, fewer, or none at all: same button, and the
+    app works out the rest. Nobody needs to count a full bag; a rough "that's
+    nowhere near ten" is worth saying.
+  </p>
+
+  <form method="post">
+    {% csrf_token %}
+
+    <div class="board-scroll">
+      <div class="board">
+        {% for row in rows %}
+          <div class="brow">
+            {% for cell in row %}
+              {% if cell.kind == "home" %}
+                <div class="cell{% if cell.short %} short{% elif cell.needs_refill %} needs{% endif %}">
+                  <label class="tile">
+                    <input type="checkbox" name="done_{{ cell.position.pk }}" value="1">
+                    {% comment %}
+                    Straight off the ledger: this many sold since somebody
+                    last filled this peg, so this many go back on it. Only
+                    drawn when there is something to say — a badge on every
+                    tile is a badge nobody reads.
+                    {% endcomment %}
+                    {% if cell.bare_since %}
+                      <span class="badge bare">empty {{ cell.bare_since|timesince }}</span>
+                    {% elif cell.sold %}
+                      <span class="badge">+{{ cell.sold }}</span>
+                    {% endif %}
+                    {% if cell.image %}
+                      <img src="{{ cell.image }}" alt="{{ cell.product.name }}">
+                    {% else %}
+                      <span class="name">{{ cell.product.recipe.name|default:cell.product.name }}</span>
+                    {% endif %}
+                    {% comment %}
+                    Two checkable claims, not a total. "Put 2 out" is read off
+                    the peg and "1 left in the bag" is read off the bag —
+                    both at the moment the work finishes. A total would need
+                    the peg counted, the bag counted and the two added, which
+                    is not something anybody can falsify at a glance.
+                    {% endcomment %}
+                    <span class="foot">
+                      <span class="n">{{ cell.expected }}/{{ cell.capacity }}</span>
+                      <span>bag {{ cell.backstock }}</span>
+                    </span>
+                  </label>
+
+                  <div class="exc">
+                    <input type="checkbox" id="exc_{{ cell.position.pk }}">
+                    <label for="exc_{{ cell.position.pk }}">count it</label>
+
+                    {% comment %}
+                    **One question: how many have you got altogether.** The
+                    app splits it — pegs first, remainder to the bag — because
+                    that is what a person does and it is the only split that
+                    needs no assumption about what was already hanging up.
+
+                    An earlier version asked "how many in the bag" and added
+                    the display's capacity on. That quietly assumed the peg
+                    started full, and a peg at 1 of 2 breaks it: the one you
+                    found goes *on the peg*, the bag stays empty, and the
+                    arithmetic reports one more than exists.
+
+                    Buttons cover 0 to what the display holds, which is every
+                    answer where the bag ends up empty — the common one. Past
+                    that there is a bag, and no ceiling, so it is typed.
+                    {% endcomment %}
+                    <div class="panel">
+                      <div class="hint">How many have you got altogether?</div>
+                      <ul class="counts">
+                        {% for n in cell.options %}
+                          <li>
+                            <label>
+                              <input type="radio" name="count_{{ cell.position.pk }}" value="{{ n }}"> {{ n }}
+                            </label>
+                          </li>
+                        {% endfor %}
+                      </ul>
+                      <div class="hint">More than {{ cell.capacity }}? Say how many:</div>
+                      <input type="number" name="more_{{ cell.position.pk }}"
+                             inputmode="numeric" min="0" max="9999"
+                             placeholder="altogether">
+                      <div class="hint">
+                        The pegs get filled first; anything over goes in the bag.
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              {% elif cell.kind == "reserved" %}
+                <div class="cell reserved">
+                  <div class="plate">{{ cell.position.reserved_label }}</div>
+                </div>
+              {% else %}
+                <div class="cell empty"><div class="plate">—</div></div>
+              {% endif %}
+            {% endfor %}
+          </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    {% comment %}
+    The name is what turns a page of ticks into a promise somebody made.
+    Pre-filled from the signed cookie, which types for you and never stands in
+    for the PIN check — see scarves/crew.py.
+    {% endcomment %}
+    <div class="signoff">
+      {% if form.non_field_errors %}
+        <div class="errors">{{ form.non_field_errors }}</div>
+      {% endif %}
+      {% for field in form %}
+        <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+        {{ field }}
+        {% for error in field.errors %}<div class="errors">{{ error }}</div>{% endfor %}
+      {% endfor %}
+      {% if remembered %}
+        <p class="lead">
+          Filled in for you. <a href="?{{ forget_param }}=1">Not you?</a>
+        </p>
+      {% endif %}
+    </div>
+
+    <button class="btn" type="submit">Save what I filled</button>
+  </form>
+
+  {% if recent %}
+    <div class="past">
+      <strong>Recent passes</strong>
+      {% if last_full %}
+        — last full check {{ last_full.created_at|date:"D d M, H:i" }}
+      {% endif %}
+      <ul>
+        {% for walk in recent %}
+          <li>
+            {{ walk.created_at|date:"D d M, H:i" }}
+            {% if walk.employee %}— {{ walk.employee.name }}{% endif %}
+            {% if walk.is_full %}<strong>· full check</strong>{% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+
+{% endblock %}

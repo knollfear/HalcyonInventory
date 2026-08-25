@@ -1,0 +1,46 @@
+{% extends "scarves/base_internal.html" %}
+{% comment %}
+The picker for the map editor. Separate from the restock picker because they
+are different jobs for different people: walking a board happens at the stall
+on a phone with no account, deciding what hangs where happens sitting down.
+{% endcomment %}
+
+{% block title %}Display Map{% endblock %}
+{% block heading %}Display map{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 720px; }
+  .card {
+      display: block; border: 1px solid #c8cfd8; border-radius: 10px;
+      background: #fff; padding: 16px; margin-bottom: 12px;
+      text-decoration: none; color: inherit;
+  }
+  .card .when { display: block; font-size: .85rem; color: #667; margin-top: 4px; }
+{% endblock %}
+
+{% block content %}
+
+  <p class="lead">
+    Say what hangs where. Assignments only — nothing here counts stock or
+    records a restock; that happens at the stall, on the
+    <a href="{% url 'restock_index' %}">restock pages</a>.
+  </p>
+
+  {% for fixture in fixtures %}
+    <a class="card" href="{% url 'display_map' fixture.pk %}">
+      <strong>{{ fixture.name }}</strong>
+      <span class="when">
+        {{ fixture.rows }} × {{ fixture.columns }},
+        {{ fixture.capacity_per_position }} per peg{% if fixture.raw_product %}
+        — {{ fixture.raw_product.name }}{% endif %}
+      </span>
+    </a>
+  {% empty %}
+    <p class="lead">
+      No display fixtures yet. Create one with
+      <code>manage.py seed_display_board</code> or in the admin.
+    </p>
+  {% endfor %}
+
+{% endblock %}

@@ -229,6 +229,23 @@ class RawProduct(models.Model):
         default=4,
         help_text="How many of this raw item you normally dye in one bath.",
     )
+    made_in_a_dye_bath = models.BooleanField(
+        default=True,
+        help_text=(
+            "Uncheck for anything a dye bath cannot produce, and it drops off "
+            "every production list.\n\n"
+            "The case this exists for is the fancy veils. A fancy veil is an "
+            "already-dyed scarf with extra line work added — so it *has* a "
+            "colorway and passes every dyed-only query in the app, but you "
+            "can never answer a shortage of one by dyeing. Sending somebody "
+            "to the dye room for it is asking for a thing that isn't made "
+            "there.\n\n"
+            "Undyed passthroughs are excluded by their null recipe instead "
+            "and don't need this — see FinishedProduct.recipe. Two markers "
+            "because they are two different claims: a passthrough was never "
+            "dyed at all, a fancy veil was dyed and then worked on."
+        ),
+    )
     order_url = models.URLField(
         blank=True,
         help_text="Where you buy this from (supplier URL).",
@@ -259,6 +276,17 @@ class RawProduct(models.Model):
             "product that already exists, because that would silently "
             "re-schedule production. Use the raw-product admin action "
             "'Bulk update finished product par' to change existing ones."
+        ),
+    )
+    display_slots_default = models.PositiveIntegerField(
+        default=2,
+        help_text=(
+            "How many units of a new colorway of this blank go on display — "
+            "a peg that holds two skeins, a spot on the scarf pole. Only "
+            "applies at creation, like finished_par_default; use the "
+            "'Bulk update display slots' action to change existing ones. "
+            "This is display *capacity*, and it is not a production target: "
+            "see FinishedProduct.display_slots."
         ),
     )
     square_item_id = models.CharField(
@@ -424,9 +452,21 @@ class FinishedProduct(models.Model):
         default=8,
         help_text="How many finished items of this kind you expect to have.",
     )
-    is_fancy = models.BooleanField(
-        default=False,
-        help_text="Mark as fancy to distinguish premium designs."
+    display_slots = models.PositiveIntegerField(
+        default=2,
+        help_text=(
+            "How many of this go on display when the display is full — pegs "
+            "times what a peg holds, or spots on the pole. **Capacity, not a "
+            "target.** Nothing schedules production to fill it: a bigger "
+            "display is somewhere to put stock, never a reason to make more, "
+            "and par does not move when the shop gets a new rack.\n\n"
+            "What it is for is telling the Sunday close where the backstock "
+            "ends. `number_on_hand` counts display and backstock together, so "
+            "`number_on_hand <= display_slots` is the app saying the bag is "
+            "empty — which is exactly when the crew should be holding this "
+            "product's kanban tag. Zero means this never goes on display, so "
+            "no tag will ever come up for it and the close leaves it alone."
+        ),
     )
     sku = models.CharField(
         max_length=50,
@@ -547,6 +587,41 @@ class FinishedProduct(models.Model):
         if self.par is None:
             return 0
         return max(self.par - self.number_on_hand, 0)
+
+    @property
+    def backstock(self) -> int:
+        """What the app believes is still in the bag, never stored.
+
+        `number_on_hand` is the *total* — what is hanging on the display and
+        what is in the bag behind it, together — and that is deliberate.
+        Storing a backstock number instead would let the shop's own furniture
+        order dye baths: fill a new rack from the bags and a backstock tracker
+        reads empty and calls for production, when nothing sold and the stock
+        simply moved across the stall. Deriving it means moving a skein from
+        bag to peg changes nothing anywhere.
+
+        So this is a reading, not a record. It is what the Sunday close's
+        expected list is built on, and nothing else should treat it as a
+        trigger.
+        """
+        return max(self.number_on_hand - self.display_slots, 0)
+
+    @property
+    def display_hole(self) -> int:
+        """How many homes on the display this can't fill. Nothing reads it yet.
+
+        `number_on_hand < display_slots` means there is a bare peg or an empty
+        spot on the pole, and once the display is mapped that is answerable
+        from a desk instead of by walking the stall — which is the whole
+        reason the capacity is recorded rather than remembered.
+
+        **It is a merchandising reading, never a production trigger.** A hook
+        that holds four exists precisely so that three is allowed to be
+        enough; wiring this to a dye bath would put display size back on the
+        path to production, which is the coupling the close was rebuilt to
+        remove. Par decides what gets made, and par is about demand.
+        """
+        return max(self.display_slots - self.number_on_hand, 0)
 
     @property
     def bath_size(self) -> int:
@@ -684,6 +759,8 @@ class InventoryLog(models.Model):
     SOURCE_CARD_BACKFILL = "card_backfill"
     SOURCE_BULK_UPDATE = "bulk_update"
     SOURCE_SUNDAY_CLOSE = "sunday_close"
+    SOURCE_RESTOCK = "restock"
+    SOURCE_FANCY_CONVERSION = "fancy_conversion"
     SOURCE_SQUARE_WEBHOOK = "square_webhook"
     SOURCE_SQUARE_IMPORT = "square_import"
     SOURCE_UNMATCHED_SALE = "unmatched_sale"
@@ -695,6 +772,8 @@ class InventoryLog(models.Model):
         (SOURCE_CARD_BACKFILL, "Kanban card backfill"),
         (SOURCE_BULK_UPDATE, "Bulk inventory update"),
         (SOURCE_SUNDAY_CLOSE, "Sunday close"),
+        (SOURCE_RESTOCK, "Restocking the display"),
+        (SOURCE_FANCY_CONVERSION, "Converted to fancy"),
         (SOURCE_SQUARE_WEBHOOK, "Square webhook"),
         (SOURCE_SQUARE_IMPORT, "Square sales import"),
         (SOURCE_UNMATCHED_SALE, "Unidentified sale, resolved"),
@@ -1532,14 +1611,363 @@ class ProductionRunRow(models.Model):
         return self.applied_log_id is not None
 
 
-class CloseRun(models.Model):
-    """One Sunday-night close: the app's zeros, checked against the tags in hand.
+class DisplayFixture(models.Model):
+    """One piece of furniture the stock hangs on: a pegboard, a scarf pole.
 
-    Stock that has run out is the one state the app is sure about — every
-    sale clamps at zero, so an undercounted row eventually funnels into it —
-    and the crew are trained to keep a product's tag when the last of it
-    goes to display. Two systems, one physical pile, and the close is where
-    they are read against each other while the bags are still in the van.
+    A grid, plus how many units one position holds. That is genuinely all the
+    shape there is — the yarn board is a rectangle of pegs and every peg takes
+    the same number of skeins, so a row/column pair addresses a position and
+    `capacity_per_position` says what fits on it.
+
+    **The capacity is a ceiling, not a target.** Swapping two-skein hooks for
+    four-skein ones doubles what the board can absorb and must change nothing
+    about how much gets dyed — see `FinishedProduct.display_slots` and the
+    northstar in CLAUDE.md. It is one number on one row precisely so that the
+    change is cheap and obviously has no other consequences.
+
+    Orientation is data. Whether the board reads 6×7 or 7×6 is a thing to
+    check against the wall, not a thing to decide in code.
+    """
+
+    name = models.CharField(max_length=120, unique=True)
+    rows = models.PositiveIntegerField(default=7)
+    columns = models.PositiveIntegerField(default=6)
+    capacity_per_position = models.PositiveIntegerField(
+        default=2,
+        help_text=(
+            "How many units one peg or spot holds. Two-skein hooks today. "
+            "Capacity, never a production target."
+        ),
+    )
+    raw_product = models.ForeignKey(
+        "RawProduct",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="display_fixtures",
+        help_text=(
+            "The blank this board is for. In the shop a board tends to carry "
+            "one product in all its colorways, and naming it here is what "
+            "lets the board say which of that blank's colorways aren't up "
+            "anywhere — the only gap worth fussing about, and one a global "
+            "list can't express.\n\n"
+            "**A lens, not a rule.** It never restricts what can be hung: a "
+            "board that ends up carrying a stray from another blank is a "
+            "thing that happens on a stall, and an app that refused it would "
+            "be arguing with the shelf. Blank means a mixed board, which "
+            "simply has no such report."
+        ),
+    )
+    is_active = models.BooleanField(default=True)
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
+
+    def ensure_positions(self):
+        """Every cell of the grid has a row in the table. Adds only.
+
+        A fixture without positions is a board that cannot be used: the grid
+        renders as dashes, the editor offers no dropdowns, and there is
+        nothing to hang a colorway on. That was survivable while boards were
+        only ever built by `seed_display_board`, and it stopped being so the
+        moment one got made in the admin — which is the obvious thing to do
+        and produced a board that silently did nothing.
+
+        So the pegs follow the fixture, wherever it is created from. Called
+        by a `post_save` signal rather than from each site, for the same
+        reason `mirror_passthrough_stock` is: a route that forgot would
+        produce a board that looks fine in a list and is dead when opened.
+
+        Adds only. Positions outside a shrunken grid are left alone rather
+        than deleted — one of them may have a colorway on it, and quietly
+        dropping that is worse than carrying a row `grid()` never reads.
+        """
+        existing = set(self.positions.values_list("row", "column"))
+        missing = [
+            DisplayPosition(fixture=self, row=row, column=column)
+            for row in range(1, self.rows + 1)
+            for column in range(1, self.columns + 1)
+            if (row, column) not in existing
+        ]
+        if missing:
+            DisplayPosition.objects.bulk_create(missing, ignore_conflicts=True)
+        return len(missing)
+
+    def grid(self):
+        """Rows of positions, in reading order, with the gaps filled in.
+
+        A fixture's positions are rows in the database and a board is a
+        rectangle, so the two have to be reconciled somewhere. Doing it here
+        means the template never has to reason about a missing peg — an
+        unassigned position and one nobody has created yet look the same to
+        it, which is right, because on the wall they are the same empty hook.
+        """
+        by_cell = {(p.row, p.column): p for p in self.positions.all()}
+        return [
+            [by_cell.get((r, c)) for c in range(1, self.columns + 1)]
+            for r in range(1, self.rows + 1)
+        ]
+
+
+class DisplayPosition(models.Model):
+    """One peg. What lives there, or what the space is used for instead.
+
+    Three states, and telling the last two apart is the whole reason
+    `reserved_label` exists rather than a bare null product:
+
+    - **assigned** — a colorway lives here and the restock walk asks about it
+    - **empty** — a real home with nothing assigned to it yet, which is a gap
+      in the map and worth seeing
+    - **reserved** — not a home at all. The price tag sits in the middle of the
+      top row, and a space taken up by signage must never read as a colorway
+      nobody has got round to assigning.
+
+    `on_delete=SET_NULL` because a position is configuration, not history.
+    Retiring a colorway empties its peg; it does not protect it. That is the
+    one place the "retire, don't delete" rule doesn't apply, because there is
+    nothing here anybody would want to read back later — the wall moved on.
+    """
+
+    fixture = models.ForeignKey(
+        DisplayFixture,
+        on_delete=models.CASCADE,
+        related_name="positions",
+    )
+    row = models.PositiveIntegerField()
+    column = models.PositiveIntegerField()
+    finished_product = models.ForeignKey(
+        FinishedProduct,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="display_positions",
+    )
+    reserved_label = models.CharField(
+        max_length=60,
+        blank=True,
+        help_text=(
+            "Set when this space isn't a home — 'Price tag', signage. Blank "
+            "means a real peg. A reserved position is never restocked, never "
+            "counted, and never contributes display capacity."
+        ),
+    )
+
+    class Meta:
+        ordering = ["fixture", "row", "column"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["fixture", "row", "column"],
+                name="one_thing_per_display_position",
+            ),
+        ]
+
+    def __str__(self):
+        where = f"{self.fixture.name} r{self.row}c{self.column}"
+        if self.reserved_label:
+            return f"{where} ({self.reserved_label})"
+        return f"{where}: {self.finished_product or 'empty'}"
+
+    @property
+    def is_home(self) -> bool:
+        """A real peg a colorway can live on."""
+        return not self.reserved_label
+
+
+def sync_display_slots(product):
+    """Write a product's display capacity from the map it appears on.
+
+    **The map is the source and `display_slots` is what everything reads.**
+    One writer, called whenever an assignment changes, rather than two numbers
+    that agree until somebody edits one of them. The same bargain `save()`
+    makes with SKUs: derived once, stored, and read everywhere without the
+    reader needing to know where it came from.
+
+    A product on no fixture is left exactly as it is rather than zeroed. Zero
+    means "never goes on display", which would quietly drop it off the Sunday
+    close — and "nobody has mapped this yet" is not the same claim as "this
+    never goes out". The map page lists those instead, loudly, because a
+    silently unmapped colorway is one the close stops asking about.
+    """
+    if product is None:
+        return
+    slots = sum(
+        position.fixture.capacity_per_position
+        for position in product.display_positions.select_related("fixture")
+        if position.is_home and position.fixture.is_active
+    )
+    if slots and product.display_slots != slots:
+        FinishedProduct.objects.filter(pk=product.pk).update(display_slots=slots)
+        product.display_slots = slots
+
+
+class RestockPass(models.Model):
+    """One walk down a fixture, and somebody's name on the result.
+
+    **This is a repeatable promise that a task was complete**, not an audit.
+    It happens at open — where the week's production physically enters the
+    display — and again at close, and at minimum at the end of every shift.
+    The job is that the display is full; the reconciliation the Sunday close
+    does is a different question with a different lifespan.
+
+    Which is why this is not day-scoped the way `CloseRun` is. A close is one
+    per evening because two would split one night's findings; a restock is as
+    many as there were shifts, and each is its own completed promise.
+
+    Unlike a `ProductionRun` this is worth keeping. A run is scaffolding and
+    the `InventoryLog` is what survives it — true here too for the *stock* —
+    but "was the board full when we opened?" is a real question about how the
+    day went, and only the passes can answer it.
+    """
+
+    fixture = models.ForeignKey(
+        DisplayFixture,
+        on_delete=models.CASCADE,
+        related_name="restock_passes",
+    )
+    employee = models.ForeignKey(
+        Employee,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="restock_passes",
+        help_text="Whose PIN signed the promise.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    is_full = models.BooleanField(
+        default=False,
+        help_text=(
+            "Every peg on the board was answered in this pass. Expected at "
+            "open and at close, and worth naming because of what it buys: "
+            "afterwards *every* position has a fresh baseline, so everything "
+            "the board predicts is trustworthy. After a partial pass some of "
+            "it isn't.\n\n"
+            "Frozen rather than derived, because the board gets colorways "
+            "hung on it and a pass that covered everything at the time must "
+            "keep saying so.\n\n"
+            "This recognises completeness; nothing anywhere penalises the "
+            "lack of it. A pass covering nine pegs is a completed piece of "
+            "work, not a failed full check."
+        ),
+    )
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        kind = "fully restocked" if self.is_full else "restocked"
+        return f"{self.fixture.name} {kind} {self.created_at:%d %b %Y %H:%M}"
+
+
+class RestockCheck(models.Model):
+    """One peg, on one pass: what was expected there and what was really there.
+
+    Most of these say "as predicted" and move nothing, which is the point —
+    the ordinary answer has to be one tap or the walk stops happening. The
+    two exceptions are where stock moves, and they are mirror images:
+
+    - **short** — the peg couldn't be filled and the bag behind it is empty,
+      so the app was over. The worked case: app says 3, one on the peg, none
+      in the bag, and −2 puts it right.
+    - **over** — the peg filled when the app said it couldn't, so the app was
+      under. Worth the quick look precisely because the app predicted a gap
+      and predicting gaps wrongly is how a colorway stops being offered.
+
+    Row and column are frozen alongside the position, because the map gets
+    rebuilt and a history that re-reads it would relocate things that already
+    happened. Same reasoning as the production sheet freezing its bath size.
+    """
+
+    AS_PREDICTED = "as_predicted"
+    SHORT = "short"
+    OVER = "over"
+    RESULT_CHOICES = [
+        (AS_PREDICTED, "As predicted — filled as far as the app said it could"),
+        (SHORT, "Couldn't fill it — the app was over"),
+        (OVER, "Filled it anyway — the app was under"),
+    ]
+
+    restock_pass = models.ForeignKey(
+        RestockPass,
+        on_delete=models.CASCADE,
+        related_name="checks",
+    )
+    position = models.ForeignKey(
+        DisplayPosition,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="checks",
+    )
+    finished_product = models.ForeignKey(
+        FinishedProduct,
+        on_delete=models.PROTECT,
+        related_name="restock_checks",
+    )
+    row = models.PositiveIntegerField()
+    column = models.PositiveIntegerField()
+    result = models.CharField(
+        max_length=20,
+        choices=RESULT_CHOICES,
+        default=AS_PREDICTED,
+    )
+    expected = models.PositiveIntegerField(
+        help_text=(
+            "What the app said could go on this peg — `min(stock, capacity)`, "
+            "frozen. A peg the app knew was empty expects zero, and "
+            "confirming that is a completed job rather than a failure."
+        ),
+    )
+    counted = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="The product's true total. Only an exception asks for one.",
+    )
+    applied_log = models.ForeignKey(
+        InventoryLog,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+        help_text=(
+            "The adjustment this check caused, if it caused one. Set once — "
+            "the page gets reopened and the button gets double-tapped."
+        ),
+    )
+
+    class Meta:
+        ordering = ["restock_pass", "row", "column"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["restock_pass", "row", "column"],
+                name="one_restock_check_per_peg",
+            ),
+        ]
+
+    def __str__(self):
+        return f"r{self.row}c{self.column} {self.finished_product}: {self.result}"
+
+
+class CloseRun(models.Model):
+    """One Sunday-night close: the app's empty bags, checked against the tags.
+
+    The crew keep a product's kanban tag when the last of it comes out of the
+    bag and goes onto the display. That is a statement about the **bag**, not
+    about the shelf — there are still one to three units hanging on the pegs —
+    and reading it as "we have none" is the mistake this model was rebuilt to
+    stop making. `number_on_hand` counts display and backstock together, so
+    the app's own version of the same statement is
+    `number_on_hand <= display_slots`. Two systems, one physical pile, and the
+    close is where they are read against each other while the van is still
+    being loaded.
+
+    Every answered row is a **count**, and the count is the total: fill the
+    display, then count what is left in the bag. A tag in hand just means the
+    second half is nothing, so the answer is a number between zero and the
+    display's capacity and takes about as long as a tick did.
 
     **The failures are the deliverable, and that is what makes this a record.**
     A `ProductionRun` is deliberately scaffolding: it is how paper and phone
@@ -1609,16 +2037,30 @@ class CloseRun(models.Model):
 
 
 class CloseRunRow(models.Model):
-    """One product on one close: what the app believed, and what was in hand.
+    """One product on one close: what the app believed, and what was counted.
 
-    Three outcomes, and the two disagreements point at opposite ends of the
-    pipeline. A **missing** tag means the app undercounts — stock arrived
-    without being recorded — and it is the only outcome anybody types a
-    number for. An **extra** tag means the app overcounts, which is stock
-    that left without registering: a swapped sale, a hand-keyed line, or a
-    webhook that has quietly stopped delivering. That last one is worth the
-    page on its own, because a dropped sale physically becomes an extra tag a
-    week later and this finds it without cross-checking Square at all.
+    **Every answered row carries a number, and the number is the total** —
+    what is hanging on the display plus what is left in the bag once the
+    display has been filled. The kanban tag is not the answer any more; it is
+    what puts the product in front of somebody. Holding it means the bag is
+    empty, so the count is bounded by `display_slots` and takes seconds.
+
+    That is the pivot this model exists after. The close used to read a tag
+    in hand as "set it to zero", which quietly deleted the one to three units
+    still hanging on the pegs — and once display stock is invisible, every
+    rack the shop adds reads as a sale and calls for a dye bath. Counting the
+    display instead means stock moving from bag to peg changes nothing.
+
+    The outcome is then just the sign of `counted - on_hand_before`, and the
+    two disagreements point at opposite ends of the pipeline. **Missing** is
+    the app undercounting — stock that arrived without being recorded.
+    **Extra** is the app overcounting, which is stock that left without
+    registering: a swapped sale, a hand-keyed line, or a webhook that has
+    quietly stopped delivering. That last one is worth the page on its own,
+    because a dropped sale physically becomes a tag in somebody's hand about
+    a week later, and this finds it without cross-checking Square at all.
+
+    Whether the row was *predicted* is a separate axis — see `added_by_tag`.
     """
 
     PENDING = "pending"
@@ -1626,10 +2068,10 @@ class CloseRunRow(models.Model):
     MISSING = "missing"
     EXTRA = "extra"
     OUTCOME_CHOICES = [
-        (PENDING, "Not answered yet"),
-        (CONFIRMED, "Tag in hand — agrees"),
-        (MISSING, "No tag — app undercounts"),
-        (EXTRA, "Tag not predicted — app overcounts"),
+        (PENDING, "Not counted yet"),
+        (CONFIRMED, "Counted — the app agreed"),
+        (MISSING, "Counted more than the app had — app undercounts"),
+        (EXTRA, "Counted less than the app had — app overcounts"),
     ]
 
     run = models.ForeignKey(
@@ -1658,7 +2100,33 @@ class CloseRunRow(models.Model):
     counted = models.PositiveIntegerField(
         null=True,
         blank=True,
-        help_text="The bag's actual count. Only a missing tag asks for one.",
+        help_text=(
+            "The true total found in hand — everything on display plus "
+            "whatever is left in the bag after the display was filled. Every "
+            "answered row has one; the outcome is the sign of "
+            "`counted - on_hand_before`."
+        ),
+    )
+    display_slots = models.PositiveIntegerField(
+        default=0,
+        help_text=(
+            "What the display held when this row was made. Frozen for the "
+            "same reason the production sheet freezes its bath size: the "
+            "person answered '0, 1 or 2?' because that is what the paper and "
+            "the pegs said that night, and re-reading it later reads back a "
+            "display that has since been rebuilt."
+        ),
+    )
+    added_by_tag = models.BooleanField(
+        default=False,
+        help_text=(
+            "This row was not predicted — somebody was holding a tag the "
+            "close didn't ask about. Kept apart from the *outcome*, which "
+            "records which way the app was wrong: an unpredicted tag usually "
+            "means an overcount but doesn't have to, and a predicted row can "
+            "come out over too. Conflating the two put the wrong thing in the "
+            "one number this page produces."
+        ),
     )
     decided_at = models.DateTimeField(null=True, blank=True)
     applied_log = models.ForeignKey(

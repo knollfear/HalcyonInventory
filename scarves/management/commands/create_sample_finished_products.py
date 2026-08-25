@@ -55,9 +55,7 @@ class Command(BaseCommand):
                         price = (raw_product.price or Decimal("0")) * Decimal("3.0")
 
                     # Simple rule for "fancy": higher suggested prices are fancy
-                    is_fancy = False
                     if raw_product.suggested_price is not None:
-                        is_fancy = raw_product.suggested_price >= Decimal("60.00")
 
                     # Random stock between 0 and 10
                     number_on_hand = random.randint(0, 10)
@@ -69,7 +67,6 @@ class Command(BaseCommand):
                         defaults={
                             "price": price,
                             "number_on_hand": number_on_hand,
-                            "is_fancy": is_fancy,
                             "sku": "",
                             "description": (
                                 f"Sample finished product using {raw_product.name} "
@@ -82,7 +79,6 @@ class Command(BaseCommand):
                     if not created:
                         # Update fields if it already existed
                         finished.price = price
-                        finished.is_fancy = is_fancy
                         finished.number_on_hand = number_on_hand
                         finished.is_active = True
                         finished.save()

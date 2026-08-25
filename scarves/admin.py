@@ -26,6 +26,9 @@ from .models import (
     FinishedProductImage,
     CloseRun,
     CloseRunRow,
+    DisplayFixture,
+    DisplayPosition,
+    RestockPass,
     InventoryLog,
     ProductImageUpload,
     ProductionRun,
@@ -244,6 +247,129 @@ def bulk_update_finished_par(modeladmin, request, queryset):
 bulk_update_finished_par.short_description = "Bulk update finished product par"
 
 
+def bulk_update_display_slots(modeladmin, request, queryset):
+    """Set `display_slots` on every active finished product of a blank.
+
+    Display capacity, not a production target — this changes what the Sunday
+    close takes the bag's edge to be, and nothing else. Par is untouched here
+    on purpose: a bigger rack is somewhere to put stock, never a reason to
+    make more of it.
+    """
+    if "apply" in request.POST:
+        raw_slots = request.POST.get("new_slots", "").strip()
+        try:
+            new_slots = int(raw_slots)
+            if new_slots < 0:
+                raise ValueError
+        except ValueError:
+            messages.error(request, f"Invalid display slots: '{raw_slots}'")
+            return None
+
+        updated = FinishedProduct.objects.filter(
+            raw_product__in=queryset, is_active=True
+        ).update(display_slots=new_slots)
+
+        messages.success(
+            request,
+            f"Set display slots to {new_slots} on {updated} finished "
+            f"product(s) across {queryset.count()} raw product(s). Par was "
+            f"not touched.",
+        )
+        return None
+
+    rows = []
+    for rp in queryset.annotate(
+        active_count=Count(
+            "finished_products",
+            filter=Q(finished_products__is_active=True),
+        ),
+    ):
+        current = sorted(
+            set(
+                rp.finished_products.filter(is_active=True)
+                .values_list("display_slots", flat=True)
+            )
+        )
+        rows.append({
+            "rp": rp,
+            "active_count": rp.active_count,
+            "current_slots": ", ".join(str(s) for s in current) or "—",
+        })
+
+    return TemplateResponse(request, "admin/scarves/bulk_display_slots.html", {
+        "rows": rows,
+        "queryset": queryset,
+        "action_checkbox_name": admin.helpers.ACTION_CHECKBOX_NAME,
+        "opts": modeladmin.model._meta,
+    })
+
+
+bulk_update_display_slots.short_description = "Bulk update display slots"
+
+
+class DisplayPositionInline(admin.TabularInline):
+    """The pegs, edited by hand.
+
+    A grid typed into a table is not the editor this eventually wants — the
+    real one is drag-and-drop over the picture, which is a desk job on wifi
+    and the one place JavaScript genuinely earns its keep. But the board gets
+    built once and then barely changes, so hand-building it is what unblocks
+    the walk, and the walk is the thing that has to exist.
+    """
+
+    model = DisplayPosition
+    extra = 0
+    fields = ("row", "column", "finished_product", "reserved_label")
+    autocomplete_fields = ("finished_product",)
+    ordering = ("row", "column")
+
+
+@admin.register(DisplayFixture)
+class DisplayFixtureAdmin(admin.ModelAdmin):
+    list_display = (
+        "name",
+        "rows",
+        "columns",
+        "capacity_per_position",
+        "assigned_count",
+        "is_active",
+    )
+    list_filter = ("is_active",)
+    search_fields = ("name",)
+    inlines = [DisplayPositionInline]
+
+    @admin.display(description="Pegs assigned")
+    def assigned_count(self, obj):
+        return obj.positions.filter(finished_product__isnull=False).count()
+
+
+@admin.register(RestockPass)
+class RestockPassAdmin(admin.ModelAdmin):
+    """Read-only, like the close's rows and for the same reason.
+
+    A pass is a record of a promise somebody made about a physical board at a
+    moment. Editing one afterwards would make it a record of nothing.
+    """
+
+    list_display = ("fixture", "created_at", "employee", "checked", "corrections")
+    list_filter = ("fixture", "employee")
+    date_hierarchy = "created_at"
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    @admin.display(description="Pegs confirmed")
+    def checked(self, obj):
+        return obj.checks.count()
+
+    @admin.display(description="App put right")
+    def corrections(self, obj):
+        return obj.checks.exclude(applied_log__isnull=True).count()
+
+
 @admin.register(DyeBrand)
 class DyeBrandAdmin(admin.ModelAdmin):
     list_display = ("name", "website")
@@ -359,11 +485,12 @@ class RawProductAdmin(admin.ModelAdmin):
         "number_on_hand",
         "par_level",
         "finished_par_default",
+        "display_slots_default",
         "is_active",
         "catalog_group",
         "square_item_id",
     )
-    list_editable = ("par_level", "finished_par_default")
+    list_editable = ("par_level", "finished_par_default", "display_slots_default")
     list_filter = ("category", "is_active", "catalog_group")
     search_fields = ("name", "category__name", "sku")
     ordering = ("category__name", "name")
@@ -371,6 +498,7 @@ class RawProductAdmin(admin.ModelAdmin):
         preview_square_match,
         bulk_update_finished_price,
         bulk_update_finished_par,
+        bulk_update_display_slots,
     ]
 
 
@@ -415,6 +543,7 @@ class FinishedProductAdmin(admin.ModelAdmin):
         "price",
         "number_on_hand",
         "par",
+        "display_slots",
         "is_active",
         "created_at",
     )
