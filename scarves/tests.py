@@ -10275,6 +10275,134 @@ class NotMadeInADyeBathTests(TestCase):
         self.assertTrue(ordinary.made_in_a_dye_bath)
 
 
+class CopyBoardLayoutTests(TestCase):
+    """The yarn boards are one pattern repeated per base, so copy it."""
+
+    def setUp(self):
+        self.category, _ = RawProductCategory.objects.get_or_create(name="Yarn")
+        self.heavenly = RawProduct.objects.create(
+            name="Heavenly", category=self.category, price="9.00"
+        )
+        self.homespun = RawProduct.objects.create(
+            name="Homespun", category=self.category, price="9.00"
+        )
+        self.recipes = [make_recipe(n) for n in ("Aegean", "Ember", "Lichen")]
+
+        self.source = make_board("Heavenly Board", rows=3, columns=3, capacity=2)
+        self.source.raw_product = self.heavenly
+        self.source.save(update_fields=["raw_product"])
+        self.target = make_board("Homespun Board", rows=3, columns=3, capacity=2)
+        self.target.raw_product = self.homespun
+        self.target.save(update_fields=["raw_product"])
+
+        for i, recipe in enumerate(self.recipes):
+            hang(self.source, self._product(self.heavenly, recipe), 2, i + 1)
+
+    def _product(self, blank, recipe):
+        return FinishedProduct.objects.create(
+            name=f"{recipe.name} {blank.name}", raw_product=blank,
+            recipe=recipe, price="30.00",
+        )
+
+    def _run(self, **opts):
+        out = StringIO()
+        call_command(
+            "copy_board_layout", "--from", self.source.name,
+            "--to", self.target.name, stdout=out, **opts
+        )
+        return out.getvalue()
+
+    def test_the_same_peg_gets_the_same_colorway_on_the_other_blank(self):
+        for recipe in self.recipes:
+            self._product(self.homespun, recipe)
+
+        self._run()
+
+        for i, recipe in enumerate(self.recipes):
+            peg = self.target.positions.get(row=2, column=i + 1)
+            self.assertEqual(peg.finished_product.recipe, recipe)
+            self.assertEqual(peg.finished_product.raw_product, self.homespun)
+
+    def test_it_sets_display_capacity_as_it_goes(self):
+        product = self._product(self.homespun, self.recipes[0])
+        self._run()
+
+        product.refresh_from_db()
+        self.assertEqual(product.display_slots, 2)
+
+    def test_a_colorway_the_target_blank_lacks_is_named_not_invented(self):
+        """Creating it would mean inventing a price, and a silently created
+        row at a guessed price is the expensive kind of helpful."""
+        self._product(self.homespun, self.recipes[0])
+
+        output = self._run()
+
+        self.assertIn("Ember", output)
+        self.assertIn("Lichen", output)
+        self.assertEqual(
+            FinishedProduct.objects.filter(raw_product=self.homespun).count(), 1
+        )
+        self.assertFalse(
+            self.target.positions.filter(row=2, column=2).first().finished_product
+        )
+
+    def test_work_already_on_the_target_is_left_alone(self):
+        """A half-laid-out board is usually somebody's work in progress, and
+        overwriting it is the one mistake here the page can't undo."""
+        for recipe in self.recipes:
+            self._product(self.homespun, recipe)
+        mine = self._product(self.homespun, make_recipe("Hand Placed"))
+        hang(self.target, mine, 2, 1)
+
+        self._run()
+
+        self.assertEqual(
+            self.target.positions.get(row=2, column=1).finished_product, mine
+        )
+        self.assertEqual(
+            self.target.positions.get(row=2, column=2).finished_product.recipe,
+            self.recipes[1],
+        )
+
+    def test_overwrite_is_available_when_it_is_meant(self):
+        for recipe in self.recipes:
+            self._product(self.homespun, recipe)
+        hang(self.target, self._product(self.homespun, make_recipe("Wrong")), 2, 1)
+
+        self._run(overwrite=True)
+
+        self.assertEqual(
+            self.target.positions.get(row=2, column=1).finished_product.recipe,
+            self.recipes[0],
+        )
+
+    def test_a_dry_run_writes_nothing(self):
+        for recipe in self.recipes:
+            self._product(self.homespun, recipe)
+
+        output = self._run(dry_run=True)
+
+        self.assertIn("Dry run", output)
+        self.assertFalse(
+            self.target.positions.filter(finished_product__isnull=False).exists()
+        )
+
+    def test_a_target_with_no_blank_is_refused(self):
+        """The mapping is "same peg, same colorway, other blank" — without a
+        target blank there is nothing to map onto."""
+        self.target.raw_product = None
+        self.target.save(update_fields=["raw_product"])
+
+        with self.assertRaises(CommandError):
+            self._run()
+
+    def test_a_typo_in_a_board_name_lists_the_real_ones(self):
+        out = StringIO()
+        with self.assertRaises(CommandError):
+            call_command("copy_board_layout", "--from", "Heavnly",
+                         "--to", self.target.name, stdout=out)
+
+
 class FancyConversionTests(TestCase):
     """Recording that plain scarves had line work added, by colorway."""
 

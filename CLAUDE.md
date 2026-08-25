@@ -1034,6 +1034,25 @@ job on wifi, and that is where JavaScript earns its keep — the no-JS rule is
 about the field, not about the app. Until then the grid is hand-built in the
 admin inline, because the board gets built once and then barely changes.
 
+### Copying a layout, and where not to
+
+The four yarn boards are one pattern repeated per base: Heavenly's r3c4 and
+Homespun's r3c4 carry the same colorway. So the second, third and fourth
+boards are the first one retyped, and `copy_board_layout --from … --to …`
+does it — same peg, same colorway, other blank.
+
+**Only where the pattern really is shared.** The silk racks are arranged by
+what looks right next to what, and copying onto one produces a
+plausible-looking layout that is wrong everywhere at once — harder to spot and
+undo than an empty board.
+
+Two refusals in it are the point. **Nothing is created**: a colorway the
+target blank doesn't have yet is named and its peg left empty, because
+inventing the product means inventing a price. And **occupied pegs are left
+alone** unless `--overwrite` is passed — a half-laid-out board is usually
+somebody's work in progress, and it is the one mistake here the editor can't
+undo.
+
 ### `display_slots` is written by the map
 
 The map is the source; `display_slots` is what everything reads. One writer —
