@@ -4802,8 +4802,18 @@ def restock_board(request, fixture_id):
 
     An unanswered peg is "not walked yet", never "empty". Same distinction the
     close draws, and for the same reason: the walk gets interrupted.
+
+    **The board opens as names, and `?photos=1` swaps it to pictures.** The
+    reasoning is in `restock.board`; what matters here is that the mode rides
+    in the URL rather than in a cookie or the session, so a walk in photo mode
+    is a link somebody can send and a shared phone can't inherit somebody
+    else's board. The POST redirect carries it, because a save that quietly
+    dropped you back to text mode is the same tap-and-lose-your-place the
+    whole page is built to avoid.
     """
     fixture = get_object_or_404(DisplayFixture, pk=fixture_id, is_active=True)
+    photos = request.GET.get("photos") == "1"
+    mode = "?photos=1" if photos else ""
 
     if request.method == "POST":
         form = RestockPassForm(request.POST, user=request.user)
@@ -4845,19 +4855,21 @@ def restock_board(request, fixture_id):
                         else ""
                     ),
                 )
-                response = redirect("restock_board", fixture_id=fixture.pk)
+                response = redirect(
+                    reverse("restock_board", args=[fixture.pk]) + mode
+                )
                 pin = form.cleaned_data.get("pin")
                 if pin:
                     crew.remember(request, response, form.cleaned_data["employee"], pin)
                 return response
             messages.info(request, "Nothing ticked, so nothing recorded.")
-            return redirect("restock_board", fixture_id=fixture.pk)
+            return redirect(reverse("restock_board", args=[fixture.pk]) + mode)
     else:
         form = RestockPassForm(user=request.user, initial=crew.initial(request))
 
     return render(request, "scarves/restock_board.html", {
         "fixture": fixture,
-        "rows": restock.board(fixture),
+        "rows": restock.board(fixture, photos=photos),
         "form": form,
         "recent": fixture.restock_passes.select_related("employee")[:5],
         "last_full": restock.last_full_check(fixture),
@@ -4866,6 +4878,11 @@ def restock_board(request, fixture_id):
         # going back out to the picker. The stall is walked in one circuit,
         # not board-by-board with a trip to a menu in between.
         "boards": DisplayFixture.objects.filter(is_active=True),
+        # The mode, and the querystring that carries it. Every link off this
+        # page (the next board, "not you?") appends `mode` so a circuit walked
+        # in one mode stays in it.
+        "photos": photos,
+        "mode": mode,
         "remembered": crew.remembered(request)[0],
         "forget_param": crew.FORGET,
     })

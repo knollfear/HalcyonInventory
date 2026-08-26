@@ -949,6 +949,21 @@ gap on the last one.
 tapped.** You did the job; the walk confirmed it. Treating an expected gap as
 an exception would make an ordinary evening read as a list of problems.
 
+**The board reads as names, and `?photos=1` swaps it to pictures.** Photo mode
+used to arrive by accident — a tile showed a photo wherever the product
+happened to have one — so a board came out half pictures and half text and
+neither mode was ever chosen. The questions a walk asks are words and numbers
+(what to put out, what the bag should hold, how long this peg has been bare),
+a name is what the peg's own label says, and on a phone a photograph takes the
+room those answers need. Names is also the mode that **prints**: the stall's
+connection is slow enough that photo tiles land after they were wanted, and
+paper needs no connection at all — so the print rules drop the leads, the
+count panels and the sign-off and leave the grid. The mode lives in the URL
+rather than a cookie, and every link off the page carries it (including the
+POST redirect), so a circuit walked in one mode stays in it. Text is still the
+fallback *inside* photo mode, because half the catalogue has no picture and a
+grey box names nothing.
+
 **Every number on a tile is a checkable claim.** A peg says what to put out
 and what the bag should hold afterwards (`on_hand - display_slots`), never a
 total — a total needs the peg counted, the bag counted and the two added,

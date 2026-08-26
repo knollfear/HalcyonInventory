@@ -11950,12 +11950,13 @@ class RestockPageTests(TestCase):
             html = self.client.get(reverse(name, args=args)).content.decode()
             self.assertNotIn(homeless.recipe.name, html, name)
 
-    def test_a_photo_is_used_when_there_is_one_and_text_when_there_is_not(self):
-        html = self.client.get(
-            reverse("restock_board", args=[self.fixture.pk])
-        ).content.decode()
-        self.assertIn(self.product.recipe.name, html)
+    def test_the_board_reads_as_names_until_photos_are_asked_for(self):
+        """Text is the mode the board opens in, whatever the catalogue has.
 
+        The questions a walk asks are words and numbers, and photo mode used
+        to arrive by accident — wherever a product happened to have a picture
+        — which made one board half one thing and half the other.
+        """
         FinishedProductImage.objects.create(
             finished_product=self.product,
             image_url="https://example.test/aegean.jpg",
@@ -11963,7 +11964,36 @@ class RestockPageTests(TestCase):
         html = self.client.get(
             reverse("restock_board", args=[self.fixture.pk])
         ).content.decode()
+        self.assertIn(self.product.recipe.name, html)
+        self.assertNotIn("https://example.test/aegean.jpg", html)
+
+        html = self.client.get(
+            reverse("restock_board", args=[self.fixture.pk]), {"photos": "1"}
+        ).content.decode()
         self.assertIn("https://example.test/aegean.jpg", html)
+
+    def test_photo_mode_still_falls_back_to_text_without_a_picture(self):
+        """Half the catalogue has no photo, and a grey box names nothing."""
+        html = self.client.get(
+            reverse("restock_board", args=[self.fixture.pk]), {"photos": "1"}
+        ).content.decode()
+        self.assertIn(self.product.recipe.name, html)
+
+    def test_saving_a_walk_in_photo_mode_comes_back_in_photo_mode(self):
+        """The mode rides in the URL, so the redirect has to carry it.
+
+        A save that dropped the walk back to names would be the app undoing a
+        choice mid-circuit, which on a phone reads as the tap having gone
+        somewhere unexpected.
+        """
+        response = self.client.post(
+            reverse("restock_board", args=[self.fixture.pk]) + "?photos=1",
+            self._sign(**{f"count_{self.position.pk}": "1"}),
+        )
+        self.assertEqual(
+            response["Location"],
+            reverse("restock_board", args=[self.fixture.pk]) + "?photos=1",
+        )
 
 
 class SundayCloseTests(TestCase):

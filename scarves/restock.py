@@ -249,13 +249,26 @@ def _drained_at(sales, cutoff, went_out):
     return None
 
 
-def board(fixture):
+def board(fixture, photos=False):
     """The fixture as rows of cells, each carrying what the walk needs.
 
     Built here rather than in the template because the interesting parts are
     judgements — whether the app predicts a gap, and whether anything has sold
     off this peg since it was last filled — and a template working those out
     inline would be the second place each rule lived.
+
+    **`photos` is off unless asked for, and the tiles read as names.** A
+    photograph identifies a colorway beautifully and answers none of the
+    questions the walk asks: what to put out, what should be left in the bag,
+    whether this peg has been bare for two hours. Those are words and numbers,
+    and on a phone a picture takes the room they need. The name is also what
+    the peg's own label says, so a text tile matches the board being walked.
+
+    Photo mode is a real mode rather than an accident of the catalogue — it
+    used to appear only where a product happened to have a picture, which made
+    the board half one thing and half the other. It costs a query per peg to
+    build (`_first_image` per product), which is the other reason it is opt-in
+    and not the default forty-times-over.
     """
     walked = last_walked(fixture)
     on_board = assigned_homes(fixture)
@@ -338,18 +351,18 @@ def board(fixture):
                 # what stops somebody going to look for a colorway there was
                 # never any of.
                 "short": short,
-                "image": _first_image(product),
+                "image": _first_image(product) if photos else None,
             })
         rows.append(cells)
     return rows
 
 
 def _first_image(product):
-    """The picture for a tile, or None to fall back to text.
+    """The picture for a tile in photo mode, or None to fall back to text.
 
     Falling back rather than showing a placeholder: a named tile is readable
     and a grey box is not, and half this board will be text until the photos
-    catch up.
+    catch up. Which is also why text is what the board opens as — see `board`.
     """
     image = product.images.first()
     if image is None:

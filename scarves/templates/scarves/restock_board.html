@@ -35,6 +35,11 @@ interrupted, and an unticked peg means "not walked yet", never "empty".
       background: var(--accent); border-color: var(--accent); color: #fff;
       font-weight: 600;
   }
+  /* The mode switch sits with the board links because it is the same kind of
+     thing: where you are looking, not what you are reporting. Nothing about
+     it is recorded — it is a rendering of the same board. */
+  .mode { margin: 0 0 16px; font-size: .9rem; }
+  .mode a { color: var(--accent); }
 
   /* The board scrolls inside its own container rather than making the page
      scroll sideways — a pegboard is wider than a phone and always will be. */
@@ -50,9 +55,13 @@ interrupted, and an unticked peg means "not walked yet", never "empty".
   }
   .tile input { position: absolute; opacity: 0; pointer-events: none; }
   .tile img { display: block; width: 100%; height: 66px; object-fit: cover; }
-  /* Text is the fallback, not a downgrade: a named tile is readable and a
-     grey placeholder is not, and half this board is text until the photos
-     catch up. */
+  /* **Text is what the board opens as, and it is not a downgrade.** The
+     questions a walk asks — how many to put out, what the bag should have
+     left, how long this peg has been bare — are words and numbers, and on a
+     phone a photograph takes the room they need. A name is also what the
+     peg's own label says, so a text tile matches the board being walked.
+     Photos are a mode you ask for (`?photos=1`), and text stays the fallback
+     inside it for the products that have no picture yet. */
   .tile .name {
       display: flex; align-items: center; justify-content: center;
       height: 66px; padding: 4px; text-align: center;
@@ -169,6 +178,34 @@ interrupted, and an unticked peg means "not walked yet", never "empty".
       padding: 14px; margin-bottom: 18px;
   }
   .past { font-size: .85rem; color: #667; margin-top: 24px; }
+
+  /* **The board on paper.** Names mode is what prints, and printing is one of
+     the reasons it exists: the stall's connection is slow enough that photo
+     tiles arrive after you needed them, and paper doesn't need a connection
+     at all. What goes is everything that only works on a phone — the lead
+     paragraphs, the count panels, the sign-off and the save button — because
+     none of them can be tapped on paper and all of them push the board onto a
+     second sheet. What stays is the grid, the numbers and the colours, which
+     is the board itself.
+
+     Colours are forced through because they carry meaning here (amber can't
+     be filled, blue needs skeins, red has been bare) and a browser dropping
+     backgrounds to save ink would print a grid of identical white tiles. */
+  @media print {
+      /* Landscape by default, because a board is wider than it is tall and an
+         18-peg one has no chance on a portrait sheet. The dialog can still
+         override it, and its scale control is the honest way to fit a very
+         wide board — better than shrinking the tiles for everybody. */
+      @page { size: landscape; margin: 10mm; }
+      body { max-width: none; padding: 0; }
+      .up, .boards, .mode, .lead, .banner, .exc, .signoff, .btn, .past {
+          display: none;
+      }
+      .board-scroll { overflow: visible; margin: 0; }
+      .cell { break-inside: avoid; }
+      .tile { min-height: 0; }
+      * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
 {% endblock %}
 
 {% block heading_actions %}
@@ -192,11 +229,27 @@ interrupted, and an unticked peg means "not walked yet", never "empty".
         {% if board.pk == fixture.pk %}
           <span class="here">{{ board.name }}</span>
         {% else %}
-          <a href="{% url 'restock_board' board.pk %}">{{ board.name }}</a>
+          <a href="{% url 'restock_board' board.pk %}{{ mode }}">{{ board.name }}</a>
         {% endif %}
       {% endfor %}
     </nav>
   {% endif %}
+
+  {% comment %}
+  Names or pictures, and the mode is in the URL rather than remembered for
+  you — see the view. The link says what you would be switching *to*, because
+  a control labelled with the state it is already in is the one everybody
+  taps twice.
+  {% endcomment %}
+  <p class="mode">
+    {% if photos %}
+      Showing photos.
+      <a href="{% url 'restock_board' fixture.pk %}">Show names instead</a>
+    {% else %}
+      Showing names — this is the one that prints.
+      <a href="{% url 'restock_board' fixture.pk %}?photos=1">Show photos instead</a>
+    {% endif %}
+  </p>
 
   {% if messages %}
     {% for message in messages %}
@@ -267,7 +320,7 @@ interrupted, and an unticked peg means "not walked yet", never "empty".
                     {% elif cell.sold %}
                       <span class="badge">+{{ cell.sold }}</span>
                     {% endif %}
-                    {% if cell.image %}
+                    {% if photos and cell.image %}
                       <img src="{{ cell.image }}" alt="{{ cell.product.name }}">
                     {% else %}
                       <span class="name">{{ cell.product.recipe.name|default:cell.product.name }}</span>
@@ -355,7 +408,8 @@ interrupted, and an unticked peg means "not walked yet", never "empty".
       {% endfor %}
       {% if remembered %}
         <p class="lead">
-          Filled in for you. <a href="?{{ forget_param }}=1">Not you?</a>
+          Filled in for you.
+          <a href="?{{ forget_param }}=1{% if photos %}&amp;photos=1{% endif %}">Not you?</a>
         </p>
       {% endif %}
     </div>
