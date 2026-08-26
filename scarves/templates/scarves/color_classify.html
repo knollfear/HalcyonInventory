@@ -55,6 +55,14 @@
       font-weight: 600;
   }
   .bandchip.on .dot { background: #fff; border-color: rgba(255,255,255,.7); }
+  /* Rainbow's dot is the spectrum, because its stand-in hex says nothing —
+     the same reason the printed tab draws stripes. The chip keeps the flat
+     --band colour when ticked so the "you decided this" fill still reads. */
+  .bandchip[data-band="rainbow"] .dot {
+      background: conic-gradient(#c0392b, #e67e22, #e8c31a, #27924f,
+                                 #2657a8, #6a3d9a, #e07aa8, #c0392b);
+      border-color: rgba(0,0,0,.25);
+  }
   /* Dashed = a machine put this here and nobody has agreed to it yet.
      An outline rather than a dashed border, because a ticked chip is filled
      with its own band colour and a border the same colour as the fill shows
@@ -85,6 +93,19 @@
     Which sections of the rainbow reference sheet each colorway prints in. A
     red-and-orange scarf claims both and appears in both — that's the point, so
     the obvious thing about a scarf is enough to find it.
+  </p>
+  {% comment %}
+  Said on the page because the rule is not guessable from a row of chips that
+  all look alike, and the mistake it prevents is the expensive one — a rainbow
+  ticked into all eight sections is four colorways appearing everywhere, each
+  time as the least useful answer to the question that section asks.
+  {% endcomment %}
+  <p class="lead">
+    <strong>Rainbow is its own section.</strong> A colorway that spans the
+    spectrum claims rainbow and nothing else — that is what somebody asks for
+    out loud, and it keeps four colorways out of all eight other sections.
+    Tick another band alongside it only if the scarf genuinely reads as that
+    colour too.
   </p>
   <p class="lead">
     Dashed chips are guesses read off the dyes; <strong>Read photo</strong> adds

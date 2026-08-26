@@ -48,6 +48,7 @@ own — the label is the visible chip, the input is hidden behind it.
         it stays dashed until you save, which is the moment it becomes yours.
         {% endcomment %}
         <label class="bandchip{% if chip.on %} on{% endif %}{% if chip.guessed %} guessed{% endif %}"
+               data-band="{{ chip.slug }}"
                style="--band: {{ chip.color }};">
           <input type="checkbox" name="bands" value="{{ chip.slug }}"
                  {% if chip.on %}checked{% endif %}>

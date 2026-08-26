@@ -64,6 +64,24 @@ BANDS = (
     ("brown", "Brown", "#7a4b2a"),
     ("grey", "Grey", "#8a8f96"),
     ("black", "Black", "#2b2b2b"),
+    # **Rainbow is a section, not a colour**, and it is here for the reason
+    # pink and brown are: it is what somebody says out loud about a scarf.
+    # Nobody asks for one with red, orange, yellow, green and blue in it. They
+    # ask whether you have a rainbow, and then which rainbow.
+    #
+    # Both answers without it are bad, and the shop was living with the worse
+    # one. Claim every band and four colorways print in all eight sections,
+    # where each is the least useful answer to the question that section asks
+    # — somebody looking for a red scarf is handed a rainbow. Claim nothing
+    # and they print nowhere, which is what was actually happening: two of the
+    # four filed as confirmed-with-no-bands, arrived at by giving up rather
+    # than by deciding, and seventeen active products printing in no section.
+    #
+    # It goes last because it is not a hue and has no place inside the
+    # spectrum. The hex is a stand-in, used only where a single colour is
+    # unavoidable; the printed tab draws the spectrum in stripes and the
+    # toggle does the same in CSS, because no one colour can say this.
+    ("rainbow", "Rainbow", "#7a5cc4"),
 )
 
 BAND_CHOICES = [(slug, label) for slug, label, _ in BANDS]
@@ -81,8 +99,26 @@ GREY = "grey"
 BLACK = "black"
 NEUTRALS = (GREY, BLACK)
 
-#: The chromatic bands, in print order. Everything except grey and black.
-CHROMATIC = tuple(s for s in BAND_SLUGS if s not in NEUTRALS)
+#: The one section that isn't a hue. Kept out of `CHROMATIC` because every
+#: rule here that says "chromatic" means "has a hue worth naming", and rainbow
+#: is a property of a *set* of colours rather than of any one of them —
+#: nothing in this module ever classifies a single colour as rainbow.
+RAINBOW = "rainbow"
+
+#: The chromatic bands, in print order. Everything except grey, black and
+#: rainbow.
+CHROMATIC = tuple(s for s in BAND_SLUGS if s not in NEUTRALS and s != RAINBOW)
+
+#: How many distinct chromatic bands a colorway needs before it reads as a
+#: rainbow rather than as a busy colorway.
+#:
+#: Five, and it sits in an empty corridor the same way the yellow/green
+#: boundary at 61 degrees does. Confirmed recipes in stock top out at **four**
+#: bands, and both that reach four are emphatically not rainbows — Forest Fire
+#: (red, orange, green, brown) and Mooney (green, blue, purple, grey). So a
+#: line at five reclassifies nothing that exists today and still catches
+#: anything genuinely spanning the spectrum. Four would have swallowed both.
+RAINBOW_MIN_BANDS = 5
 
 
 #: Where yellow stops and green starts, in degrees of hue. Named rather than
@@ -232,7 +268,27 @@ def bands_from_dyes(recipe):
             bands.append(band)
 
     chromatic = [b for b in bands if b not in NEUTRALS]
-    return sort_bands(chromatic or bands)
+    return fold_rainbow(sort_bands(chromatic or bands))
+
+
+def fold_rainbow(bands):
+    """Collapse a spread of bands into `rainbow`, or hand them back unchanged.
+
+    **A suggestion, like everything else in this module.** It is applied where
+    the classifier proposes bands and nowhere near where they are saved —
+    the same division `bands_from_dyes` already makes for the neutral rule.
+    Somebody ticking red *and* rainbow on a warm rainbow is making a judgement
+    about that scarf, and a save that quietly deleted the red would be this
+    module deciding, which it does nowhere.
+
+    Neutrals fold in with the rest. A rainbow with black in it is still what
+    somebody means when they say rainbow, and printing it in the black section
+    as well would put it back in a section it is no use in.
+    """
+    chromatic = {b for b in bands if b in CHROMATIC}
+    if len(chromatic) >= RAINBOW_MIN_BANDS:
+        return [RAINBOW]
+    return list(bands)
 
 
 #: How much of a photo's *chromatic* area a band needs before it's suggested.
@@ -346,4 +402,8 @@ def bands_from_image(fp, *, share=PHOTO_BAND_SHARE):
     ]
     if neutral_total / total >= PHOTO_NEUTRAL_SHARE:
         found.append(max(NEUTRALS, key=lambda b: counts.get(b, 0)))
-    return sort_bands(found)
+    # Folded here as well as on the dye path: a photo of a rainbow is the one
+    # picture this classifier reads *well* — there is no dominant colour to
+    # get wrong — and without folding it produces the maximally unhelpful
+    # answer, a colorway claiming most of the sheet.
+    return fold_rainbow(sort_bands(found))

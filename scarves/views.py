@@ -2366,16 +2366,36 @@ def _band_tab_painter(page_bands):
         x = page_w - doc.rightMargin + 0.10 * inch
 
         canvas.saveState()
-        canvas.setFillColor(colors.HexColor(color))
-        canvas.rect(x, y, width, height, stroke=0, fill=1)
-        # Yellow, orange, pink and grey are too light to carry white text; the
-        # rest are too dark to carry black. Cheap luminance rather than a
-        # lookup nobody would remember to update when a band colour changes —
-        # the label has to survive a black-and-white photocopy of the sheet.
-        r, g, b = colors.HexColor(color).rgb()
-        canvas.setFillColor(
-            colors.black if (0.299 * r + 0.587 * g + 0.114 * b) > 0.5 else colors.white
-        )
+        if slug == colorbands.RAINBOW:
+            # **No single colour can say rainbow**, and picking one would make
+            # the tab a lie in the one place a tab is read without reading:
+            # fanned, from the edge. So the section draws the spectrum in
+            # stripes, which is recognisable at a glance and survives a
+            # photocopy as a banded block rather than as a flat grey the same
+            # as its neighbours.
+            stripes = colorbands.CHROMATIC
+            band_h = height / len(stripes)
+            for i, stripe in enumerate(stripes):
+                canvas.setFillColor(colors.HexColor(colorbands.BAND_COLORS[stripe]))
+                canvas.rect(x, y + i * band_h, width, band_h + 0.5, stroke=0, fill=1)
+            # The label needs a plate to sit on: rotated text over eight
+            # colours is unreadable in either ink, and this is the tab whose
+            # name matters most because it is the one nobody expects.
+            plate_h = min(height * 0.5, 0.9 * inch)
+            canvas.setFillColor(colors.white)
+            canvas.rect(x, y + (height - plate_h) / 2, width, plate_h, stroke=0, fill=1)
+            canvas.setFillColor(colors.black)
+        else:
+            canvas.setFillColor(colors.HexColor(color))
+            canvas.rect(x, y, width, height, stroke=0, fill=1)
+            # Yellow, orange, pink and grey are too light to carry white text;
+            # the rest are too dark to carry black. Cheap luminance rather
+            # than a lookup nobody would remember to update when a band colour
+            # changes — the label has to survive a black-and-white photocopy.
+            r, g, b = colors.HexColor(color).rgb()
+            canvas.setFillColor(
+                colors.black if (0.299 * r + 0.587 * g + 0.114 * b) > 0.5 else colors.white
+            )
         canvas.setFont("Helvetica-Bold", 8)
         canvas.translate(x + width / 2, y + height / 2)
         canvas.rotate(90)

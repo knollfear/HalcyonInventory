@@ -334,6 +334,35 @@ Two judgements are baked in and are not bugs:
   Beware that `band_for_hsl` holds a **second, unrelated 70** — the cream rule
   that keeps Ivory out of yellow. Moving one with the other is the mistake.
 
+- **Rainbow is a section, and it is the one that isn't a hue.** It exists for
+  the reason pink and brown do: it is what somebody says out loud about a
+  scarf. Nobody asks for one with red, orange, yellow, green and blue in it —
+  they ask whether you have a rainbow, and then which rainbow. Both answers
+  without it are bad and the shop was living with the worse one: claim every
+  band and four colorways print in all eight sections, each time as the least
+  useful answer to the question that section asks; claim none and they print
+  nowhere, which is what was happening — two of the four filed as
+  confirmed-with-no-bands, arrived at by giving up, and seventeen active
+  products in no section at all.
+
+  The classifier folds a spread of **five or more** chromatic bands into
+  `rainbow` alone, neutrals included. Five sits in an empty corridor the same
+  way the yellow/green boundary at 61 does: confirmed colorways in stock top
+  out at four bands, and both that reach four are emphatically not rainbows
+  (Forest Fire, Mooney), so the line reclassifies nothing that exists. The
+  fold lives in `bands_from_dyes` and `bands_from_image` and **not** in
+  `color_bands_save` — same division as the neutral rule, so a warm rainbow
+  that genuinely reads red can claim both, because that is a judgement about
+  the scarf. Nothing ever classifies a *single* colour as rainbow; it is a
+  property of a set, which is why it is out of `CHROMATIC`.
+
+  Its printed tab draws the spectrum in stripes with a white label plate
+  rather than picking a stand-in colour — a tab is read fanned, from the edge,
+  and one flat colour there would be a lie in the one place tabs are used
+  without reading. The classification page's chip does the same in CSS. The
+  three or four kinds of rainbow are separate recipes and need nothing: a
+  "kind of rainbow" field would be the fiber-field mistake.
+
 - **Neutral only claims a recipe when it is the *only* band.** Black, grey and
   cream are working dyes that ground the colors beside them. Every neutral-ish
   recipe in stock reads as something else too (`turq-mid-black`,

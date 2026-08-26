@@ -1219,6 +1219,23 @@ class PhotoWalkTests(TestCase):
         self.assertEqual(tiers[miss.pk], photowalk.REST)
         self.assertEqual(ranked[0]["product"].pk, exact.pk)
 
+    def test_a_photo_of_a_rainbow_matches_the_rainbow_colorway(self):
+        """The walk gets this free from the classifier folding. Without it a
+        rainbow photo produces most of the sheet's bands and matches nothing,
+        which is the one photo this classifier reads *well* — there is no
+        dominant colour to get wrong."""
+        from . import colorbands
+
+        rainbow = self._colorway("Rainbow", ["rainbow"])
+        plain = self._colorway("Just Red", ["red"])
+        seen = colorbands.fold_rainbow(
+            ["red", "orange", "yellow", "green", "blue", "purple"]
+        )
+
+        ranked = photowalk.rank([plain, rainbow], seen)
+        self.assertEqual(ranked[0]["product"].pk, rainbow.pk)
+        self.assertEqual(ranked[0]["tier"], photowalk.EXACT)
+
     def test_an_unconfirmed_colorway_is_never_ranked_on_its_guess(self):
         """`bands_confirmed_at` is what says a person agreed. An unreviewed
         guess ordering the list would look exactly like a reviewed one — the
@@ -1792,6 +1809,28 @@ class ByColorSheetTests(TestCase):
         self._colorway("Sunset", ["red", "blue"])
 
         self.assertEqual([slug for slug, _, _, _, _ in self._pages()], ["red", "blue"])
+
+    def test_a_rainbow_gets_one_page_at_the_end_not_eight_through_the_middle(self):
+        """The section earns its place by what it keeps *out*. Four rainbow
+        colorways across seventeen products, claiming every band, would be
+        eight extra pages in every section — each one the least useful answer
+        to the question that section asks."""
+        self._colorway("Classic Rainbow", ["rainbow"])
+        self._colorway("Sunset", ["red"])
+
+        pages = [(slug, recipe.name) for slug, _, _, recipe, _ in self._pages()]
+        self.assertEqual(pages, [("red", "Sunset"), ("rainbow", "Classic Rainbow")])
+
+    def test_the_kinds_of_rainbow_are_recipes_not_a_dimension(self):
+        """Three or four kinds, and they are already separate colorways. A
+        "kind of rainbow" field would be the fiber-field mistake."""
+        self._colorway("Neon Rainbow", ["rainbow"])
+        self._colorway("Pastel Rainbow", ["rainbow"])
+
+        self.assertEqual(
+            [recipe.name for slug, _, _, recipe, _ in self._pages()],
+            ["Neon Rainbow", "Pastel Rainbow"],
+        )
 
     def test_pages_come_out_in_rainbow_order_not_by_name(self):
         self._colorway("Aardvark", ["blue"])
@@ -3558,6 +3597,58 @@ class ColorClassifyViewTests(TestCase):
         # Your decision stands; the dye reading no longer overwrites or marks it.
         self.assertIn('value="purple"\n                 checked', row)
         self.assertNotIn("guessed", row)
+
+    def test_a_rainbow_claims_one_section_rather_than_all_of_them(self):
+        """The section exists so four colorways don't print in all eight.
+
+        Both answers without it are bad: claim every band and a rainbow turns
+        up in the red section as the least useful answer to the question that
+        section asks; claim none and it prints nowhere at all, which is what
+        was actually happening.
+        """
+        from . import colorbands
+
+        spread = ["red", "orange", "yellow", "green", "blue"]
+        self.assertEqual(colorbands.fold_rainbow(spread), ["rainbow"])
+        # Neutrals fold in too — a rainbow with black in it is still what
+        # somebody means by "rainbow".
+        self.assertEqual(
+            colorbands.fold_rainbow(spread + ["black"]), ["rainbow"]
+        )
+
+    def test_a_busy_colorway_is_not_a_rainbow(self):
+        """Five sits in an empty corridor, the way the yellow/green boundary
+        at 61 degrees does. The two widest confirmed colorways in stock reach
+        four bands and are emphatically not rainbows — a line at four would
+        have swallowed both."""
+        from . import colorbands
+
+        forest_fire = ["red", "orange", "green", "brown"]
+        mooney = ["green", "blue", "purple", "grey"]
+        self.assertEqual(colorbands.fold_rainbow(forest_fire), forest_fire)
+        self.assertEqual(colorbands.fold_rainbow(mooney), mooney)
+
+    def test_no_single_colour_is_ever_classified_as_rainbow(self):
+        """It is a property of a set, not of a colour. Anything that returned
+        it from a hex would be putting a scarf in the rainbow section on the
+        strength of one dye."""
+        from . import colorbands
+
+        for _, _, color in colorbands.BANDS:
+            self.assertNotEqual(colorbands.band_for_hex(color), colorbands.RAINBOW)
+        self.assertNotIn(colorbands.RAINBOW, colorbands.CHROMATIC)
+
+    def test_ticking_rainbow_and_a_colour_is_allowed(self):
+        """The fold is a suggestion and lives in the classifier, the same way
+        the neutral rule does. A warm rainbow that genuinely reads red is a
+        judgement about that scarf, and a save that deleted the red tick would
+        be the app deciding."""
+        self.client.post(
+            reverse("color_bands_save", args=[self.recipe.pk]),
+            {"bands": ["red", "rainbow"]},
+        )
+        self.recipe.refresh_from_db()
+        self.assertEqual(self.recipe.color_bands, ["red", "rainbow"])
 
     def test_the_todo_filter_shows_only_unconfirmed_recipes(self):
         done = make_recipe("Already Done", hexes=("#1e3277",))
