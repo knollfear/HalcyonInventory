@@ -18,7 +18,30 @@ interrupted, and an unticked peg means "not walked yet", never "empty".
 
 {% block style %}
   {{ block.super }}
-  :root { --column: 900px; }
+  /* **The rails come off: the board is the page.** Some fixtures are 18 pegs
+     across — over 2000px of grid — and a centred 900px column spends most of
+     a laptop or a phone held sideways on empty margin while the thing being
+     walked scrolls inside a slot. So the column is released here and the page
+     runs to the glass, with the gutter cut to what stops the tiles touching
+     the edge.
+
+     Nothing useful got smaller to pay for it: the tiles, the numbers and the
+     badges are all the size they were. It is the whitespace that goes.
+
+     Prose is capped back to a readable width below, because a paragraph of
+     instructions at 1600px is worse than one at 820px — width helps a grid
+     and hurts a sentence. */
+  :root { --column: none; }
+  body { padding: 12px; }
+  .pagehead, .mode, .boards, .lead, .banner, .signoff, .btn, .past,
+  .errors { max-width: 820px; }
+
+  /* A phone held sideways is the case this is for: it is how somebody looks
+     at a wide board, and it is also where every millimetre of gutter costs a
+     column of pegs. */
+  @media (max-width: 700px), (orientation: landscape) and (max-height: 520px) {
+      body { padding: 6px; }
+  }
 
   .lead { font-size: .92rem; color: #556; margin: 0 0 12px; line-height: 1.5; }
 
