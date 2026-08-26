@@ -131,6 +131,19 @@ urlpatterns = [
         views.assign_upload,
         name="assign_upload",
     ),
+    # The walk. `private/images/display/` is the picker the convention wants
+    # for the parameterised page under it — and the two answer different
+    # questions anyway: which board, then which peg.
+    path(
+        "private/images/display/",
+        views.photo_walk_index,
+        name="photo_walk_index",
+    ),
+    path(
+        "private/images/display/<int:fixture_id>/",
+        views.photo_walk,
+        name="photo_walk",
+    ),
     path(
         "private/images/products/search/",
         views.product_search,

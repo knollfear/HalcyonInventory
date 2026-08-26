@@ -50,8 +50,8 @@ from django.shortcuts import render, redirect
 from django.template.response import TemplateResponse
 
 from . import (
-    closing, colorbands, crew, fancy, labels, production, restock, sheetscan,
-    skus, timesheets,
+    closing, colorbands, crew, fancy, labels, photowalk, production, restock,
+    sheetscan, skus, timesheets,
 )
 from .colorutils import hex_to_rgb, nearest_by_color, pick_color_cluster
 from .forms import (
@@ -2740,14 +2740,27 @@ def process_upload(request, upload_id):
             # original rather than losing the upload over it.
             upload.error = (upload.error + " | " if upload.error else "") + f"resize: {exc}"
 
-    product = None
+    scanned = None
     for code in codes:
         if not code:
             continue
-        product = FinishedProduct.objects.filter(sku=code).first()
-        if product:
+        scanned = FinishedProduct.objects.filter(sku=code).first()
+        if scanned:
             upload.detected_sku = code
             break
+
+    # **On a walk, the peg is the claim and it beats a barcode that
+    # disagrees.** The blank picker on the batch page is a coarse statement
+    # covering forty photos, so there a decoded symbol is the better evidence.
+    # A stop is the opposite: made per photo, at the peg, by somebody looking
+    # at the scarf — while a symbol that happens to resolve in shot may belong
+    # to the colorway hanging two inches to the left. Reported either way,
+    # because a silent resolution in either direction is how a photo ends up
+    # on the wrong colorway with nothing to say so.
+    stop = _walk_stop(request.POST)
+    expected = stop["product"] if stop else None
+    product = expected or scanned
+    mismatch = scanned if expected and scanned and scanned != expected else None
 
     if product:
         fpi = _attach_image(upload, product)
@@ -2756,7 +2769,8 @@ def process_upload(request, upload_id):
         upload.status = ProductImageUpload.STATUS_MATCHED
         upload.save()
         return render(request, "scarves/partials/upload_card.html",
-                      {"upload": upload, "matched": True})
+                      {"upload": upload, "matched": True, "mismatch": mismatch,
+                       "expected": expected})
 
     # No barcode / no match -> uploader assigns it inline, with the blank
     # they said they were shooting already typed into the box. Run through
@@ -2764,9 +2778,139 @@ def process_upload(request, upload_id):
     # goes straight into a search box, and `slug` is the same function that
     # built the SKU half it is meant to match.
     upload.save()
+
+    # **An empty peg is the fresh-board case, and it is the main one.** Set
+    # the display up, walk it once, and come away with the photos *and* the
+    # map — which only works if naming the colorway is quick. So the photo
+    # that was just taken orders the list: the bands it shows against the
+    # bands each colorway claims, exact first, then supersets, then any
+    # overlap, then the rest alphabetically.
+    #
+    # Ordering only. A band set is not an identity — dozens of colorways are
+    # blue-and-green — so this moves the answer near the top and the person
+    # holding the scarf does the rest. Same rule `colorbands` follows
+    # everywhere else: fill the form in, never decide.
+    candidates = []
+    confirmed = total = 0
+    photo_bands = []
+    if stop and expected is None:
+        if data is not None:
+            try:
+                photo_bands = colorbands.bands_from_image(BytesIO(data))
+            except Exception:
+                photo_bands = []
+        candidates, _ = photowalk.candidates(stop["fixture"], photo_bands)
+        confirmed, total = photowalk.rankable(stop["fixture"])
+
     return render(request, "scarves/partials/upload_card.html",
                   {"upload": upload, "needs_assign": True,
-                   "prefix": skus.slug(request.POST.get("prefix"))})
+                   "prefix": skus.slug(request.POST.get("prefix")),
+                   # An empty peg: pick the colorway and it lands on the peg
+                   # as well as on the photo. Carried through the search so
+                   # the buttons it returns can do both — see `assign_upload`.
+                   "stop": stop,
+                   "candidates": candidates,
+                   "photo_bands": photo_bands,
+                   "band_names": [
+                       colorbands.BAND_LABELS.get(b, b) for b in photo_bands
+                   ],
+                   # Stated, because a list that fell back to alphabetical for
+                   # want of confirmed bands looks exactly like one where the
+                   # photo matched nothing — and only one of those has a fix.
+                   "confirmed_count": confirmed,
+                   "candidate_total": total})
+
+
+@page_meta(
+    title="Photograph a Display",
+    description="Walk a board peg by peg and photograph what hangs there. The "
+                "peg says what the picture is of, so nothing has to be typed "
+                "or scanned.",
+    category="Products",
+)
+@login_required
+def photo_walk_index(request):
+    """The boards, as places to photograph rather than places to restock."""
+    fixtures = []
+    for fixture in DisplayFixture.objects.filter(is_active=True).select_related(
+        "raw_product"
+    ):
+        walk = photowalk.stops(fixture)
+        products = [stop["product"] for stop in walk if stop["product"]]
+        # Counted here because it is the only number that decides which board
+        # to walk: how much of it the catalogue still has no picture of.
+        missing = [p for p in products if not p.images.exists()]
+        fixtures.append({
+            "fixture": fixture,
+            "stops": len(walk),
+            "assigned": len(products),
+            "missing": len(missing),
+        })
+    # Most to photograph first, which is the only ordering worth having here.
+    fixtures.sort(key=lambda entry: (-entry["missing"], entry["fixture"].name))
+    return render(request, "scarves/photo_walk_index.html", {"fixtures": fixtures})
+
+
+@page_meta(
+    title="Photograph a Display (one board)",
+    description="One peg at a time: what to shoot, whether it already has a "
+                "photo, and where you were when you stopped.",
+    category="Products",
+    show_in_index=False,
+)
+@login_required
+def photo_walk(request, fixture_id):
+    """One stop on the walk. **Where you are is the URL and nothing else.**
+
+    Fifteen photos in, get distracted, come back to `?row=3&column=5` — a
+    stored cursor would be a second place the answer lived, and the one it
+    disagreed with would be the one somebody was looking at. It also means a
+    peg can be handed to somebody else as a link.
+
+    An address that isn't a stop advances to the next one that is, so a
+    bookmark taken before the board was rearranged resumes rather than
+    failing — see `photowalk.stop_at`.
+    """
+    fixture = get_object_or_404(DisplayFixture, pk=fixture_id, is_active=True)
+
+    def _int(name):
+        try:
+            return int(request.GET[name])
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    stop, walk = photowalk.stop_at(fixture, _int("row"), _int("column"))
+    product = stop["product"] if stop else None
+
+    return render(request, "scarves/photo_walk.html", {
+        "fixture": fixture,
+        "stop": stop,
+        "product": product,
+        "label": photowalk.label_for(product),
+        # Stated so a photo that already exists is a choice rather than a
+        # surprise: retake it, or move on. Nothing here decides which.
+        "existing": list(product.images.all()[:3]) if product else [],
+        # Plain navigation. "Peg 17 of 42" is how somebody knows roughly how
+        # much board is left, not a score — nothing counts walks, and there is
+        # no completeness anywhere.
+        "index": (
+            next(
+                (
+                    i + 1
+                    for i, candidate in enumerate(walk)
+                    if (candidate["row"], candidate["column"])
+                    == (stop["row"], stop["column"])
+                ),
+                None,
+            )
+            if stop
+            else None
+        ),
+        "total": len(walk),
+        "next_url": _walk_url(fixture, photowalk.next_after(walk, stop)) if stop else "",
+        "done": stop is None,
+        "use_s3": settings.USE_S3,
+    })
 
 
 def search_products(q, limit=10):
@@ -2793,6 +2937,10 @@ def product_search(request):
     q = (request.GET.get("q") or "").strip()
     upload_id = request.GET.get("upload_id")
     for_labels = request.GET.get("mode") == "labels"
+    # Passed straight through to the assign call's URL. The search itself is
+    # unchanged by it — a walk narrows nothing, because the whole reason this
+    # peg is being typed into is that the map doesn't know what hangs there.
+    stop_query = _stop_query(_walk_stop(request.GET))
 
     products = search_products(q)
 
@@ -2803,13 +2951,66 @@ def product_search(request):
         "scarves/partials/label_item_results.html" if for_labels
         else "scarves/partials/product_search_results.html"
     )
-    return render(request, template, {"products": products, "upload_id": upload_id})
+    return render(request, template, {
+        "products": products, "upload_id": upload_id, "stop_query": stop_query,
+    })
+
+
+def _walk_stop(data):
+    """The peg a photo was taken at, from whatever the page sent.
+
+    `None` on the batch page, which is not standing anywhere. Anything
+    unparseable is also `None` rather than an error: the walk is navigation,
+    and the worst a bad address can do is fall back to filing the photo the
+    way the batch page would.
+    """
+    try:
+        fixture_id = int(data.get("fixture"))
+        row = int(data.get("row"))
+        column = int(data.get("column"))
+    except (TypeError, ValueError):
+        return None
+
+    fixture = DisplayFixture.objects.filter(pk=fixture_id, is_active=True).first()
+    if fixture is None:
+        return None
+    position = fixture.positions.filter(row=row, column=column).first()
+    if position is not None and not position.is_home:
+        return None
+    return {
+        "fixture": fixture,
+        "row": row,
+        "column": column,
+        "position": position,
+        "product": position.finished_product if position else None,
+    }
+
+
+def _stop_query(stop):
+    """`?fixture=…&row=…&column=…`, or empty off a walk."""
+    if not stop:
+        return ""
+    return (
+        f"?fixture={stop['fixture'].pk}&row={stop['row']}&column={stop['column']}"
+    )
 
 
 @require_POST
 @login_required
 def assign_upload(request, upload_id):
-    """File a manually-picked product for an upload the barcode couldn't match."""
+    """File a manually-picked product for an upload the barcode couldn't match.
+
+    On a walk it does a second thing: **an empty peg gets the colorway you
+    just picked.** You are standing in front of the hook, you have just said
+    what is hanging on it, and the map not knowing is the reason the walk had
+    nothing to tell you here. Making that a separate trip to the map editor
+    would mean the fact is known at the wall and recorded nowhere.
+
+    **An occupied peg is never overwritten**, the same refusal
+    `copy_board_layout` makes: a peg that already names a colorway is
+    somebody's decision, and disagreeing with it is a map question rather than
+    a photo one.
+    """
     upload = get_object_or_404(ProductImageUpload, id=upload_id)
     product = get_object_or_404(FinishedProduct, id=request.POST.get("product_id"))
 
@@ -2820,8 +3021,47 @@ def assign_upload(request, upload_id):
         upload.status = ProductImageUpload.STATUS_ASSIGNED
         upload.save()
 
-    return render(request, "scarves/partials/upload_card.html",
-                  {"upload": upload, "matched": True})
+    stop = _walk_stop(request.GET)
+    response = render(request, "scarves/partials/upload_card.html",
+                      {"upload": upload, "matched": True})
+    if stop is None:
+        return response
+
+    position = stop["position"]
+    if position is None:
+        position = photowalk.position_for(stop["fixture"], stop["row"], stop["column"])
+    if position.finished_product_id is None:
+        position.finished_product = product
+        # The signal on DisplayPosition writes `display_slots` from here, so
+        # this peg starts counting towards the close and the restock walk
+        # immediately — which is what putting a colorway on the map means.
+        position.save(update_fields=["finished_product"])
+        messages.success(
+            request,
+            f"Filed the photo and put {product.name} on "
+            f"{stop['fixture'].name} r{stop['row']}c{stop['column']}.",
+        )
+    else:
+        messages.info(
+            request,
+            f"Filed the photo. Left the peg as it was — it already says "
+            f"{position.finished_product.name}.",
+        )
+
+    # The walk moves on by navigating, so the redirect rides on the response
+    # to the click rather than being a second request the page has to make.
+    walk = photowalk.stops(stop["fixture"])
+    nxt = photowalk.next_after(walk, stop)
+    response["HX-Redirect"] = _walk_url(stop["fixture"], nxt)
+    return response
+
+
+def _walk_url(fixture, stop):
+    """Where the walk goes next, or back to the board when it is done."""
+    url = reverse("photo_walk", args=[fixture.pk])
+    if stop is None:
+        return url + "?done=1"
+    return f"{url}?row={stop['row']}&column={stop['column']}"
 
 
 # --------------------------------------------------------------------------

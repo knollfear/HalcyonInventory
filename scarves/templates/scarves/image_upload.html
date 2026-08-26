@@ -97,93 +97,34 @@
     </label>
 
     <div id="cards"></div>
+
+    {% comment %}
+    The uploader's configuration, read by the shared script. No `data-next`:
+    this page is forty photos in one sitting and never moves.
+    {% endcomment %}
+    <div id="uploader"
+         data-csrf="{{ csrf_token }}"
+         data-use-s3="{{ use_s3|yesno:"1,0" }}"
+         data-presign="{% url 'presign_upload' %}"
+         data-local="{% url 'local_upload' %}"
+         data-process="{% url 'process_upload' 0 %}"
+         data-extra="{}"></div>
 {% endblock %}
 
 {% block scripts %}
+{% include "scarves/partials/uploader.html" %}
 <script>
-(function () {
-    const csrftoken = "{{ csrf_token }}";
-    const useS3 = {{ use_s3|yesno:"true,false" }};
-    const presignUrl = "{% url 'presign_upload' %}";
-    const localUrl = "{% url 'local_upload' %}";
-    const processTpl = "{% url 'process_upload' 0 %}";  // .../upload/0/process/
-    const input = document.getElementById("file-input");
-    const cards = document.getElementById("cards");
-
-    // Read at send time rather than at page load: the pile changes partway
-    // through a session and the answer has to change with it.
-    const blank = document.getElementById("blank");
-
-    input.addEventListener("change", async (e) => {
-        const files = Array.from(e.target.files);
-        input.value = "";
-        for (const file of files) { await handleFile(file); }
-    });
-
-    async function handleFile(file) {
-        const card = document.createElement("div");
-        card.className = "card";
-        card.textContent = "⏳ Uploading " + file.name + "…";
-        cards.prepend(card);
-        try {
-            // 1 & 2. Get the bytes stored. Two transports, same result:
-            //   bucket  -> presign, then the browser POSTs straight to it
-            //   local   -> POST to Django, which writes to default storage
-            // Step 3 below is identical either way.
-            const upload_id = useS3
-                ? await uploadToBucket(file)
-                : await uploadToServer(file);
-
-            // 3. Let the server decode + file it; HTMX swaps in the result
-            //    (and wires up any type-ahead in the returned fragment).
-            card.id = "card-" + upload_id;
-            card.textContent = "🔍 Reading barcode…";
-            const processUrl = processTpl.replace("/0/", "/" + upload_id + "/");
-            await htmx.ajax("POST", processUrl, {
-                target: "#card-" + upload_id,
-                swap: "outerHTML",
-                headers: { "X-CSRFToken": csrftoken },
-                values: { prefix: blank.value },
-            });
-        } catch (err) {
-            card.className = "card error";
-            card.textContent = "❌ " + file.name + ": " + err.message;
+    // The one thing this page adds to the shared uploader: what you said you
+    // were photographing, re-read on every change so a session that moves on
+    // to the next pile says so.
+    (function () {
+        const blank = document.getElementById("blank");
+        const uploader = document.getElementById("uploader");
+        function sync() {
+            uploader.dataset.extra = JSON.stringify({ prefix: blank.value });
         }
-    }
-
-    async function uploadToBucket(file) {
-        const presign = await fetch(presignUrl, {
-            method: "POST",
-            headers: {
-                "X-CSRFToken": csrftoken,
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-            body: new URLSearchParams({
-                content_type: file.type || "image/jpeg",
-            }),
-        });
-        if (!presign.ok) throw new Error("could not start upload");
-        const { upload_id, url, fields } = await presign.json();
-
-        const form = new FormData();
-        Object.entries(fields).forEach(([k, v]) => form.append(k, v));
-        form.append("file", file);
-        const put = await fetch(url, { method: "POST", body: form });
-        if (!put.ok) throw new Error("bucket upload failed");
-        return upload_id;
-    }
-
-    async function uploadToServer(file) {
-        const form = new FormData();
-        form.append("file", file);
-        const res = await fetch(localUrl, {
-            method: "POST",
-            headers: { "X-CSRFToken": csrftoken },
-            body: form,
-        });
-        if (!res.ok) throw new Error("upload failed");
-        return (await res.json()).upload_id;
-    }
-})();
+        blank.addEventListener("change", sync);
+        sync();
+    })();
 </script>
 {% endblock %}

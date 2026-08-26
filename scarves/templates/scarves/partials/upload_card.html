@@ -6,8 +6,23 @@
             {% endif %}
             <div>
                 ✅ Filed to <strong>{{ upload.finished_product.name }}</strong>
-                {% if upload.detected_sku %}
+                {% if mismatch %}
+                    {% comment %}
+                    The peg won, and the disagreement is said out loud. A
+                    symbol that resolved in shot may well belong to the
+                    colorway hanging two inches to the left — but it may also
+                    be the scarf in your hand, and only the person holding it
+                    can tell. Silence in either direction is how a photo ends
+                    up on the wrong colorway with nothing to say so.
+                    {% endcomment %}
+                    <div class="warn">⚠️ A barcode in the photo read
+                    <strong>{{ mismatch.name }}</strong> ({{ upload.detected_sku }}).
+                    Filed to the peg. If the barcode was right, fix it in the
+                    admin.</div>
+                {% elif upload.detected_sku %}
                     <div class="muted">barcode {{ upload.detected_sku }}</div>
+                {% elif expected %}
+                    <div class="muted">from the peg you were standing at</div>
                 {% else %}
                     <div class="muted">assigned manually</div>
                 {% endif %}
@@ -18,7 +33,53 @@
             {% if upload.preview_url %}
                 <img class="preview" src="{{ upload.preview_url }}" alt="Uploaded photo">
             {% endif %}
-            <div class="warn">⚠️ Couldn't read a barcode — pick the product:</div>
+            {% if stop %}
+              {% comment %}
+              A walk at an empty peg: this is a map question, not a barcode
+              failure, so it is not phrased as one. The photo just taken is
+              what orders the list.
+              {% endcomment %}
+              <div class="lead">
+                {% if band_names %}
+                  That photo looks <strong>{{ band_names|join:" and " }}</strong>.
+                  Closest colorways first — pick one and it goes on the peg.
+                {% else %}
+                  Couldn't read a colour off that photo, so the list is
+                  alphabetical. Pick one and it goes on the peg.
+                {% endif %}
+              </div>
+              {% if candidates %}
+                <div class="results">
+                  {% for row in candidates %}
+                    <button type="button"
+                            class="result"
+                            hx-post="{% url 'assign_upload' upload.id %}?fixture={{ stop.fixture.pk }}&amp;row={{ stop.row }}&amp;column={{ stop.column }}"
+                            hx-vals='{"product_id": "{{ row.product.id }}"}'
+                            hx-target="#card-{{ upload.id }}"
+                            hx-swap="outerHTML">
+                      {{ row.product.recipe.name }}
+                      <span class="muted">{{ row.product.name }}</span>
+                      {% for band in row.bands %}<span class="band">{{ band }}</span>{% endfor %}
+                    </button>
+                  {% endfor %}
+                </div>
+              {% endif %}
+              {% comment %}
+              How much of the list could be ordered at all. A list that fell
+              back to alphabetical because nothing has been confirmed looks
+              identical to one where the photo matched nothing, and only the
+              first has a fix — which nobody makes if they aren't told.
+              {% endcomment %}
+              <div class="muted">
+                {{ confirmed_count }} of {{ candidate_total }} colorways on this
+                board have confirmed colours to sort by{% if confirmed_count < candidate_total %}
+                — the rest are alphabetical until somebody confirms them on
+                the colour page{% endif %}.
+              </div>
+              <div class="lead">Not in the list? Search:</div>
+            {% else %}
+              <div class="warn">⚠️ Couldn't read a barcode — pick the product:</div>
+            {% endif %}
             {% comment %}
             The blank you said you were shooting, already typed. A SKU reads
             `BLANK-DYEBATH` and the search matches on it, so `HALFCI-` has
@@ -40,7 +101,13 @@
                    hx-get="{% url 'product_search' %}"
                    hx-trigger="{% if prefix %}load, {% endif %}keyup changed delay:250ms"
                    hx-target="#results-{{ upload.id }}"
-                   hx-vals='{"upload_id": "{{ upload.id }}"}'>
+                   hx-vals='{"upload_id": "{{ upload.id }}"{% if stop %}, "fixture": "{{ stop.fixture.pk }}", "row": "{{ stop.row }}", "column": "{{ stop.column }}"{% endif %}}'>
+            {% comment %}
+            The peg rides along with the search so the buttons it returns can
+            put the colorway on the peg as well as on the photo — see
+            `assign_upload`. Off a walk there is no peg and this is the box it
+            has always been.
+            {% endcomment %}
             <div class="results" id="results-{{ upload.id }}"></div>
         </div>
     {% endif %}

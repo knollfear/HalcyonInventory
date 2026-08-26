@@ -1,7 +1,7 @@
 {% for p in products %}
     <button type="button"
             class="result"
-            hx-post="{% url 'assign_upload' upload_id %}"
+            hx-post="{% url 'assign_upload' upload_id %}{{ stop_query }}"
             hx-vals='{"product_id": "{{ p.id }}"}'
             hx-target="#card-{{ upload_id }}"
             hx-swap="outerHTML">

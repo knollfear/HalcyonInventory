@@ -36,8 +36,8 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from . import (
-    closing, colorbands, crew, fancy, production, restock, sheetscan, skus,
-    timesheets,
+    closing, colorbands, crew, fancy, photowalk, production, restock,
+    sheetscan, skus, timesheets,
 )
 from .colorutils import (
     delta_e,
@@ -967,6 +967,299 @@ class PhotoSessionPrefillTests(TestCase):
         html = self._card(prefix='"><script>alert(1)</script>')
         self.assertNotIn("<script>alert(1)</script>", html)
         self.assertIn("SCRIPT-", html)
+
+
+@override_settings(MEDIA_ROOT=tempfile.mkdtemp())
+class PhotoWalkTests(TestCase):
+    """Photographing a board peg by peg.
+
+    The batch page asks "here are forty photos, work out what they are" and
+    leans on a barcode that reads about half the time. A walk inverts that: a
+    peg is an identity, so a photo taken at a known stop needs no barcode, no
+    typing and no search. The two jobs it has to do are file the photo against
+    the peg's colorway, and — on a board being set up — find out what that
+    colorway is with as little typing as possible.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("walk", "w@example.test", "pw")
+        self.client.force_login(self.user)
+        self.product = make_product(
+            make_recipe("Crocodile"), "Artisan", with_image=False
+        )
+        self.blank = self.product.raw_product
+        self.fixture = DisplayFixture.objects.create(
+            name="Artisan Board", rows=2, columns=3, capacity_per_position=2,
+            raw_product=self.blank,
+        )
+
+    def _upload(self):
+        key = default_storage.save(
+            "finished_products/test.jpg", ContentFile(make_jpeg())
+        )
+        return ProductImageUpload.objects.create(key=key)
+
+    def _stop_vals(self, row, column):
+        return {"fixture": self.fixture.pk, "row": row, "column": column}
+
+    # --- where the walk goes ----------------------------------------------
+
+    def test_reserved_spaces_are_not_stops(self):
+        """The price tag in the middle of the top row is not a colorway
+        nobody got round to photographing, and stopping at it would ask a
+        question with no answer."""
+        DisplayPosition.objects.filter(
+            fixture=self.fixture, row=1, column=2
+        ).update(reserved_label="Price tag")
+        cells = [(s["row"], s["column"]) for s in photowalk.stops(self.fixture)]
+        self.assertNotIn((1, 2), cells)
+        self.assertIn((1, 1), cells)
+
+    def test_an_empty_hook_is_a_stop_whether_or_not_it_has_a_row(self):
+        """On the wall an unassigned peg and one nobody has created yet are
+        the same empty hook — the reading `DisplayFixture.grid` already
+        takes — and a photo taken at either is how the map finds out."""
+        # `ensure_positions` gives a new board a row per cell, so make a real
+        # gap the way a grown board does: the fixture got wider afterwards.
+        DisplayPosition.objects.filter(
+            fixture=self.fixture, row=2, column=3
+        ).delete()
+        cells = [(s["row"], s["column"]) for s in photowalk.stops(self.fixture)]
+        self.assertIn((1, 1), cells)   # exists, unassigned
+        self.assertIn((2, 3), cells)   # no row at all
+        self.assertEqual(len(cells), 6)
+
+    def test_an_address_that_is_not_a_stop_resumes_at_the_next_one(self):
+        """A bookmark taken before the board was rearranged has to land
+        somewhere. Refusing it would end the walk at exactly the moment
+        somebody was trying to resume it."""
+        DisplayPosition.objects.filter(
+            fixture=self.fixture, row=1, column=2
+        ).update(reserved_label="Price tag")
+        stop, _ = photowalk.stop_at(self.fixture, 1, 2)
+        self.assertEqual((stop["row"], stop["column"]), (1, 3))
+
+    def test_walking_past_the_last_peg_is_finished_not_an_error(self):
+        stop, _ = photowalk.stop_at(self.fixture, 9, 9)
+        self.assertIsNone(stop)
+        response = self.client.get(
+            reverse("photo_walk", args=[self.fixture.pk]), {"row": 9, "column": 9}
+        )
+        self.assertContains(response, "That's the whole board")
+
+    def test_the_page_says_what_to_photograph_and_stays_addressable(self):
+        hang(self.fixture, self.product, 1, 2)
+        response = self.client.get(
+            reverse("photo_walk", args=[self.fixture.pk]), {"row": 1, "column": 2}
+        )
+        self.assertContains(response, "Artisan — Crocodile")
+        # And the next peg is a plain link, so skipping needs no scripting.
+        self.assertContains(response, "row=1&amp;column=3")
+
+    def test_a_peg_whose_colorway_already_has_a_photo_says_so(self):
+        """Said, never acted on. A colorway that already has a photo is often
+        exactly the one worth retaking."""
+        hang(self.fixture, self.product, 1, 1)
+        FinishedProductImage.objects.create(
+            finished_product=self.product,
+            image_url="https://example.test/croc.jpg",
+        )
+        response = self.client.get(reverse("photo_walk", args=[self.fixture.pk]))
+        self.assertContains(response, "Already has 1 photo")
+
+    # --- filing a photo at a peg ------------------------------------------
+
+    def test_a_photo_taken_at_a_peg_files_itself(self):
+        """The whole point of the map-first route: no barcode, no typing."""
+        hang(self.fixture, self.product, 1, 1)
+        upload = self._upload()
+
+        self.client.post(
+            reverse("process_upload", args=[upload.id]), self._stop_vals(1, 1)
+        )
+
+        upload.refresh_from_db()
+        self.assertEqual(upload.status, ProductImageUpload.STATUS_MATCHED)
+        self.assertEqual(upload.finished_product_id, self.product.pk)
+
+    def test_the_peg_beats_a_barcode_that_disagrees_and_says_so(self):
+        """A symbol that resolves in shot may belong to the colorway hanging
+        two inches to the left. The stop is a per-photo claim made at the peg,
+        so it wins — and the disagreement is reported, because silence in
+        either direction files a photo on the wrong colorway with nothing to
+        say so."""
+        hang(self.fixture, self.product, 1, 1)
+        neighbour = make_product(make_recipe("Neighbour"), "Artisan Two", with_image=False)
+        neighbour.sku = "SKU-NEIGHBOUR"
+        neighbour.save()
+        upload = self._upload()
+
+        with mock.patch("pyzbar.pyzbar.decode") as decode:
+            decode.return_value = [mock.Mock(data=b"SKU-NEIGHBOUR")]
+            response = self.client.post(
+                reverse("process_upload", args=[upload.id]), self._stop_vals(1, 1)
+            )
+
+        upload.refresh_from_db()
+        self.assertEqual(upload.finished_product_id, self.product.pk)
+        self.assertContains(response, "A barcode in the photo read")
+        self.assertContains(response, neighbour.name)
+
+    def test_off_a_walk_the_barcode_still_decides(self):
+        """The batch page is not standing anywhere, and its blank picker is a
+        coarse statement covering forty photos. Nothing about the walk changes
+        what happens there."""
+        self.product.sku = "SKU-BATCH-1"
+        self.product.save()
+        upload = self._upload()
+
+        with mock.patch("pyzbar.pyzbar.decode") as decode:
+            decode.return_value = [mock.Mock(data=b"SKU-BATCH-1")]
+            self.client.post(reverse("process_upload", args=[upload.id]))
+
+        upload.refresh_from_db()
+        self.assertEqual(upload.finished_product_id, self.product.pk)
+
+    # --- filling the map from the photos ----------------------------------
+
+    def test_picking_a_colorway_at_an_empty_peg_fills_the_map(self):
+        """The photos-first route: walk a bare board once and come away with
+        both the pictures and the map."""
+        upload = self._upload()
+        self.client.post(
+            reverse("process_upload", args=[upload.id]), self._stop_vals(2, 1)
+        )
+
+        response = self.client.post(
+            reverse("assign_upload", args=[upload.id])
+            + f"?fixture={self.fixture.pk}&row=2&column=1",
+            {"product_id": self.product.pk},
+        )
+
+        position = DisplayPosition.objects.get(fixture=self.fixture, row=2, column=1)
+        self.assertEqual(position.finished_product_id, self.product.pk)
+        upload.refresh_from_db()
+        self.assertEqual(upload.finished_product_id, self.product.pk)
+        # The map is the source of display capacity, so the peg starts
+        # counting the moment it is assigned.
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.display_slots, 2)
+        # And the walk moves on by itself.
+        self.assertEqual(
+            response["HX-Redirect"],
+            reverse("photo_walk", args=[self.fixture.pk]) + "?row=2&column=2",
+        )
+
+    def test_an_occupied_peg_is_never_overwritten_from_here(self):
+        """The refusal `copy_board_layout` makes: a peg that already names a
+        colorway is somebody's decision, and disagreeing with it is a map
+        question rather than a photo one."""
+        hang(self.fixture, self.product, 1, 1)
+        other = make_product(make_recipe("Other"), "Artisan Other", with_image=False)
+        upload = self._upload()
+
+        self.client.post(
+            reverse("assign_upload", args=[upload.id])
+            + f"?fixture={self.fixture.pk}&row=1&column=1",
+            {"product_id": other.pk},
+        )
+
+        position = DisplayPosition.objects.get(fixture=self.fixture, row=1, column=1)
+        self.assertEqual(position.finished_product_id, self.product.pk)
+        # The photo is still filed against what was picked — that half was
+        # never in doubt.
+        upload.refresh_from_db()
+        self.assertEqual(upload.finished_product_id, other.pk)
+
+    def test_the_last_peg_ends_the_walk_rather_than_wrapping(self):
+        upload = self._upload()
+        response = self.client.post(
+            reverse("assign_upload", args=[upload.id])
+            + f"?fixture={self.fixture.pk}&row=2&column=3",
+            {"product_id": self.product.pk},
+        )
+        self.assertEqual(
+            response["HX-Redirect"],
+            reverse("photo_walk", args=[self.fixture.pk]) + "?done=1",
+        )
+
+    # --- the ordering ------------------------------------------------------
+
+    def _colorway(self, name, bands, confirmed=True):
+        product = make_product(make_recipe(name), f"Artisan {name}", with_image=False)
+        FinishedProduct.objects.filter(pk=product.pk).update(raw_product=self.blank)
+        recipe = product.recipe
+        recipe.color_bands = bands
+        recipe.bands_confirmed_at = timezone.now() if confirmed else None
+        recipe.save()
+        return FinishedProduct.objects.get(pk=product.pk)
+
+    def test_the_ranking_tiers_are_exact_then_any_superset_then_overlap(self):
+        """**A superset of any size is one tier.** Blue+green+five sits beside
+        blue+green+one: a scarf with a lot going on is not a worse match for
+        the blue and green in the photo, it is a scarf with a lot going on.
+        """
+        exact = self._colorway("Exact", ["blue", "green"])
+        plus_one = self._colorway("Plus One", ["blue", "green", "red"])
+        plus_five = self._colorway("Plus Five", [
+            "blue", "green", "red", "orange", "yellow", "purple", "pink",
+        ])
+        overlap = self._colorway("Overlap", ["blue", "brown"])
+        miss = self._colorway("Miss", ["brown"])
+
+        ranked = photowalk.rank(
+            [miss, overlap, plus_five, plus_one, exact], ["blue", "green"]
+        )
+        tiers = {row["product"].pk: row["tier"] for row in ranked}
+
+        self.assertEqual(tiers[exact.pk], photowalk.EXACT)
+        self.assertEqual(tiers[plus_one.pk], photowalk.SUPERSET)
+        self.assertEqual(tiers[plus_five.pk], photowalk.SUPERSET)
+        self.assertEqual(tiers[overlap.pk], photowalk.OVERLAP)
+        self.assertEqual(tiers[miss.pk], photowalk.REST)
+        self.assertEqual(ranked[0]["product"].pk, exact.pk)
+
+    def test_an_unconfirmed_colorway_is_never_ranked_on_its_guess(self):
+        """`bands_confirmed_at` is what says a person agreed. An unreviewed
+        guess ordering the list would look exactly like a reviewed one — the
+        reason the rainbow sheet skips them too."""
+        guessed = self._colorway("Guessed", ["blue", "green"], confirmed=False)
+        ranked = photowalk.rank([guessed], ["blue", "green"])
+        self.assertEqual(ranked[0]["tier"], photowalk.REST)
+
+    def test_with_no_colour_read_the_list_is_alphabetical(self):
+        """What it was before any of this, which is the right failure."""
+        b = self._colorway("Bravo", ["blue"])
+        a = self._colorway("Alpha", ["green"])
+        ranked = photowalk.rank([b, a], [])
+        self.assertEqual(
+            [row["product"].name for row in ranked],
+            ["Artisan Alpha", "Artisan Bravo"],
+        )
+
+    def test_candidates_are_scoped_to_the_board_s_blank(self):
+        """A yarn board is one base in forty colours, so the answer is one of
+        forty rather than one of a few hundred."""
+        self._colorway("Mine", ["blue"])
+        elsewhere = make_product(
+            make_recipe("Someone Else"), "Different Blank", with_image=False
+        )
+        rows, _ = photowalk.candidates(self.fixture, ["blue"])
+        self.assertNotIn(elsewhere.pk, [row["product"].pk for row in rows])
+
+    def test_the_card_says_how_much_of_the_list_could_be_ordered(self):
+        """A list that fell back to alphabetical for want of confirmed bands
+        looks identical to one where the photo matched nothing, and only the
+        first has a fix."""
+        self._colorway("Confirmed", ["blue"])
+        self._colorway("Unconfirmed", ["blue"], confirmed=False)
+
+        upload = self._upload()
+        response = self.client.post(
+            reverse("process_upload", args=[upload.id]), self._stop_vals(2, 2)
+        )
+        self.assertContains(response, "have confirmed colours to sort by")
+        self.assertContains(response, "until somebody confirms them")
 
 
 @override_settings(MEDIA_ROOT=tempfile.mkdtemp())

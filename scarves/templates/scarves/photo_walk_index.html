@@ -1,0 +1,50 @@
+{% extends "scarves/base_internal.html" %}
+
+{% block title %}Photograph a Display{% endblock %}
+{% block heading %}Photograph a Display{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 760px; }
+
+  .board {
+      display: block; border: 1px solid #cbd6e2; border-radius: 10px;
+      background: #fff; padding: 14px 16px; margin-bottom: 12px;
+      text-decoration: none; color: inherit;
+  }
+  .board:hover { border-color: var(--accent); }
+  .board .name { font-weight: 600; font-size: 1.05rem; color: var(--accent); }
+  .board .stat { font-size: .9rem; color: #556; margin-top: 4px; }
+  .board .none { color: #2e7d52; }
+{% endblock %}
+
+{% block content %}
+  <p class="lead">
+    Walk a board peg by peg. Each stop says what hangs there, so the photo
+    needs no barcode and nothing to type — the map has already answered the
+    question the batch upload page has to guess at.
+  </p>
+  <p class="lead">
+    Where you are is in the address, so you can stop after fifteen and come
+    back to the same peg. Reserved spaces are skipped; empty pegs are not,
+    because a photo taken at one is how the map finds out what is hanging
+    there.
+  </p>
+
+  {% for entry in fixtures %}
+    <a class="board" href="{% url 'photo_walk' entry.fixture.pk %}">
+      <div class="name">{{ entry.fixture.name }}</div>
+      <div class="stat">
+        {% if entry.missing %}
+          {{ entry.missing }} of {{ entry.assigned }} colorway{{ entry.assigned|pluralize }}
+          on this board have no photo
+        {% else %}
+          <span class="none">Every colorway on this board has a photo</span>
+        {% endif %}
+        — {{ entry.stops }} peg{{ entry.stops|pluralize }} to walk
+      </div>
+    </a>
+  {% empty %}
+    <p class="lead">No active display fixtures. Build one in the admin first.</p>
+  {% endfor %}
+{% endblock %}

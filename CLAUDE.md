@@ -2025,3 +2025,65 @@ The menu offers only blanks with an active product under them, and the value
 is `skus.slug(name)` — the same function the SKU was built from, so a prefill
 that stopped matching would mean the SKU rule itself had moved. The submitted
 value is run back through `slug` on the way in.
+
+### Walking a display instead: the peg is the identity
+
+`private/images/display/` inverts the identification problem rather than
+solving it. A peg *is* an identity — the map already says Artisan — Crocodile
+hangs at row 3, column 4 — so a photo taken at a known stop needs no barcode,
+no typing and no search. The walk says what to shoot, you shoot it or skip,
+and either answer moves to the next peg.
+
+**Two routes through it, and they run in opposite directions.**
+
+- **Map first.** Fill the map in the editor, then walk: each stop names the
+  colorway and the photo files itself with nothing typed.
+- **Photos first.** Build the fixture in the admin, walk the bare board, and
+  at each peg photograph what is hanging there and pick the colorway — which
+  goes *on the peg* as well as on the photo. One walk produces the pictures
+  and the map together.
+
+The second is what the ranking is for. The photo just taken is classified by
+`colorbands` and the candidate list is ordered against each colorway's
+confirmed bands: **exact set, then any superset, then any overlap, then the
+rest alphabetically.** A superset of five extra bands sits with a superset of
+one — the count of extras is not a penalty, because a scarf with a lot going
+on is not a worse match for the blue and green in the photo.
+
+Four things hold it honest:
+
+- **Colour orders the list; it never picks.** A band set is not an identity —
+  dozens of colorways are blue-and-green — so this moves the answer near the
+  top and the person holding the scarf does the rest. Photo dominants
+  classify right about 4 in 5 times, which is plenty for ordering a list
+  somebody reads and nowhere near enough to file on.
+- **Only confirmed bands rank.** An unreviewed guess ordering the list would
+  look exactly like a reviewed one, so unconfirmed colorways fall to the
+  alphabetical tail — and the card **says how many could be ordered at all**,
+  because a list that fell back to alphabetical looks identical to one where
+  the photo matched nothing and only one of those has a fix.
+- **The stop beats a barcode that disagrees, and the disagreement is
+  reported.** The batch page's blank picker is a coarse statement covering
+  forty photos, so there a decoded symbol is the better evidence. A stop is
+  the opposite: made per photo, at the peg, by somebody looking at the scarf —
+  while a symbol that resolves in shot may belong to the colorway hanging two
+  inches to the left.
+- **An occupied peg is never overwritten**, the same refusal
+  `copy_board_layout` makes. Assigning is only ever filling a blank.
+
+**Where you are is the URL and nothing else** (`?row=3&column=5`). Fifteen
+photos in, get distracted, come back to the peg — and an address that is no
+longer a stop advances to the next one that is, so a bookmark taken before the
+board was rearranged resumes rather than failing. Nothing stores progress: a
+cursor would be a second place the answer lived, and the one it disagreed with
+would be the one somebody was looking at.
+
+Reserved spaces are not stops — the price tag is not a colorway nobody got
+round to photographing. Empty pegs are, because a photo taken at one is how
+the map finds out what is hanging there.
+
+The uploader itself is one script (`partials/uploader.html`) driven by data
+attributes, because the batch page and the walk differ only in what rides
+along with the process call and what happens afterwards. A second copy with
+two lines changed is what would drift, and the way it would show is one of the
+two pages quietly uploading to the wrong place.

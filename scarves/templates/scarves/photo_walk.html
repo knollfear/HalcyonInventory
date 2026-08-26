@@ -1,0 +1,166 @@
+{% extends "scarves/base_internal.html" %}
+{% comment %}
+One stop. The whole page is a single question — is this what is hanging here,
+and do you want a photo of it — with two answers: take one, or move on.
+
+Both answers advance. That is the point of walking a board rather than
+uploading a pile: the next peg is one tap away whether or not this one
+produced anything, so a session is forty taps with photos in between rather
+than forty decisions about what a photo was of.
+{% endcomment %}
+
+{% block title %}{{ fixture.name }} — photograph{% endblock %}
+{% block heading %}{{ fixture.name }}{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 640px; }
+
+  .where { font-size: .9rem; color: #667; margin: 0 0 14px; }
+  .subject {
+      border: 1px solid #cbd6e2; border-radius: 12px; background: #fff;
+      padding: 18px; margin-bottom: 14px;
+  }
+  .subject .what { font-size: 1.5rem; font-weight: 700; line-height: 1.25; }
+  .subject .sku { font-family: var(--mono); font-size: .85rem; color: #667; margin-top: 6px; }
+  .subject.empty-peg { background: #f7f8fa; }
+  .subject.empty-peg .what { font-size: 1.15rem; color: #556; font-weight: 600; }
+
+  .have { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
+  .have img {
+      width: 64px; height: 64px; object-fit: cover;
+      border-radius: 8px; border: 1px solid #ddd;
+  }
+  .have .note { font-size: .9rem; color: #2e7d52; }
+
+  .picker {
+      display: block; width: 100%;
+      padding: 1.4rem 1rem; margin: 0 0 10px;
+      border: 2px dashed #9cbce0; border-radius: 12px;
+      background: #f2f7fd; text-align: center;
+      font-size: 1.1rem; color: var(--accent); cursor: pointer;
+  }
+  .picker input { display: none; }
+  .skip {
+      display: block; width: 100%; padding: 1rem; text-align: center;
+      border: 1px solid #cbd6e2; border-radius: 12px; background: #fff;
+      text-decoration: none; font-size: 1.05rem; font-weight: 600;
+  }
+
+  .card { border: 1px solid #cbd6e2; border-radius: 10px; background: #fff;
+          padding: 12px; margin-top: 12px; }
+  .card .thumb { width: 64px; height: 64px; object-fit: cover;
+                 border-radius: 6px; margin-right: .6rem; vertical-align: middle; }
+  .filed { display: flex; align-items: center; gap: .6rem; }
+  .preview { display: block; width: 100%; max-height: 240px; object-fit: contain;
+             border-radius: 8px; margin-bottom: .5rem; background: #fff; }
+  .results { margin-top: .4rem; }
+  .result { display: block; width: 100%; text-align: left;
+            padding: .5rem .6rem; margin: .2rem 0;
+            border: 1px solid #cbd6e2; border-radius: 6px;
+            background: #fff; cursor: pointer; font-size: .95rem; }
+  .result:hover { background: #eef4fb; }
+  /* The bands the colorway claims, so the eye can check the ordering rather
+     than trust it. Named rather than swatched: the list is being read at
+     arm's length next to the real scarf, which is the better swatch. */
+  .band {
+      font-size: .7rem; text-transform: uppercase; letter-spacing: .03em;
+      border: 1px solid #d8dee6; border-radius: 999px;
+      padding: 1px 7px; margin-left: 4px; color: #556;
+  }
+  .lead { font-size: .92rem; }
+  input[type=text] { width: 100%; padding: .55rem .6rem; font-size: 1rem; }
+  .error { color: #a11; }
+  .warn { color: #8a5a00; }
+  .done { border: 1px solid #bcd8c6; background: #f1f8f3; border-radius: 12px;
+          padding: 18px; }
+{% endblock %}
+
+{% block head %}
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+{% endblock %}
+
+{% block body_attrs %} hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'{% endblock %}
+
+{% block content %}
+  {% csrf_token %}
+
+  {% if not use_s3 %}
+    <p class="warn">⚠️ No bucket configured — photos are saved to local
+    storage instead.</p>
+  {% endif %}
+
+  {% if done %}
+    <div class="done">
+      <strong>That's the whole board.</strong>
+      <p class="lead">
+        Nothing is recorded about the walk itself — start again from the top
+        whenever, and pegs that already have photos will say so.
+      </p>
+      <a class="skip" href="{% url 'photo_walk' fixture.pk %}">Start again at the top</a>
+    </div>
+    <p class="where" style="margin-top:14px">
+      <a href="{% url 'photo_walk_index' %}">All boards</a>
+    </p>
+  {% else %}
+    <p class="where">
+      Row {{ stop.row }}, peg {{ stop.column }} — {{ index }} of {{ total }}
+      · <a href="{% url 'photo_walk_index' %}">all boards</a>
+    </p>
+
+    {% if product %}
+      <div class="subject">
+        <div class="what">{{ label }}</div>
+        {% if product.sku %}<div class="sku">{{ product.sku }}</div>{% endif %}
+        {% comment %}
+        Said, never acted on. A colorway that already has a photo is often
+        exactly the one worth retaking — the first was a bad light or the
+        wrong side of the scarf — so this is a fact and a thumbnail, not a
+        skip. Same rule `colorbands` follows.
+        {% endcomment %}
+        {% if existing %}
+          <div class="have">
+            {% for image in existing %}
+              {% if image.url %}<img src="{{ image.url }}" alt="">{% endif %}
+            {% endfor %}
+            <span class="note">Already has {{ existing|length }} photo{{ existing|pluralize }}.</span>
+          </div>
+        {% endif %}
+      </div>
+    {% else %}
+      <div class="subject empty-peg">
+        <div class="what">Nothing is assigned to this peg.</div>
+        <p class="lead" style="margin-bottom:0">
+          If something is hanging here, photograph it and pick the colorway —
+          it goes on the peg as well as on the photo. Otherwise skip it.
+        </p>
+      </div>
+    {% endif %}
+
+    <label class="picker">
+      📷 Take the photo
+      <input type="file" id="file-input" accept="image/*" capture="environment">
+    </label>
+    <a class="skip" href="{{ next_url }}">Skip to the next peg →</a>
+
+    <div id="cards"></div>
+
+    {% comment %}
+    The uploader's configuration. `data-extra` carries the peg, which is what
+    files the photo with no barcode and no typing; `data-next` is what makes
+    a photo advance the walk the same way skipping does.
+    {% endcomment %}
+    <div id="uploader"
+         data-csrf="{{ csrf_token }}"
+         data-use-s3="{{ use_s3|yesno:"1,0" }}"
+         data-presign="{% url 'presign_upload' %}"
+         data-local="{% url 'local_upload' %}"
+         data-process="{% url 'process_upload' 0 %}"
+         data-next="{{ next_url }}"
+         data-extra='{"fixture": "{{ fixture.pk }}", "row": "{{ stop.row }}", "column": "{{ stop.column }}"}'></div>
+  {% endif %}
+{% endblock %}
+
+{% block scripts %}
+  {% if not done %}{% include "scarves/partials/uploader.html" %}{% endif %}
+{% endblock %}
