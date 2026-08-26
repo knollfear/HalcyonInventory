@@ -19,12 +19,26 @@
                 <img class="preview" src="{{ upload.preview_url }}" alt="Uploaded photo">
             {% endif %}
             <div class="warn">⚠️ Couldn't read a barcode — pick the product:</div>
+            {% comment %}
+            The blank you said you were shooting, already typed. A SKU reads
+            `BLANK-DYEBATH` and the search matches on it, so `HALFCI-` has
+            already narrowed a few hundred products to the forty colorways of
+            one blank — and the two or three letters of a colour name finish
+            the job. Loading with it fires the search straight away, so the
+            first thing on screen is that blank's colorways rather than an
+            empty box asking for nine characters.
+
+            It is a prefill and nothing more: it can be cleared, typed over,
+            or ignored, and with no blank chosen this is exactly the box it
+            has always been.
+            {% endcomment %}
             <input type="text"
                    name="q"
+                   value="{% if prefix %}{{ prefix }}-{% endif %}"
                    placeholder="Type product name or SKU…"
                    autocomplete="off"
                    hx-get="{% url 'product_search' %}"
-                   hx-trigger="keyup changed delay:250ms"
+                   hx-trigger="{% if prefix %}load, {% endif %}keyup changed delay:250ms"
                    hx-target="#results-{{ upload.id }}"
                    hx-vals='{"upload_id": "{{ upload.id }}"}'>
             <div class="results" id="results-{{ upload.id }}"></div>

@@ -1969,3 +1969,38 @@ sheet (what a transposed pitch digit looks like), `LabelStockGeometryTests`
 re-checks every seeded stock, and the calibration route prints outlines plus a
 one-inch ruler on plain paper to catch printer registration and a print dialog
 left on "fit to page".
+
+## Photographing stock: the barcode misses, and the pile doesn't
+
+`private/images/upload/` files a photo against a `FinishedProduct` by reading
+the Code128 on its tag. In a real session of forty photos **about half of them
+don't read** — a phone camera, a small symbol, whatever the light is doing —
+and each miss then costs a product name typed out in full, one-handed, next to
+the pile.
+
+**So the page asks what you are photographing, once.** A session is a pile of
+*one blank*: forty half circle veils, then forty sash belts. That is the blank
+half of `BLANK-DYEBATH`, it is known before the first shot, and it stays true
+for the whole pile — so it is typed once instead of forty times. A failed
+decode comes back with `HALFCI-` already in the search box and the search
+already run, which has narrowed a few hundred products to that blank's forty
+colorways; two or three letters of a colour name finish it.
+
+Three things keep that honest, and they are the same three the rest of the app
+makes:
+
+- **It fills the form in; it never files anything.** A read barcode still
+  wins outright, whatever the menu says — the barcode is evidence and the
+  menu is a statement of intent. Same rule as `colorbands` and the crew
+  cookie.
+- **It is a prefill, not a filter.** The box is ordinary editable text, so
+  shooting something off-pile costs one clear. Nothing is hidden from the
+  search, which is what would make an off-pile scarf unfindable.
+- **The answer is read at send time, not at page load**, because the pile
+  changes partway through a session and a stale answer would quietly prefill
+  the wrong blank.
+
+The menu offers only blanks with an active product under them, and the value
+is `skus.slug(name)` — the same function the SKU was built from, so a prefill
+that stopped matching would mean the SKU rule itself had moved. The submitted
+value is run back through `slug` on the way in.

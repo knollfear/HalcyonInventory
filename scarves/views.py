@@ -51,7 +51,7 @@ from django.template.response import TemplateResponse
 
 from . import (
     closing, colorbands, crew, fancy, labels, production, restock, sheetscan,
-    timesheets,
+    skus, timesheets,
 )
 from .colorutils import hex_to_rgb, nearest_by_color, pick_color_cluster
 from .forms import (
@@ -2475,10 +2475,36 @@ def _attach_image(upload, product):
 )
 @login_required
 def image_upload(request):
+    """The upload page, plus the blanks you can say you are shooting.
+
+    **Saying what is in front of the camera is what makes a failed decode
+    cheap.** Roughly half the barcodes in a session of forty photos don't
+    read — a phone, a small Code128 on a hang tag, whatever the light is
+    doing — and each miss then costs a product name typed out in full on a
+    phone next to a pile of scarves. But a photo session is a *pile of one
+    blank*: forty half-circle veils, then forty sash belts. So the blank is
+    known before the first shot and stays true for the whole pile, which is
+    exactly the half of `BLANK-DYEBATH` the picker can fill in for you.
+
+    It fills the box in; it does not decide anything. The barcode still wins
+    whenever it reads, and the prefill is ordinary editable text — same
+    bargain `colorbands` and the crew cookie make.
+    """
+    # Only blanks that have something photographable under them. A blank
+    # whose colorways are all retired would be a line in the menu that
+    # narrows to nothing.
+    blanks = [
+        {"name": raw.name, "prefix": skus.slug(raw.name)}
+        for raw in RawProduct.objects.filter(
+            is_active=True, finished_products__is_active=True
+        )
+        .distinct()
+        .order_by("name")
+    ]
     return render(
         request,
         "scarves/image_upload.html",
-        {"use_s3": settings.USE_S3},
+        {"use_s3": settings.USE_S3, "blanks": blanks},
     )
 
 
@@ -2685,10 +2711,15 @@ def process_upload(request, upload_id):
         return render(request, "scarves/partials/upload_card.html",
                       {"upload": upload, "matched": True})
 
-    # No barcode / no match -> uploader assigns it inline.
+    # No barcode / no match -> uploader assigns it inline, with the blank
+    # they said they were shooting already typed into the box. Run through
+    # `slug` rather than trusted as sent: it is a value from the page, it
+    # goes straight into a search box, and `slug` is the same function that
+    # built the SKU half it is meant to match.
     upload.save()
     return render(request, "scarves/partials/upload_card.html",
-                  {"upload": upload, "needs_assign": True})
+                  {"upload": upload, "needs_assign": True,
+                   "prefix": skus.slug(request.POST.get("prefix"))})
 
 
 def search_products(q, limit=10):

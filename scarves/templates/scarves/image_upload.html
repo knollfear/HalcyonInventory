@@ -40,6 +40,13 @@
   }
   .result:hover { background: #eef4fb; }
   input[type=text] { width: 100%; padding: 0.55rem 0.6rem; font-size: 1rem; }
+  /* Above the camera button, because it is answered first and once. Sized
+     like the other tap targets — this page is used one-handed too. */
+  .shooting { display: block; font-size: 0.95rem; margin: 1rem 0 0.3rem; }
+  select#blank {
+      width: 100%; padding: 0.7rem 0.6rem; font-size: 1rem;
+      border: 1px solid #cbd6e2; border-radius: 8px; background: #fff;
+  }
   .error { color: #a11; }
   .warn { color: #8a5a00; }
 {% endblock %}
@@ -61,6 +68,29 @@
     <p class="muted">Each photo is filed automatically by reading its barcode.
     If a barcode can't be read, you'll pick the product yourself.</p>
 
+    {% comment %}
+    **What's in front of the camera, said once for the whole pile.**
+
+    A photo session is a pile of one blank — forty half circle veils, then
+    forty sash belts — so this is known before the first shot and stays true
+    for all of them. About half the barcodes don't read, and every miss used
+    to cost a product name typed out in full on a phone. A SKU is
+    `BLANK-DYEBATH`, and this is the blank half: picked here, it lands in the
+    search box already typed, and what's left to type is the two or three
+    letters that pick the colorway out of the forty.
+
+    It only ever fills the box in. The barcode still wins when it reads, and
+    the prefill is plain editable text — shoot something off-pile and you
+    clear it, the same as before.
+    {% endcomment %}
+    <label class="shooting" for="blank">What are you photographing?</label>
+    <select id="blank">
+        <option value="">— I'll pick each one myself —</option>
+        {% for blank in blanks %}
+            <option value="{{ blank.prefix }}">{{ blank.name }}</option>
+        {% endfor %}
+    </select>
+
     <label class="picker">
         📷 Tap to take or choose photos
         <input type="file" id="file-input" accept="image/*" multiple>
@@ -79,6 +109,10 @@
     const processTpl = "{% url 'process_upload' 0 %}";  // .../upload/0/process/
     const input = document.getElementById("file-input");
     const cards = document.getElementById("cards");
+
+    // Read at send time rather than at page load: the pile changes partway
+    // through a session and the answer has to change with it.
+    const blank = document.getElementById("blank");
 
     input.addEventListener("change", async (e) => {
         const files = Array.from(e.target.files);
@@ -109,6 +143,7 @@
                 target: "#card-" + upload_id,
                 swap: "outerHTML",
                 headers: { "X-CSRFToken": csrftoken },
+                values: { prefix: blank.value },
             });
         } catch (err) {
             card.className = "card error";

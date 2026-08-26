@@ -36,7 +36,8 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from . import (
-    closing, colorbands, crew, fancy, production, restock, sheetscan, timesheets,
+    closing, colorbands, crew, fancy, production, restock, sheetscan, skus,
+    timesheets,
 )
 from .colorutils import (
     delta_e,
@@ -863,6 +864,109 @@ class ProcessUploadResizeTests(TestCase):
         upload.refresh_from_db()
         self.assertTrue(default_storage.exists(upload.key))
         self.assertNotEqual(upload.error, "")
+
+
+@override_settings(MEDIA_ROOT=tempfile.mkdtemp())
+class PhotoSessionPrefillTests(TestCase):
+    """Saying what is in front of the camera, and what that buys.
+
+    About half the barcodes in a session don't read — a phone, a small
+    Code128 on a hang tag, whatever the light is doing — and each miss used
+    to cost a product name typed out in full on a phone next to a pile of
+    scarves. A session is a pile of *one blank*, so the blank half of
+    `BLANK-DYEBATH` is known before the first shot and can be typed once for
+    forty photos.
+
+    It fills the box in and decides nothing: the barcode still wins whenever
+    it reads. Same bargain `colorbands` and the crew cookie make.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("shoot", "s@example.test", "pw")
+        self.client.force_login(self.user)
+        self.product = make_product(
+            make_recipe("Aegean Sea"), "Half Circle Veil", with_image=False
+        )
+        self.blank = self.product.raw_product
+
+    def _upload(self):
+        key = default_storage.save(
+            "finished_products/test.jpg", ContentFile(make_jpeg())
+        )
+        return ProductImageUpload.objects.create(key=key)
+
+    def _card(self, prefix=None):
+        upload = self._upload()
+        post = {"prefix": prefix} if prefix is not None else {}
+        return self.client.post(
+            reverse("process_upload", args=[upload.id]), post
+        ).content.decode()
+
+    def test_the_page_offers_the_blanks_by_their_sku_half(self):
+        """The menu's values have to be the same six characters the SKU was
+        built from, or the prefill narrows to nothing."""
+        html = self.client.get(reverse("image_upload")).content.decode()
+        self.assertIn(self.blank.name, html)
+        self.assertIn(f'value="{skus.slug(self.blank.name)}"', html)
+
+    def test_a_blank_with_nothing_active_under_it_is_not_offered(self):
+        """A line in the menu that narrows to nothing is worse than no line:
+        it reads as a working answer."""
+        retired = make_product(
+            make_recipe("Gone"), "Retired Style", with_image=False, active=False
+        )
+        html = self.client.get(reverse("image_upload")).content.decode()
+        self.assertNotIn(retired.raw_product.name, html)
+
+    def test_a_failed_decode_comes_back_with_the_blank_already_typed(self):
+        """The whole point: nine characters become two or three."""
+        html = self._card(prefix=skus.slug(self.blank.name))
+        self.assertIn(f'value="{skus.slug(self.blank.name)}-"', html)
+        # And the search runs on arrival, so the first thing on screen is that
+        # blank's colorways rather than an empty box.
+        self.assertIn("load,", html)
+
+    def test_the_prefilled_search_finds_that_blank_and_not_the_others(self):
+        """`HALFCI-` has to be a real narrowing, not decoration."""
+        other = make_product(make_recipe("Ember"), "Sash Belt", with_image=False)
+        response = self.client.get(
+            reverse("product_search"),
+            {"q": f"{skus.slug(self.blank.name)}-", "upload_id": self._upload().id},
+        )
+        html = response.content.decode()
+        self.assertIn(self.product.sku, html)
+        self.assertNotIn(other.sku, html)
+
+    def test_saying_nothing_leaves_the_box_exactly_as_it_was(self):
+        """The menu is optional, and the old flow is what "no answer" means."""
+        html = self._card()
+        self.assertIn('value=""', html)
+        self.assertNotIn("load,", html)
+
+    def test_a_barcode_that_read_still_wins(self):
+        """The prefill fills a form in; it never files a photo. A read barcode
+        is evidence and the menu is a statement of intent, so a card that
+        matched must not be steered by what somebody said they were shooting.
+        """
+        self.product.sku = "SKU-PREFILL-1"
+        self.product.save()
+        upload = self._upload()
+        with mock.patch("pyzbar.pyzbar.decode") as decode:
+            decode.return_value = [mock.Mock(data=b"SKU-PREFILL-1")]
+            self.client.post(
+                reverse("process_upload", args=[upload.id]), {"prefix": "SASHBE"}
+            )
+        upload.refresh_from_db()
+        self.assertEqual(upload.status, ProductImageUpload.STATUS_MATCHED)
+        self.assertEqual(upload.finished_product_id, self.product.pk)
+
+    def test_the_prefix_is_slugged_on_the_way_in(self):
+        """It comes off the page and goes into an input's value. `slug` is the
+        same function that built the SKU half it is meant to match, so running
+        it through is both the safe answer and the correct one."""
+        html = self._card(prefix='"><script>alert(1)</script>')
+        self.assertNotIn("<script>alert(1)</script>", html)
+        self.assertIn("SCRIPT-", html)
 
 
 @override_settings(MEDIA_ROOT=tempfile.mkdtemp())
