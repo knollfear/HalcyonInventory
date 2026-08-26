@@ -654,22 +654,52 @@ def _classify_row(recipe, suggested=None, saved=False):
 )
 @login_required
 def color_classify(request):
-    todo_only = request.GET.get("todo") == "true"
+    """Confirm each colorway's rainbow sections, on two independent axes.
 
-    recipes = (
-        Recipe.objects.filter(is_active=True)
-        .prefetch_related("recipe_dyes__dye", "finished_products__images")
-        .order_by("name")
-    )
+    **Confirmed-or-not is one question; sellable-or-not is a different one**,
+    and collapsing them into one row of pills is what made the page noisy. A
+    recipe with no active product under it prints on no sheet and hangs on no
+    peg, so confirming its bands changes nothing anybody can see today — but
+    it is still worth doing eventually, which is why it is filtered rather
+    than dropped. The pair that matters is "has a product **and** isn't
+    confirmed": those are the colorways a customer can ask for and the sheet
+    is currently leaving out.
+
+    Both filters ride in the query string, so a particular view of the work
+    is a link somebody can send, and every pill carries the other axis with
+    it rather than resetting it.
+
+    Counts are scoped to whatever is on screen. A pill reading "Unconfirmed
+    57" over a list of nine is the page contradicting itself, and the number
+    people act on is the one beside the list they are looking at.
+    """
+    todo_only = request.GET.get("todo") == "true"
+    products_only = request.GET.get("with_products") == "true"
+
+    scope = Recipe.objects.filter(is_active=True)
+    if products_only:
+        # `distinct` because a colorway is normally dyed onto several blanks,
+        # and the join would otherwise list it once per product.
+        scope = scope.filter(finished_products__is_active=True).distinct()
+
+    recipes = scope.prefetch_related(
+        "recipe_dyes__dye", "finished_products__images"
+    ).order_by("name")
     if todo_only:
         recipes = recipes.filter(bands_confirmed_at__isnull=True)
 
     rows = [_classify_row(recipe) for recipe in recipes]
 
-    total = Recipe.objects.filter(is_active=True).count()
-    confirmed = Recipe.objects.filter(
-        is_active=True, bands_confirmed_at__isnull=False
-    ).count()
+    total = scope.count()
+    confirmed = scope.filter(bands_confirmed_at__isnull=False).count()
+    # Stated whichever way the filter is set, because it is the whole reason
+    # the filter exists: what is left to do on the colorways that are
+    # actually for sale.
+    with_products = (
+        Recipe.objects.filter(is_active=True, finished_products__is_active=True)
+        .distinct()
+        .count()
+    )
 
     return render(
         request,
@@ -677,12 +707,29 @@ def color_classify(request):
         {
             "rows": rows,
             "todo_only": todo_only,
+            "products_only": products_only,
             "total_count": total,
             "confirmed_count": confirmed,
             "todo_count": total - confirmed,
+            "with_products_count": with_products,
+            # Each pill's destination, built here so the template isn't doing
+            # querystring arithmetic — one axis toggles, the other is carried.
+            "all_href": _classify_href(False, products_only),
+            "todo_href": _classify_href(True, products_only),
+            "products_href": _classify_href(todo_only, not products_only),
             "bands": colorbands.BANDS,
         },
     )
+
+
+def _classify_href(todo, with_products):
+    """`private/colors/` with those two filters set."""
+    params = []
+    if todo:
+        params.append("todo=true")
+    if with_products:
+        params.append("with_products=true")
+    return reverse("color_classify") + ("?" + "&".join(params) if params else "")
 
 
 @require_POST

@@ -3275,6 +3275,75 @@ class ColorClassifyViewTests(TestCase):
         self.assertContains(response, "Sunset Silk")
         self.assertNotContains(response, "Already Done")
 
+    def test_the_products_filter_hides_colorways_nothing_is_made_in(self):
+        """The noise this removes. A colorway with no active product prints on
+        no sheet and hangs on no peg, so confirming it changes nothing anybody
+        can see today — worth doing eventually, not what you are looking at
+        when you want the sheet to stop leaving scarves out."""
+        make_product(self.recipe, "Sunset Infinity", with_image=False)
+        make_recipe("Book Only", hexes=("#1e3277",))
+
+        response = self.client.get(
+            reverse("color_classify"), {"with_products": "true"}
+        )
+        self.assertContains(response, "Sunset Silk")
+        self.assertNotContains(response, "Book Only")
+
+    def test_a_colorway_on_several_blanks_is_listed_once(self):
+        """A colorway is normally dyed onto several blanks, and the join would
+        otherwise list it once per product."""
+        make_product(self.recipe, "Sunset Infinity", with_image=False)
+        make_product(self.recipe, "Sunset Sash", with_image=False)
+
+        response = self.client.get(
+            reverse("color_classify"), {"with_products": "true"}
+        )
+        self.assertEqual(len(response.context["rows"]), 1)
+        self.assertEqual(response.context["total_count"], 1)
+
+    def test_the_two_filters_combine_and_each_pill_keeps_the_other(self):
+        """The pair that matters is "has a product and isn't confirmed" — the
+        colorways a customer can ask for that the sheet is leaving out. A pill
+        that reset the other axis would make it unreachable in one place and
+        unsendable as a link."""
+        make_product(self.recipe, "Sunset Infinity", with_image=False)
+        done = make_recipe("Done And Sold", hexes=("#1e3277",))
+        make_product(done, "Done Infinity", with_image=False)
+        done.bands_confirmed_at = timezone.now()
+        done.save()
+        make_recipe("Book Only", hexes=("#1e3277",))
+
+        response = self.client.get(
+            reverse("color_classify"), {"todo": "true", "with_products": "true"}
+        )
+        self.assertContains(response, "Sunset Silk")
+        self.assertNotContains(response, "Done And Sold")
+        self.assertNotContains(response, "Book Only")
+
+        # Each pill toggles its own axis and carries the other.
+        self.assertEqual(response.context["todo_href"], "%s?todo=true&with_products=true" % reverse("color_classify"))
+        self.assertEqual(response.context["all_href"], "%s?with_products=true" % reverse("color_classify"))
+        self.assertEqual(response.context["products_href"], "%s?todo=true" % reverse("color_classify"))
+
+    def test_counts_follow_the_list_on_screen(self):
+        """A pill reading "Unconfirmed 57" over a list of nine is the page
+        contradicting itself, and the number people act on is the one beside
+        the list they are looking at."""
+        make_product(self.recipe, "Sunset Infinity", with_image=False)
+        make_recipe("Book Only", hexes=("#1e3277",))
+
+        response = self.client.get(reverse("color_classify"))
+        self.assertEqual(response.context["total_count"], 2)
+
+        response = self.client.get(
+            reverse("color_classify"), {"with_products": "true"}
+        )
+        self.assertEqual(response.context["total_count"], 1)
+        self.assertEqual(response.context["todo_count"], 1)
+        # And the whole-catalogue figure stays available, because "what is
+        # left on the ones you sell" is the point of the filter.
+        self.assertEqual(response.context["with_products_count"], 1)
+
     def test_counts_track_what_is_left_to_do(self):
         make_recipe("Second", hexes=("#1e3277",))
         response = self.client.get(reverse("color_classify"))

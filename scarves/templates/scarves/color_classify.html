@@ -94,12 +94,28 @@
     you'd look in orange, not find it, and get no hint why.
   </p>
 
+  {% comment %}
+  Two independent axes, not one row of alternatives. Confirmed-or-not is the
+  state of the work; has-a-product-or-not is whether the work shows up
+  anywhere yet. A colorway with no active product prints on no sheet and
+  hangs on no peg, so it is filtered rather than dropped — still worth doing,
+  just not what you are looking for when you want the sheet to stop leaving
+  scarves out.
+
+  Each pill carries the other axis rather than resetting it, so the pair that
+  matters — has a product, isn't confirmed — is two taps and a sendable link.
+  {% endcomment %}
   <div class="toolbar">
     <a class="pill{% if not todo_only %} on{% endif %}"
-       href="{% url 'color_classify' %}">All {{ total_count }}</a>
+       href="{{ all_href }}">All {{ total_count }}</a>
     <a class="pill{% if todo_only %} on{% endif %}"
-       href="{% url 'color_classify' %}?todo=true">Unconfirmed {{ todo_count }}</a>
-    <span class="stat">{{ confirmed_count }} of {{ total_count }} confirmed</span>
+       href="{{ todo_href }}">Unconfirmed {{ todo_count }}</a>
+    <a class="pill{% if products_only %} on{% endif %}"
+       href="{{ products_href }}">With products {{ with_products_count }}</a>
+    <span class="stat">
+      {{ confirmed_count }} of {{ total_count }} confirmed{% if products_only %}
+      — colorways you sell{% endif %}
+    </span>
   </div>
 
   <div class="filterbar">
@@ -121,7 +137,10 @@
         {% include "scarves/partials/color_row.html" with recipe=row.recipe chips=row.chips photo=row.photo saved=row.saved pending=row.pending %}
       {% empty %}
         <tr><td colspan="4"><span class="empty">
-          {% if todo_only %}Everything is confirmed.{% else %}No active recipes.{% endif %}
+          {% if todo_only %}
+            Everything is confirmed{% if products_only %} on the colorways you
+            sell — {{ with_products_count }} of them{% endif %}.
+          {% else %}No active recipes.{% endif %}
         </span></td></tr>
       {% endfor %}
       <tr class="noresults"><td colspan="4"><span class="empty">Nothing matches that.</span></td></tr>

@@ -339,6 +339,27 @@ Two judgements are baked in and are not bugs:
   recipe in stock reads as something else too (`turq-mid-black`,
   `grey-forest-navy`), and nobody looks for those under grey.
 
+### Two axes on the confirmation page
+
+`private/colors/` filters on **confirmed-or-not** and **has-an-active-product
+-or-not**, and they are separate questions rather than one row of alternatives.
+A colorway with no active product prints on no sheet and hangs on no peg, so
+confirming its bands changes nothing anybody can see today — still worth doing
+eventually, which is why it is filtered rather than dropped. The pair that
+matters is `?todo=true&with_products=true`: colorways a customer can ask for
+that the sheet is currently leaving out.
+
+Both filters ride in the query string and **every pill carries the other axis**
+rather than resetting it, so that pair is two taps and a link somebody can
+send. **Counts are scoped to what is on screen** — a pill reading "Unconfirmed
+57" over a list of nine is the page contradicting itself, and the number people
+act on is the one beside the list they are reading.
+
+Worth knowing where the work actually sits, because it is not where you would
+guess: the dye entry has gone mostly into recipes with *no* active product (the
+dye book), while the bands have been confirmed on the ones that sell. So bands
+are the well-covered signal on sellable colorways and linked dyes are not.
+
 ### One category, two orderings
 
 A category builds two sheets off **one picker** — `public/reference-sheet/` —
