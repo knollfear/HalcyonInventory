@@ -67,6 +67,25 @@ class Command(BaseCommand):
             help="Push updated prices and SKUs to existing Square variations, then sync inventory.",
         )
         parser.add_argument(
+            "--relink",
+            action="store_true",
+            help=(
+                "Match local rows to variations Square already has, by SKU, "
+                "and write the IDs back. Run this after anything that could "
+                "have lost a square_variation_id — otherwise the next plain "
+                "sync creates a second variation for every one of them."
+            ),
+        )
+        parser.add_argument(
+            "--reattach",
+            action="store_true",
+            help=(
+                "Re-assert photo attachment for images Square already holds. "
+                "For photos that reached the library but never landed on "
+                "their variation, which --images cannot repair."
+            ),
+        )
+        parser.add_argument(
             "--reorder",
             action="store_true",
             help=(
@@ -289,6 +308,24 @@ class Command(BaseCommand):
         if options["reorder"]:
             self._reorder_variations(client)
             return
+
+        if options["relink"]:
+            self._relink(client)
+            return
+
+        if options["reattach"]:
+            self._reattach_images(client)
+            return
+
+        # Relink before deciding what is new. A blank square_variation_id is
+        # the *only* thing that marks a variation as needing creating, and it
+        # cannot tell "Square never had this" from "Square has it and we lost
+        # the id". Creating on the second reads as normal output and appends
+        # a duplicate variation under the same SKU — which splits that
+        # colourway's stock and its sale history across two rows at the till,
+        # silently. Matching on SKU first costs one catalogue read and makes
+        # the ambiguity impossible to act on wrongly.
+        self._relink(client, announce_only_if_found=True)
 
         raw_products = (
             RawProduct.objects.filter(is_active=True)
@@ -850,6 +887,173 @@ class Command(BaseCommand):
         shown = ", ".join(names[:limit])
         rest = len(names) - limit
         return f"{shown} (and {rest} more)" if rest > 0 else shown
+
+    def _square_variations_by_sku(self, client):
+        """Every variation under our items, indexed by SKU.
+
+        SKU is what makes this safe. It is write-once on our side —
+        `FinishedProduct.save()` only ever fills a blank one, and
+        `generate_skus --overwrite` has to be asked twice — and it is what
+        Square stores to identify the variation. So an exact match is the
+        same product, not a guess about names that a recipe rename would
+        break.
+        """
+        ids = self._items_square_knows()
+        by_sku = {}
+        for i in range(0, len(ids), 100):
+            result = client.catalog.batch_retrieve_catalog_objects(body={
+                "object_ids": ids[i:i + 100],
+            })
+            if result.is_error():
+                self._fail("Could not read the catalogue to match SKUs", result)
+            for obj in result.body.get("objects", []) or []:
+                for variation in (obj.get("item_data") or {}).get("variations", []) or []:
+                    sku = (variation.get("item_variation_data") or {}).get("sku")
+                    if sku and sku not in by_sku:
+                        by_sku[sku] = variation["id"]
+        return by_sku
+
+    def _relink(self, client, announce_only_if_found=False):
+        """Fill blank variation IDs from the ones Square already holds.
+
+        Nothing is created and nothing is sent — this only ever writes a
+        Square ID onto a local row that had none. A row that Square genuinely
+        does not know is left blank, which is what the ordinary sync path is
+        for.
+        """
+        blanks = list(
+            FinishedProduct.objects
+            .filter(is_active=True, square_variation_id="")
+            .exclude(sku="")
+        )
+        if not blanks:
+            if not announce_only_if_found:
+                self.stdout.write("Nothing to relink — every active product has a Square ID.")
+            return 0
+
+        by_sku = self._square_variations_by_sku(client)
+        matched = [(fp, by_sku[fp.sku]) for fp in blanks if fp.sku in by_sku]
+        missing = [fp for fp in blanks if fp.sku not in by_sku]
+
+        if not matched:
+            if not announce_only_if_found:
+                self.stdout.write(
+                    f"No matches — {len(blanks)} product(s) with no Square ID "
+                    f"are genuinely absent from the catalogue."
+                )
+            return 0
+
+        if self.dry_run:
+            self.stdout.write(self.style.WARNING(
+                f"DRY RUN — would relink {len(matched)} product(s):"
+            ))
+            for fp, vid in matched:
+                self.stdout.write(f"  {fp.sku:<16} -> {vid}")
+            return 0
+
+        for fp, vid in matched:
+            fp.square_variation_id = vid
+            fp.save(update_fields=["square_variation_id"])
+
+        self.stdout.write(self.style.SUCCESS(
+            f"Relinked {len(matched)} product(s) to variations Square already "
+            f"had — these would otherwise have been created a second time."
+        ))
+        for fp, vid in matched:
+            self.stdout.write(f"  {fp.sku:<16} -> {vid}")
+        if missing:
+            self.stdout.write(
+                f"{len(missing)} product(s) are genuinely new to Square: "
+                f"{', '.join(fp.sku for fp in missing[:5])}"
+            )
+        return len(matched)
+
+    def _reattach_images(self, client):
+        """Re-assert attachment for photos Square already holds.
+
+        `--images` skips anything carrying a `square_image_id`, which is
+        right — that column is what stops the same photo being stacked on a
+        variation over and over, because Square's image endpoint appends and
+        has nothing that says "you already sent me this". But it also means a
+        photo that reached the library and never landed on its variation can
+        never be repaired by re-running `--images`: the record says sent, and
+        sent is the whole of what the column knows.
+
+        Re-posting the bytes is safe, and that is the part worth stating
+        plainly because it looks reckless: **Square deduplicates on image
+        content.** An upload it already holds comes back as the existing
+        image object — same id, same created_at, same caption — and adds
+        nothing to the library. What the second post does do is carry
+        `object_id` again, and that is what performs the attach.
+
+        Note you cannot check this from the API. At the pinned version
+        `image_ids` is not returned on an ITEM or an ITEM_VARIATION at all,
+        so a variation with a photo and one without read identically. The
+        dashboard is the only oracle.
+        """
+        images = list(
+            FinishedProductImage.objects
+            .filter(finished_product__is_active=True)
+            .exclude(square_image_id="")
+            .select_related("finished_product")
+            .order_by("finished_product_id", "order", "pk")
+        )
+        sendable = [i for i in images if i.finished_product.square_variation_id and i.image]
+        skipped = [i for i in images if i not in sendable]
+
+        if not sendable:
+            self.stdout.write("Nothing to re-attach.")
+            return
+
+        if self.dry_run:
+            self.stdout.write(self.style.WARNING(
+                f"DRY RUN — would re-attach {len(sendable)} photo(s):"
+            ))
+            seen = set()
+            for image in sendable:
+                fp = image.finished_product
+                primary = fp.pk not in seen
+                seen.add(fp.pk)
+                self.stdout.write(
+                    f"  {fp.sku or fp.name:<16} {image.square_image_id}"
+                    f"{' [primary]' if primary else ''}"
+                )
+            return
+
+        self.stdout.write(f"Re-attaching {len(sendable)} photo(s)...")
+
+        # First photo per product is its primary, the same rule `--images`
+        # applies on the way in — so a repair cannot quietly promote a
+        # different picture to the one the POS shows.
+        seen, done, failed = set(), 0, []
+        for image in sendable:
+            fp = image.finished_product
+            try:
+                with image.image.open("rb") as fh:
+                    payload = fh.read()
+            except (OSError, ValueError) as exc:
+                failed.append((fp.sku or fp.name, str(exc)[:60]))
+                continue
+
+            primary = fp.pk not in seen
+            square_id = self._upload_image(client, image, payload, primary)
+            if square_id != image.square_image_id:
+                # Square handed back a different object, so the dedupe did
+                # not fire and this really is a new image. Record it or the
+                # next run stacks another.
+                image.square_image_id = square_id
+                image.save(update_fields=["square_image_id"])
+            seen.add(fp.pk)
+            done += 1
+
+        self.stdout.write(self.style.SUCCESS(f"Re-attached {done} photo(s)."))
+        if skipped:
+            self.stdout.write(self.style.WARNING(
+                f"{len(skipped)} skipped (no variation in Square, or no file "
+                f"in the bucket): {self._name_a_few(skipped)}"
+            ))
+        for sku, why in failed:
+            self.stderr.write(self.style.WARNING(f"  could not read {sku}: {why}"))
 
     def _push_inventory(self, client):
         self.stdout.write("Pushing inventory counts to Square...")
