@@ -82,10 +82,26 @@ is for. There is no "17 still to do" anywhere, and there should not be.
 The single thing worth noticing is `_drained_at`: **a peg reckoned to have run
 bare while there is still stock behind it.** That is yarn that could be
 selling and isn't, which is the only version of this anybody actually cares
-about. It shows as a plain elapsed time with **no threshold and no
-escalation** — whether an hour matters depends on how busy the stall is and
-whether anyone is free, neither of which the app can see. It states the fact;
-a person decides. Same rule `colorbands` follows.
+about. The board says it as a state — "empty" — and stops there.
+
+**How long it has been that way is not shown unless `?bare=1` asks for it.**
+Two reasons, and the second decides it. An elapsed time in front of the person
+walking the board reads as a stopwatch on them however carefully it is worded:
+"empty 6 hours" is a number with somebody's name beside it, on the one page in
+the app that deliberately scores nothing. And it mostly is not measuring what
+it appears to — the clock starts at the last walk, so a long one usually means
+nobody has been round with the phone rather than that a peg stood bare all
+afternoon. A figure that is both accusing and wrong is worse than no figure.
+
+So it is kept for curiosity and demonstration, called forth by hand, and
+deliberately **not** carried along the way `?photos=1` is. A mode rides in the
+URL so a circuit stays in it; this one must *not* stay, because a link sent
+mid-walk or a bookmark is exactly how it would end up back in front of the
+people it is not for.
+
+`board()` computes it either way, because `board_status` counts bare pegs with
+it — and that count is work available, not time elapsed, which is why it stays
+on the picker.
 
 The failure worth naming: if the webhook dropped a sale, the board
 *under*-reports and the peg is emptier than the tile claims. The walk notices,
@@ -232,6 +248,12 @@ def _drained_at(sales, cutoff, went_out):
     board worth raising your voice about**, and even then only barely: an
     empty peg with stock behind it is yarn that could be selling and isn't.
 
+    The board renders the *fact* of it and not the moment — the timestamp is
+    behind `?bare=1`, for the reasons in the module docstring. What is
+    returned here is still a timestamp rather than a boolean, because the
+    thing being asked is "when did the running total pass what went out", and
+    `None` has to keep meaning "it hasn't".
+
     Nothing here counts walks, scores completeness or tracks a missed peg.
     How many times a board gets restocked is not a measure of anything — five
     in five minutes is a good afternoon — and a page that started grading the
@@ -341,10 +363,11 @@ def board(fixture, photos=False):
                 # them would put jobs and non-jobs in the same colour.
                 "needs_refill": bool(sold) and not short,
                 # When this peg is reckoned to have run bare with stock still
-                # behind it. The one thing here worth noticing, and it is
-                # shown as a plain elapsed time with no threshold and no
-                # escalation — whoever is looking decides whether an hour
-                # matters, which depends on things the app cannot see.
+                # behind it. The one thing here worth noticing — but the
+                # board prints only *that* it is bare. The elapsed time is
+                # behind `?bare=1`: it reads as a stopwatch on whoever is
+                # walking, and it mostly measures how long since anybody
+                # walked rather than how long the yarn sat unsold.
                 "bare_since": bare_since,
                 # The app's own prediction of a gap, and the whole reason the
                 # walk is worth doing with a phone rather than by eye: it is
@@ -426,6 +449,11 @@ def board_status(fixture):
 
     `units` is what to bring from backstock for this board, which is the
     number that decides whether it is an armful or a pocketful.
+
+    `oldest_bare` is the one thing here the picker does not print by default —
+    `?bare=1` calls it forth. It is a length of time rather than a count of
+    work, which is a different kind of claim about the people doing the
+    walking; see the module docstring.
 
     Note what is *not* here: nothing about how much of the board was walked,
     when it was last done, or how that compares with anything. These are

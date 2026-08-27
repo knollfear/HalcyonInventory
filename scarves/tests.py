@@ -12098,15 +12098,14 @@ class RestockPageTests(TestCase):
         # Sold, but there is nothing to put back — so not styled as work.
         self.assertFalse(cell["needs_refill"])
 
-    def test_a_peg_reckoned_bare_says_how_long_it_has_been(self):
-        """**The one thing on this board worth hurrying about.**
+    def _drain(self, name="Ran Dry", row=3, column=1):
+        """A peg the app reckons has run bare with stock still behind it.
 
-        Two went out at the last walk, two have sold since, so the peg is
-        reckoned bare — and there is still stock in the bag that could be on
-        it. That is yarn that could be selling and isn't.
+        Two went out at the last walk, two have sold since — and there is
+        still yarn in the bag that could be on it.
         """
-        product = make_close_product("Ran Dry", on_hand=8, slots=2)
-        position = hang(self.fixture, product, 3, 1)
+        product = make_close_product(name, on_hand=8, slots=2)
+        position = hang(self.fixture, product, row, column)
         walk = restock.open_pass(self.fixture, employee=self.employee)
         restock.record(walk, position)
 
@@ -12118,14 +12117,68 @@ class RestockPageTests(TestCase):
                 source=InventoryLog.SOURCE_SQUARE_WEBHOOK,
                 quantity=-1,
             )
+        return position
 
-        cell = self._cell_for(position)
-        self.assertIsNotNone(cell["bare_since"])
+    def test_a_peg_reckoned_bare_says_so_and_not_for_how_long(self):
+        """**The one thing on this board worth hurrying to — as a state.**
+
+        The elapsed time is a different claim: on the one page in the app
+        that deliberately scores nothing, "empty 6 hours" is a number with
+        the walker's name beside it, and it mostly measures how long since
+        anybody came round with the phone rather than yarn sitting unsold.
+        """
+        position = self._drain()
+        self.assertIsNotNone(self._cell_for(position)["bare_since"])
 
         html = self.client.get(
             reverse("restock_board", args=[self.fixture.pk])
         ).content.decode()
-        self.assertIn("empty", html)
+        self.assertIn("empty</span>", html)
+        self.assertNotRegex(html, r"empty\s+\d")
+
+    def test_typing_bare_1_calls_the_elapsed_time_forth(self):
+        """Kept for curiosity and demonstration, reachable only by typing."""
+        self._drain()
+
+        html = self.client.get(
+            reverse("restock_board", args=[self.fixture.pk]) + "?bare=1"
+        ).content.decode()
+        self.assertRegex(html, r"empty\s+\d+\s*(minute|hour|day|week)")
+
+    def test_the_elapsed_time_does_not_follow_you_around(self):
+        """**The inversion that keeps it away from the crew.**
+
+        `?photos=1` is a mode and every link carries it, so a circuit stays
+        in it. This is the opposite: a link sent mid-walk or a bookmark taken
+        during a demo is exactly how a stopwatch ends up in front of the
+        people it is not for, so nothing on the page passes it on and neither
+        does the save.
+        """
+        self._drain()
+        url = reverse("restock_board", args=[self.fixture.pk])
+
+        html = self.client.get(url + "?bare=1").content.decode()
+        self.assertNotIn("bare=1", html)
+
+        response = self.client.post(
+            url + "?bare=1",
+            self._sign(**{f"done_{self.position.pk}": "1"}),
+        )
+        self.assertNotIn("bare=1", response["Location"])
+
+    def test_the_picker_names_bare_pegs_without_timing_them(self):
+        """Same split on the board list: the count is work available, the
+        elapsed time is only there if somebody asked."""
+        self._drain()
+
+        html = self.client.get(reverse("restock_index")).content.decode()
+        self.assertIn("1 bare", html)
+        self.assertNotIn("longest", html)
+
+        html = self.client.get(
+            reverse("restock_index") + "?bare=1"
+        ).content.decode()
+        self.assertIn("longest", html)
 
     def test_a_half_sold_peg_is_not_called_bare(self):
         """One of two gone is a peg to top up, not one to hurry to."""

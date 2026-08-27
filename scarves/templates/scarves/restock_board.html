@@ -80,7 +80,7 @@ interrupted, and an unticked peg means "not walked yet", never "empty".
   .tile img { display: block; width: 100%; height: 66px; object-fit: cover; }
   /* **Text is what the board opens as, and it is not a downgrade.** The
      questions a walk asks — how many to put out, what the bag should have
-     left, how long this peg has been bare — are words and numbers, and on a
+     left, whether this peg has run bare — are words and numbers, and on a
      phone a photograph takes the room they need. A name is also what the
      peg's own label says, so a text tile matches the board being walked.
      Photos are a mode you ask for (`?photos=1`), and text stays the fallback
@@ -285,7 +285,7 @@ interrupted, and an unticked peg means "not walked yet", never "empty".
     <strong>how many should be left in the bag</strong> afterwards. Fill it,
     glance in the bag, and tap the tile if both look right. A peg the app
     already knows is empty still gets tapped — <strong>you did the job</strong>,
-    and saying so is the point of the walk.
+    and saying so is the point of the restock.
   </p>
   <p class="lead">
     A <strong>blue peg with +2 on it</strong> sold two since it was last
@@ -294,12 +294,14 @@ interrupted, and an unticked peg means "not walked yet", never "empty".
     nothing you do at the board fixes it. Worth a very quick look either way —
     if it fills, say so.
   </p>
-  <p class="lead">
-    <strong>“empty 2 hours”</strong> means that peg has probably had nothing
-    on it since then, and there's yarn in the bag that could be. It's the one
-    thing here worth hurrying about — and it's just the elapsed time, not a
-    telling-off. Do as many passes a day as suit you; nothing counts them.
-  </p>
+  {% comment %}
+  There was a paragraph here explaining the red “empty” badge. It went
+  because the badge says “empty” and a red tile among quiet ones needs no
+  gloss — and because what the paragraph had turned into was a disclaimer
+  ("a note about the peg, not about you", "nothing counts them"), which
+  raises the idea it is denying. The page scores nothing; saying so on the
+  page is what makes somebody wonder.
+  {% endcomment %}
   <p class="lead">
     Answering all {{ homes }} peg{{ homes|pluralize }} records a <strong>full check</strong> —
     what open and close are for. A shorter pass is still a good pass and
@@ -338,8 +340,14 @@ interrupted, and an unticked peg means "not walked yet", never "empty".
                     drawn when there is something to say — a badge on every
                     tile is a badge nobody reads.
                     {% endcomment %}
+                    {% comment %}
+                    The *state*, not the stopwatch. How long it has been like
+                    this only prints when `?bare=1` asks, because an elapsed
+                    time here reads as a measurement of whoever is walking and
+                    mostly measures the gap since the last walk anyway.
+                    {% endcomment %}
                     {% if cell.bare_since %}
-                      <span class="badge bare">empty {{ cell.bare_since|timesince }}</span>
+                      <span class="badge bare">empty{% if bare_age %} {{ cell.bare_since|timesince }}{% endif %}</span>
                     {% elif cell.sold %}
                       <span class="badge">+{{ cell.sold }}</span>
                     {% endif %}

@@ -1077,12 +1077,29 @@ free, and it is precisely the convenience somebody reasonable asks for after
 the third morning. The cost *is* the evidence.
 
 The one thing said out loud is `_drained_at`: **a peg reckoned to have run
-bare while stock is still behind it**, shown as plain elapsed time with no
-threshold and no escalation. That is yarn that could be selling and isn't,
-which is the only version anybody cares about. Whether an hour matters depends
-on how busy the stall is and whether anyone is free — neither of which the app
-can see — so it states the fact and a person decides. Same rule `colorbands`
-follows.
+bare while stock is still behind it.** That is yarn that could be selling and
+isn't, which is the only version anybody cares about. The tile says `empty`
+and the picker counts how many — a state and a count of work available, with
+no threshold and no escalation. Whether it matters depends on how busy the
+stall is and whether anyone is free, neither of which the app can see, so it
+states the fact and a person decides. Same rule `colorbands` follows.
+
+**How long it has been bare is behind `?bare=1` on both pages, advertised
+nowhere.** An elapsed time on a peg reads as a stopwatch on whoever is
+walking, however carefully it is worded — on the one page in the app that
+deliberately scores nothing, `empty 6 hours` is a number with somebody's name
+beside it. And it mostly is not measuring what it looks like: the clock starts
+at the last walk, so a long one usually means nobody has been round with the
+phone, not that a peg stood bare all afternoon. Accusing *and* wrong is worse
+than absent.
+
+Unlike `?photos=1` it is **not** folded into `mode`, so no link off the page
+and no POST redirect carries it. That inversion is the point: a mode should
+follow you round a circuit, and this should evaporate the moment you stop
+typing it, because a link sent mid-walk or a bookmark taken during a demo is
+exactly how it gets back in front of the crew. `board()` computes `bare_since`
+either way — `board_status` needs it to count bare pegs, and that count is not
+a time.
 
 ### No JavaScript, and no htmx either
 

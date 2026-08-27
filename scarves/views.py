@@ -2843,7 +2843,7 @@ def process_upload(request, upload_id):
 
 @page_meta(
     title="Photograph a Display",
-    description="Walk a board peg by peg and photograph what hangs there. The "
+    description="Go round a board peg by peg and photograph what hangs there. The "
                 "peg says what the picture is of, so nothing has to be typed "
                 "or scanned.",
     category="Products",
@@ -5042,7 +5042,7 @@ def _map_rows(fixture, positions):
 
 @page_meta(
     title="Restock the Display",
-    description="Pick a fixture and walk it: fill every peg, confirm each "
+    description="Pick a fixture and restock it: fill every peg, confirm each "
                 "one, and say where the app was wrong. Open, close, and the "
                 "end of every shift.",
     category="Inventory",
@@ -5053,6 +5053,12 @@ def restock_index(request):
     The picker for `restock_board`, and the answer to the only question worth
     asking from a distance: when was this board last filled, and by whom. A
     promise nobody has made in six hours is the finding.
+
+    **`?bare=1` adds how long the longest-bare peg has been bare**, and
+    nothing else on the page changes. Off by default and linked from nowhere,
+    for the reasons in `restock`: it is a length of time attached to whoever
+    was walking, and it mostly measures the gap since the last walk rather
+    than yarn sitting unsold.
     """
     if crew.asked_to_forget(request):
         return crew.forget(redirect("restock_index"))
@@ -5090,6 +5096,9 @@ def restock_index(request):
 
     return render(request, "scarves/restock_index.html", {
         "fixtures": fixtures,
+        # Typed by hand or not present. See `restock_board` for why it is not
+        # a link and does not follow you around.
+        "bare_age": request.GET.get("bare") == "1",
         # One trip to the backstock for the whole stall.
         "pull": restock.pull_list(),
         # No "colorways with no home" here. Which colorways belong on a board
@@ -5148,10 +5157,19 @@ def restock_board(request, fixture_id):
     else's board. The POST redirect carries it, because a save that quietly
     dropped you back to text mode is the same tap-and-lose-your-place the
     whole page is built to avoid.
+
+    **`?bare=1` is the opposite of a mode, and is handled the opposite way.**
+    It adds how long each bare peg has been bare, it is advertised nowhere,
+    and it is deliberately left out of `mode` so no link off this page and no
+    POST redirect carries it. A mode should follow you around a circuit; this
+    should evaporate the moment you stop asking for it, because a link sent
+    mid-walk or a bookmark taken during a demo is exactly how a stopwatch
+    ends up in front of the crew. Typing it is the whole of the interface.
     """
     fixture = get_object_or_404(DisplayFixture, pk=fixture_id, is_active=True)
     photos = request.GET.get("photos") == "1"
     mode = "?photos=1" if photos else ""
+    bare_age = request.GET.get("bare") == "1"
 
     if request.method == "POST":
         form = RestockPassForm(request.POST, user=request.user)
@@ -5221,6 +5239,9 @@ def restock_board(request, fixture_id):
         # in one mode stays in it.
         "photos": photos,
         "mode": mode,
+        # Not folded into `mode` on purpose — it is asked for per page view,
+        # never carried. The tiles say a peg is empty either way.
+        "bare_age": bare_age,
         "remembered": crew.remembered(request)[0],
         "forget_param": crew.FORGET,
     })
