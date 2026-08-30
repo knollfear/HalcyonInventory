@@ -160,7 +160,39 @@ renders bare. BaseTemplateTests guards it.
   .btn-quiet:hover { background: #eef2f7; border-color: var(--accent); }
   .actions { margin-top: 18px; display: flex; align-items: center; gap: 12px; }
 
-  .back { display: inline-block; margin-top: 22px; font-size: 13px; }
+  /* The way back is pinned to the viewport rather than sitting at the foot
+     of the page. Navigation here is hub-and-spoke — every staff page is
+     reached from the site map and left the same way — so on a long table or
+     a tall form the one link that is always wanted was the one thing you
+     had to scroll to the bottom to find.
+
+     Bottom *right* because everything in this app's forms is left-aligned:
+     `.actions` is a flex row from the start edge, and the map editor's
+     sticky save bar puts its button at the left of the column. The right
+     corner is the one that is reliably empty, so a pinned control there
+     covers nothing anybody was about to press.
+
+     Under the dye picker's dropdown (z-index 40) on purpose. The picker is
+     something being read and typed into; this is a way out of the page, and
+     the way out losing an argument with the control in use is the right way
+     round. */
+  .back {
+      position: fixed; right: 18px; bottom: 18px; z-index: 30;
+      font-size: 13px; text-decoration: none; color: var(--accent);
+      background: #fff; border: 1px solid #cfd6de; border-radius: 999px;
+      padding: 8px 15px; box-shadow: 0 2px 12px rgba(20, 40, 70, .16);
+  }
+  .back:hover { border-color: var(--accent); background: #eef2f7; }
+
+  /* Room to scroll past. A fixed element covers whatever is under it at the
+     moment you look, which is the deal — but at the bottom of a page there
+     is nothing left to scroll, so without this it would sit on the last row
+     of a table or the note under a save button permanently. */
+  body { padding-bottom: 80px; }
+
+  /* Several staff pages get printed. A fixed element repeats on every sheet
+     in some browsers, and a "← Site map" on paper is nothing to anybody. */
+  @media print { .back { display: none; } }
 {% endblock %}
 
 {% block body %}
