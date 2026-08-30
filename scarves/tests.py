@@ -37,7 +37,7 @@ from django.urls import reverse
 
 from . import (
     closing, colorbands, crew, fancy, photowalk, production, restock,
-    sheetscan, skus, timesheets,
+    sales, sheetscan, skus, timesheets,
 )
 from .colorutils import (
     delta_e,
@@ -14031,3 +14031,242 @@ class CrewHandbookSignedInTests(TestCase):
 
         self.assertTrue(response.context["no_pass"])
         self.assertIn("contact Michael", response.content.decode())
+
+
+class SalesReportTests(TestCase):
+    """`private/sales/` — what sold, per finished product, over a range.
+
+    The report reads the inventory log as a dataset. Everything worth pinning
+    here is a way it could be quietly wrong: a boundary that drops the last
+    day, a row count passed off as a sale count, or a stock adjustment
+    counted as if the till had seen it.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("rep", "r@example.test", "pw")
+        self.client.login(username="rep", password="pw")
+        self.recipe = make_recipe("Stormy Sea")
+        self.product = make_product(self.recipe, "Stormy Sea Silk Scarf")
+        self.other = make_product(make_recipe("Aegean"), "Aegean Silk Scarf")
+        self.today = timezone.localdate()
+
+    def _sale(self, product, qty, when=None, ref="ORDER-1",
+              log_type=InventoryLog.SALE):
+        """A log row on a given local day. `created_at` is auto_now_add, so
+        the date can only be set afterwards."""
+        log = InventoryLog.objects.create(
+            finished_product=product,
+            log_type=log_type,
+            source=InventoryLog.SOURCE_SQUARE_WEBHOOK,
+            quantity=-qty if log_type == InventoryLog.SALE else qty,
+            sale_reference=ref,
+        )
+        if when is not None:
+            InventoryLog.objects.filter(pk=log.pk).update(created_at=when)
+        return log
+
+    def _at(self, day, hour=12):
+        return timezone.make_aware(
+            datetime.combine(day, time(hour, 0)),
+            timezone.get_current_timezone(),
+        )
+
+    def _rows(self, **params):
+        response = self.client.get(reverse("sales_report"), params)
+        self.assertEqual(response.status_code, 200)
+        return {r["product"].pk: r for r in response.context["rows"]}
+
+    def test_units_come_back_positive(self):
+        """Sales are stored negative. A ranking of top sellers headed by -12
+        is the sort of thing nobody reports and everybody works around."""
+        self._sale(self.product, 3, self._at(self.today))
+        rows = self._rows(range="today")
+        self.assertEqual(rows[self.product.pk]["units"], 3)
+
+    def test_yesterday_does_not_leak_into_today(self):
+        self._sale(self.product, 3, self._at(self.today))
+        self._sale(self.other, 5, self._at(self.today - timedelta(days=1)))
+
+        today = self._rows(range="today")
+        self.assertEqual(set(today), {self.product.pk})
+
+        yesterday = self._rows(range="yesterday")
+        self.assertEqual(set(yesterday), {self.other.pk})
+
+    def test_a_custom_range_includes_the_whole_of_its_last_day(self):
+        """The boundary bug worth a test of its own. `created_at <= the end
+        date` compares a timestamp against midnight, so a range ending today
+        would take nothing sold after midnight — which is all of it, silently,
+        with the page still reading as a complete answer."""
+        day = self.today - timedelta(days=2)
+        self._sale(self.product, 4, self._at(day, hour=23))
+
+        rows = self._rows(**{
+            "from": (day - timedelta(days=1)).isoformat(),
+            "to": day.isoformat(),
+        })
+        self.assertEqual(rows[self.product.pk]["units"], 4)
+
+    def test_transactions_counts_orders_not_rows(self):
+        """Twelve sold in one sale and twelve sold in eleven are the same
+        number of units and different facts about a colorway."""
+        self._sale(self.product, 2, self._at(self.today), ref="A")
+        self._sale(self.product, 1, self._at(self.today), ref="B")
+        self._sale(self.product, 1, self._at(self.today), ref="B")
+
+        row = self._rows(range="today")[self.product.pk]
+        self.assertEqual(row["units"], 4)
+        self.assertEqual(row["transactions"], 2)
+
+    def test_rows_with_no_order_reference_count_one_each(self):
+        """Nothing says two referenceless rows were the same sale, and
+        assuming so deflates the count."""
+        self._sale(self.product, 1, self._at(self.today), ref="")
+        self._sale(self.product, 1, self._at(self.today), ref="")
+
+        row = self._rows(range="today")[self.product.pk]
+        self.assertEqual(row["transactions"], 2)
+
+    def test_an_adjustment_is_not_a_sale(self):
+        """The Sunday close writes adjustments, and some of them really are
+        unregistered sales — but the app cannot tell which, and a guess in
+        the same column as a till receipt is worse than a gap."""
+        self._sale(self.other, 6, self._at(self.today),
+                   log_type=InventoryLog.ADJUSTMENT)
+        self.assertEqual(self._rows(range="today"), {})
+
+    def test_days_separates_a_rush_from_a_following(self):
+        for offset in (0, 1, 1, 2):
+            self._sale(
+                self.product, 1,
+                self._at(self.today - timedelta(days=offset)),
+                ref=f"O{offset}-{offset}",
+            )
+        row = self._rows(range="7")[self.product.pk]
+        self.assertEqual(row["units"], 4)
+        self.assertEqual(row["days"], 3)
+
+    def test_shortfall_is_clamped_and_par_is_shown_beside_stock(self):
+        """`on hand / par` is one cell because the gap is the reading. A
+        product above par is not short by a negative number — overshoot is
+        bath-size rounding and means nothing here."""
+        FinishedProduct.objects.filter(pk=self.product.pk).update(
+            number_on_hand=1, par=8
+        )
+        FinishedProduct.objects.filter(pk=self.other.pk).update(
+            number_on_hand=10, par=8
+        )
+        self._sale(self.product, 1, self._at(self.today), ref="A")
+        self._sale(self.other, 1, self._at(self.today), ref="B")
+
+        rows = self._rows(range="today")
+        self.assertEqual(rows[self.product.pk]["short"], 7)
+        self.assertEqual(rows[self.other.pk]["short"], 0)
+
+    def test_sorting_runs_on_a_derived_column(self):
+        """Shortfall and value are computed here rather than queried, and a
+        column you can see but can't sort by is a question the page can
+        obviously answer and won't."""
+        FinishedProduct.objects.filter(pk=self.product.pk).update(
+            number_on_hand=0, par=10
+        )
+        FinishedProduct.objects.filter(pk=self.other.pk).update(
+            number_on_hand=9, par=10
+        )
+        self._sale(self.product, 1, self._at(self.today), ref="A")
+        self._sale(self.other, 9, self._at(self.today), ref="B")
+
+        response = self.client.get(
+            reverse("sales_report"), {"range": "today", "sort": "short", "dir": "desc"}
+        )
+        order = [r["product"].pk for r in response.context["rows"]]
+        self.assertEqual(order[0], self.product.pk)
+
+        response = self.client.get(
+            reverse("sales_report"), {"range": "today", "sort": "units", "dir": "desc"}
+        )
+        order = [r["product"].pk for r in response.context["rows"]]
+        self.assertEqual(order[0], self.other.pk)
+
+    def test_a_range_pill_keeps_the_sort_and_the_filter(self):
+        """The useful readings are combinations. A control that resets the
+        others means the combination can only be reached by starting again."""
+        response = self.client.get(
+            reverse("sales_report"),
+            {"range": "today", "sort": "value", "dir": "asc", "q": "stormy"},
+        )
+        hrefs = {r["key"]: r["href"] for r in response.context["ranges"]}
+        self.assertIn("sort=value", hrefs["yesterday"])
+        self.assertIn("dir=asc", hrefs["yesterday"])
+        self.assertIn("q=stormy", hrefs["yesterday"])
+
+    def test_a_custom_range_survives_being_narrowed(self):
+        """The filter form carries the dates, so typing a colour name does
+        not silently drop the range back to today."""
+        start = (self.today - timedelta(days=4)).isoformat()
+        response = self.client.get(
+            reverse("sales_report"), {"from": start, "to": self.today.isoformat()}
+        )
+        carried = dict(response.context["filter_hidden"])
+        self.assertEqual(carried["from"], start)
+        self.assertEqual(carried["range"], "custom")
+
+    def test_the_filters_narrow_to_one_style(self):
+        self._sale(self.product, 1, self._at(self.today), ref="A")
+        self._sale(self.other, 1, self._at(self.today), ref="B")
+
+        rows = self._rows(range="today", blank=self.product.raw_product_id)
+        self.assertEqual(set(rows), {self.product.pk})
+
+        rows = self._rows(range="today", q="aegean")
+        self.assertEqual(set(rows), {self.other.pk})
+
+    def test_a_stale_link_degrades_to_no_filter(self):
+        """There is no 404 in this app, so bad links are ordinary. A page
+        that 500s instead of answering is the expensive version."""
+        self._sale(self.product, 1, self._at(self.today), ref="A")
+        rows = self._rows(range="today", blank="nonsense", sort="wat", dir="sideways")
+        self.assertIn(self.product.pk, rows)
+
+    def test_the_source_breakdown_names_how_the_sales_arrived(self):
+        """A run of imported rows where webhook ones normally sit is a dead
+        integration, and it reads as ordinary sales in every other column."""
+        self._sale(self.product, 2, self._at(self.today), ref="A")
+        log = self._sale(self.other, 1, self._at(self.today), ref="B")
+        InventoryLog.objects.filter(pk=log.pk).update(
+            source=InventoryLog.SOURCE_SQUARE_IMPORT
+        )
+
+        response = self.client.get(reverse("sales_report"), {"range": "today"})
+        by_source = {s["source"]: s["units"] for s in response.context["sources"]}
+        self.assertEqual(by_source[InventoryLog.SOURCE_SQUARE_WEBHOOK], 2)
+        self.assertEqual(by_source[InventoryLog.SOURCE_SQUARE_IMPORT], 1)
+
+    def test_backwards_dates_are_read_the_way_round_they_were_meant(self):
+        day = self.today - timedelta(days=3)
+        self._sale(self.product, 2, self._at(day))
+        rows = self._rows(**{
+            "from": self.today.isoformat(),
+            "to": day.isoformat(),
+        })
+        self.assertEqual(rows[self.product.pk]["units"], 2)
+
+    def test_an_unreadable_date_is_refused_rather_than_guessed(self):
+        """A range built from half a date is a total for days nobody asked
+        about, and it looks exactly like a real one. So an unparseable date
+        contributes nothing — and what the page fell back to is said in the
+        heading, which is what stops the answer being mistaken for the
+        question."""
+        rng = sales.resolve_range({"from": "not-a-date", "to": ""})
+        self.assertEqual(rng.key, "today")
+        self.assertEqual(rng.label, "Today")
+
+        # With the other half readable the range stays open-ended rather than
+        # inventing a start, and says so.
+        end = self.today - timedelta(days=1)
+        rng = sales.resolve_range(
+            {"range": "custom", "from": "13/02/26", "to": end.isoformat()}
+        )
+        self.assertIsNone(rng.start)
+        self.assertEqual(rng.end, end)
+        self.assertTrue(rng.label.startswith("Up to "))

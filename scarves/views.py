@@ -51,7 +51,7 @@ from django.template.response import TemplateResponse
 
 from . import (
     closing, colorbands, crew, fancy, labels, photowalk, production, restock,
-    sheetscan, skus, timesheets,
+    sales, sheetscan, skus, timesheets,
 )
 from .colorutils import hex_to_rgb, nearest_by_color, pick_color_cluster
 from .forms import (
@@ -5567,4 +5567,170 @@ def close_history(request):
         "found_total": sum(e["tally"]["disagreements"] for e in entries),
         "under_total": sum(e["tally"]["under_units"] for e in entries),
         "over_total": sum(e["tally"]["over_units"] for e in entries),
+    })
+
+
+#: The table, in reading order: what it is, then what it did, then what is
+#: left. Every one is sortable — a column you can see and can't sort by is a
+#: question the page can obviously answer and won't.
+SALES_COLUMNS = [
+    ("name", "Product"),
+    ("blank", "Style"),
+    ("colorway", "Colorway"),
+    ("units", "Units sold"),
+    ("transactions", "Sales"),
+    ("days", "Days"),
+    ("value", "Value"),
+    ("last", "Last sold"),
+    ("on_hand", "On hand / par"),
+    ("short", "Short"),
+]
+
+
+def _int_or_none(text):
+    """A positive integer off the query string, or None.
+
+    A hand-edited or stale `?blank=` degrades to no filter rather than a 500
+    — the catch-all redirect means bad links are ordinary here, and the
+    failure worth avoiding is a page that errors instead of answering.
+    """
+    try:
+        value = int(text)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _hidden(base, *keys):
+    """The subset of the page's state one form has to carry for the other."""
+    return [(k, base[k]) for k in keys
+            if base.get(k) not in (None, "", 0)]
+
+
+def _sales_href(base, **overrides):
+    """`private/sales/` with the current view's state, minus what's overridden.
+
+    Every control on the page carries the whole of the rest of the state —
+    sorting a filtered range keeps the filter and the range, and a pill keeps
+    the sort. Same rule the colour page's pills follow, for the same reason:
+    the useful views are combinations, and a control that resets the others
+    means the combination can only be reached by starting again.
+    """
+    params = dict(base)
+    params.update(overrides)
+    params = {k: v for k, v in params.items() if v not in (None, "", 0)}
+    query = urlencode(params)
+    return reverse("sales_report") + (f"?{query}" if query else "")
+
+
+@page_meta(
+    title="Top Sellers",
+    description="What sold over a date range, one row per finished product: "
+                "units, how many separate sales, and what's left against par. "
+                "Today, yesterday, or dates you pick.",
+    category="Inventory",
+    note="Sortable columns; ?range=today|yesterday|7|30|all or ?from=&to=",
+)
+@login_required
+def sales_report(request):
+    """Top sellers over a range, sortable and narrowable.
+
+    The whole of the page's state is in the query string — range, filters,
+    sort column and direction — so a particular reading is a link somebody
+    can send, and the back button walks back through the questions asked
+    rather than dumping you at today's default.
+
+    **`on hand / par` is one column, not two.** The number that matters after
+    "twelve of these sold" is not the stock and not the target but the gap
+    between them, and putting them side by side in one cell is what makes it
+    readable without arithmetic. It is sorted on the shortfall for the same
+    reason.
+
+    Nothing here schedules anything. It is a page somebody reads: a colorway
+    at the top of this table with nothing left is an argument for raising its
+    par, which stays a deliberate decision about demand rather than something
+    a report gets to make.
+    """
+    rng = sales.resolve_range(request.GET)
+
+    q = request.GET.get("q", "").strip()
+    category_id = _int_or_none(request.GET.get("category"))
+    raw_product_id = _int_or_none(request.GET.get("blank"))
+
+    sort = request.GET.get("sort", "")
+    if sort not in sales.SORTS:
+        sort = sales.DEFAULT_SORT
+    direction = request.GET.get("dir", "")
+    if direction not in ("asc", "desc"):
+        direction = "desc" if sort in sales.DESCENDING_FIRST else "asc"
+
+    logs = sales.narrow(
+        sales.sale_logs(rng), q=q,
+        category_id=category_id, raw_product_id=raw_product_id,
+    )
+    rows = sales.product_rows(logs)
+    rows = sales.sort_rows(rows, sort, descending=direction == "desc")
+
+    # The state every link on the page starts from.
+    base = dict(rng.querystring())
+    base.update({
+        "q": q,
+        "category": category_id,
+        "blank": raw_product_id,
+        "sort": sort,
+        "dir": direction,
+    })
+
+    # Column headings. A heading already sorted flips direction; any other
+    # heading opens the way that column reads first — biggest-first for a
+    # ranking, A-first for a name.
+    columns = []
+    for key, label in SALES_COLUMNS:
+        if key == sort:
+            nxt = "asc" if direction == "desc" else "desc"
+        else:
+            nxt = "desc" if key in sales.DESCENDING_FIRST else "asc"
+        columns.append({
+            "key": key,
+            "label": label,
+            "sorted": key == sort,
+            "direction": direction if key == sort else "",
+            "href": _sales_href(base, sort=key, dir=nxt),
+        })
+
+    return render(request, "scarves/sales_report.html", {
+        "range": rng,
+        "ranges": [
+            {
+                "key": key,
+                "label": label,
+                "on": rng.key == key,
+                # "Choose dates" is the form below rather than a link, so it
+                # is a pill that only ever shows state.
+                "href": None if key == "custom" else _sales_href(
+                    base, range=key, **{"from": None, "to": None}
+                ),
+            }
+            for key, label in sales.RANGES
+        ],
+        "rows": rows,
+        "columns": columns,
+        "totals": sales.totals(rows),
+        "sources": sales.by_source(logs),
+        "q": q,
+        "category_id": category_id,
+        "blank_id": raw_product_id,
+        "categories": RawProductCategory.objects.all(),
+        "blanks": RawProduct.objects.filter(
+            finished_products__isnull=False
+        ).distinct().order_by("name"),
+        "sort": sort,
+        "direction": direction,
+        # Each of the two forms carries the state the other one owns, as
+        # hidden fields, so submitting either keeps everything already set —
+        # typing a colour name must not silently drop back to today.
+        "date_hidden": _hidden(base, "q", "category", "blank", "sort", "dir"),
+        "filter_hidden": _hidden(base, "range", "from", "to", "sort", "dir"),
+        "clear_href": _sales_href(dict(rng.querystring())),
+        "any_filter": bool(q or category_id or raw_product_id),
     })

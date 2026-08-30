@@ -1429,6 +1429,74 @@ never mentions the excursion leaves "why did Square briefly show 50 of these"
 with no answer anywhere — the silent kind of wrong. Nothing else in this app
 deletes an `InventoryLog` either.
 
+## Top sellers: the first page that reads the log as a dataset
+
+`private/sales/` answers "what sold, and over what dates" — one row per
+finished product, which is blank × colorway, the axis the catalogue is
+organised on. `scarves/sales.py` does the picking; nothing in it writes.
+
+**Scope is `log_type=SALE` and nothing else**, which is deliberately narrower
+than "stock that left the tent". A Sunday close writes an *adjustment* when
+the count disagrees, and some of those genuinely are sales nobody registered
+— but the app cannot tell which ones, and a guess sitting in the same column
+as a till receipt is worse than a gap, because nothing on the row would say
+which it was. `close_history` already has that half, and the page links to it
+rather than folding the two together.
+
+Two properties of the date column change what a total means, so both are
+printed on the page rather than known only here:
+
+- **The date is when the row was written.** A webhook lands within seconds, so
+  those agree. `import_square_sales` stamps at import time, so a CSV loaded on
+  Monday piles Saturday onto Monday. A resolved unidentified sale is the one
+  that goes the other way — back-dated to Square's own sale time.
+- **A sale that never reached the app is not here at all**, which is the same
+  silence the close exists to catch.
+
+Which is why the page prints a **breakdown by `source`** under the table. That
+is the field doing the job it was added for: a range carrying `square_import`
+rows where `square_webhook` ones normally sit is a dropped integration and a
+CSV loaded afterwards, and a `test` row is a simulated sale somebody left
+behind — all of which read as ordinary sales in every other column.
+
+**Transactions is not a row count.** A dye bath yields several units of one
+SKU and they leave in ones and twos, so "12 sold across 11 sales" and "12 sold
+in one" are different facts about a colorway and only one of them is a
+following. Rows carrying no order reference count one each: nothing says two
+of them were the same sale, and assuming so deflates the number. `days` is
+beside it for the same reason at a coarser grain — a rush and a steady seller
+are the same integer in the units column.
+
+**`on hand / par` is one cell, not two columns.** The number worth reading
+after "twelve of these sold" is the gap, and side by side it needs no
+arithmetic; `short` is the gap, sorted on and **clamped at zero**, because a
+product above par is not short by a negative amount — overshoot is bath-size
+rounding and means nothing here. Nothing on this page schedules anything: a
+colorway at the top with nothing left is an argument for raising its par,
+which stays a deliberate decision about demand (see *Display capacity is not
+demand*).
+
+**Value is units × today's price and says so on the page.** There is no price
+on an `InventoryLog` row, so this cannot be what the till took — a price
+changed since, or anything discounted, makes it wrong. It is there to rank
+colorways against each other, never to reconcile against Square.
+
+No rates and no averages. Units and transactions are both printed and never
+divided into each other, the same bargain the close makes: an average basket
+across a stall's worth of colorways moves for reasons nobody can act on, and
+it would sit beside the two numbers that can be.
+
+**All of the page's state is query string** — range, filters, sort column,
+direction — so a reading is a link somebody can send and every control
+carries the rest of the state rather than resetting it (the colour page's
+pills, again). `today` and `yesterday` resolve at request time rather than
+being links to a fixed date: somebody who taps "today" and sends the link
+means today. Sorting happens in Python so the derived columns (shortfall,
+value) sort on the same terms as the queried ones, instead of being the two
+headings that mysteriously aren't links. An unreadable date contributes
+nothing and the heading states the range actually used, which is what stops
+the answer being mistaken for the question that was asked.
+
 ## Timekeeping: the pay week, and the two totals
 
 The hours form (`secret/hours/`) and the timesheet (`private/timesheet/`)

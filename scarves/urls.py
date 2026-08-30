@@ -65,6 +65,11 @@ urlpatterns = [
         name="bulk_inventory_update",
     ),
 
+    # What sold, per finished product, over a date range. A read-only report:
+    # the state (range, filters, sort) is all query string, so a reading is a
+    # link somebody can send.
+    path("private/sales/", views.sales_report, name="sales_report"),
+
     # --- Recipes ---
     # POST-only, from the type-ahead in any dye picker. No @page_meta: there
     # is no page here, only the "add this dye" the picker offers.

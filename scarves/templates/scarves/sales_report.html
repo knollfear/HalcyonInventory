@@ -1,0 +1,253 @@
+{% extends "scarves/base_internal.html" %}
+{% comment %}
+Top sellers over a date range. A desk page: staff-only, read-only, and it
+schedules nothing.
+
+Everything the page knows is in the query string — range, filters, sort
+column, direction — so a reading is a link somebody can send and the back
+button walks back through the questions rather than dumping you at today.
+
+No percentages and no averages. Units and sales are both printed and never
+divided into each other: an average basket size over a stall's worth of
+colorways moves for reasons nobody can act on, and it would sit next to the
+two numbers that can be.
+{% endcomment %}
+
+{% block title %}Top Sellers{% endblock %}
+{% block heading %}What sold — {{ range.label }}{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 1200px; }
+
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 14px 0 6px; }
+  .pill {
+      border: 1px solid #cbd6e2; border-radius: 999px; padding: 4px 12px;
+      text-decoration: none; font-size: 14px; background: #fff; color: inherit;
+  }
+  .pill.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  .forms { display: flex; flex-wrap: wrap; gap: 22px; align-items: flex-end; margin: 12px 0 4px; }
+  .forms form { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
+  .field { display: flex; flex-direction: column; gap: 3px; }
+  .field label { font-size: 12px; color: #667; }
+  .field input[type="date"], .field input[type="search"] {
+      font: inherit; padding: 5px 8px; border: 1px solid #cfd6de;
+      border-radius: 6px; background: #fff;
+  }
+  .field input[type="search"] { width: 16rem; max-width: 100%; }
+  button.go {
+      font: inherit; padding: 6px 14px; border-radius: 6px; cursor: pointer;
+      border: 1px solid var(--accent); background: var(--accent); color: #fff;
+  }
+
+  .totals { display: flex; gap: 30px; flex-wrap: wrap; margin: 22px 0 10px; }
+  .totals .n { font-size: 2.1rem; font-weight: 700; line-height: 1.05; }
+  .totals .what { font-size: .85rem; color: #556; max-width: 20ch; }
+
+  th a { color: inherit; text-decoration: none; display: inline-block; }
+  th a:hover { color: var(--accent); text-decoration: underline; }
+  th.sorted a { color: var(--accent); font-weight: 700; }
+  td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
+  td.units { font-weight: 700; font-size: 1.05rem; }
+  .sku { font-size: 12px; color: #8a93a0; }
+  .none { color: #99a; }
+  .short-n { color: #8a2f2a; font-weight: 600; }
+  .why { font-size: .92rem; color: #556; max-width: 74ch; }
+  .why + .why { margin-top: 8px; }
+  .sources { font-size: .9rem; color: #556; }
+  .sources td, .sources th { padding: 5px 10px; }
+  table.report { margin-top: 6px; }
+{% endblock %}
+
+{% block content %}
+
+  {% comment %}
+  Today and Yesterday resolve at request time rather than being links to a
+  fixed date: somebody who taps "today" and sends the link means today.
+  Every pill carries the filters and the sort, so a narrowed, sorted view can
+  be moved to another day in one tap.
+  {% endcomment %}
+  <div class="toolbar">
+    {% for r in ranges %}
+      {% if r.href %}
+        <a class="pill{% if r.on %} on{% endif %}" href="{{ r.href }}">{{ r.label }}</a>
+      {% else %}
+        <span class="pill{% if r.on %} on{% endif %}">{{ r.label }}</span>
+      {% endif %}
+    {% endfor %}
+  </div>
+
+  <div class="forms">
+    <form method="get" action="">
+      {% for key, value in date_hidden %}
+        <input type="hidden" name="{{ key }}" value="{{ value }}">
+      {% endfor %}
+      <div class="field">
+        <label for="from">From</label>
+        <input type="date" id="from" name="from"
+               value="{% if range.key == 'custom' and range.start %}{{ range.start|date:'Y-m-d' }}{% endif %}">
+      </div>
+      <div class="field">
+        <label for="to">To</label>
+        <input type="date" id="to" name="to"
+               value="{% if range.key == 'custom' and range.end %}{{ range.end|date:'Y-m-d' }}{% endif %}">
+      </div>
+      <button class="go" type="submit">Use these dates</button>
+    </form>
+
+    <form method="get" action="">
+      {% for key, value in filter_hidden %}
+        <input type="hidden" name="{{ key }}" value="{{ value }}">
+      {% endfor %}
+      <div class="field">
+        <label for="q">Name, colorway or SKU</label>
+        <input type="search" id="q" name="q" value="{{ q }}" placeholder="e.g. stormy">
+      </div>
+      <div class="field">
+        <label for="category">Table</label>
+        <select id="category" name="category">
+          <option value="">All</option>
+          {% for c in categories %}
+            <option value="{{ c.pk }}"{% if c.pk == category_id %} selected{% endif %}>{{ c.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label for="blank">Style</label>
+        <select id="blank" name="blank">
+          <option value="">All</option>
+          {% for b in blanks %}
+            <option value="{{ b.pk }}"{% if b.pk == blank_id %} selected{% endif %}>{{ b.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <button class="go" type="submit">Narrow</button>
+      {% if any_filter %}
+        <a class="pill" href="{{ clear_href }}">Clear</a>
+      {% endif %}
+    </form>
+  </div>
+
+  <div class="totals">
+    <div>
+      <div class="n">{{ totals.units }}</div>
+      <div class="what">items sold</div>
+    </div>
+    <div>
+      <div class="n">{{ totals.transactions }}</div>
+      <div class="what">separate sales they went out in</div>
+    </div>
+    <div>
+      <div class="n">{{ totals.products }}</div>
+      <div class="what">products that sold at all</div>
+    </div>
+    <div>
+      <div class="n">${{ totals.value|floatformat:0 }}</div>
+      <div class="what">at today's prices — not what the till took</div>
+    </div>
+  </div>
+
+  <table class="report">
+    <thead>
+      <tr>
+        {% for col in columns %}
+          <th class="{% if col.sorted %}sorted {% endif %}{% if col.key != 'name' and col.key != 'blank' and col.key != 'colorway' %}n{% endif %}">
+            <a href="{{ col.href }}">{{ col.label }}{% if col.sorted %}{% if col.direction == 'desc' %} ↓{% else %} ↑{% endif %}{% endif %}</a>
+          </th>
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+        <tr>
+          <td>
+            {{ row.product.name }}<br>
+            <span class="sku">{{ row.product.sku|default:"no SKU" }}</span>
+          </td>
+          <td>{{ row.product.raw_product.name }}</td>
+          <td>{{ row.product.recipe.name|default:"undyed" }}</td>
+          <td class="n units">{{ row.units }}</td>
+          <td class="n">{{ row.transactions }}</td>
+          {% comment %}
+          How many separate days it sold on. Twelve in one afternoon and
+          twelve across the fortnight are the same number in the units
+          column and completely different facts about a colorway.
+          {% endcomment %}
+          <td class="n">{{ row.days }}</td>
+          <td class="n">${{ row.value|floatformat:0 }}</td>
+          <td class="n">{{ row.last_sold|date:"d M, H:i" }}</td>
+          {% comment %}
+          On hand and par in one cell. The number worth reading is the gap,
+          and side by side it needs no arithmetic.
+          {% endcomment %}
+          <td class="n">
+            {{ row.on_hand }} <span class="none">/ {{ row.par|default:"—" }}</span>
+          </td>
+          <td class="n">
+            {% if row.short %}<span class="short-n">{{ row.short }}</span>
+            {% else %}<span class="none">—</span>{% endif %}
+          </td>
+        </tr>
+      {% empty %}
+        <tr>
+          <td colspan="{{ columns|length }}" class="none">
+            No sales recorded in this range.
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% if sources %}
+    {% comment %}
+    How the range's sales came to be recorded. It changes what the totals
+    above mean and nothing else on the page can say it: a run of
+    `square_import` rows where webhook ones normally sit is an integration
+    that stopped delivering and a CSV loaded afterwards, and a `test` row is
+    a simulated sale somebody left behind. Both read as ordinary sales in
+    every other column.
+    {% endcomment %}
+    <h2>How these were recorded</h2>
+    <table class="sources">
+      <thead>
+        <tr><th>Flow</th><th class="n">Items</th><th class="n">Entries</th></tr>
+      </thead>
+      <tbody>
+        {% for s in sources %}
+          <tr>
+            <td>{{ s.label }}</td>
+            <td class="n">{{ s.units }}</td>
+            <td class="n">{{ s.entries }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+
+  <h2>What this counts</h2>
+  <p class="why">
+    Sale entries on the inventory log, and nothing else. That is narrower
+    than "stock that left the tent": the Sunday close writes an
+    <em>adjustment</em> when the count disagrees, and some of those really
+    are sales nobody registered — but the app cannot tell which, and a guess
+    in the same column as a till receipt is worse than a gap.
+    <a href="{% url 'close_history' %}">Close History</a> has that half.
+  </p>
+  <p class="why">
+    The date is when the entry was written. A webhook lands within seconds of
+    the sale, so those agree; a CSV loaded with
+    <code>import_square_sales</code> piles the whole file onto the day it was
+    imported; a resolved
+    <a href="{% url 'unmatched_sales' %}">unidentified sale</a> is back-dated
+    to Square's own sale time. Only the middle one moves a total, and the
+    table above says when it applies.
+  </p>
+  <p class="why">
+    <strong>Value is units × today's price</strong>, not what the till took.
+    A price that has changed since, or anything sold at a discount, makes it
+    wrong — it is here to rank colorways against each other, not to reconcile
+    against Square.
+  </p>
+
+{% endblock %}
