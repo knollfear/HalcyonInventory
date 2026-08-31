@@ -329,6 +329,54 @@ def _adjustment(product, delta, notes):
     )
 
 
+def card_status(rows):
+    """The close's rows read as three piles: cards, not cards, and not done.
+
+    The question a close *ends* on is not the one it starts on. Working down
+    the list, what matters is which way each count went; once the counting is
+    finished, what matters is the stack of cards in somebody's hand and
+    whether it matches. Those are two readings of the same rows, and the
+    second has no use for the first's categories — whether a row was
+    predicted or turned up as an unexpected tag says where the evening's work
+    came from, not what should be in the stack at the end of it. Reading the
+    close back through `expected` and `unpredicted` asks somebody to do that
+    subtraction in their head while holding forty cards.
+
+    So the card test is one test applied to every answered row alike, and it
+    is applied **live**: `number_on_hand <= display_slots` — every unit
+    hanging on the pegs and nothing behind them, which is precisely the claim
+    the crew make by holding the tag. The same test `expected_products`
+    opened the evening with, asked again of the numbers this close has since
+    corrected.
+
+    **A row nobody counted is neither**, and that is the third pile. Its
+    number is the app's own belief rather than tonight's finding, so filing
+    it under a card either way would put an unchecked claim in a list whose
+    whole purpose is to be checked — and the two jobs are genuinely
+    different: finishing the counting is work remaining, settling the stack
+    is what the counting was for. Kept on the page rather than dropped,
+    because a row that vanished would leave the card lists reading as
+    complete when they are short, and a card silently absent from the list it
+    is about to be checked against is the failure this page exists to catch.
+
+    `display_slots` is the row's frozen copy rather than the product's live
+    one, for the same reason it was frozen in the first place: the pegs held
+    what they held tonight, and a board rebuilt on Monday must not
+    retrospectively change which tags were in a hand on Sunday.
+
+    Returns `(cards, no_cards, uncounted)` in the rows' own order.
+    """
+    cards, no_cards, uncounted = [], [], []
+    for row in rows:
+        if row.outcome == CloseRunRow.PENDING:
+            uncounted.append(row)
+            continue
+        on_hand = row.finished_product.number_on_hand
+        bucket = cards if on_hand <= (row.display_slots or 0) else no_cards
+        bucket.append(row)
+    return cards, no_cards, uncounted
+
+
 def tally(run):
     """The numbers this run exists to produce: what was found wrong.
 

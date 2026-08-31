@@ -13063,7 +13063,9 @@ class SundayClosePageTests(TestCase):
             "pin": "1234",
         })
         run = CloseRun.objects.get()
-        self.assertRedirects(response, reverse("close_run", args=[run.token]))
+        self.assertRedirects(
+            response, reverse("close_run", args=[run.token]) + "?mode=count"
+        )
         self.assertEqual(run.employee, self.employee)
         self.assertEqual(run.rows.count(), 1)
 
@@ -13146,7 +13148,10 @@ class SundayClosePageTests(TestCase):
         url = reverse("close_run", args=[run.token])
 
         self.client.post(url, count_post(row, 2))
-        html = self.client.get(url).content.decode()
+        # The counting list explicitly: a bare URL opens the card lists once
+        # anything has been counted, and the answer is shown back on the
+        # buttons that took it.
+        html = self.client.get(url, {"mode": "count"}).content.decode()
 
         checked = re.search(
             rf'<input type="radio" name="counted_{row.pk}" value="(\d+|more)"[^>]*checked',
@@ -13379,7 +13384,9 @@ class SundayClosePageTests(TestCase):
         url = reverse("close_run", args=[run.token])
         self.client.post(url, count_post(row, 5))
 
-        html = self.client.get(url).content.decode()
+        # Undo lives on the counting list. A bare URL now opens the card
+        # lists, which are read rather than worked.
+        html = self.client.get(url, {"mode": "count"}).content.decode()
         self.assertIn(reverse("close_undo", args=[run.token, row.pk]), html)
         self.assertIn("Undo", html)
 
@@ -13434,7 +13441,9 @@ class SundayClosePageTests(TestCase):
             "product_id": product.pk,
         })
 
-        self.assertRedirects(response, reverse("close_run", args=[run.token]))
+        self.assertRedirects(
+            response, reverse("close_run", args=[run.token]) + "?mode=count"
+        )
         product.refresh_from_db()
         self.assertEqual(product.number_on_hand, 4)
         self.assertEqual(InventoryLog.objects.count(), 0)
@@ -13477,6 +13486,230 @@ class SundayClosePageTests(TestCase):
         response = self.client.get(reverse("close_history"))
         self.assertEqual(response.status_code, 302)
         self.assertIn("/login", response["Location"])
+
+
+class CloseCardListTests(TestCase):
+    """What the close leaves in somebody's hand, once the counting is done.
+
+    A different question from the one the evening is worked on, asked of the
+    same rows. Not *which way was the app wrong* — that is the counting
+    list's business and the history page's output — but *which tags should be
+    in the stack now*, which is one live test applied to every row alike:
+    `number_on_hand <= display_slots`, the app saying the bag is empty.
+
+    Deliberately blind to whether a row was predicted. Where the evening's
+    work came from is not what should be in the stack at the end of it, and
+    reading the stack through that split asks somebody to do the subtraction
+    in their head while holding forty cards.
+
+    A row nobody counted is neither card nor not-card but a third pile: work
+    remaining. Its number is the app's belief rather than tonight's finding,
+    and an unchecked claim in a list whose whole job is to be checked would
+    make the stack agree with itself.
+    """
+
+    def setUp(self):
+        self.employee = Employee.objects.create(name="Closer", pin="1234")
+
+    def _cards(self, run):
+        rows = list(run.rows.select_related("finished_product"))
+        return closing.card_status(rows)
+
+    def test_a_count_that_finds_a_bag_moves_the_row_out_of_the_cards(self):
+        """The whole point of counting: the tag was wrong and goes back.
+
+        Predicted, so a tag was in hand — and the count found four behind a
+        display that holds two. There is a bag after all.
+        """
+        make_close_product("Found A Bag", on_hand=1, slots=2)
+        run, _ = closing.run_for_today(employee=self.employee)
+        row = run.rows.get()
+
+        self.client.post(reverse("close_run", args=[run.token]), count_post(row, 4))
+
+        cards, no_cards, uncounted = self._cards(run)
+        self.assertEqual(cards, [])
+        self.assertEqual([r.pk for r in no_cards], [row.pk])
+        self.assertEqual(uncounted, [])
+
+    def test_an_unpredicted_tag_counted_low_is_a_card_like_any_other(self):
+        """The split the lists refuse to make.
+
+        This row arrived because somebody was holding a tag the close never
+        asked about, and the count agreed the bag was empty. In the stack it
+        is a card; nothing about where it came from changes that.
+        """
+        product = make_close_product("Turned Up", on_hand=5, slots=2)
+        run, _ = closing.run_for_today(employee=self.employee)
+        self.client.post(reverse("close_add_tag", args=[run.token]), {
+            "product_id": product.pk,
+        })
+        row = run.rows.get(finished_product=product)
+
+        self.client.post(reverse("close_run", args=[run.token]), count_post(row, 2))
+
+        cards, no_cards, uncounted = self._cards(run)
+        self.assertEqual([r.pk for r in cards], [row.pk])
+        self.assertEqual(no_cards, [])
+        self.assertEqual(uncounted, [])
+
+    def test_a_row_sitting_exactly_on_the_display_is_a_card(self):
+        """Every unit is hanging up, so the bag is empty — same `<=` the
+        close opened the evening by predicting with."""
+        make_close_product("Exactly Full", on_hand=0, slots=2)
+        run, _ = closing.run_for_today(employee=self.employee)
+        row = run.rows.get()
+
+        self.client.post(reverse("close_run", args=[run.token]), count_post(row, 2))
+
+        cards, no_cards, uncounted = self._cards(run)
+        self.assertEqual([r.pk for r in cards], [row.pk])
+        self.assertEqual(no_cards, [])
+        self.assertEqual(uncounted, [])
+
+    def test_an_uncounted_row_is_neither_card_nor_not_card(self):
+        """Work remaining, kept out of both stacks.
+
+        The number on it is the app's belief rather than tonight's finding,
+        so filing it under a card either way would put an unchecked claim in
+        a list whose whole job is to be checked.
+        """
+        make_close_product("Never Got To It", on_hand=1, slots=2)
+        run, _ = closing.run_for_today(employee=self.employee)
+        row = run.rows.get()
+
+        cards, no_cards, uncounted = self._cards(run)
+        self.assertEqual(cards, [])
+        self.assertEqual(no_cards, [])
+        self.assertEqual([r.pk for r in uncounted], [row.pk])
+
+    def test_the_uncounted_are_on_the_page_as_their_own_list(self):
+        """Dropped instead, and the two card lists read as complete when
+        they are short — which is the silence this page exists to break."""
+        make_close_product("Never Got To It", on_hand=1, slots=2)
+        run, _ = closing.run_for_today(employee=self.employee)
+
+        html = self.client.get(
+            reverse("close_run", args=[run.token]), {"mode": "cards"}
+        ).content.decode()
+        self.assertIn("Still to count", html)
+        self.assertIn("Never Got To It", html)
+        self.assertIn("1 still to count", html)
+
+    def test_the_frozen_display_is_what_decides_a_card(self):
+        """A board rebuilt on Monday must not change which tags were in a
+        hand on Sunday — the same reason the row froze the number."""
+        product = make_close_product("Rebuilt Peg", on_hand=2, slots=2)
+        run, _ = closing.run_for_today(employee=self.employee)
+        row = run.rows.get()
+        self.client.post(reverse("close_run", args=[run.token]), count_post(row, 2))
+
+        FinishedProduct.objects.filter(pk=product.pk).update(display_slots=1)
+
+        cards, no_cards, uncounted = self._cards(run)
+        self.assertEqual([r.pk for r in cards], [row.pk])
+        self.assertEqual(no_cards, [])
+        self.assertEqual(uncounted, [])
+
+
+class CloseModeTests(TestCase):
+    """Which of the two readings a URL gets, and what carries it.
+
+    Counting is the evening's work; the cards are what it leaves behind. The
+    mode is in the query string so a reading is a link somebody can send, and
+    every action on the counting half redirects back carrying it — a close is
+    worked in several passes across an evening, and dropping into the summary
+    after each submit would cost a tap back every time.
+    """
+
+    def setUp(self):
+        self.employee = Employee.objects.create(name="Closer", pin="1234")
+
+    def test_an_untouched_close_opens_on_the_counting_list(self):
+        make_close_product("Nothing Done", on_hand=0)
+        run, _ = closing.run_for_today(employee=self.employee)
+
+        html = self.client.get(
+            reverse("close_run", args=[run.token])
+        ).content.decode()
+        self.assertIn("Count what you've got", html)
+
+    def test_once_something_is_counted_a_bare_url_opens_the_cards(self):
+        """The moment the page's usefulness changes hands. Before the first
+        submit there is no stack to check; after it, the stack is the
+        question — which is what a link off the history page is following."""
+        make_close_product("Counted One", on_hand=0)
+        run, _ = closing.run_for_today(employee=self.employee)
+        row = run.rows.get()
+        url = reverse("close_run", args=[run.token])
+        self.client.post(url, count_post(row, 1))
+
+        html = self.client.get(url).content.decode()
+        self.assertIn("Cards you should have", html)
+        self.assertNotIn("Count what you've got", html)
+
+    def test_a_finished_day_opens_on_the_cards(self):
+        """Nothing on it can be counted any more, so it is read rather than
+        worked."""
+        make_close_product("Yesterdays Stack", on_hand=0)
+        run, _ = closing.run_for_today(employee=self.employee)
+        CloseRun.objects.filter(pk=run.pk).update(
+            day=timezone.localdate() - timedelta(days=1)
+        )
+
+        html = self.client.get(
+            reverse("close_run", args=[run.token])
+        ).content.decode()
+        self.assertIn("Cards you should have", html)
+
+    def test_saving_counts_comes_back_to_the_counting_list(self):
+        """Worked in passes, so a submit mid-pile stays where the pile is."""
+        make_close_product("Mid Pile", on_hand=0)
+        run, _ = closing.run_for_today(employee=self.employee)
+        row = run.rows.get()
+
+        response = self.client.post(
+            reverse("close_run", args=[run.token]), count_post(row, 1)
+        )
+
+        self.assertRedirects(
+            response, reverse("close_run", args=[run.token]) + "?mode=count"
+        )
+
+    def test_undo_comes_back_to_the_counting_list(self):
+        make_close_product("Mis Tapped", on_hand=0)
+        run, _ = closing.run_for_today(employee=self.employee)
+        row = run.rows.get()
+        url = reverse("close_run", args=[run.token])
+        self.client.post(url, count_post(row, 5))
+
+        response = self.client.post(
+            reverse("close_undo", args=[run.token, row.pk])
+        )
+
+        self.assertRedirects(response, url + "?mode=count")
+
+    def test_the_tag_search_keeps_the_counting_list(self):
+        """A GET off the page has to carry the mode, or looking for a tag
+        drops somebody into the summary."""
+        make_close_product("Searchable", on_hand=0)
+        run, _ = closing.run_for_today(employee=self.employee)
+        row = run.rows.get()
+        url = reverse("close_run", args=[run.token])
+        self.client.post(url, count_post(row, 1))
+
+        html = self.client.get(url, {"mode": "count"}).content.decode()
+        self.assertIn('name="mode" value="count"', html)
+
+    def test_an_unreadable_mode_falls_back_to_the_default(self):
+        """A hand-edited or stale link degrades rather than 500s."""
+        make_close_product("Junk Mode", on_hand=0)
+        run, _ = closing.run_for_today(employee=self.employee)
+
+        html = self.client.get(
+            reverse("close_run", args=[run.token]), {"mode": "sideways"}
+        ).content.decode()
+        self.assertIn("Count what you've got", html)
 
 
 class WebhookOutageRecoveryTests(TestCase):

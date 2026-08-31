@@ -4735,7 +4735,10 @@ def close_index(request):
         if form.is_valid():
             employee = form.cleaned_data["employee"]
             run, _created = closing.run_for_today(employee=employee)
-            response = redirect("close_run", token=run.token)
+            # Starting is starting to count, said explicitly rather than
+            # left to the default — the mode is what every other link and
+            # redirect onto this run carries.
+            response = redirect(_close_run_url(run, _COUNT))
             # Only after the PIN has been checked — see crew.remember.
             pin = form.cleaned_data.get("pin")
             if pin:
@@ -5321,7 +5324,7 @@ def close_run(request, token):
     if request.method == "POST":
         if not run.is_open:
             messages.error(request, _CLOSED_RUN_MESSAGE)
-            return redirect("close_run", token=run.token)
+            return redirect(_close_run_url(run, _COUNT))
 
         # Everything still answerable, freshly read: `sync_expected` may have
         # added rows since this page was drawn, and a submit that only knew
@@ -5334,7 +5337,9 @@ def close_run(request, token):
             # Re-rendered rather than redirected, or the numbers already
             # typed are lost along with the message saying which one was
             # rejected.
-            return _close_run_page(request, run, count_form=count_form)
+            return _close_run_page(
+                request, run, count_form=count_form, mode=_COUNT
+            )
 
         counts = count_form.counts()
         by_pk = {row.pk: row for row in rows}
@@ -5358,7 +5363,10 @@ def close_run(request, token):
                 request,
                 f"Counted {len(counts)} — all agreed with the app. Nothing moved.",
             )
-        return redirect("close_run", token=run.token)
+        # Back to the counting list, not the cards. This is worked in several
+        # passes across an evening, and defaulting a mid-pile submit into the
+        # summary would put the person back through a link every time.
+        return redirect(_close_run_url(run, _COUNT))
 
     # New zeros since the page was last opened get folded in here, so a close
     # started at noon still asks about the scarf that sold out at four.
@@ -5381,8 +5389,53 @@ _CLOSED_RUN_MESSAGE = (
 )
 
 
-def _close_run_page(request, run, count_form=None):
-    """Render one close, its rows split by what each still needs."""
+#: The two readings of one close. **Counting** is the evening's work — one
+#: question per row, worked down a physical pile. **Cards** is what the
+#: evening leaves behind: the stack of kanban tags that should now be in
+#: somebody's hand, and the ones that go back in a bag. They are the same
+#: rows read for different purposes, and by the time anybody follows a link
+#: off the history page or reopens the run tomorrow, the stack is the only
+#: question left.
+#:
+#: The mode rides in the query string rather than a session or a cookie, so a
+#: reading is a link somebody can send, and every link and redirect off the
+#: page carries it — the same bargain the restock board's `?photos=1` makes.
+_COUNT, _CARDS = "count", "cards"
+_CLOSE_MODES = (_COUNT, _CARDS)
+
+
+def _close_run_url(run, mode=None):
+    """This run's URL, in a mode. Reversed by name, never hardcoded."""
+    url = reverse("close_run", args=[run.token])
+    return f"{url}?mode={mode}" if mode else url
+
+
+def _close_mode(request, run, rows):
+    """Which reading a bare URL gets.
+
+    Counting until something has been counted, cards afterwards. The first
+    submit is the moment the page's usefulness changes hands: before it there
+    is nothing to check a stack against, and after it the stack is what
+    somebody is holding. A finished day is always cards — nothing on it can
+    be counted any more, and it is being read rather than worked.
+
+    An explicit `?mode=` always wins, which is what keeps a person mid-count
+    counting: every action on that half of the page redirects back carrying
+    it, so submitting the fourth of five passes doesn't drop somebody into
+    the summary.
+    """
+    mode = (request.GET.get("mode") or "").strip().lower()
+    if mode in _CLOSE_MODES:
+        return mode
+    if not run.is_open:
+        return _CARDS
+    if any(row.outcome != CloseRunRow.PENDING for row in rows):
+        return _CARDS
+    return _COUNT
+
+
+def _close_run_page(request, run, count_form=None, mode=None):
+    """Render one close, in one of its two readings."""
     rows = list(
         run.rows.select_related(
             "finished_product__recipe", "finished_product__raw_product"
@@ -5407,8 +5460,23 @@ def _close_run_page(request, run, count_form=None):
     # request is dropped is worse than one that visibly reloads.
     query = (request.GET.get("q") or "").strip()
 
+    # Read live, off the same rows, after everything this close has applied.
+    # Not a new category alongside the outcomes: it is the one test the
+    # evening began with, asked again of the numbers it corrected — plus the
+    # rows nobody has answered, which are work remaining rather than a card
+    # call either way.
+    cards, no_cards, uncounted = closing.card_status(rows)
+
     return render(request, "scarves/close_run.html", {
         "run": run,
+        "mode": mode or _close_mode(request, run, rows),
+        "count_mode": _COUNT,
+        "cards_mode": _CARDS,
+        "count_url": _close_run_url(run, _COUNT),
+        "cards_url": _close_run_url(run, _CARDS),
+        "cards": cards,
+        "no_cards": no_cards,
+        "uncounted": uncounted,
         "query": query,
         "results": search_products(query) if query else None,
         "tally": closing.tally(run),
@@ -5465,7 +5533,7 @@ def close_add_tag(request, token):
     run = get_object_or_404(CloseRun, token=token)
     if not run.is_open:
         messages.error(request, _CLOSED_RUN_MESSAGE)
-        return redirect("close_run", token=run.token)
+        return redirect(_close_run_url(run, _COUNT))
 
     product = (
         FinishedProduct.objects.filter(
@@ -5476,7 +5544,7 @@ def close_add_tag(request, token):
     )
     if product is None:
         messages.error(request, "Couldn't find that product — try the search again.")
-        return redirect("close_run", token=run.token)
+        return redirect(_close_run_url(run, _COUNT))
 
     row, created = closing.add_tag(run, product)
     if not created:
@@ -5488,7 +5556,7 @@ def close_add_tag(request, token):
             f"{row.on_hand_before} on hand. Count what's on the display and "
             f"say how many.",
         )
-    return redirect("close_run", token=run.token)
+    return redirect(_close_run_url(run, _COUNT))
 
 
 @require_POST
@@ -5504,14 +5572,14 @@ def close_undo(request, token, pk):
     run = get_object_or_404(CloseRun, token=token)
     if not run.is_open:
         messages.error(request, _CLOSED_RUN_MESSAGE)
-        return redirect("close_run", token=run.token)
+        return redirect(_close_run_url(run, _COUNT))
 
     row = run.rows.filter(pk=pk).select_related("finished_product").first()
     if row is None:
         # Already undone, most likely a double tap. Says so plainly rather
         # than erroring, because the page is now in the state they wanted.
         messages.info(request, "That one's already been put back.")
-        return redirect("close_run", token=run.token)
+        return redirect(_close_run_url(run, _COUNT))
 
     name = row.finished_product.name
     closing.undo(run, row)
@@ -5520,7 +5588,7 @@ def close_undo(request, token, pk):
         f"Put {name} back the way it was. Nothing to tell anyone about — the "
         f"log keeps both entries.",
     )
-    return redirect("close_run", token=run.token)
+    return redirect(_close_run_url(run, _COUNT))
 
 
 @page_meta(

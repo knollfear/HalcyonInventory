@@ -80,7 +80,13 @@ used the van is half loaded and the only question is "start".
       {% endif %}
       {% if existing.employee %}<br>Started by {{ existing.employee.name }}.{% endif %}
     </div>
-    <a class="btn" href="{% url 'close_run' existing.token %}">Carry on with today's close</a>
+    {% comment %}
+    Straight to the counting list. "Carry on" means carry on working the
+    pile, and the run's own default flips to the card lists once anything
+    has been counted — which is right for a link off the history page and
+    wrong for this button.
+    {% endcomment %}
+    <a class="btn" href="{% url 'close_run' existing.token %}?mode=count">Carry on with today's close</a>
   {% else %}
     <form method="post">
       {% csrf_token %}

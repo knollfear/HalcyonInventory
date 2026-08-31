@@ -13,6 +13,20 @@ Big tap targets, no JavaScript, and the unexpected-tag search is a plain form
 submit rather than a type-ahead. This is a phone, standing up, in a car park,
 on one bar of signal — the same reasoning as the booth form and the
 production run page.
+
+Two readings, in `?mode=`. **Counting** is the above. **Cards** is what the
+evening leaves behind — the stack of kanban tags that should now be in
+somebody's hand, against the ones that go back in a bag — and it is what a
+bare URL gets once anything has been counted, because by then the stack is
+the only question left. The card lists deliberately say nothing about which
+rows the close predicted and which turned up as unexpected tags: that is
+where the work came from, not what should be in the stack at the end of it.
+
+Rows nobody answered are a third list rather than a fourth column, because
+they are a different job: finishing the counting is work remaining, settling
+the stack is what the counting was for. They carry the app's belief rather
+than tonight's finding, and an unchecked number in a list whose whole job is
+to be checked would make the stack agree with itself.
 {% endcomment %}
 
 {% block title %}Close {{ run.day|date:"d M Y" }}{% endblock %}
@@ -89,7 +103,10 @@ production run page.
       font-weight: 600; border: 1px solid var(--accent); border-radius: 10px;
       background: var(--accent); color: #fff; cursor: pointer;
   }
-  .btn.quiet { background: #fff; color: var(--accent); }
+  .btn.quiet {
+      background: #fff; color: var(--accent);
+      display: block; text-align: center; text-decoration: none;
+  }
 
   .search { display: flex; gap: 8px; margin-bottom: 12px; }
   .search input {
@@ -110,6 +127,15 @@ production run page.
   }
   .banner.shut { background: #f4f5f7; }
   .score { font-size: 1.6rem; font-weight: 700; line-height: 1.15; }
+
+  /* The two readings, switched from the page itself. A link rather than a
+     tab strip, because it is one word and the page has forty rows under it. */
+  .modes { font-size: .95rem; margin: 0 0 18px; }
+
+  /* A card row carries no outcome colouring. Which way the count went is the
+     counting list's business; this one is a stack of tags to check against. */
+  .row.card { cursor: default; }
+  .unread { color: #8a5a1f; }
 {% endblock %}
 
 {% block content %}
@@ -140,6 +166,115 @@ production run page.
       bulk inventory update, where the reason gets written down.
     </div>
   {% endif %}
+
+  {% comment %}
+  Whichever reading you are not in. Both are the same rows; only the question
+  differs, and the URL says which one so a reading can be sent to somebody.
+  {% endcomment %}
+  <p class="modes">
+    {% if mode == cards_mode %}
+      <a href="{{ count_url }}">Back to counting</a>
+    {% else %}
+      <a href="{{ cards_url }}">See the cards</a>
+    {% endif %}
+  </p>
+
+  {% if mode == cards_mode %}
+
+    {% comment %}
+    What the evening leaves in somebody's hand. One test, applied to every
+    row alike and read live: everything the app knows about is hanging on the
+    pegs, so the bag is empty and the tag is out — which is the same claim
+    the close opened by predicting, asked again of the numbers it corrected.
+
+    Nothing here reports what the true-up had to do. That is the counting
+    list's business and the history page's output; a stack of cards is
+    checked by name.
+    {% endcomment %}
+    <div class="banner">
+      <div class="score">{{ cards|length }}</div>
+      card{{ cards|length|pluralize }} you should be holding{% if no_cards %},
+      {{ no_cards|length }} to put back{% endif %}.
+      {% comment %}
+      Said here as well as in its own section, because the two lists below
+      read as the whole answer otherwise — and a short list nobody was told
+      was short is exactly the silence this page exists to break.
+      {% endcomment %}
+      {% if uncounted %}
+        <br><span class="unread">{{ uncounted|length }} still to count.</span>
+      {% endif %}
+    </div>
+
+    <h2>Cards you should have</h2>
+    <p class="lead">
+      Everything the app knows about is on the display, so the bag behind it
+      is empty. Check the stack in your hand against this list.
+    </p>
+    {% for row in cards %}
+      <div class="row card">
+        <div class="grow">
+          <div class="what">{{ row.finished_product.name }}</div>
+          <div class="detail">
+            {{ row.finished_product.sku }} —
+            {{ row.finished_product.number_on_hand }} on hand,
+            display holds {{ row.display_slots }}
+          </div>
+        </div>
+      </div>
+    {% empty %}
+      <p class="lead">No cards — every bag has something in it.</p>
+    {% endfor %}
+
+    <h2>Cards you shouldn't have</h2>
+    <p class="lead">
+      There's a bag behind these after all, so the tag goes back in it.
+    </p>
+    {% for row in no_cards %}
+      <div class="row card">
+        <div class="grow">
+          <div class="what">{{ row.finished_product.name }}</div>
+          <div class="detail">
+            {{ row.finished_product.sku }} —
+            {{ row.finished_product.number_on_hand }} on hand,
+            display holds {{ row.display_slots }}
+          </div>
+        </div>
+      </div>
+    {% empty %}
+      <p class="lead">None — every tag on this list stays out.</p>
+    {% endfor %}
+
+    {% comment %}
+    Work remaining, kept apart from the two card lists on purpose. These rows
+    carry the app's belief rather than tonight's finding, and putting an
+    unchecked number into a list whose whole job is to be checked would make
+    the stack agree with itself. Finishing the counting and settling the
+    stack are different jobs; this is the first one, and it links back to it.
+    {% endcomment %}
+    {% if uncounted %}
+      <h2>Still to count</h2>
+      <p class="lead">
+        Nobody has answered these, so they aren't a card either way yet —
+        the numbers below are what the app believes, not what was found.
+      </p>
+      {% for row in uncounted %}
+        <div class="row card">
+          <div class="grow">
+            <div class="what">{{ row.finished_product.name }}</div>
+            <div class="detail">
+              {{ row.finished_product.sku }} —
+              app says {{ row.finished_product.number_on_hand }} on hand,
+              display holds {{ row.display_slots }}
+            </div>
+          </div>
+        </div>
+      {% endfor %}
+      {% if run.is_open %}
+        <a class="btn quiet" href="{{ count_url }}">Count these</a>
+      {% endif %}
+    {% endif %}
+
+  {% else %}
 
   {% comment %}
   The count of things found wrong, up top, because it is the output. No
@@ -230,6 +365,11 @@ production run page.
     </p>
 
     <form class="search" method="get">
+      {% comment %}
+      Carries the mode, or searching for a tag drops back to the default —
+      which is the card lists once anything has been counted.
+      {% endcomment %}
+      <input type="hidden" name="mode" value="{{ count_mode }}">
       <input type="search" name="q" value="{{ query }}"
              placeholder="Name or barcode" autocomplete="off">
       <button class="btn" type="submit">Search</button>
@@ -295,7 +435,7 @@ production run page.
     {% endif %}
   {% endif %}
 
-  {% if not run.is_open and confirmed_rows %}
+  {% if confirmed_rows and not run.is_open %}
     <h2>Agreed</h2>
     {% for row in confirmed_rows %}
       <div class="row settled">
@@ -309,5 +449,7 @@ production run page.
       </div>
     {% endfor %}
   {% endif %}
+
+  {% endif %}{# /counting reading #}
 
 {% endblock %}

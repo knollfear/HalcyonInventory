@@ -1276,6 +1276,54 @@ outcome records is the **direction** — the app was under, the
 stock-arrived-unrecorded end of the pipeline — and the direction is what is
 being counted.
 
+### Two readings: counting, then the cards
+
+The question a close *ends* on is not the one it is worked on, and `?mode=`
+says which one is on screen. **`count`** is the evening's work — one question
+per row, down a physical pile, undo, and the unpredicted-tag search.
+**`cards`** is what the evening leaves in somebody's hand: the stack of kanban
+tags that should now exist, against the ones that go back in a bag.
+
+**A bare URL opens `cards` once anything has been counted**, and always on a
+finished day. That is the moment the page's usefulness changes hands — before
+the first submit there is no stack to check, and afterwards the stack is the
+only question left, which is what a link off `private/closes/` is following.
+Every action on the counting half redirects back carrying `mode=count`
+(including the tag search, which is a GET), because a close is worked in
+several passes across an evening and dropping into the summary after each
+submit costs a tap back every time. "Carry on with today's close" on the
+picker points at `count` for the same reason.
+
+**The card lists are blind to what the true-up did**, deliberately. Which way
+the app was wrong is the counting list's business and `close_history`'s
+output; a stack of forty tags is checked by name. For the same reason they do
+**not** split on `added_by_tag` — whether a row was predicted or turned up as
+an unexpected tag says where the evening's work came from, not what should be
+in the stack at the end of it, and reading the stack through that split asks
+somebody to do the subtraction in their head while holding the cards.
+
+So `closing.card_status()` applies **one test to every answered row alike,
+live**: `number_on_hand <= display_slots`, which is the app saying every unit
+is hanging on the pegs and the bag behind them is empty. That is the same
+claim `expected_products()` opened the evening by predicting, asked again of
+the numbers the close has since corrected. Exactly on the display is a card —
+nothing is behind it.
+
+`display_slots` is the **row's frozen copy**, not the product's live one, for
+the reason it was frozen: the pegs held what they held that night, and a board
+rebuilt on Monday must not retrospectively change which tags were in a hand on
+Sunday.
+
+**A row nobody counted is a third list, not a marked-up card.** Its number is
+the app's belief rather than that night's finding, so filing it under a card
+either way would put an unchecked claim into a list whose whole job is to be
+checked — the stack would agree with itself. And the two are different jobs:
+finishing the counting is work remaining, settling the stack is what the
+counting was for, so *Still to count* sits apart with a link back into
+counting. It stays on the page rather than being dropped, and its count is
+repeated in the header, because two card lists that read as complete when
+they are short is exactly the silence this page exists to break.
+
 ### A run is a calendar day, and yesterday's is a record
 
 `CloseRun.day` is unique. Reopening the page the same evening lands back in
