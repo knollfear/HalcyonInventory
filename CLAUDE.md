@@ -538,6 +538,16 @@ thing: baths dyed now, stock moves. It links to the cards where the
 disclosure used to be, because removing an option without saying where it went
 leaves somebody hunting a page that no longer has it.
 
+**The card is the unit of digitising, and one product at a time is the
+feature.** Cards get typed up as they are handled on the way back, one in the
+hand at a time — so the page asking for exactly that card's dates and bath
+counts is the shape of the job, not a limitation of it. The obvious
+improvement is to let a whole dye session go in at once, across the two or
+three blanks it covered; **don't build it.** Recovering which entries on which
+cards belonged to one session means collating dates across a stack by hand
+before typing anything, which is more work than the typing and produces a
+grouping nothing downstream reads. Write the dates off the card and move on.
+
 ## The recipe page: one colorway, and which blank you're reading
 
 `private/recipes/<pk>/` is a colorway end to end — every blank it is dyed on,
