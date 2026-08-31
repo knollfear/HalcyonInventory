@@ -1,0 +1,21 @@
+{% comment %}
+Which product the figures below are about. Above them, not below, because it
+governs every number under it — a total that disagrees with the list it sits
+over is the page contradicting itself, the same rule the colour page's pills
+follow.
+
+Empty when the whole colorway is showing. The wrapper `#focus-note` stays in
+the page either way, so a chip swap has something to aim at.
+{% endcomment %}
+{% if focus %}
+  <p class="focusnote">
+    Showing <strong>{{ focus.name }}</strong> only — every figure and every
+    row below is this product.
+    <a href="{{ all_url }}"
+       hx-get="{{ all_history_url }}"
+       hx-target="#history"
+       hx-swap="innerHTML"
+       hx-push-url="{{ all_url }}"
+       hx-indicator="#history-loading">Show the whole colorway</a>
+  </p>
+{% endif %}

@@ -85,6 +85,13 @@ urlpatterns = [
         name="record_recipe_production",
     ),
     path("private/recipes/<int:pk>/row/", views.recipe_row, name="recipe_row"),
+    # The history half of the recipe page, for a chip click. An htmx fragment,
+    # so no @page_meta — it returns a table, not a page.
+    path(
+        "private/recipes/<int:pk>/history/",
+        views.recipe_history,
+        name="recipe_history",
+    ),
     path(
         "private/recipes/<int:pk>/dyes/",
         views.recipe_dyes_save,

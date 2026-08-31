@@ -1,0 +1,17 @@
+{% comment %}
+What a chip click sends back: the chips and their rows for the primary swap,
+plus the two blocks above the fold that follow the same filter.
+
+They ride out-of-band because they are at the top of the page and the chips
+are at the bottom — the whole reason for the swap is that somebody clicking a
+chip should not be moved. Leaving them behind would put a colorway-wide total
+over a one-product list, which is exactly the contradiction the scoping rule
+exists to prevent, only now invisible until the reader scrolls up.
+{% endcomment %}
+<div id="focus-note" hx-swap-oob="true">
+  {% include "scarves/partials/recipe_focus_note.html" %}
+</div>
+<div id="figures" hx-swap-oob="true">
+  {% include "scarves/partials/recipe_figures.html" %}
+</div>
+{% include "scarves/partials/recipe_history.html" %}

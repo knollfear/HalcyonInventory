@@ -1,0 +1,24 @@
+{% comment %}
+Lifetime movement for whatever the chips have narrowed to. Swapped
+out-of-band on a chip click, because these sit above the fold and the chips
+are at the bottom — leaving them behind would put a colorway-wide total over
+a one-product list.
+{% endcomment %}
+<div class="figures">
+  <div class="figure">
+    <div class="value">{{ on_hand }}</div>
+    <div class="label">on hand{% if par_total %} · par {{ par_total }}{% endif %}</div>
+  </div>
+  <div class="figure made">
+    <div class="value">{{ produced }}</div>
+    <div class="label">produced, all time</div>
+  </div>
+  <div class="figure sold">
+    <div class="value">{{ sold }}</div>
+    <div class="label">sold, all time</div>
+  </div>
+  <div class="figure">
+    <div class="value">{{ scope_count }}</div>
+    <div class="label">finished product{{ scope_count|pluralize }}</div>
+  </div>
+</div>

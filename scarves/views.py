@@ -1027,14 +1027,49 @@ def recipe_detail(request, pk):
     recipe = get_object_or_404(
         Recipe.objects.prefetch_related("recipe_dyes__dye"), pk=pk
     )
+    products = _recipe_products(recipe)
+    context = {"recipe": recipe, "products": products}
+    context.update(_recipe_history(request, recipe, products))
+    return render(request, "scarves/recipe_detail.html", context)
 
-    products = list(
+
+@login_required
+def recipe_history(request, pk):
+    """The history half of the recipe page, for a chip click.
+
+    The chips sit under a long page, so following a link meant landing back at
+    the top and scrolling down again for every filter — paid on every click.
+    Swapping instead leaves the reader where they are.
+
+    Returns the figures and the focus note out-of-band with it. Those are
+    above the fold and follow the same filter, so leaving them behind would
+    put a colorway-wide total over a one-product list — the contradiction the
+    scoping rule exists to prevent, made invisible until somebody scrolls up.
+    """
+    recipe = get_object_or_404(Recipe, pk=pk)
+    products = _recipe_products(recipe)
+    context = {"recipe": recipe, "products": products}
+    context.update(_recipe_history(request, recipe, products))
+    return render(request, "scarves/partials/recipe_history_swap.html", context)
+
+
+def _recipe_products(recipe):
+    """This colorway on every blank it is dyed on, retired ones last."""
+    return list(
         recipe.finished_products
         .select_related("raw_product", "raw_product__category")
         .prefetch_related("images")
         .order_by("-is_active", "name")
     )
 
+
+def _recipe_history(request, recipe, products):
+    """Everything the `?product=` chip filter decides, for either renderer.
+
+    One function because the page and the fragment must agree about what a
+    filter means; two would drift, and the drift shows as a swapped-in view
+    disagreeing with the one a refresh produces.
+    """
     # Which product's history is on screen. There is no per-finished-product
     # page anywhere in this app, so without this a colorway on four blanks
     # gives one interleaved column and "what has this one actually done" is
@@ -1090,28 +1125,31 @@ def recipe_detail(request, pk):
             .annotate(n=Count("id"))
         )
     }
-    base_url = reverse("recipe_detail", args=[recipe.pk])
+    page_url = reverse("recipe_detail", args=[recipe.pk])
+    swap_url = reverse("recipe_history", args=[recipe.pk])
     chips = [
         {
             "product": product,
             "count": chip_counts.get(product.pk, 0),
-            "url": f"{base_url}?product={product.pk}",
+            # Two URLs per chip on purpose: the fragment is what htmx fetches,
+            # the page URL is what it pushes. Pushing the fragment's would put
+            # an address in the bar that renders a bare table on reload.
+            "url": f"{page_url}?product={product.pk}",
+            "history_url": f"{swap_url}?product={product.pk}",
             "current": focus is not None and product.pk == focus.pk,
         }
         for product in products
     ]
 
-    return render(request, "scarves/recipe_detail.html", {
-        "recipe": recipe,
-        "products": products,
+    return {
         "logs": logs,
         "truncated": truncated,
         "log_limit": RECIPE_LOG_LIMIT,
         "focus": focus,
         "chips": chips,
-        "all_url": base_url,
+        "all_url": page_url,
+        "all_history_url": swap_url,
         "all_count": sum(chip_counts.values()),
-        "scope_count": len(scope),
         "on_hand": sum(p.number_on_hand for p in scope),
         "par_total": sum(p.par or 0 for p in scope),
         "produced": _qty(InventoryLog.PRODUCTION),
@@ -1119,7 +1157,8 @@ def recipe_detail(request, pk):
         "sold": -_qty(InventoryLog.SALE),
         "adjusted": _qty(InventoryLog.ADJUSTMENT),
         "log_count": sum(row["entries"] for row in totals),
-    })
+        "scope_count": len(scope),
+    }
 
 
 @require_POST

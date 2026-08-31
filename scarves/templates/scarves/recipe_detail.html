@@ -57,6 +57,13 @@
   .chip .n { font-size: 12px; color: #778; font-variant-numeric: tabular-nums; }
   .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
   .chip.on .n { color: #fff; opacity: .8; }
+  .chipnote { font-size: 12px; color: #778; align-self: center; }
+  .chipnote.failed { color: #8a2f2a; }
+  /* Our own indicator rules rather than htmx's opacity fade, which leaves the
+     line taking up room and reading as a permanent label. */
+  .htmx-indicator { display: none; }
+  .htmx-request .htmx-indicator,
+  .htmx-request.htmx-indicator { display: inline; }
   .focusnote {
       margin: 14px 0 0; padding: 10px 12px; font-size: 13px;
       border: 1px solid #cbd6e2; border-radius: 8px; background: #fff;
@@ -87,6 +94,44 @@
   }
 {% endblock %}
 
+{% block head %}
+  {% comment %}
+  Per-page, as the other private pages do it — base_internal carries no htmx,
+  because most staff pages are forms and links and have no business paying for
+  a script they don't use.
+  {% endcomment %}
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+{% endblock %}
+
+{% block scripts %}
+  {{ block.super }}
+  {% comment %}
+  A swap that never arrives leaves the previous table sitting there looking
+  answered — the chip highlights nothing and the rows don't change, which is
+  indistinguishable from a filter that happened to match the same thing. Said
+  out loud instead, the same bargain the close's tag search makes.
+
+  The listener is on the container rather than the chips, because the chips
+  are themselves replaced by every swap.
+  {% endcomment %}
+  <script>
+    (function () {
+      var box = document.getElementById("history");
+      if (!box) { return; }
+      function failed(show) {
+        var el = document.getElementById("history-failed");
+        if (el) { el.hidden = !show; }
+      }
+      box.addEventListener("htmx:beforeRequest", function () { failed(false); });
+      ["htmx:sendError", "htmx:responseError", "htmx:timeout"].forEach(
+        function (name) {
+          box.addEventListener(name, function () { failed(true); });
+        }
+      );
+    })();
+  </script>
+{% endblock %}
+
 {% block content %}
   <div class="subhead">
     {% if not recipe.is_active %}<span class="inactive">Inactive recipe</span>{% endif %}
@@ -99,35 +144,17 @@
   {% if recipe.description %}<p class="lead">{{ recipe.description }}</p>{% endif %}
 
   {% comment %}
-  Above the figures, not below, because it governs every number under it. A
-  total that disagrees with the list it sits over is the page contradicting
-  itself — the same rule the colour page's pills follow.
+  Both of these follow the chip filter, and both live above the fold while the
+  chips are at the bottom of the page — so a chip click swaps them
+  out-of-band. Always-present wrappers, even when empty, because a target that
+  only exists sometimes is one the swap silently misses.
   {% endcomment %}
-  {% if focus %}
-    <p class="focusnote">
-      Showing <strong>{{ focus.name }}</strong> only — every figure and every
-      row below is this product.
-      <a href="{{ all_url }}">Show the whole colorway</a>
-    </p>
-  {% endif %}
+  <div id="focus-note">
+    {% include "scarves/partials/recipe_focus_note.html" %}
+  </div>
 
-  <div class="figures">
-    <div class="figure">
-      <div class="value">{{ on_hand }}</div>
-      <div class="label">on hand{% if par_total %} · par {{ par_total }}{% endif %}</div>
-    </div>
-    <div class="figure made">
-      <div class="value">{{ produced }}</div>
-      <div class="label">produced, all time</div>
-    </div>
-    <div class="figure sold">
-      <div class="value">{{ sold }}</div>
-      <div class="label">sold, all time</div>
-    </div>
-    <div class="figure">
-      <div class="value">{{ scope_count }}</div>
-      <div class="label">finished product{{ scope_count|pluralize }}</div>
-    </div>
+  <div id="figures">
+    {% include "scarves/partials/recipe_figures.html" %}
   </div>
 
   <h2>Dyes</h2>
@@ -247,83 +274,18 @@
   <h2>Inventory history</h2>
 
   {% comment %}
-  A colorway on four blanks gives one interleaved column, and there is no
-  per-finished-product page anywhere in this app — so without these, "what
-  has this one actually done" has no answer. Chips rather than a table each,
-  because the combined view is the one that shows a session across bases as a
-  session; splitting by default would take that away to solve the other half.
+  Swapped rather than navigated. The chips are at the bottom of a long page,
+  so following a link meant landing back at the top and scrolling down again
+  for every filter — paid on each click, which is the same shape of cost the
+  unidentified-sales queue had.
 
-  Each carries its own row count, and the counts are of what the chip will
-  show — a chip promising 42 that lands on a list of nine is the page
-  contradicting itself.
+  `hx-push-url` carries the *page* URL rather than the fragment's, so the
+  address bar still holds a reading somebody can send and the back button
+  still walks the filters. Without htmx these are ordinary links to the same
+  URLs and the page works as it did.
   {% endcomment %}
-  {% if chips|length > 1 %}
-    <div class="chips">
-      <a class="chip{% if not focus %} on{% endif %}" href="{{ all_url }}">
-        All <span class="n">{{ all_count }}</span>
-      </a>
-      {% for chip in chips %}
-        <a class="chip{% if chip.current %} on{% endif %}" href="{{ chip.url }}">
-          {{ chip.product.raw_product.name }}
-          <span class="n">{{ chip.count }}</span>
-        </a>
-      {% endfor %}
-    </div>
-  {% endif %}
+  <div id="history">
+    {% include "scarves/partials/recipe_history.html" %}
+  </div>
 
-  {% if logs %}
-    <div class="card">
-      <table>
-        <thead>
-          <tr>
-            <th>When</th>
-            <th>Product</th>
-            <th>Type</th>
-            <th class="num">Change</th>
-            <th>Reference / notes</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for log in logs %}
-            <tr>
-              {% comment %}
-              `when`, not a date filter: a back-filled entry may only know its
-              month, and the day it's stored under is padding.
-              {% endcomment %}
-              <td class="when">
-                {{ log.when }}
-                {% if log.date_precision == "month" %}<span class="approx">month only</span>{% endif %}
-              </td>
-              <td>{{ log.finished_product.name }}</td>
-              <td><span class="type {{ log.log_type }}">{{ log.get_log_type_display }}</span></td>
-              <td class="num">
-                <span class="qty {% if log.quantity < 0 %}down{% else %}up{% endif %}">
-                  {% if log.quantity > 0 %}+{% endif %}{{ log.quantity }}
-                </span>
-              </td>
-              <td class="small">
-                {% if log.sale_reference %}<span class="ref">{{ log.sale_reference }}</span>{% endif %}
-                {% if log.notes %}<span class="muted">{{ log.notes }}</span>{% endif %}
-                {% if not log.sale_reference and not log.notes %}<span class="muted">—</span>{% endif %}
-              </td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-    {% if truncated %}
-      <p class="truncated">
-        Showing the most recent {{ log_limit }} of {{ log_count }} entries.
-      </p>
-    {% endif %}
-  {% else %}
-    <p class="empty">
-      {% if focus %}
-        Nothing recorded for {{ focus.name }} yet.
-        <a href="{{ all_url }}">The rest of the colorway</a> may have moved.
-      {% else %}
-        No inventory movement recorded for this recipe's products yet.
-      {% endif %}
-    </p>
-  {% endif %}
 {% endblock %}

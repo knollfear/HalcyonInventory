@@ -578,6 +578,33 @@ this one, the rest of the colorway may have moved" is a different fact from
 at all when there is a single product, because a filter offering one choice is
 furniture.
 
+**A chip click swaps, it doesn't navigate.** The chips sit under a long page,
+so a link meant landing back at the top and scrolling down again for every
+filter — paid on every click, the same shape of cost the unidentified-sales
+queue had. `recipe_history` returns the chips and their rows for the primary
+swap, and **the figures and the focus note ride out-of-band with them**: those
+are above the fold and follow the same filter, so leaving them behind puts a
+colorway-wide total over a one-product list. That is the contradiction the
+scoping rule exists to prevent, made worse by being invisible until somebody
+scrolls up.
+
+`hx-push-url` carries the **page** URL, never the fragment's — pushing the
+fragment's would leave an address in the bar that renders a bare table on
+reload, and the sendable-link property is the reason the filter is in the
+query string at all. The chips keep their `href`, so with the script blocked
+they are the ordinary links they always were.
+
+**One context builder, `_recipe_history()`, serves both renderers.** Two would
+drift, and the drift shows as a swapped-in view disagreeing with the one a
+refresh produces — which reads as the app being wrong about the numbers rather
+than about the rendering. Same reason the fragment renders the same partial
+the page does.
+
+A swap that never arrives leaves the previous table sitting there looking
+answered, so both the wait and the failure are said out loud. The listener is
+on the `#history` container rather than the chips, because the chips are
+themselves replaced by every swap.
+
 ## Production sheets: paper to the dye room, one scan back
 
 `private/production-sheet/` prints a dye-room worksheet — the next N baths to

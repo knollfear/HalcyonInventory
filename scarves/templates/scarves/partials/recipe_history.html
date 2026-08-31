@@ -1,0 +1,113 @@
+{% comment %}
+The chips and the rows they filter, in one swap target. Rendered by the page
+for the first paint and returned by `recipe_history` for every chip click, so
+there is one copy of this markup — two would drift, and the way that shows is
+a swapped-in chip pointing somewhere the original didn't.
+
+The figures and the focus note ride out-of-band with it; see
+`recipe_history_swap.html`.
+{% endcomment %}
+
+  {% comment %}
+  A colorway on four blanks gives one interleaved column, and there is no
+  per-finished-product page anywhere in this app — so without these, "what
+  has this one actually done" has no answer. Chips rather than a table each,
+  because the combined view is the one that shows a session across bases as a
+  session; splitting by default would take that away to solve the other half.
+
+  Each carries its own row count, and the counts are of what the chip will
+  show — a chip promising 42 that lands on a list of nine is the page
+  contradicting itself.
+  {% endcomment %}
+  {% if chips|length > 1 %}
+    <div class="chips">
+      {% comment %}
+      An `href` as well as an `hx-get`: htmx intercepts the click, and with
+      the script blocked these are the ordinary links they always were.
+      `hx-push-url` carries the page URL, not the fragment's, so the address
+      bar keeps a reading somebody can send.
+      {% endcomment %}
+      <a class="chip{% if not focus %} on{% endif %}" href="{{ all_url }}"
+         hx-get="{{ all_history_url }}" hx-target="#history" hx-swap="innerHTML"
+         hx-push-url="{{ all_url }}" hx-indicator="#history-loading">
+        All <span class="n">{{ all_count }}</span>
+      </a>
+      {% for chip in chips %}
+        <a class="chip{% if chip.current %} on{% endif %}" href="{{ chip.url }}"
+           hx-get="{{ chip.history_url }}" hx-target="#history" hx-swap="innerHTML"
+           hx-push-url="{{ chip.url }}" hx-indicator="#history-loading">
+          {{ chip.product.raw_product.name }}
+          <span class="n">{{ chip.count }}</span>
+        </a>
+      {% endfor %}
+      {% comment %}
+      A swap that never arrives leaves the old table sitting there looking
+      answered, so both the wait and the failure are said out loud — the same
+      bargain the close's tag search makes.
+      {% endcomment %}
+      <span id="history-loading" class="htmx-indicator chipnote">Loading…</span>
+      <span id="history-failed" class="chipnote failed" hidden>
+        That didn't reach the app — tap again.
+      </span>
+    </div>
+  {% endif %}
+
+  {% if logs %}
+    <div class="card">
+      <table>
+        <thead>
+          <tr>
+            <th>When</th>
+            <th>Product</th>
+            <th>Type</th>
+            <th class="num">Change</th>
+            <th>Reference / notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for log in logs %}
+            <tr>
+              {% comment %}
+              `when`, not a date filter: a back-filled entry may only know its
+              month, and the day it's stored under is padding.
+              {% endcomment %}
+              <td class="when">
+                {{ log.when }}
+                {% if log.date_precision == "month" %}<span class="approx">month only</span>{% endif %}
+              </td>
+              <td>{{ log.finished_product.name }}</td>
+              <td><span class="type {{ log.log_type }}">{{ log.get_log_type_display }}</span></td>
+              <td class="num">
+                <span class="qty {% if log.quantity < 0 %}down{% else %}up{% endif %}">
+                  {% if log.quantity > 0 %}+{% endif %}{{ log.quantity }}
+                </span>
+              </td>
+              <td class="small">
+                {% if log.sale_reference %}<span class="ref">{{ log.sale_reference }}</span>{% endif %}
+                {% if log.notes %}<span class="muted">{{ log.notes }}</span>{% endif %}
+                {% if not log.sale_reference and not log.notes %}<span class="muted">—</span>{% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if truncated %}
+      <p class="truncated">
+        Showing the most recent {{ log_limit }} of {{ log_count }} entries.
+      </p>
+    {% endif %}
+  {% else %}
+    <p class="empty">
+      {% if focus %}
+        Nothing recorded for {{ focus.name }} yet.
+        <a href="{{ all_url }}"
+           hx-get="{{ all_history_url }}" hx-target="#history"
+           hx-swap="innerHTML" hx-push-url="{{ all_url }}"
+           hx-indicator="#history-loading">The rest of the colorway</a>
+        may have moved.
+      {% else %}
+        No inventory movement recorded for this recipe's products yet.
+      {% endif %}
+    </p>
+  {% endif %}

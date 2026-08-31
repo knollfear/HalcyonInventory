@@ -2540,6 +2540,108 @@ class RecordRecipeProductionTests(TestCase):
         self.assertContains(page, "Nothing recorded for")
         self.assertContains(page, "The rest of the colorway")
 
+    def test_a_chip_click_swaps_only_the_history(self):
+        """The chips are under a long page, so following a link meant landing
+        back at the top and scrolling down again for every filter."""
+        base_a = self._base("Heavenly - Angel", per_bath=5)
+        base_b = self._base("Homespun - Angel", per_bath=5)
+        sage = self._product(base_a, "Heavenly - Angel - Sage")
+        moss = self._product(base_b, "Homespun - Angel - Moss")
+        self.client.post(self.url, {
+            f"baths_{sage.pk}": "1", f"baths_{moss.pk}": "1",
+        })
+
+        response = self.client.get(
+            reverse("recipe_history", args=[self.recipe.pk]), {"product": sage.pk}
+        )
+
+        html = response.content.decode()
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('class="chips"', html)
+        # A fragment, not a page.
+        self.assertNotIn("<!doctype", html.lower())
+        self.assertNotIn("Record production", html)
+
+    def test_the_figures_ride_out_of_band_with_it(self):
+        """They are above the fold and follow the same filter, so leaving
+        them behind puts a colorway-wide total over a one-product list —
+        invisible until somebody scrolls up."""
+        base_a = self._base("Heavenly - Angel", per_bath=5)
+        base_b = self._base("Homespun - Angel", per_bath=5)
+        sage = self._product(base_a, "Heavenly - Angel - Sage")
+        moss = self._product(base_b, "Homespun - Angel - Moss")
+        self.client.post(self.url, {
+            f"baths_{sage.pk}": "1", f"baths_{moss.pk}": "2",
+        })
+
+        html = self.client.get(
+            reverse("recipe_history", args=[self.recipe.pk]), {"product": sage.pk}
+        ).content.decode()
+
+        self.assertIn('id="figures"', html)
+        self.assertIn('id="focus-note"', html)
+        self.assertEqual(html.count('hx-swap-oob="true"'), 2)
+        self.assertIn("Heavenly - Angel - Sage", html)
+
+    def test_the_chip_pushes_the_page_url_not_the_fragment(self):
+        """Pushing the fragment's address would put a URL in the bar that
+        renders a bare table on reload."""
+        base_a = self._base("Heavenly - Angel")
+        base_b = self._base("Homespun - Angel")
+        sage = self._product(base_a, "Heavenly - Angel - Sage")
+        self._product(base_b, "Homespun - Angel - Moss")
+
+        html = self.client.get(
+            reverse("recipe_detail", args=[self.recipe.pk])
+        ).content.decode()
+
+        page = reverse("recipe_detail", args=[self.recipe.pk])
+        frag = reverse("recipe_history", args=[self.recipe.pk])
+        self.assertIn(f'hx-get="{frag}?product={sage.pk}"', html)
+        self.assertIn(f'hx-push-url="{page}?product={sage.pk}"', html)
+
+    def test_the_chips_are_still_links_without_htmx(self):
+        base_a = self._base("Heavenly - Angel")
+        base_b = self._base("Homespun - Angel")
+        sage = self._product(base_a, "Heavenly - Angel - Sage")
+        self._product(base_b, "Homespun - Angel - Moss")
+
+        html = self.client.get(
+            reverse("recipe_detail", args=[self.recipe.pk])
+        ).content.decode()
+
+        page = reverse("recipe_detail", args=[self.recipe.pk])
+        self.assertIn(f'href="{page}?product={sage.pk}"', html)
+
+    def test_the_page_and_the_fragment_agree_about_a_filter(self):
+        """One context builder, because two would drift — and the drift shows
+        as a swapped-in view disagreeing with the one a refresh produces."""
+        base_a = self._base("Heavenly - Angel", per_bath=5)
+        base_b = self._base("Homespun - Angel", per_bath=5)
+        sage = self._product(base_a, "Heavenly - Angel - Sage")
+        self._product(base_b, "Homespun - Angel - Moss")
+        self.client.post(self.url, {f"baths_{sage.pk}": "3"})
+
+        page = self.client.get(
+            reverse("recipe_detail", args=[self.recipe.pk]), {"product": sage.pk}
+        )
+        fragment = self.client.get(
+            reverse("recipe_history", args=[self.recipe.pk]), {"product": sage.pk}
+        )
+
+        for key in ("produced", "sold", "scope_count", "all_count", "focus"):
+            self.assertEqual(
+                page.context[key], fragment.context[key], key
+            )
+
+    def test_the_fragment_is_staff_only(self):
+        self.client.logout()
+        response = self.client.get(
+            reverse("recipe_history", args=[self.recipe.pk])
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/login", response["Location"])
+
     def test_the_new_stock_shows_up_in_the_recipes_own_history(self):
         """End to end: record a session, then read it back off the page."""
         base = self._base("Heavenly - Angel", per_bath=5)
