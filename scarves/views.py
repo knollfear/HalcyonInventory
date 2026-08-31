@@ -1035,10 +1035,27 @@ def recipe_detail(request, pk):
         .order_by("-is_active", "name")
     )
 
+    # Which product's history is on screen. There is no per-finished-product
+    # page anywhere in this app, so without this a colorway on four blanks
+    # gives one interleaved column and "what has this one actually done" is
+    # unanswerable. A chip rather than a separate table each, because the
+    # combined view is the one that shows a session across bases as a session.
+    #
+    # In the query string, like every other filter here, so a reading is a
+    # link somebody can send. An unreadable or unknown id falls back to the
+    # whole recipe rather than erroring — a stale link is navigation, and the
+    # worst it should do is show more than was asked for.
+    by_pk = {p.pk: p for p in products}
+    try:
+        focus = by_pk.get(int(request.GET.get("product") or 0))
+    except ValueError:
+        focus = None
+    scope = [focus] if focus else products
+
     # One query for the whole history rather than one per product.
     logs = (
         InventoryLog.objects
-        .filter(finished_product__in=products)
+        .filter(finished_product__in=scope)
         .select_related("finished_product")
         .order_by("-created_at")[: RECIPE_LOG_LIMIT + 1]
     )
@@ -1047,10 +1064,13 @@ def recipe_detail(request, pk):
     logs = logs[:RECIPE_LOG_LIMIT]
 
     # Lifetime movement, computed over every log rather than the page's slice —
-    # a truncated history would otherwise quietly understate the totals.
+    # a truncated history would otherwise quietly understate the totals — and
+    # over the *scope*, not the recipe, because a total that disagrees with
+    # the list under it is the page contradicting itself. Same rule the colour
+    # page's pills follow.
     totals = (
         InventoryLog.objects
-        .filter(finished_product__in=products)
+        .filter(finished_product__in=scope)
         .values("log_type")
         .annotate(qty=Sum("quantity"), entries=Count("id"))
     )
@@ -1059,21 +1079,46 @@ def recipe_detail(request, pk):
     def _qty(log_type):
         return (by_type.get(log_type) or {}).get("qty") or 0
 
+    # How many rows each chip stands for, in one grouped query rather than
+    # one per product.
+    chip_counts = {
+        row["finished_product"]: row["n"]
+        for row in (
+            InventoryLog.objects
+            .filter(finished_product__in=products)
+            .values("finished_product")
+            .annotate(n=Count("id"))
+        )
+    }
+    base_url = reverse("recipe_detail", args=[recipe.pk])
+    chips = [
+        {
+            "product": product,
+            "count": chip_counts.get(product.pk, 0),
+            "url": f"{base_url}?product={product.pk}",
+            "current": focus is not None and product.pk == focus.pk,
+        }
+        for product in products
+    ]
+
     return render(request, "scarves/recipe_detail.html", {
         "recipe": recipe,
         "products": products,
         "logs": logs,
         "truncated": truncated,
         "log_limit": RECIPE_LOG_LIMIT,
-        "on_hand": sum(p.number_on_hand for p in products),
-        "par_total": sum(p.par or 0 for p in products),
+        "focus": focus,
+        "chips": chips,
+        "all_url": base_url,
+        "all_count": sum(chip_counts.values()),
+        "scope_count": len(scope),
+        "on_hand": sum(p.number_on_hand for p in scope),
+        "par_total": sum(p.par or 0 for p in scope),
         "produced": _qty(InventoryLog.PRODUCTION),
         # Sales are recorded negative; show the count as a positive number.
         "sold": -_qty(InventoryLog.SALE),
         "adjusted": _qty(InventoryLog.ADJUSTMENT),
         "log_count": sum(row["entries"] for row in totals),
-        # Caps the back-date picker; a dye session can't be in the future.
-        "today": timezone.localdate(),
     })
 
 
@@ -1089,35 +1134,21 @@ def record_recipe_production(request, pk):
 
     Quantities are counted in baths rather than items: a bath is indivisible,
     which is exactly why finishing slightly over par is normal.
+
+    **This form means exactly one thing: baths dyed now, and stock moves.**
+    It used to carry an optional back-date, folded into a disclosure *below*
+    the submit button — so one button meant two materially different things
+    (move stock, or write history and don't), and the switch deciding which
+    was under it and closed by default. Somebody reading top to bottom
+    reached the button before learning the option existed.
+
+    Typing up old sessions has its own door at `private/cards/`, which is
+    better at it: a kanban card is a column of dates and bath counts, it
+    parses a month-only date honestly, and nothing on it can move current
+    stock at all. Two doors to one job is how the ambiguous one survives, and
+    this was the ambiguous one.
     """
     recipe = get_object_or_404(Recipe, pk=pk)
-
-    # Optional back-date, for digitising sessions off paper. Blank means now,
-    # which is the everyday case — day-level precision doesn't matter here,
-    # the question is always which season something was dyed in.
-    dyed_on = None
-    dyed_on_raw = (request.POST.get("dyed_on") or "").strip()
-    if dyed_on_raw:
-        try:
-            dyed_on = datetime.strptime(dyed_on_raw, "%Y-%m-%d").date()
-        except ValueError:
-            messages.error(
-                request,
-                f"'{dyed_on_raw}' isn't a date I understand (YYYY-MM-DD) — "
-                "nothing was recorded.",
-            )
-            return redirect("recipe_detail", pk=pk)
-        if dyed_on > timezone.localdate():
-            messages.error(
-                request, "That date is in the future — nothing was recorded."
-            )
-            return redirect("recipe_detail", pk=pk)
-
-    # A back-dated session is history being typed up, not stock arriving: the
-    # yarn was sold or counted long ago. Adding it to number_on_hand would
-    # inflate current inventory by however many years get digitised, so a past
-    # date writes log rows only.
-    historical = dyed_on is not None and dyed_on < timezone.localdate()
 
     # Read the form before touching anything, so a bad field can't leave a
     # session half-recorded.
@@ -1153,14 +1184,13 @@ def record_recipe_production(request, pk):
             per_bath = raw_product.number_per_dye_bath or 1
             quantity = baths * per_bath
 
-            if not historical:
-                raw_product.number_on_hand = max(
-                    raw_product.number_on_hand - quantity, 0
-                )
-                raw_product.save(update_fields=["number_on_hand"])
+            raw_product.number_on_hand = max(
+                raw_product.number_on_hand - quantity, 0
+            )
+            raw_product.save(update_fields=["number_on_hand"])
 
-                product.number_on_hand += quantity
-                product.save(update_fields=["number_on_hand"])
+            product.number_on_hand += quantity
+            product.save(update_fields=["number_on_hand"])
 
             # One row per product per session, not one per bath: the bath
             # count is recoverable from quantity, and a single deliberate
@@ -1173,39 +1203,17 @@ def record_recipe_production(request, pk):
                 quantity=quantity,
                 notes=(
                     f"{baths} dye bath{'' if baths == 1 else 's'} × {per_bath}, "
-                    + (
-                        f"back-dated entry for {dyed_on:%d %b %Y}; "
-                        "stock left unchanged."
-                        if historical
-                        else f"recorded from the {recipe.name} recipe page."
-                    )
+                    f"recorded from the {recipe.name} recipe page."
                 ),
             )
-            if dyed_on is not None:
-                # created_at is auto_now_add, so it can only be set after the
-                # fact. Noon local, because a date carries no time and midnight
-                # is the value most likely to slide into the adjacent day.
-                InventoryLog.objects.filter(pk=log.pk).update(
-                    created_at=timezone.make_aware(
-                        datetime.combine(dyed_on, time(12, 0))
-                    )
-                )
             made += quantity
 
-    if historical:
-        messages.success(
-            request,
-            f"Logged {made} item{'' if made == 1 else 's'} for {recipe.name} "
-            f"dyed on {dyed_on:%d %b %Y}. Current stock was left alone — "
-            "back-dated entries record history only.",
-        )
-    else:
-        messages.success(
-            request,
-            f"Recorded {made} item{'' if made == 1 else 's'} across "
-            f"{len(entries)} product{'' if len(entries) == 1 else 's'} "
-            f"for {recipe.name}.",
-        )
+    messages.success(
+        request,
+        f"Recorded {made} item{'' if made == 1 else 's'} across "
+        f"{len(entries)} product{'' if len(entries) == 1 else 's'} "
+        f"for {recipe.name}.",
+    )
     return redirect("recipe_detail", pk=pk)
 
 

@@ -44,10 +44,23 @@
   td.num, th.num { text-align: right; }
   tr.retired td { color: #999; }
 
-  .backdate { margin-top: 14px; font-size: 13px; }
-  .backdate summary { cursor: pointer; color: var(--accent); }
-  .backdate p { max-width: 46rem; line-height: 1.5; }
-  .backdate input { margin-left: 6px; }
+  /* Which product's history is on screen. Reads as a row of filters, and the
+     one in force is filled rather than merely bolded — on a page this dense a
+     weight change is not a state. */
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 14px; }
+  .chip {
+      display: inline-flex; align-items: baseline; gap: 6px;
+      padding: 5px 11px; border-radius: 999px; font-size: 13px;
+      border: 1px solid #cbd6e2; background: #fff; color: var(--ink);
+      text-decoration: none;
+  }
+  .chip .n { font-size: 12px; color: #778; font-variant-numeric: tabular-nums; }
+  .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .chip.on .n { color: #fff; opacity: .8; }
+  .focusnote {
+      margin: 14px 0 0; padding: 10px 12px; font-size: 13px;
+      border: 1px solid #cbd6e2; border-radius: 8px; background: #fff;
+  }
 
   .baths-col { white-space: nowrap; text-align: right; width: 9rem; }
   .baths-col input { width: 4rem; text-align: right; }
@@ -85,6 +98,19 @@
 
   {% if recipe.description %}<p class="lead">{{ recipe.description }}</p>{% endif %}
 
+  {% comment %}
+  Above the figures, not below, because it governs every number under it. A
+  total that disagrees with the list it sits over is the page contradicting
+  itself — the same rule the colour page's pills follow.
+  {% endcomment %}
+  {% if focus %}
+    <p class="focusnote">
+      Showing <strong>{{ focus.name }}</strong> only — every figure and every
+      row below is this product.
+      <a href="{{ all_url }}">Show the whole colorway</a>
+    </p>
+  {% endif %}
+
   <div class="figures">
     <div class="figure">
       <div class="value">{{ on_hand }}</div>
@@ -99,8 +125,8 @@
       <div class="label">sold, all time</div>
     </div>
     <div class="figure">
-      <div class="value">{{ products|length }}</div>
-      <div class="label">finished product{{ products|length|pluralize }}</div>
+      <div class="value">{{ scope_count }}</div>
+      <div class="label">finished product{{ scope_count|pluralize }}</div>
     </div>
   </div>
 
@@ -194,22 +220,22 @@
       </div>
 
       {% comment %}
-      Folded away because the everyday answer is "today" and nobody should
-      have to think about it. It's open only when digitising old sessions.
+      This form means one thing: baths dyed now, stock moves. It used to carry
+      an optional back-date folded into a disclosure *below* the button — so
+      one button meant two materially different things and the switch
+      deciding which was under it and closed, which anybody reading top to
+      bottom reached after they had already pressed it.
+
+      Typing up old sessions has its own door, and a better one: a kanban
+      card is a column of dates and bath counts, it reads a month-only date
+      honestly, and nothing on that page can move current stock at all.
       {% endcomment %}
-      <details class="backdate">
-        <summary>Recording an older session?</summary>
-        <p class="small muted">
-          Leave this blank for anything dyed recently — the date it's entered
-          is close enough. Set it only when typing up a session from the past.
-          A past date <strong>records history without changing current
-          stock</strong>, since that yarn has long since been counted or sold.
-        </p>
-        <label class="small">
-          Dyed on
-          <input type="date" name="dyed_on" max="{{ today|date:'Y-m-d' }}">
-        </label>
-      </details>
+      <p class="small muted">
+        Typing up a session from the past?
+        <a href="{% url 'card_backfill_index' %}">Use the kanban cards</a> —
+        that yarn was counted or sold long ago, so those entries record
+        history without touching current stock.
+      </p>
     </form>
   {% else %}
     <p class="empty">
@@ -219,6 +245,32 @@
   {% endif %}
 
   <h2>Inventory history</h2>
+
+  {% comment %}
+  A colorway on four blanks gives one interleaved column, and there is no
+  per-finished-product page anywhere in this app — so without these, "what
+  has this one actually done" has no answer. Chips rather than a table each,
+  because the combined view is the one that shows a session across bases as a
+  session; splitting by default would take that away to solve the other half.
+
+  Each carries its own row count, and the counts are of what the chip will
+  show — a chip promising 42 that lands on a list of nine is the page
+  contradicting itself.
+  {% endcomment %}
+  {% if chips|length > 1 %}
+    <div class="chips">
+      <a class="chip{% if not focus %} on{% endif %}" href="{{ all_url }}">
+        All <span class="n">{{ all_count }}</span>
+      </a>
+      {% for chip in chips %}
+        <a class="chip{% if chip.current %} on{% endif %}" href="{{ chip.url }}">
+          {{ chip.product.raw_product.name }}
+          <span class="n">{{ chip.count }}</span>
+        </a>
+      {% endfor %}
+    </div>
+  {% endif %}
+
   {% if logs %}
     <div class="card">
       <table>
@@ -266,7 +318,12 @@
     {% endif %}
   {% else %}
     <p class="empty">
-      No inventory movement recorded for this recipe's products yet.
+      {% if focus %}
+        Nothing recorded for {{ focus.name }} yet.
+        <a href="{{ all_url }}">The rest of the colorway</a> may have moved.
+      {% else %}
+        No inventory movement recorded for this recipe's products yet.
+      {% endif %}
     </p>
   {% endif %}
 {% endblock %}

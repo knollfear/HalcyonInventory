@@ -2388,9 +2388,29 @@ class RecordRecipeProductionTests(TestCase):
         self.assertContains(response, f'name="baths_{product.pk}"')
         self.assertContains(response, "Record production")
 
-    def test_a_back_dated_session_records_history_without_moving_stock(self):
-        """Digitising old paper records must not inflate today's inventory —
-        that yarn was counted or sold years ago."""
+    def test_the_form_records_now_and_moves_stock_full_stop(self):
+        """One button, one meaning.
+
+        It used to carry an optional back-date folded into a disclosure
+        *below* the submit — so the same button either moved stock or didn't,
+        and the switch deciding which was under it and closed by default.
+        Typing up old sessions has its own door at `private/cards/`, which
+        cannot move current stock at all.
+        """
+        base = self._base("Heavenly - Angel", per_bath=5, on_hand=40)
+        product = self._product(base, "Heavenly - Angel - Sage", on_hand=2)
+
+        self.client.post(self.url, {f"baths_{product.pk}": "2"})
+
+        product.refresh_from_db()
+        base.refresh_from_db()
+        self.assertEqual(product.number_on_hand, 12)
+        self.assertEqual(base.number_on_hand, 30)
+
+    def test_a_date_posted_by_hand_changes_nothing(self):
+        """The field is gone from the form, so nothing should still be
+        reading it — a leftover parser is how a removed option comes back
+        through a hand-built POST."""
         base = self._base("Heavenly - Angel", per_bath=5, on_hand=40)
         product = self._product(base, "Heavenly - Angel - Sage", on_hand=2)
 
@@ -2400,80 +2420,125 @@ class RecordRecipeProductionTests(TestCase):
         })
 
         product.refresh_from_db()
-        base.refresh_from_db()
-        self.assertEqual(product.number_on_hand, 2)   # untouched
-        self.assertEqual(base.number_on_hand, 40)     # untouched
-
+        self.assertEqual(product.number_on_hand, 12)
         log = InventoryLog.objects.get()
-        self.assertEqual(log.quantity, 10)
-        self.assertEqual(timezone.localtime(log.created_at).date().isoformat(),
-                         "2024-06-15")
-        self.assertIn("stock left unchanged", log.notes)
+        self.assertEqual(
+            timezone.localtime(log.created_at).date(), timezone.localdate()
+        )
+        self.assertNotIn("back-dated", log.notes)
 
-    def test_todays_date_behaves_like_a_normal_entry(self):
-        """Only the *past* is history. Typing today's date explicitly should
-        still move stock, or the everyday path would depend on a blank box."""
-        base = self._base("Heavenly - Angel", per_bath=5, on_hand=40)
-        product = self._product(base, "Heavenly - Angel - Sage")
-
-        self.client.post(self.url, {
-            f"baths_{product.pk}": "1",
-            "dyed_on": timezone.localdate().isoformat(),
-        })
-
-        product.refresh_from_db()
-        base.refresh_from_db()
-        self.assertEqual(product.number_on_hand, 5)
-        self.assertEqual(base.number_on_hand, 35)
-
-    def test_a_future_date_is_refused(self):
-        base = self._base("Heavenly - Angel")
-        product = self._product(base, "Heavenly - Angel - Sage")
-        ahead = (timezone.localdate() + timedelta(days=1)).isoformat()
-
-        response = self.client.post(self.url, {
-            f"baths_{product.pk}": "1", "dyed_on": ahead,
-        }, follow=True)
-
-        self.assertEqual(InventoryLog.objects.count(), 0)
-        self.assertContains(response, "in the future")
-
-    def test_an_unparseable_date_records_nothing(self):
-        base = self._base("Heavenly - Angel")
-        product = self._product(base, "Heavenly - Angel - Sage")
-
-        response = self.client.post(self.url, {
-            f"baths_{product.pk}": "1", "dyed_on": "last summer",
-        }, follow=True)
-
-        product.refresh_from_db()
-        self.assertEqual(product.number_on_hand, 0)
-        self.assertEqual(InventoryLog.objects.count(), 0)
-        self.assertContains(response, "isn&#x27;t a date I understand")
-
-    def test_back_dated_entries_land_in_the_right_season_not_the_next_day(self):
-        """A date carries no time; midnight is the value most likely to slide
-        into the adjacent day once a timezone is applied."""
-        base = self._base("Heavenly - Angel")
-        product = self._product(base, "Heavenly - Angel - Sage")
-
-        self.client.post(self.url, {
-            f"baths_{product.pk}": "1", "dyed_on": "2025-01-01",
-        })
-
-        local = timezone.localtime(InventoryLog.objects.get().created_at)
-        self.assertEqual(local.date().isoformat(), "2025-01-01")
-        self.assertEqual(local.hour, 12)
-
-    def test_the_form_offers_back_dating_without_putting_it_in_the_way(self):
+    def test_the_page_sends_old_sessions_to_the_cards(self):
+        """Removing the option without saying where it went leaves somebody
+        looking for it on a page that no longer has it."""
         base = self._base("Heavenly - Angel")
         self._product(base, "Heavenly - Angel - Sage")
 
         response = self.client.get(reverse("recipe_detail", args=[self.recipe.pk]))
-        self.assertContains(response, 'name="dyed_on"')
-        # Behind a disclosure, so the everyday path is a number and a button.
-        self.assertContains(response, "<details")
-        self.assertContains(response, f'max="{timezone.localdate():%Y-%m-%d}"')
+
+        self.assertNotContains(response, 'name="dyed_on"')
+        self.assertContains(response, reverse("card_backfill_index"))
+
+    def test_the_history_filters_to_one_finished_product(self):
+        """There is no per-finished-product page anywhere in this app, so a
+        colorway on several blanks otherwise gives one interleaved column and
+        "what has this one done" has no answer."""
+        base_a = self._base("Heavenly - Angel", per_bath=5)
+        base_b = self._base("Homespun - Angel", per_bath=5)
+        sage = self._product(base_a, "Heavenly - Angel - Sage")
+        moss = self._product(base_b, "Homespun - Angel - Moss")
+        self.client.post(self.url, {
+            f"baths_{sage.pk}": "1", f"baths_{moss.pk}": "1",
+        })
+
+        page = self.client.get(
+            reverse("recipe_detail", args=[self.recipe.pk]), {"product": sage.pk}
+        )
+
+        names = [log.finished_product_id for log in page.context["logs"]]
+        self.assertEqual(set(names), {sage.pk})
+
+    def test_the_figures_follow_the_filter(self):
+        """A total that disagrees with the list under it is the page
+        contradicting itself — the rule the colour page's pills follow."""
+        base_a = self._base("Heavenly - Angel", per_bath=5)
+        base_b = self._base("Homespun - Angel", per_bath=5)
+        sage = self._product(base_a, "Heavenly - Angel - Sage")
+        moss = self._product(base_b, "Homespun - Angel - Moss")
+        self.client.post(self.url, {
+            f"baths_{sage.pk}": "1", f"baths_{moss.pk}": "2",
+        })
+
+        whole = self.client.get(reverse("recipe_detail", args=[self.recipe.pk]))
+        one = self.client.get(
+            reverse("recipe_detail", args=[self.recipe.pk]), {"product": sage.pk}
+        )
+
+        self.assertEqual(whole.context["produced"], 15)
+        self.assertEqual(one.context["produced"], 5)
+        self.assertEqual(one.context["scope_count"], 1)
+
+    def test_each_chip_counts_what_it_will_show(self):
+        """A chip promising 42 that lands on a list of nine is the same
+        contradiction one level up."""
+        base_a = self._base("Heavenly - Angel", per_bath=5)
+        base_b = self._base("Homespun - Angel", per_bath=5)
+        sage = self._product(base_a, "Heavenly - Angel - Sage")
+        moss = self._product(base_b, "Homespun - Angel - Moss")
+        self.client.post(self.url, {f"baths_{sage.pk}": "1"})
+
+        chips = {
+            c["product"].pk: c["count"]
+            for c in self.client.get(
+                reverse("recipe_detail", args=[self.recipe.pk])
+            ).context["chips"]
+        }
+
+        self.assertEqual(chips[sage.pk], 1)
+        self.assertEqual(chips[moss.pk], 0)
+
+    def test_no_chips_when_there_is_only_one_product(self):
+        """A filter offering one choice is a row of furniture."""
+        base = self._base("Heavenly - Angel")
+        self._product(base, "Heavenly - Angel - Sage")
+
+        html = self.client.get(
+            reverse("recipe_detail", args=[self.recipe.pk])
+        ).content.decode()
+
+        self.assertNotIn('class="chips"', html)
+
+    def test_a_stale_or_junk_product_id_falls_back_to_the_whole_colorway(self):
+        """A filter is navigation, and the worst a dead link should do is show
+        more than was asked for."""
+        base = self._base("Heavenly - Angel", per_bath=5)
+        product = self._product(base, "Heavenly - Angel - Sage")
+        self.client.post(self.url, {f"baths_{product.pk}": "1"})
+
+        for bad in ("999999", "sage", ""):
+            with self.subTest(bad=bad):
+                page = self.client.get(
+                    reverse("recipe_detail", args=[self.recipe.pk]),
+                    {"product": bad},
+                )
+                self.assertEqual(page.status_code, 200)
+                self.assertIsNone(page.context["focus"])
+                self.assertEqual(len(page.context["logs"]), 1)
+
+    def test_an_empty_filtered_history_says_which_silence_it_is(self):
+        """"Nothing here" and "nothing anywhere on this colorway" are
+        different facts, and only one of them has somewhere else to look."""
+        base_a = self._base("Heavenly - Angel", per_bath=5)
+        base_b = self._base("Homespun - Angel", per_bath=5)
+        sage = self._product(base_a, "Heavenly - Angel - Sage")
+        moss = self._product(base_b, "Homespun - Angel - Moss")
+        self.client.post(self.url, {f"baths_{sage.pk}": "1"})
+
+        page = self.client.get(
+            reverse("recipe_detail", args=[self.recipe.pk]), {"product": moss.pk}
+        )
+
+        self.assertContains(page, "Nothing recorded for")
+        self.assertContains(page, "The rest of the colorway")
 
     def test_the_new_stock_shows_up_in_the_recipes_own_history(self):
         """End to end: record a session, then read it back off the page."""

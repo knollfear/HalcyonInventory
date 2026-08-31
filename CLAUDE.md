@@ -519,10 +519,54 @@ wrote down. Always use `{{ log.when }}`, which says no more than is known.
 The same rule governs input: `parse_card_date()` refuses anything it can't
 read rather than guessing, and never promotes a month to a day.
 
-**Back-dated entries never move stock.** The recipe page's production form and
-the whole card-backfill flow write log rows only when the date is in the past —
-that yarn was counted or sold long ago, and adding it to `number_on_hand` would
-inflate current inventory by however far back the records go.
+**Back-dated entries never move stock.** The card-backfill flow writes log
+rows only — that yarn was counted or sold long ago, and adding it to
+`number_on_hand` would inflate current inventory by however far back the
+records go.
+
+**`private/cards/` is the only door to that**, and the recipe page's
+production form no longer has a second one. It used to carry an optional
+back-date, folded into a disclosure *below* the submit button, which made one
+button mean two materially different things — move stock, or write history and
+don't — with the switch deciding which under it and closed by default.
+Somebody reading top to bottom reached the button before learning the option
+existed. The card page is better at the job anyway: a kanban card is a column
+of dates and bath counts, `parse_card_date` reads a month-only date honestly,
+and *nothing* on that page can move current stock, so the guarantee is
+structural rather than conditional. The recipe form now means exactly one
+thing: baths dyed now, stock moves. It links to the cards where the
+disclosure used to be, because removing an option without saying where it went
+leaves somebody hunting a page that no longer has it.
+
+## The recipe page: one colorway, and which blank you're reading
+
+`private/recipes/<pk>/` is a colorway end to end — every blank it is dyed on,
+and the inventory history underneath. **There is no per-finished-product page
+anywhere in this app**, which is what the history's chips are for: a colorway
+on four blanks otherwise gives one interleaved column, and "what has this one
+actually done" has no answer.
+
+Chips over `?product=<pk>`, not a table per product. The combined view is the
+one that shows a dye session across three bases *as* a session, and splitting
+by default would give that up to solve the other half. In the query string
+like every other filter here, so a reading is a link somebody can send, and an
+unreadable or unknown id falls back to the whole colorway rather than erroring
+— a filter is navigation, and the worst a stale link should do is show more
+than was asked for.
+
+Two counting rules come straight off the colour page's pills. **Every figure
+above the history follows the filter** — a lifetime total that disagrees with
+the list under it is the page contradicting itself — and the notice saying
+which product is in force sits *above* the figures, because it governs them.
+**Each chip counts the rows it will show**, so a chip promising 42 can't land
+on a list of nine. Both counts come from one grouped query, never one per
+chip.
+
+An empty filtered history says *which* silence it is: "nothing recorded for
+this one, the rest of the colorway may have moved" is a different fact from
+"nothing anywhere", and only one of them has somewhere else to look. No chips
+at all when there is a single product, because a filter offering one choice is
+furniture.
 
 ## Production sheets: paper to the dye room, one scan back
 
