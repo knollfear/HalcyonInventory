@@ -1,4 +1,5 @@
 {% extends "scarves/base_internal.html" %}
+{% load form_extras %}
 
 {% block title %}Raw Inventory – {{ category.name }}{% endblock %}
 {% block heading %}Raw Inventory – {{ category.name }}{% endblock %}
@@ -7,17 +8,36 @@
   {{ block.super }}
   .category-nav { margin: 14px 0; font-size: 13px; display: flex; flex-wrap: wrap; gap: 4px 14px; }
   .category-nav .current { font-weight: 600; color: var(--ink); text-decoration: none; }
-  td.actions { white-space: nowrap; margin: 0; display: table-cell; }
-  td.actions form { display: inline; }
-  td.actions form.set-to { margin-left: 10px; }
-  .set-to-input { width: 5em; padding: 2px 4px; font: inherit; }
+  .count-input { width: 5.5em; padding: 4px 6px; font: inherit; }
   .order-link { font-size: 13px; }
+  th.entry, td.entry { text-align: right; white-space: nowrap; }
+  tr.bad { background: #fdf3f2; }
+  td.bad-why { font-size: 13px; color: #8a2f2a; }
+  /* Sticky, because the table is as long as the category and the whole point
+     of the change is that one save covers all of it — a button below forty
+     rows is one somebody scrolls to find after every line. */
+  .savebar {
+      position: sticky; bottom: 0; display: flex; gap: 14px;
+      align-items: center; flex-wrap: wrap;
+      padding: 12px 0; background: #fff; border-top: 1px solid #e1e5ea;
+  }
 {% endblock %}
 
 {% block content %}
   <p class="lead">
-    Review par levels and adjust stock. This page is only for the
+    Review par levels and book stock in. This page is only for the
     {{ category.name }} supplier.
+  </p>
+  {% comment %}
+  Two questions, said plainly, because the column headings are the only thing
+  telling somebody which one they are answering.
+  {% endcomment %}
+  <p class="note">
+    <strong>Received</strong> is what a delivery note says arrived — it gets
+    added on, so nobody has to do the sum. <strong>Counted</strong> is what is
+    actually on the shelf, and replaces whatever the app believed. Leave a row
+    blank and it isn't touched, and <strong>one Save books the lot</strong>: a
+    bill is one document.
   </p>
 
   <div class="category-nav">
@@ -28,6 +48,8 @@
   </div>
 
   {% if products %}
+    <form method="post">
+    {% csrf_token %}
     <div class="card">
       <table>
         <thead>
@@ -38,13 +60,14 @@
             <th>Shortage</th>
             <th>Cost</th>
             <th>Order URL</th>
-            <th>Actions</th>
+            <th class="entry">Received</th>
+            <th class="entry">Counted</th>
           </tr>
         </thead>
         <tbody>
           {% for p in products %}
-            {% with shortage=p.raw_shortage %}
-            <tr>
+            {% with shortage=p.raw_shortage entry=typed|lookup:p.pk why=errors|lookup:p.pk %}
+            <tr{% if why %} class="bad"{% endif %}>
               <td>{{ p.name }}</td>
               <td>{{ p.number_on_hand }}</td>
               <td>{{ p.par_level }}</td>
@@ -65,32 +88,43 @@
                   <a href="{{ p.order_url }}" target="_blank">Supplier page</a>
                 {% endif %}
               </td>
-              <td class="actions">
-                {% for delta, label in adjustments %}
-                  <form method="post" action="{% url 'adjust_raw_stock' p.pk %}">
-                    {% csrf_token %}
-                    <input type="hidden" name="next" value="{{ request.get_full_path }}">
-                    <input type="hidden" name="delta" value="{{ delta }}">
-                    <button type="submit" class="btn-quiet">{{ label }}</button>
-                  </form>
-                {% endfor %}
-                <form method="post" action="{% url 'adjust_raw_stock' p.pk %}"
-                      class="set-to">
-                  {% csrf_token %}
-                  <input type="hidden" name="next" value="{{ request.get_full_path }}">
-                  <input type="number" name="set_to" min="0" step="1"
-                         placeholder="{{ p.number_on_hand }}"
-                         aria-label="Set {{ p.name }} count to"
-                         class="set-to-input">
-                  <button type="submit" class="btn-quiet">Set</button>
-                </form>
+              <td class="entry">
+                {% comment %}
+                Signed on purpose: a return to the supplier is a delivery note
+                with a minus in front of it, which is what the row's old -1
+                button was for.
+                {% endcomment %}
+                <input type="number" name="received_{{ p.pk }}" step="1"
+                       value="{{ entry.received }}"
+                       aria-label="Received of {{ p.name }}"
+                       class="count-input">
+              </td>
+              <td class="entry">
+                <input type="number" name="counted_{{ p.pk }}" min="0" step="1"
+                       placeholder="{{ p.number_on_hand }}"
+                       value="{{ entry.counted }}"
+                       aria-label="Counted on the shelf for {{ p.name }}"
+                       class="count-input">
               </td>
             </tr>
+            {% comment %}
+            Named under the row it belongs to, not only in the banner up top:
+            on a category of forty products, "a line didn't read" without
+            saying which one is a hunt.
+            {% endcomment %}
+            {% if why %}
+              <tr class="bad"><td colspan="8" class="bad-why">{{ p.name }}: {{ why }}</td></tr>
+            {% endif %}
             {% endwith %}
           {% endfor %}
         </tbody>
       </table>
     </div>
+    <div class="savebar">
+      <button class="btn" type="submit">Save this bill</button>
+      <span class="note">Blank rows are left alone. Counted wins if you fill in both.</span>
+    </div>
+    </form>
   {% else %}
     <p class="empty">No raw products found for this category.</p>
   {% endif %}

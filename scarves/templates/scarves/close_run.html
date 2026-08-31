@@ -132,10 +132,45 @@ to be checked would make the stack agree with itself.
      tab strip, because it is one word and the page has forty rows under it. */
   .modes { font-size: .95rem; margin: 0 0 18px; }
 
+  /* Our own indicator rules rather than htmx's: its default fades opacity,
+     which leaves the line taking up room and reading as a permanent label. */
+  .htmx-indicator { display: none; }
+  .htmx-request .htmx-indicator,
+  .htmx-request.htmx-indicator { display: block; }
+  .failed { color: #8a2f2a; }
+
   /* A card row carries no outcome colouring. Which way the count went is the
      counting list's business; this one is a stack of tags to check against. */
   .row.card { cursor: default; }
   .unread { color: #8a5a1f; }
+{% endblock %}
+
+{% block scripts %}
+  {{ block.super }}
+  {% comment %}
+  The one thing the page reload gave for free: a search that didn't reach the
+  app looked like a search that found nothing, and on this page that reads as
+  "the scarf isn't in there" — which sends somebody off to solve the wrong
+  problem. htmx says so on the events; this turns them into a sentence.
+
+  Everything else about the search degrades without this: no htmx, and the
+  form is the ordinary GET it always was.
+  {% endcomment %}
+  <script>
+    (function () {
+      var form = document.querySelector("form.search");
+      var failed = document.getElementById("tag-failed");
+      if (!form || !failed) { return; }
+      form.addEventListener("htmx:beforeRequest", function () {
+        failed.hidden = true;
+      });
+      ["htmx:sendError", "htmx:responseError", "htmx:timeout"].forEach(
+        function (name) {
+          form.addEventListener(name, function () { failed.hidden = false; });
+        }
+      );
+    })();
+  </script>
 {% endblock %}
 
 {% block content %}
@@ -305,6 +340,28 @@ to be checked would make the stack agree with itself.
       blank means "not yet", not zero.
     </p>
 
+    {% comment %}
+    The drawer. Answered rows come off this list because what somebody is
+    looking for here is the next thing they have *not* checked, and on a list
+    twenty-three long a settled row between two unsettled ones has to be read
+    to be skipped. Undo lives in there too, so the link says so — a fix
+    nobody can find is a fix that gets left unmentioned, which is the failure
+    the undo button exists to prevent.
+    {% endcomment %}
+    {% if answered_count and run.is_open %}
+      <p class="lead">
+        {% if show_answered %}
+          Showing all {{ answered_count }} already answered.
+          <a href="{{ hide_answered_url }}">Hide them</a> to get back to
+          what's left.
+        {% else %}
+          <strong>{{ pending_count }}</strong> left to count.
+          <a href="{{ show_answered_url }}">Show the {{ answered_count }}
+          already answered</a> — to change one, or to undo it.
+        {% endif %}
+      </p>
+    {% endif %}
+
     {% if count_fields %}
       {% comment %}
       One loop in one order. Rendering the answered ones first would reorder
@@ -350,6 +407,15 @@ to be checked would make the stack agree with itself.
         {% endfor %}
         <button class="btn" type="submit">Save these counts</button>
       </form>
+    {% elif answered_count %}
+      {% comment %}
+      Different news from an empty list, and worth saying apart: the pile is
+      worked through, rather than there being nothing on it.
+      {% endcomment %}
+      <p class="lead">
+        Everything on the list is counted. Anything else you're holding a tag
+        for goes in below.
+      </p>
     {% else %}
       <p class="lead">
         Nothing to count right now — the app thinks every display still has a
@@ -364,30 +430,51 @@ to be checked would make the stack agree with itself.
       to be counted like the rest — adding it on its own changes nothing.
     </p>
 
-    <form class="search" method="get">
+    {% comment %}
+    htmx swaps the matches in; the form is still an ordinary GET to this page,
+    so with the script blocked it behaves exactly as it did.
+
+    **Submit, never a type-ahead.** The original objection to a request per
+    keystroke stands whole — this is a phone in a field on one bar, and a
+    request nobody asked for is the worst kind to drop. What changed is the
+    other half of that reasoning: a full navigation throws away the scroll
+    position, and this box sits under twenty-odd rows, so every search was
+    paid for with a scrub back down the page. That cost is paid every time; a
+    dropped request is rare, and is now said out loud below rather than
+    looking like no matches.
+    {% endcomment %}
+    <form class="search" method="get"
+          hx-get="{{ tag_search_url }}"
+          hx-target="#tag-results"
+          hx-swap="innerHTML"
+          hx-indicator="#tag-searching">
       {% comment %}
-      Carries the mode, or searching for a tag drops back to the default —
-      which is the card lists once anything has been counted.
+      Only the no-script path reads these — htmx posts to the fragment, which
+      needs neither. They are here so a plain submit lands back on the
+      counting list rather than the default reading.
       {% endcomment %}
       <input type="hidden" name="mode" value="{{ count_mode }}">
+      <input type="hidden" name="answered" value="{% if show_answered %}1{% else %}0{% endif %}">
       <input type="search" name="q" value="{{ query }}"
              placeholder="Name or barcode" autocomplete="off">
       <button class="btn" type="submit">Search</button>
     </form>
 
-    {% if results is not None %}
-      <form method="post" action="{% url 'close_add_tag' run.token %}">
-        {% csrf_token %}
-        {% for p in results %}
-          <button class="result" type="submit" name="product_id" value="{{ p.id }}">
-            {{ p.name }}
-            <span class="muted">{{ p.sku }} — app says {{ p.number_on_hand }} on hand</span>
-          </button>
-        {% empty %}
-          <p class="lead">Nothing matches “{{ query }}”.</p>
-        {% endfor %}
-      </form>
-    {% endif %}
+    {% comment %}
+    A dropped request has to be visible. That was the whole argument for the
+    page reload, and it is the part worth keeping: a search box that silently
+    does nothing is indistinguishable from one that found nothing, and on
+    this page the wrong reading is "that scarf isn't in the app".
+    {% endcomment %}
+    <p id="tag-searching" class="htmx-indicator lead">Searching…</p>
+    <p id="tag-failed" class="lead failed" hidden>
+      That search didn't reach the app — signal, most likely. Tap Search
+      again; nothing is lost.
+    </p>
+
+    <div id="tag-results">
+      {% include "scarves/partials/close_tag_results.html" %}
+    </div>
 
   {% endif %}
 
@@ -403,7 +490,7 @@ to be checked would make the stack agree with itself.
   Nothing is erased by it: the movement is reversed with a second log entry
   beside the first.
   {% endcomment %}
-  {% if applied_rows %}
+  {% if applied_rows and show_answered %}
     <h2>Already put right</h2>
     {% for row in applied_rows %}
       <div class="row{% if row.outcome == 'extra' %} over{% else %} settled{% endif %}">
@@ -435,7 +522,7 @@ to be checked would make the stack agree with itself.
     {% endif %}
   {% endif %}
 
-  {% if confirmed_rows and not run.is_open %}
+  {% if confirmed_rows and not run.is_open and show_answered %}
     <h2>Agreed</h2>
     {% for row in confirmed_rows %}
       <div class="row settled">

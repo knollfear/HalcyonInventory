@@ -1,0 +1,25 @@
+{% comment %}
+Photos with no open sale within the window. Either the sale never reached
+Square, or it was rung up as a real product after all — in which case the
+stock has already moved and there is nothing to do here.
+{% endcomment %}
+{% if orphans %}
+  <h2 class="card-title">Photos with no sale beside them</h2>
+  <p class="note">
+    Either the sale never reached Square, or it was rung up as a real product
+    after all — in which case the stock has already moved and there's nothing
+    to do here.
+  </p>
+  <div class="shots">
+    {% for report in orphans %}
+      <div class="shot">
+        {% if report.image %}<img src="{{ report.image.url }}" alt="">{% endif %}
+        <div class="meta">
+          {% if report.sku_prefix %}<span class="prefix">{{ report.sku_prefix }}-…</span><br>{% endif %}
+          {{ report.when|date:"H:i" }} · {{ report.employee.name }}
+          {% if report.note %}<br>{{ report.note }}{% endif %}
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+{% endif %}

@@ -32,7 +32,9 @@ from django.utils import timezone
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.db.models import ProtectedError
+from django.db import connection
 from django.test import TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
 from . import (
@@ -3967,10 +3969,19 @@ class FinishedParDefaultTests(TestCase):
         self.assertEqual(fp.number_on_hand, 9)
 
 
-class SetRawStockTests(TestCase):
-    """Counting the shelf and nudging a number are different questions, and
-    the page only answered the second one. `set_to` answers the first, the way
-    the bulk inventory page already does for finished products.
+class RawInventoryBillTests(TestCase):
+    """One save for the whole category, because what gets typed in is a bill.
+
+    The page used to post a row at a time — three nudge buttons and a "set"
+    box per product, each its own form — so a delivery of nine lines was nine
+    round trips and nine page rebuilds with the invoice in somebody's other
+    hand. Now it is one form.
+
+    Two columns, because there are two questions. *Received* is a delta: the
+    note says twelve arrived and nobody should have to add twelve to the
+    current figure in their head. *Counted* is an absolute: the shelf holds
+    nine, whatever the app believed — the shape every correction in this app
+    takes, because an absolute heals whatever went unrecorded before it.
     """
 
     def setUp(self):
@@ -3979,65 +3990,142 @@ class SetRawStockTests(TestCase):
             name="8mm Habotai", category=self.category, price="5.00",
             number_on_hand=12,
         )
+        self.other = RawProduct.objects.create(
+            name="Sash Blank", category=self.category, price="4.00",
+            number_on_hand=3,
+        )
         User.objects.create_user("staff", "s@example.test", "pw")
         self.client.login(username="staff", password="pw")
-        self.url = reverse("adjust_raw_stock", args=[self.raw.pk])
-        self.next = reverse("raw_inventory", args=[self.category.pk])
+        self.url = reverse("raw_inventory", args=[self.category.pk])
 
-    def _post(self, data):
-        data.setdefault("next", self.next)
+    def _post(self, **data):
         return self.client.post(self.url, data)
 
-    def test_setting_an_absolute_count_replaces_what_was_there(self):
-        self._post({"set_to": "5"})
+    def test_one_save_books_every_line(self):
+        """The whole point: a bill is one document, not nine round trips."""
+        self._post(**{
+            f"received_{self.raw.pk}": "12",
+            f"received_{self.other.pk}": "6",
+        })
+
+        self.raw.refresh_from_db()
+        self.other.refresh_from_db()
+        self.assertEqual(self.raw.number_on_hand, 24)
+        self.assertEqual(self.other.number_on_hand, 9)
+
+    def test_a_blank_row_is_left_alone(self):
+        """What makes a nine-line bill cheap on a page of forty products."""
+        self._post(**{f"received_{self.raw.pk}": "1"})
+
+        self.other.refresh_from_db()
+        self.assertEqual(self.other.number_on_hand, 3)
+
+    def test_counted_replaces_rather_than_adds(self):
+        self._post(**{f"counted_{self.raw.pk}": "5"})
+
         self.raw.refresh_from_db()
         self.assertEqual(self.raw.number_on_hand, 5)
 
-    def test_setting_a_higher_count_works_too(self):
-        self._post({"set_to": "30"})
-        self.raw.refresh_from_db()
-        self.assertEqual(self.raw.number_on_hand, 30)
+    def test_counted_zero_empties_the_shelf(self):
+        """0 is a real count. The falsy-string trap would read it as blank
+        and leave the row untouched, which is the opposite of what was
+        said."""
+        self._post(**{f"counted_{self.raw.pk}": "0"})
 
-    def test_setting_zero_empties_the_shelf(self):
-        """0 is a real count, and the falsy-string trap would read it as 'blank'
-        and fall through to the delta path, which changes nothing."""
-        self._post({"set_to": "0"})
         self.raw.refresh_from_db()
         self.assertEqual(self.raw.number_on_hand, 0)
 
-    def test_the_delta_buttons_still_work(self):
-        self._post({"delta": "-3"})
-        self.raw.refresh_from_db()
-        self.assertEqual(self.raw.number_on_hand, 9)
+    def test_a_count_wins_over_a_delta_on_the_same_row(self):
+        """A count is a measurement; a delivery note is a claim about a
+        change."""
+        self._post(**{
+            f"counted_{self.raw.pk}": "4",
+            f"received_{self.raw.pk}": "100",
+        })
 
-    def test_an_empty_box_falls_through_to_the_delta(self):
-        """Both forms post to the same endpoint; a blank number field must not
-        stop the +1 button next to it from working."""
-        self._post({"set_to": "", "delta": "1"})
-        self.raw.refresh_from_db()
-        self.assertEqual(self.raw.number_on_hand, 13)
-
-    def test_a_count_wins_over_a_delta(self):
-        self._post({"set_to": "4", "delta": "100"})
         self.raw.refresh_from_db()
         self.assertEqual(self.raw.number_on_hand, 4)
 
-    def test_nonsense_leaves_the_count_alone(self):
-        for bad in ("twelve", "-2", "3.5"):
-            with self.subTest(bad=bad):
-                self._post({"set_to": bad})
-                self.raw.refresh_from_db()
-                self.assertEqual(self.raw.number_on_hand, 12)
+    def test_a_negative_received_is_a_return_to_the_supplier(self):
+        """What the row's old -1 button was for."""
+        self._post(**{f"received_{self.raw.pk}": "-3"})
 
-    def test_setting_it_to_what_it_already_is_is_not_an_error(self):
-        response = self._post({"set_to": "12"})
+        self.raw.refresh_from_db()
+        self.assertEqual(self.raw.number_on_hand, 9)
+
+    def test_received_cannot_drive_the_shelf_below_zero(self):
+        self._post(**{f"received_{self.raw.pk}": "-99"})
+
+        self.raw.refresh_from_db()
+        self.assertEqual(self.raw.number_on_hand, 0)
+
+    def test_one_bad_line_books_none_of_them(self):
+        """A bill goes in whole or not at all. Half of one booked in is worse
+        than none, because the missing half is invisible afterwards."""
+        response = self._post(**{
+            f"received_{self.raw.pk}": "12",
+            f"counted_{self.other.pk}": "twelve",
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.raw.refresh_from_db()
+        self.other.refresh_from_db()
+        self.assertEqual(self.raw.number_on_hand, 12)
+        self.assertEqual(self.other.number_on_hand, 3)
+
+    def test_a_rejected_bill_comes_back_still_typed_in(self):
+        """Losing nine lines to one fat-fingered digit is the expensive
+        failure here."""
+        response = self._post(**{
+            f"received_{self.raw.pk}": "12",
+            f"counted_{self.other.pk}": "twelve",
+        })
+
+        html = response.content.decode()
+        self.assertIn('value="12"', html)
+        self.assertIn('value="twelve"', html)
+
+    def test_a_rejected_bill_names_the_line(self):
+        """On a category of forty products, 'a line didn't read' without
+        saying which one is a hunt."""
+        response = self._post(**{f"counted_{self.other.pk}": "-2"})
+
+        self.assertContains(response, "Sash Blank")
+        self.assertContains(response, "can&#x27;t be negative", html=False)
+
+    def test_a_line_that_changes_nothing_is_not_an_error(self):
+        response = self._post(**{f"counted_{self.raw.pk}": "12"})
+
         self.assertEqual(response.status_code, 302)
         self.raw.refresh_from_db()
         self.assertEqual(self.raw.number_on_hand, 12)
 
-    def test_the_page_offers_a_box_to_type_in(self):
-        response = self.client.get(self.next)
-        self.assertContains(response, 'name="set_to"')
+    def test_the_page_offers_both_columns(self):
+        response = self.client.get(self.url)
+
+        self.assertContains(response, f'name="received_{self.raw.pk}"')
+        self.assertContains(response, f'name="counted_{self.raw.pk}"')
+
+    def test_there_is_one_form_and_one_button(self):
+        """The regression this replaced: a submit per row."""
+        html = self.client.get(self.url).content.decode()
+
+        self.assertEqual(html.count("<form"), 1)
+        self.assertEqual(html.count('type="submit"'), 1)
+
+    def test_a_passthrough_mirror_still_follows_the_raw_count(self):
+        """`save()` rather than a queryset `update()`, because a `post_save`
+        signal is what keeps a passthrough's finished row in step — and a
+        passthrough is one physical pile with one row allowed to count it."""
+        finished = FinishedProduct.objects.create(
+            name="8mm Habotai", raw_product=self.raw, recipe=None,
+            price="9.00", number_on_hand=12,
+        )
+
+        self._post(**{f"received_{self.raw.pk}": "5"})
+
+        finished.refresh_from_db()
+        self.assertEqual(finished.number_on_hand, 17)
 
 
 class BehindABathTests(TestCase):
@@ -7410,6 +7498,188 @@ class UnmatchedSaleReviewTests(TestCase):
         rows = self._rows()
         self.assertEqual([r["sale"].pk for r in rows], [second.pk])
         self.assertEqual(rows[0]["reports"], [])
+
+
+class UnmatchedSalePaceTests(TestCase):
+    """Working the queue at pace: a hundred lines, read and clicked.
+
+    Two costs were in the way and both were structural rather than
+    incidental. The page asked the same catalogue-sized question once per
+    row, and every dismissal was a full navigation that rebuilt all of it.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("owner", "o@example.test", "pw")
+        self.client.force_login(self.user)
+        self.employee = Employee.objects.create(name="Robin", pin="4821")
+        silk, _ = RawProductCategory.objects.get_or_create(name="Silk")
+        raw = RawProduct.objects.create(name="Infinity", category=silk, price="5.00")
+        for colour in ("Aegean Sea", "Ember", "Stormy"):
+            FinishedProduct.objects.create(
+                name=f"{colour} Infinity", raw_product=raw,
+                recipe=make_recipe(colour), price="30.00", number_on_hand=4,
+            )
+        self.sold_at = timezone.now() - timedelta(hours=3)
+        self.sale = UnmatchedSale.objects.create(
+            order_id="ORDER-1", line_uid="L1", name="Scarf",
+            quantity=1, amount_cents=3000, sold_at=self.sold_at,
+        )
+        self.url = reverse("unmatched_sales")
+        self.day = timezone.localtime(self.sold_at).date().isoformat()
+
+    def _more_sales(self, count):
+        for n in range(2, count + 2):
+            UnmatchedSale.objects.create(
+                order_id=f"ORDER-{n}", line_uid="L1", name="Scarf",
+                quantity=1, amount_cents=3000, sold_at=self.sold_at,
+            )
+
+    def test_the_catalogue_is_asked_for_once_however_many_rows(self):
+        """The common row has no photo and therefore no reported barcode, so
+        every one of them asks the identical question — the whole active
+        catalogue. A day with ten was running ten copies of the biggest query
+        on the page, and paying it again on every dismissal's redirect."""
+        with CaptureQueriesContext(connection) as one_row:
+            self.client.get(self.url, {"day": self.day})
+
+        self._more_sales(8)
+
+        with CaptureQueriesContext(connection) as nine_rows:
+            self.client.get(self.url, {"day": self.day})
+
+        self.assertEqual(len(nine_rows), len(one_row))
+
+    def test_rows_that_really_differ_still_get_their_own_list(self):
+        """The cache is keyed on the reported prefixes and nothing else, so
+        narrowing still narrows — this must not become one list for every
+        row."""
+        photo = BoothPhoto(
+            employee=self.employee,
+            reason=BoothPhoto.REASON_UNIDENTIFIED,
+            sold_at=self.sold_at,
+            sku_prefix="AEGEAN",
+        )
+        photo.save()
+        FinishedProduct.objects.filter(name="Aegean Sea Infinity").update(
+            sku="AEGEAN-INFIN"
+        )
+        # Same day, well outside the photo's fifteen minutes, so this one has
+        # nothing reported against it and asks the wide question.
+        UnmatchedSale.objects.create(
+            order_id="ORDER-2", line_uid="L1", name="Scarf",
+            quantity=1, amount_cents=3000,
+            sold_at=self.sold_at + timedelta(minutes=40),
+        )
+
+        rows = self.client.get(
+            self.url, {"day": self.day}
+        ).context["rows"]
+
+        by_narrowed = {r["narrowed"]: r for r in rows}
+        self.assertIn(True, by_narrowed)
+        self.assertIn(False, by_narrowed)
+        self.assertEqual(len(by_narrowed[True]["options"]), 1)
+        self.assertEqual(len(by_narrowed[False]["options"]), 3)
+
+    def _dismiss(self, sale, htmx=True, **extra):
+        data = {"dismiss": "1", "day": self.day}
+        data.update(extra)
+        headers = {"HTTP_HX_REQUEST": "true"} if htmx else {}
+        return self.client.post(
+            reverse("resolve_unmatched_sale", args=[sale.pk]), data, **headers
+        )
+
+    def test_an_htmx_dismiss_swaps_one_row_instead_of_rebuilding_the_page(self):
+        response = self._dismiss(self.sale)
+
+        self.assertEqual(response.status_code, 200)
+        html = response.content.decode()
+        self.assertIn(f'id="sale-{self.sale.pk}"', html)
+        self.assertIn("Dismissed", html)
+        # The thing the whole change is about: no other row, and no
+        # catalogue-sized <select>, comes back with it.
+        self.assertNotIn("which scarf was it?", html)
+        self.sale.refresh_from_db()
+        self.assertIsNotNone(self.sale.dismissed_at)
+
+    def test_the_reason_typed_beside_it_is_kept(self):
+        self._dismiss(self.sale, dismissed_reason="tip jar")
+
+        self.sale.refresh_from_db()
+        self.assertEqual(self.sale.dismissed_reason, "tip jar")
+
+    def test_the_header_count_comes_back_with_it(self):
+        """Out-of-band, because a header reading '2 open in total' over one
+        row is the page contradicting itself."""
+        self._more_sales(1)
+
+        html = self._dismiss(self.sale).content.decode()
+
+        self.assertIn('id="open-total"', html)
+        self.assertIn('hx-swap-oob="true"', html)
+        self.assertIn("1 open in total", html)
+
+    def test_a_photo_left_behind_by_a_dismissal_comes_back_as_an_orphan(self):
+        """Dismissing can *make* an orphan: the photo that was sitting beside
+        that sale now has nothing to be beside."""
+        photo = BoothPhoto(
+            employee=self.employee,
+            reason=BoothPhoto.REASON_UNIDENTIFIED,
+            sold_at=self.sold_at,
+            note="blue one",
+        )
+        photo.save()
+
+        html = self._dismiss(self.sale).content.decode()
+
+        self.assertIn('id="orphans"', html)
+        self.assertIn("Photos with no sale beside them", html)
+        self.assertIn("blue one", html)
+
+    def test_dismissing_the_same_line_twice_says_where_things_stand(self):
+        """A double-click at pace, or a stale tab. The page is already in the
+        state they were asking for, so it says so rather than erroring."""
+        self._dismiss(self.sale)
+
+        response = self._dismiss(self.sale)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Dismissed", response.content.decode())
+
+    def test_without_htmx_it_still_posts_and_redirects(self):
+        """Script blocked, and the button is the ordinary submit it always
+        was."""
+        response = self._dismiss(self.sale, htmx=False)
+
+        self.assertRedirects(response, f"{self.url}?day={self.day}")
+        self.sale.refresh_from_db()
+        self.assertIsNotNone(self.sale.dismissed_at)
+
+    def test_the_page_wires_the_button_to_the_swap(self):
+        html = self.client.get(self.url, {"day": self.day}).content.decode()
+
+        self.assertIn(
+            f'hx-post="{reverse("resolve_unmatched_sale", args=[self.sale.pk])}"',
+            html,
+        )
+        self.assertIn(f'hx-target="#sale-{self.sale.pk}"', html)
+        self.assertIn('hx-swap="outerHTML"', html)
+        self.assertIn("htmx.org", html)
+
+    def test_matching_a_product_is_still_a_navigation(self):
+        """It moves stock, and the sentence saying what moved is worth a
+        page."""
+        product = FinishedProduct.objects.get(name="Ember Infinity")
+
+        response = self.client.post(
+            reverse("resolve_unmatched_sale", args=[self.sale.pk]),
+            {"product_id": product.pk, "day": self.day},
+            HTTP_HX_REQUEST="true",
+        )
+
+        self.assertRedirects(response, f"{self.url}?day={self.day}")
+        product.refresh_from_db()
+        self.assertEqual(product.number_on_hand, 3)
 
 
 class CrewCookieTests(TestCase):
@@ -13148,10 +13418,15 @@ class SundayClosePageTests(TestCase):
         url = reverse("close_run", args=[run.token])
 
         self.client.post(url, count_post(row, 2))
-        # The counting list explicitly: a bare URL opens the card lists once
-        # anything has been counted, and the answer is shown back on the
-        # buttons that took it.
-        html = self.client.get(url, {"mode": "count"}).content.decode()
+        # The counting list with the drawer open: a bare URL opens the card
+        # lists once anything has been counted, and an answered row is off
+        # the counting list until it is asked for. Both of those are stronger
+        # answers to what this test guards — a row that is absent and counted
+        # in a header cannot be misread as one nobody reached — but the
+        # answer still has to be shown back on the buttons that took it.
+        html = self.client.get(
+            url, {"mode": "count", "answered": "1"}
+        ).content.decode()
 
         checked = re.search(
             rf'<input type="radio" name="counted_{row.pk}" value="(\d+|more)"[^>]*checked',
@@ -13384,9 +13659,12 @@ class SundayClosePageTests(TestCase):
         url = reverse("close_run", args=[run.token])
         self.client.post(url, count_post(row, 5))
 
-        # Undo lives on the counting list. A bare URL now opens the card
-        # lists, which are read rather than worked.
-        html = self.client.get(url, {"mode": "count"}).content.decode()
+        # Undo lives on the counting list, behind the answered drawer — a
+        # bare URL opens the card lists, and the counting list shows what is
+        # left rather than what is done.
+        html = self.client.get(
+            url, {"mode": "count", "answered": "1"}
+        ).content.decode()
         self.assertIn(reverse("close_undo", args=[run.token, row.pk]), html)
         self.assertIn("Undo", html)
 
@@ -13486,6 +13764,228 @@ class SundayClosePageTests(TestCase):
         response = self.client.get(reverse("close_history"))
         self.assertEqual(response.status_code, 302)
         self.assertIn("/login", response["Location"])
+
+
+class CloseAnsweredDrawerTests(TestCase):
+    """Answered rows come off the counting list, and come back on request.
+
+    What somebody is looking for on this page is the next thing they have not
+    checked. On a list twenty-three long a settled row sitting between two
+    unsettled ones has to be read in order to be skipped, which is a cost
+    paid on every pass down the pile — and a close is worked in several
+    passes across an evening.
+
+    A reveal rather than a mode. Nothing carries `?answered=1` onward, so it
+    evaporates on the next submit or link — the same inversion the restock
+    board's `?bare=1` makes, and for the same reason: the focused list is
+    what the page is for, and a stale reveal quietly puts the long list back.
+    """
+
+    def setUp(self):
+        self.employee = Employee.objects.create(name="Closer", pin="1234")
+
+    def test_an_answered_row_is_off_the_counting_list(self):
+        make_close_product("Counted Already", on_hand=0)
+        make_close_product("Still Waiting", on_hand=0)
+        run, _ = closing.run_for_today(employee=self.employee)
+        row = run.rows.get(finished_product__name="Counted Already")
+        url = reverse("close_run", args=[run.token])
+        self.client.post(url, count_post(row, 1))
+
+        html = self.client.get(url, {"mode": "count"}).content.decode()
+        self.assertIn("Still Waiting", html)
+        self.assertNotIn("Counted Already", html)
+
+    def test_the_drawer_says_how_many_are_behind_it(self):
+        """A row that is simply absent, with nothing saying so, reads as a
+        row the close never asked about."""
+        make_close_product("Counted Already", on_hand=0)
+        make_close_product("Still Waiting", on_hand=0)
+        run, _ = closing.run_for_today(employee=self.employee)
+        row = run.rows.get(finished_product__name="Counted Already")
+        url = reverse("close_run", args=[row.run.token])
+        self.client.post(url, count_post(row, 1))
+
+        html = self.client.get(url, {"mode": "count"}).content.decode()
+        self.assertIn("already answered", html)
+        self.assertIn("left to count", html)
+
+    def test_the_drawer_brings_them_back(self):
+        make_close_product("Counted Already", on_hand=0)
+        run, _ = closing.run_for_today(employee=self.employee)
+        row = run.rows.get()
+        url = reverse("close_run", args=[run.token])
+        self.client.post(url, count_post(row, 1))
+
+        html = self.client.get(
+            url, {"mode": "count", "answered": "1"}
+        ).content.decode()
+        self.assertIn("Counted Already", html)
+        self.assertIn(reverse("close_undo", args=[run.token, row.pk]), html)
+
+    def test_hiding_a_row_does_not_unanswer_it(self):
+        """The hidden row simply isn't in the POST, and an absent row is one
+        nobody answered — which is the same rule a half-worked close relies
+        on. It must not read as an answer of any kind."""
+        make_close_product("Counted Already", on_hand=0)
+        other = make_close_product("Still Waiting", on_hand=0)
+        run, _ = closing.run_for_today(employee=self.employee)
+        settled = run.rows.get(finished_product__name="Counted Already")
+        waiting = run.rows.get(finished_product=other)
+        url = reverse("close_run", args=[run.token])
+        self.client.post(url, count_post(settled, 1))
+
+        self.client.post(url, count_post(waiting, 2))
+
+        settled.refresh_from_db()
+        self.assertEqual(settled.counted, 1)
+        self.assertEqual(settled.outcome, CloseRunRow.MISSING)
+
+    def test_the_reveal_does_not_survive_a_submit(self):
+        """It evaporates, unlike the mode. A reveal that followed somebody
+        round would put the long list back without being asked for."""
+        make_close_product("Counted Already", on_hand=0)
+        make_close_product("Still Waiting", on_hand=0)
+        run, _ = closing.run_for_today(employee=self.employee)
+        waiting = run.rows.get(finished_product__name="Still Waiting")
+        url = reverse("close_run", args=[run.token])
+
+        response = self.client.post(
+            url + "?mode=count&answered=1", count_post(waiting, 1)
+        )
+
+        self.assertRedirects(response, url + "?mode=count")
+
+    def test_a_rejected_answer_is_never_the_thing_that_got_hidden(self):
+        """'more' tapped with no number, on a row opened from the drawer. A
+        form that came back with its error hidden reads as saved."""
+        # Counted at exactly what the app believed: answered, so it is in
+        # the drawer, but it moved no stock so it is still correctable — the
+        # bag-found-at-seven case, which is the reason to open the drawer at
+        # all.
+        make_close_product("Fumbled", on_hand=1, slots=2)
+        run, _ = closing.run_for_today(employee=self.employee)
+        row = run.rows.get()
+        url = reverse("close_run", args=[run.token])
+        self.client.post(url, count_post(row, 1))
+        self.assertEqual(run.rows.get().outcome, CloseRunRow.CONFIRMED)
+
+        response = self.client.post(url + "?mode=count&answered=1", {
+            f"counted_{row.pk}": "more",
+        })
+
+        self.assertEqual(response.status_code, 200)
+        html = response.content.decode()
+        self.assertIn("Fumbled", html)
+        self.assertIn("type how many there are altogether", html)
+
+    def test_a_finished_day_hides_nothing(self):
+        """All record, nothing answerable — there is no work left to focus
+        on, so there is nothing to put behind a drawer."""
+        make_close_product("Yesterdays Answer", on_hand=0)
+        run, _ = closing.run_for_today(employee=self.employee)
+        row = run.rows.get()
+        url = reverse("close_run", args=[run.token])
+        self.client.post(url, count_post(row, 3))
+        CloseRun.objects.filter(pk=run.pk).update(
+            day=timezone.localdate() - timedelta(days=1)
+        )
+
+        html = self.client.get(url, {"mode": "count"}).content.decode()
+        self.assertIn("Yesterdays Answer", html)
+
+
+class CloseTagSearchTests(TestCase):
+    """The unpredicted-tag search, swapped in rather than navigated to.
+
+    This was a plain form submit on purpose and the reason is worth keeping:
+    the close runs in a field on one bar, and a search that silently does
+    nothing is worse than one that visibly reloads. So the round trip stays
+    visible — an indicator while it runs, a sentence when it fails — and it
+    is still submit-only, never a request per keystroke.
+
+    What changed is the cost the original reasoning did not weigh: the box
+    sits under twenty-odd rows, and a full navigation throws the scroll
+    position away, so every search was paid for with a scrub back down the
+    page.
+    """
+
+    def setUp(self):
+        self.employee = Employee.objects.create(name="Closer", pin="1234")
+        self.product = make_close_product("Sought After", on_hand=9, slots=2)
+        self.run, _ = closing.run_for_today(employee=self.employee)
+
+    def test_the_fragment_needs_no_login(self):
+        """secret/ means unlisted, not gated — and the crew have no
+        accounts."""
+        response = self.client.get(
+            reverse("close_tag_search", args=[self.run.token]), {"q": "Sought"}
+        )
+        self.assertEqual(response.status_code, 200)
+
+    def test_it_returns_the_matches_as_add_buttons(self):
+        response = self.client.get(
+            reverse("close_tag_search", args=[self.run.token]), {"q": "Sought"}
+        )
+        html = response.content.decode()
+        self.assertIn("Sought After", html)
+        self.assertIn(reverse("close_add_tag", args=[self.run.token]), html)
+        self.assertIn(f'value="{self.product.pk}"', html)
+
+    def test_it_carries_this_run_and_no_other(self):
+        """The token scopes the fragment, so a swapped-in button cannot post
+        a tag onto somebody else's close."""
+        other = CloseRun.objects.create(day=timezone.localdate() - timedelta(days=3))
+
+        html = self.client.get(
+            reverse("close_tag_search", args=[self.run.token]), {"q": "Sought"}
+        ).content.decode()
+
+        self.assertNotIn(reverse("close_add_tag", args=[other.token]), html)
+
+    def test_an_empty_query_returns_nothing_rather_than_everything(self):
+        html = self.client.get(
+            reverse("close_tag_search", args=[self.run.token])
+        ).content.decode()
+        self.assertNotIn("Sought After", html)
+
+    def test_the_page_renders_the_same_partial_it_swaps_in(self):
+        """One copy of the markup. Two would drift, and the way that shows is
+        the swapped version quietly posting somewhere the inline one
+        doesn't."""
+        html = self.client.get(
+            reverse("close_run", args=[self.run.token]),
+            {"mode": "count", "q": "Sought"},
+        ).content.decode()
+
+        self.assertIn('id="tag-results"', html)
+        self.assertIn("Sought After", html)
+        self.assertIn(reverse("close_add_tag", args=[self.run.token]), html)
+
+    def test_the_form_still_works_without_htmx(self):
+        """Script blocked, and it is the ordinary GET it always was — landing
+        back on the counting list rather than the default reading."""
+        html = self.client.get(
+            reverse("close_run", args=[self.run.token]), {"mode": "count"}
+        ).content.decode()
+
+        self.assertIn('method="get"', html)
+        self.assertIn('name="mode" value="count"', html)
+        self.assertIn(
+            f'hx-get="{reverse("close_tag_search", args=[self.run.token])}"', html
+        )
+
+    def test_a_dropped_request_has_somewhere_to_say_so(self):
+        """The whole of what the page reload gave for free. A search that
+        didn't arrive must not read as a search that found nothing — on this
+        page that reads as 'the scarf isn't in the app'."""
+        html = self.client.get(
+            reverse("close_run", args=[self.run.token]), {"mode": "count"}
+        ).content.decode()
+
+        self.assertIn('id="tag-failed"', html)
+        self.assertIn("htmx:sendError", html)
+        self.assertIn("htmx:responseError", html)
 
 
 class CloseCardListTests(TestCase):

@@ -22,7 +22,26 @@
   .dismiss { margin-top: 10px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .dismiss input[type="text"] { width: 240px; }
   .note { font-size: 13px; color: #667; margin-top: 8px; }
+  /* A dismissed row, collapsed. One line: the queue gets worked a hundred at
+     a time, and a hundred full-height receipts would bury what's left. */
+  .row.struck {
+      display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap;
+      padding: 10px 16px; background: #f7f8fa; color: #667;
+  }
+  .row.struck .what { font-size: 14px; font-weight: 600; }
+  .row.struck .meta { font-size: 13px; }
 {% endblock %}
+
+{% block head %}
+  {% comment %}
+  Per-page, as the upload page does it — base_internal carries no htmx,
+  because most staff pages are forms and links and have no business paying
+  for a script they don't use.
+  {% endcomment %}
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+{% endblock %}
+
+{% block body_attrs %} hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'{% endblock %}
 
 {% block content %}
   <p class="lead">
@@ -35,11 +54,16 @@
     <a class="btn-quiet" href="?day={{ prev_day|date:'Y-m-d' }}">← {{ prev_day|date:"d M" }}</a>
     <h2>{{ day|date:"D d M Y" }}</h2>
     <a class="btn-quiet" href="?day={{ next_day|date:'Y-m-d' }}">{{ next_day|date:"d M" }} →</a>
-    <span class="stat">{{ open_total }} open in total</span>
+    {% comment %}
+    Swapped out-of-band by a dismissal. A header still reading "12 open in
+    total" over eleven rows is the page contradicting itself, and nothing on
+    screen would explain which number to believe.
+    {% endcomment %}
+    <span class="stat" id="open-total">{{ open_total }} open in total</span>
   </div>
 
   {% for row in rows %}
-    <div class="row">
+    <div class="row" id="sale-{{ row.sale.pk }}">
       <div class="sale">
         <span class="what">{{ row.sale.name|default:"(unnamed line)" }}</span>
         <span class="meta">
@@ -99,9 +123,27 @@
           </label>
         {% endif %}
 
+        {% comment %}
+        Dismissal swaps this row for a one-line strip instead of reloading
+        the page. The cost it removes is structural: a full navigation
+        rebuilds every *other* row on the day, and each of those carries a
+        `<select>` of the whole active catalogue whenever no barcode was
+        reported. On a hundred-line day that is the difference between
+        working at pace and waiting on each click.
+
+        Still an ordinary submit button underneath, so with the script
+        blocked it posts, redirects and behaves exactly as it did. Matching
+        stays a full navigation on purpose — it moves stock, and the message
+        saying what moved is worth a page.
+        {% endcomment %}
         <div class="dismiss">
           <input type="text" name="dismissed_reason" placeholder="not a scarf — what was it?">
-          <button class="btn-quiet" type="submit" name="dismiss" value="1">Dismiss</button>
+          <button class="btn-quiet" type="submit" name="dismiss" value="1"
+                  hx-post="{% url 'resolve_unmatched_sale' row.sale.pk %}"
+                  hx-include="closest form"
+                  hx-vals='{"dismiss": "1"}'
+                  hx-target="#sale-{{ row.sale.pk }}"
+                  hx-swap="outerHTML">Dismiss</button>
         </div>
       </form>
     </div>
@@ -109,24 +151,13 @@
     <p class="empty">Nothing unresolved on this day.</p>
   {% endfor %}
 
-  {% if orphans %}
-    <h2 class="card-title">Photos with no sale beside them</h2>
-    <p class="note">
-      Either the sale never reached Square, or it was rung up as a real product
-      after all — in which case the stock has already moved and there's nothing
-      to do here.
-    </p>
-    <div class="shots">
-      {% for report in orphans %}
-        <div class="shot">
-          {% if report.image %}<img src="{{ report.image.url }}" alt="">{% endif %}
-          <div class="meta">
-            {% if report.sku_prefix %}<span class="prefix">{{ report.sku_prefix }}-…</span><br>{% endif %}
-            {{ report.when|date:"H:i" }} · {{ report.employee.name }}
-            {% if report.note %}<br>{{ report.note }}{% endif %}
-          </div>
-        </div>
-      {% endfor %}
-    </div>
-  {% endif %}
+  {% comment %}
+  Always present, even when empty, because a dismissal swaps it out-of-band
+  and a target that only exists sometimes is one the swap silently misses.
+  Dismissing can *make* an orphan: the photo that was beside that sale now
+  has nothing to be beside.
+  {% endcomment %}
+  <div id="orphans">
+    {% include "scarves/partials/unmatched_orphans.html" %}
+  </div>
 {% endblock %}

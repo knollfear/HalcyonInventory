@@ -403,104 +403,147 @@ def raw_inventory_index(request):
 @page_meta(
     title="Raw Inventory (by category)",
     description="Raw products for a single category, highlighting items below "
-                "par so you know what to order. Adjust stock inline.",
+                "par so you know what to order. Book a delivery or a shelf "
+                "count for the whole category in one save.",
     category="Inventory",
     # Reached from the picker above, which is what the site map lists. A route
     # needing a category id can only ever be a dead card there.
     show_in_index=False,
 )
 @login_required
+@require_http_methods(["GET", "POST"])
 def raw_inventory_view(request, category_id):
-    """
-    Shows raw products for a single category and highlights which ones are below par.
-    Lets you see what needs to be ordered and adjust stock.
+    """One category's blanks: what is on the shelf, and what a delivery adds.
+
+    **This is where a bill gets entered**, and a bill is one document. The
+    page used to post a row at a time — three nudge buttons and a "set" box
+    per product, each its own form — so booking a delivery of nine lines was
+    nine round trips, nine page rebuilds and nine flash messages, with the
+    invoice in somebody's other hand the whole time. It is one form and one
+    Save now.
+
+    **Two columns, because there are two questions and they are not the same
+    one.** *Received* is a delta: the invoice says twelve arrived, and nobody
+    wants to add twelve to the current figure in their head first. *Counted*
+    is an absolute: the shelf was counted and holds nine, whatever the app
+    believed — the same shape every correction in this app takes, and the
+    reason it is here rather than being expressible as a delta is that an
+    absolute heals whatever went unrecorded before it.
+
+    Blank means untouched, which is what makes a bill of nine lines cheap on
+    a page of forty products. Counted wins if somebody fills in both, which
+    is the rule the single-row endpoint used and the right one: a count is a
+    measurement and a delivery note is a claim about a change.
+
+    **Nothing is applied unless every line reads.** A bill is one document,
+    and half of one booked in is worse than none — the missing half is
+    invisible afterwards. So an unreadable figure re-renders the page with
+    everything still typed and the bad line named, rather than applying what
+    parsed and reporting the rest.
+
+    No `InventoryLog` here, which is the same as before this change rather
+    than an omission introduced by it. Raw stock is an opening balance that
+    gets counted and topped up, not a ledger of movements; the finished side
+    is where provenance is tracked.
     """
     category = get_object_or_404(RawProductCategory, pk=category_id)
-
-    # Only this category, active products
-    products = (
-        RawProduct.objects.filter(
-            category=category,
-            is_active=True,
-        )
-        .order_by("name")
+    products = list(
+        RawProduct.objects.filter(category=category, is_active=True).order_by("name")
     )
 
-    # You might want all categories for navigation
-    all_categories = RawProductCategory.objects.all().order_by("name")
+    typed, errors = {}, {}
+    if request.method == "POST":
+        typed, errors = _read_raw_lines(request, products)
+        if not errors:
+            applied = _apply_raw_lines(typed)
+            if applied:
+                messages.success(
+                    request,
+                    f"Booked {len(applied)} line{'' if len(applied) == 1 else 's'}: "
+                    + ", ".join(applied)
+                    + ".",
+                )
+            else:
+                messages.info(request, "Nothing filled in, so nothing changed.")
+            return redirect("raw_inventory", category_id=category.pk)
+        messages.error(
+            request,
+            "Nothing was booked — a bill goes in whole or not at all. Fix the "
+            "line below and save again.",
+        )
 
-    context = {
+    return render(request, "scarves/raw_inventory.html", {
         "category": category,
         "products": products,
-        "all_categories": all_categories,
-        # The stock buttons on each row. Here rather than spelled out three
-        # times in the template, so changing the steps is a one-line edit.
-        "adjustments": [(-1, "-1"), (1, "+1"), (10, "+10")],
-    }
-    return render(request, "scarves/raw_inventory.html", context)
+        "all_categories": RawProductCategory.objects.all().order_by("name"),
+        "typed": typed,
+        "errors": errors,
+    })
 
-@require_POST
-@login_required
-def adjust_raw_stock(request, pk):
+
+def _read_raw_lines(request, products):
+    """What was typed, per product, and what didn't read.
+
+    Returns `(typed, errors)` both keyed by pk. `typed` comes back whether or
+    not it parsed, because it is what the page re-renders with — losing a
+    nine-line bill to one fat-fingered digit is the expensive failure here.
     """
-    Adjust number_on_hand for a raw product.
+    typed, errors = {}, {}
+    for product in products:
+        received = (request.POST.get(f"received_{product.pk}") or "").strip()
+        counted = (request.POST.get(f"counted_{product.pk}") or "").strip()
+        if not received and not counted:
+            continue
 
-    Two ways in, because they answer different questions. `delta` is a nudge
-    (+1, -1, +10) for when you know what just happened — a box arrived. `set_to`
-    is an absolute count for when you've just counted the shelf and know what is
-    there, which is the same thing the bulk inventory page does for finished
-    products. `set_to` wins if both are posted.
+        entry = {"product": product, "received": received, "counted": counted}
+        typed[product.pk] = entry
+
+        # Counted wins, so it is the one checked first — a bad delta beside a
+        # good count is not a reason to refuse the count.
+        if counted:
+            try:
+                value = int(counted)
+            except ValueError:
+                errors[product.pk] = f"“{counted}” isn't a count."
+                continue
+            if value < 0:
+                errors[product.pk] = "A count can't be negative."
+                continue
+            entry["set_to"] = value
+        else:
+            try:
+                # Signed on purpose: a return to the supplier is a delivery
+                # note with a minus in front of it, and it was reachable
+                # before through the row's -1 button.
+                entry["delta"] = int(received)
+            except ValueError:
+                errors[product.pk] = f"“{received}” isn't a number received."
+    return typed, errors
+
+
+def _apply_raw_lines(typed):
+    """Write the lines that changed something. Returns a sentence each.
+
+    `save()` rather than a queryset `update()`, because a `post_save` signal
+    on `RawProduct` is what mirrors the count onto a passthrough's finished
+    row — and a passthrough is one pile with one row allowed to count it.
+    An `update()` here would leave the two disagreeing silently, in the
+    direction that decides when to reorder.
     """
-    raw_product = get_object_or_404(RawProduct, pk=pk, is_active=True)
-
-    next_url = request.POST.get("next") or request.META.get("HTTP_REFERER") or "/"
-
-    old_on_hand = raw_product.number_on_hand
-    raw_set_to = (request.POST.get("set_to") or "").strip()
-
-    if raw_set_to:
-        try:
-            new_on_hand = int(raw_set_to)
-            if new_on_hand < 0:
-                raise ValueError
-        except ValueError:
-            messages.error(
-                request,
-                f"'{raw_set_to}' isn't a count, so '{raw_product.name}' was left alone.",
-            )
-            return redirect(next_url)
-        delta = new_on_hand - old_on_hand
-    else:
-        try:
-            delta = int(request.POST.get("delta", "0"))
-        except ValueError:
-            delta = 0
-        new_on_hand = max(old_on_hand + delta, 0)
-
-    if delta == 0:
-        messages.info(request, f"No change applied to '{raw_product.name}'.")
-        return redirect(next_url)
-
-    raw_product.number_on_hand = new_on_hand
-    raw_product.save()
-
-    if raw_set_to:
-        action = f"Counted {new_on_hand} units"
-    elif delta > 0:
-        action = f"Received {delta} units"
-    else:
-        action = f"Removed {abs(delta)} units"
-
-    messages.success(
-        request,
-        (
-            f"{action} of '{raw_product.name}' in category '{raw_product.category.name}'. "
-            f"Now {new_on_hand} on hand (par {raw_product.par_level})."
-        ),
-    )
-
-    return redirect(next_url)
-
+    applied = []
+    for entry in typed.values():
+        product = entry["product"]
+        before = product.number_on_hand
+        if "set_to" in entry:
+            after = entry["set_to"]
+        else:
+            after = max(before + entry["delta"], 0)
+        if after == before:
+            continue
+        product.number_on_hand = after
+        product.save()
+        applied.append(f"{product.name} {before}→{after}")
+    return applied
 
 
 @require_POST
@@ -4530,7 +4573,7 @@ def _review_day(request):
     return timezone.localtime(oldest.sold_at).date() if oldest else timezone.localdate()
 
 
-def _resolution_options(reports):
+def _resolution_options(reports, cache=None):
     """Products a sale could plausibly be, given the photos near it.
 
     The reported prefix is the blank, not the colorway — six characters off a
@@ -4538,17 +4581,69 @@ def _resolution_options(reports):
     nobody can read a colorway off a scarf they couldn't name, but the style
     turns a few hundred products into a few dozen. With no prefix reported the
     honest answer is the whole active catalogue rather than a guess.
+
+    **The answer is keyed on the prefixes and nothing else**, so `cache` is a
+    dict the caller keeps for one request. That matters more than it sounds:
+    the common row has no photo beside it and therefore no prefix, so every
+    such row asks the identical question — *the whole active catalogue* — and
+    a day with ten of them was running ten copies of the biggest query on the
+    page. Rows genuinely differ only when the photos differ.
     """
-    prefixes = {r.sku_prefix for r in reports if r.sku_prefix}
+    prefixes = frozenset(r.sku_prefix for r in reports if r.sku_prefix)
+    if cache is not None and prefixes in cache:
+        return cache[prefixes]
+
     products = FinishedProduct.objects.filter(is_active=True)
     if prefixes:
         narrowed = Q()
         for prefix in prefixes:
             narrowed |= Q(sku__istartswith=prefix)
         products = products.filter(narrowed)
-    return list(
-        products.select_related("raw_product", "recipe").order_by("name")
-    ), bool(prefixes)
+    answer = (
+        list(products.select_related("raw_product", "recipe").order_by("name")),
+        bool(prefixes),
+    )
+    if cache is not None:
+        cache[prefixes] = answer
+    return answer
+
+
+def _open_unmatched_total():
+    """Everything still in the queue, any day. One count, shared by the page
+    and by the fragment a dismissal swaps in — a header that kept saying 12
+    over a list of 11 is the page contradicting itself."""
+    return UnmatchedSale.objects.filter(
+        resolved_at__isnull=True, dismissed_at__isnull=True
+    ).count()
+
+
+def _orphan_reports(day, sales=None, reports=None):
+    """Photos with no open sale beside them, on `day`.
+
+    Kept on the page rather than filtered out: a report with nothing to match
+    is the interesting case — either the sale never reached Square, or it was
+    rung up as a product after all and the scarf on the photo is still
+    counted as in stock.
+
+    One definition, used by the page and again after a dismissal, because
+    dismissing a sale can *make* an orphan: the photo that was sitting beside
+    it now has nothing to be beside.
+    """
+    if sales is None:
+        sales = list(_open_sales_on(day))
+    if reports is None:
+        reports = list(_unused_reports())
+    paired = {
+        report.pk
+        for sale in sales
+        for report in reports
+        if abs(report.when - sale.sold_at) <= UNMATCHED_WINDOW
+    }
+    return [
+        report for report in reports
+        if report.pk not in paired
+        and timezone.localtime(report.when).date() == day
+    ]
 
 
 @page_meta(
@@ -4565,15 +4660,16 @@ def unmatched_sales(request):
     sales = list(_open_sales_on(day))
     reports = list(_unused_reports())
 
+    # One cache for the request. Most rows have no photo and so ask the same
+    # question, and that question is the whole catalogue.
+    options_cache = {}
     rows = []
-    paired = set()
     for sale in sales:
         near = [
             report for report in reports
             if abs(report.when - sale.sold_at) <= UNMATCHED_WINDOW
         ]
-        paired.update(report.pk for report in near)
-        options, narrowed = _resolution_options(near)
+        options, narrowed = _resolution_options(near, options_cache)
         rows.append({
             "sale": sale,
             "reports": near,
@@ -4581,25 +4677,11 @@ def unmatched_sales(request):
             "narrowed": narrowed,
         })
 
-    # Photos with no sale beside them. Kept on the page rather than filtered
-    # out: a report with nothing to match is the interesting case — either the
-    # sale never reached Square, or it was rung up as a product after all and
-    # the scarf on the photo is still counted as in stock.
-    orphans = [
-        report for report in reports
-        if report.pk not in paired
-        and timezone.localtime(report.when).date() == day
-    ]
-
-    open_total = UnmatchedSale.objects.filter(
-        resolved_at__isnull=True, dismissed_at__isnull=True
-    ).count()
-
     return render(request, "scarves/unmatched_sales.html", {
         "day": day,
         "rows": rows,
-        "orphans": orphans,
-        "open_total": open_total,
+        "orphans": _orphan_reports(day, sales, reports),
+        "open_total": _open_unmatched_total(),
         "window_minutes": int(UNMATCHED_WINDOW.total_seconds() // 60),
         "prev_day": day - timedelta(days=1),
         "next_day": day + timedelta(days=1),
@@ -4623,6 +4705,11 @@ def resolve_unmatched_sale(request, pk):
     redirect_to = reverse("unmatched_sales") + (f"?day={day}" if day else "")
 
     if not sale.is_open:
+        # A double-tap at pace, or a stale tab. Says where things stand
+        # rather than erroring — the page is already in the state they were
+        # asking for.
+        if _is_htmx(request) and sale.dismissed_at:
+            return _dismissed_row(request, sale)
         messages.info(request, "That sale was already dealt with.")
         return redirect(redirect_to)
 
@@ -4630,6 +4717,12 @@ def resolve_unmatched_sale(request, pk):
         sale.dismissed_at = timezone.now()
         sale.dismissed_reason = (request.POST.get("dismissed_reason") or "").strip()[:200]
         sale.save(update_fields=["dismissed_at", "dismissed_reason"])
+        if _is_htmx(request):
+            # No `messages` on this path: it would sit in the session and
+            # surface on some later full page load, describing a row the
+            # reader dealt with twenty dismissals ago. The strip that
+            # replaces the row is the receipt.
+            return _dismissed_row(request, sale)
         messages.success(request, f"Dismissed “{sale.name or 'that line'}” — not a scarf.")
         return redirect(redirect_to)
 
@@ -4682,6 +4775,38 @@ def resolve_unmatched_sale(request, pk):
         f"a sale on {timezone.localtime(sale.sold_at):%d %b %Y, %H:%M}.",
     )
     return redirect(redirect_to)
+
+
+def _is_htmx(request):
+    """Whether this came from a swap rather than a navigation."""
+    return request.headers.get("HX-Request") == "true"
+
+
+def _dismissed_row(request, sale):
+    """The one-line strip a dismissed row collapses to, plus what it changed.
+
+    The queue gets worked a hundred lines at a time, and what made that slow
+    was structural rather than incidental: every dismissal was a full
+    navigation that rebuilt every *other* row on the day, each carrying a
+    `<select>` of the whole active catalogue. Swapping one row for one line
+    replaces all of that with a few hundred bytes.
+
+    The day comes off the form rather than the query string, and falls back
+    to the sale's own day: an absent or unreadable value would otherwise
+    rebuild the wrong day's orphan list, and the only symptom is a photo
+    appearing or vanishing on a page nobody is looking at.
+    """
+    raw = (request.POST.get("day") or "").strip()
+    try:
+        day = date.fromisoformat(raw)
+    except ValueError:
+        day = timezone.localtime(sale.sold_at).date()
+    return render(request, "scarves/partials/unmatched_dismissed.html", {
+        "sale": sale,
+        "day": day,
+        "open_total": _open_unmatched_total(),
+        "orphans": _orphan_reports(day),
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -5337,8 +5462,12 @@ def close_run(request, token):
             # Re-rendered rather than redirected, or the numbers already
             # typed are lost along with the message saying which one was
             # rejected.
+            # Everything revealed: the rejected row may be one somebody
+            # opened the drawer to correct, and a form that comes back with
+            # its error hidden is a form that reads as saved.
             return _close_run_page(
-                request, run, count_form=count_form, mode=_COUNT
+                request, run, count_form=count_form, mode=_COUNT,
+                show_answered=True,
             )
 
         counts = count_form.counts()
@@ -5434,7 +5563,7 @@ def _close_mode(request, run, rows):
     return _COUNT
 
 
-def _close_run_page(request, run, count_form=None, mode=None):
+def _close_run_page(request, run, count_form=None, mode=None, show_answered=None):
     """Render one close, in one of its two readings."""
     rows = list(
         run.rows.select_related(
@@ -5448,16 +5577,42 @@ def _close_run_page(request, run, count_form=None, mode=None):
     # stock and a bag found under the table at seven has to be able to
     # correct what was answered at four.
     open_rows = [r for r in rows if not closing.is_frozen(run, r)]
+    applied_rows = [r for r in rows if r.is_applied]
+    confirmed_rows = [r for r in rows if r.outcome == CloseRunRow.CONFIRMED]
+
+    # **Answered rows come off the counting list.** What somebody is looking
+    # for on this page is the next thing they have not checked, and on a list
+    # twenty-three long a settled row between two unsettled ones is a row
+    # that has to be read to be skipped. So the list shows what is left and
+    # says how much is behind the button.
+    #
+    # A reveal rather than a mode: unlike `?mode=`, nothing carries
+    # `?answered=1` onward, so it evaporates the moment somebody submits or
+    # follows a link — same inversion as the restock board's `?bare=1`. The
+    # focused list is what the page is for, and having to re-open the drawer
+    # is cheaper than a stale reveal quietly putting the long list back.
+    #
+    # A finished day is all record and nothing is answerable on it, so there
+    # is nothing to hide behind: everything shows.
+    if show_answered is None:
+        show_answered = (
+            not run.is_open or request.GET.get("answered") == "1"
+        )
+    pending_rows = [r for r in open_rows if r.outcome == CloseRunRow.PENDING]
+    form_rows = open_rows if show_answered else pending_rows
 
     if count_form is None:
-        count_form = build_close_count_form_class(open_rows)(
-            initial=_count_initial(open_rows)
+        count_form = build_close_count_form_class(form_rows)(
+            initial=_count_initial(form_rows)
         )
 
     # The unexpected-tag search is a plain GET rather than a type-ahead. It
     # is the one place on this page that needs the network, and the network
     # is a field on one bar — a search box that silently does nothing when a
     # request is dropped is worse than one that visibly reloads.
+    # Only meaningful without htmx, which swaps the results in and leaves the
+    # address bar alone. The plain GET still puts the query here, so the
+    # no-script path is unchanged and a search is still a link.
     query = (request.GET.get("q") or "").strip()
 
     # Read live, off the same rows, after everything this close has applied.
@@ -5477,19 +5632,26 @@ def _close_run_page(request, run, count_form=None, mode=None):
         "cards": cards,
         "no_cards": no_cards,
         "uncounted": uncounted,
+        "show_answered": show_answered,
+        "answered_count": len(applied_rows) + len(confirmed_rows),
+        "pending_count": len(pending_rows),
+        # The drawer, both ways, with the mode still on them.
+        "show_answered_url": _close_run_url(run, _COUNT) + "&answered=1",
+        "hide_answered_url": _close_run_url(run, _COUNT),
+        "tag_search_url": reverse("close_tag_search", args=[run.token]),
         "query": query,
         "results": search_products(query) if query else None,
         "tally": closing.tally(run),
         "rows": rows,
-        "applied_rows": [r for r in rows if r.is_applied],
-        "confirmed_rows": [r for r in rows if r.outcome == CloseRunRow.CONFIRMED],
+        "applied_rows": applied_rows,
+        "confirmed_rows": confirmed_rows,
         "count_fields": [
             {
                 "row": row,
                 "field": count_form[f"counted_{row.pk}"],
                 "more": count_form[f"more_{row.pk}"],
             }
-            for row in open_rows
+            for row in form_rows
             if f"counted_{row.pk}" in count_form.fields
         ],
         "count_form": count_form,
@@ -5518,6 +5680,40 @@ def _count_initial(rows):
             initial[f"counted_{row.pk}"] = "more"
             initial[f"more_{row.pk}"] = row.counted
     return initial
+
+
+def close_tag_search(request, token):
+    """The unpredicted-tag search, as a fragment rather than a page load.
+
+    This was a plain form submit on purpose, and the reason it changed is
+    worth recording rather than quietly reversing. The original argument was
+    that the close runs in a field on one bar of signal, and a search box
+    that silently does nothing when a request is dropped is worse than one
+    that visibly reloads. That is still true — so the failure is *shown*
+    (see the handlers on the page) rather than the round trip being avoided.
+
+    What the argument missed is what the reload costs on the page it is on.
+    The search sits below a list of twenty-odd rows, and a full navigation
+    throws away the scroll position, so finding the box again is a scrub down
+    the page every single time. That is paid on every search; the dropped
+    request is paid rarely and is now visible when it happens.
+
+    Still **submit only, never a type-ahead.** One request when somebody has
+    finished typing, not one per keystroke on a phone that has one bar — and
+    the original objection applies with full force to a request nobody asked
+    for.
+
+    The page renders the same partial inline, so the first paint and every
+    swap are the same markup. Without htmx the form is an ordinary GET to the
+    page itself and works exactly as it did.
+    """
+    run = get_object_or_404(CloseRun, token=token)
+    query = (request.GET.get("q") or "").strip()
+    return render(request, "scarves/partials/close_tag_results.html", {
+        "run": run,
+        "query": query,
+        "results": search_products(query) if query else None,
+    })
 
 
 @require_POST

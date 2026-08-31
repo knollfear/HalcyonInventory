@@ -1,0 +1,13 @@
+{% comment %}
+The two things on the page that a dismissal changes but that don't live in
+the row it swapped. Sent out-of-band so the page can't sit there contradicting
+itself — a header still reading "12 open in total" over eleven rows is the
+kind of wrong nothing on screen would explain.
+
+The orphan list is here because dismissing a sale can *make* one: the photo
+that was sitting beside it now has nothing to be beside.
+{% endcomment %}
+<span class="stat" id="open-total" hx-swap-oob="true">{{ open_total }} open in total</span>
+<div id="orphans" hx-swap-oob="true">
+  {% include "scarves/partials/unmatched_orphans.html" %}
+</div>

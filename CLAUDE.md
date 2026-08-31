@@ -163,7 +163,7 @@ def my_view(request):
 ```
 
 Do **not** add `@page_meta` to:
-- POST-only / action endpoints (e.g. `record_dye_bath`, `adjust_raw_stock`)
+- POST-only / action endpoints (e.g. `record_dye_bath`, `color_bands_save`)
 - HTMX fragment endpoints
 - webhooks (e.g. `square_webhook`)
 
@@ -197,7 +197,7 @@ This is enforced, not just documented — `PickerPageConventionTests` walks the
 URLconf and fails if any `@page_meta` view takes URL params without a picker at
 its parent path. `SiteMapTests` separately asserts no card is unclickable. The
 rule only applies to pages: POST-only actions (`record_dye_bath`,
-`adjust_raw_stock`) and HTMX fragments take params freely, because they carry no
+`color_bands_save`) and HTMX fragments take params freely, because they carry no
 `@page_meta` and were never listed.
 
 **Watch the decorator order when adding helpers near a view.** Defining a
@@ -459,6 +459,47 @@ its rows cascade away, but the `InventoryLog` rows they created are separate
 objects and stay. Those baths were really dyed. What goes is the trail from
 the sheet to the movement — which is fine, because the run was scaffolding
 and the log is the record.
+
+## Raw inventory: one save, because what goes in is a bill
+
+`private/raw-inventory/<category>/` is the reorder workflow — **you order
+these, you don't make them** — and the thing typed into it is a supplier's
+invoice. So it is **one form with one Save**, not a submit per row. It used to
+be the latter: three nudge buttons and a "set" box per product, each its own
+`<form>`, which made a nine-line delivery nine round trips and nine page
+rebuilds with the paper in somebody's other hand.
+
+**Two columns, because there are two questions and they are not the same one.**
+
+- **Received** is a delta. The note says twelve arrived, and nobody should
+  have to add twelve to the current figure in their head first. Signed, so a
+  return to the supplier is a delivery note with a minus in front of it —
+  which is what the old row's `-1` button was for.
+- **Counted** is an absolute: the shelf holds nine, whatever the app believed.
+  That is the shape every correction in this app takes, because an absolute
+  heals whatever went unrecorded before it while a delta only works if
+  everything before it was right.
+
+Blank means untouched, which is what makes a nine-line bill cheap on a page of
+forty products. **Counted wins if both are filled in** — a count is a
+measurement, a delivery note is a claim about a change.
+
+**Nothing is applied unless every line reads.** A bill is one document, and
+half of one booked in is worse than none because the missing half is invisible
+afterwards. An unreadable figure re-renders the page with everything still
+typed and names the offending line under its own row — losing nine lines to
+one fat-fingered digit is the expensive failure here, and "a line didn't read"
+without saying which one is a hunt across forty products.
+
+Rows are written with `save()`, never a queryset `update()`, because the
+`post_save` on `RawProduct` is what mirrors the count onto a passthrough's
+finished row — one physical pile, one row allowed to count it, and an
+`update()` would leave the two disagreeing silently in the direction that
+decides when to reorder.
+
+No `InventoryLog` is written here, which is unchanged rather than an omission
+introduced with the form. Raw stock is an opening balance that gets counted
+and topped up; the finished side is where provenance is tracked.
 
 ## Inventory log dates: print `log.when`, never `log.created_at`
 
@@ -1276,6 +1317,51 @@ outcome records is the **direction** — the app was under, the
 stock-arrived-unrecorded end of the pipeline — and the direction is what is
 being counted.
 
+### The counting list: what's left, and the search
+
+**Answered rows come off the counting list.** What somebody is looking for
+here is the next thing they have *not* checked, and on a list twenty-three
+long a settled row between two unsettled ones has to be read in order to be
+skipped — a cost paid on every pass down the pile, and the pile is worked in
+several passes across an evening. So the list shows what is left, says how
+many are behind it, and `?answered=1` opens the drawer. Undo is in there, so
+the link says so: a fix nobody can find is a fix that gets left unmentioned,
+which is what the undo button exists to prevent.
+
+A **reveal, not a mode** — nothing carries `?answered=1` onward, so it
+evaporates on the next submit or link, the same inversion `?bare=1` makes on
+the restock board. Two exceptions, both because there is nothing to focus on:
+a finished day is all record, and **a rejected answer always reveals
+everything**, because a form that comes back with its error hidden reads as
+one that saved.
+
+Hiding is safe because an absent field is already how a half-worked close
+works: `counts()` records only the rows somebody answered, so a row that
+isn't in the POST is one nobody touched — never an answer of any kind.
+
+**The tag search is an htmx submit, and the reasoning that made it a page
+load is only half-wrong.** The recorded argument was that this runs in a
+field on one bar, and a search box that silently does nothing when a request
+is dropped is worse than one that visibly reloads. That half stands, and is
+kept: an indicator while the request is out, and a sentence naming a dropped
+request — because a search that didn't arrive otherwise looks exactly like a
+search that found nothing, which on this page reads as *the scarf isn't in
+the app* and sends somebody off to solve the wrong problem.
+
+What the argument never weighed is what the reload costs on the page it is
+on. The box sits under twenty-odd rows, and a full navigation throws away the
+scroll position, so every search was paid for with a scrub back down the
+page. That is paid every time; a dropped request is rare and is now visible.
+
+Still **submit-only, never a type-ahead** — the original objection applies
+with full force to a request nobody asked for. Adding a tag stays a full
+POST and navigation, because it changes the list above and a page that came
+back looking unchanged is how the same tag gets added three times. Without
+htmx the form is the ordinary GET it always was, `q` lands in the URL, and
+the page renders `partials/close_tag_results.html` inline — the same partial
+the fragment returns, so the two cannot drift into the swapped copy posting
+somewhere the inline one doesn't.
+
 ### Two readings: counting, then the cards
 
 The question a close *ends* on is not the one it is worked on, and `?mode=`
@@ -1378,8 +1464,9 @@ admin is read-only, and why nothing deletes.
 
 The close runs at a field on one bar of signal. A step that needs the network
 is a step that sometimes doesn't happen — the same reasoning that keeps the
-booth form's toggle in CSS, and why the unexpected-tag search is a plain form
-submit rather than a type-ahead.
+booth form's toggle in CSS, and why the unexpected-tag search is submit-only
+and never a type-ahead (see *The counting list* below for what that search
+does do, and why it stopped being a page load).
 
 Reconciling against Square's own counts is a desk job for afterwards, and
 doing it *first* would be worse than not doing it at all: `_push_inventory`
@@ -1722,6 +1809,38 @@ Related, and fixed while the loop was being closed: the webhook now skips a
 line it has already logged for that order. Square sends `order.updated` more
 than once and `COMPLETED` is not a one-shot state, so a redelivery used to
 decrement the same sale again.
+
+**The queue is worked at pace — a hundred lines, read and clicked — and two
+costs were in the way.** Both were structural rather than incidental, which
+is why they are worth writing down.
+
+The page asked the **same catalogue-sized question once per row**. With no
+photo beside a sale there is no reported barcode, so the honest answer is the
+whole active catalogue — and that is the *common* row, so every one of them
+asked the identical question and got a separate query. `_resolution_options`
+now takes a per-request cache keyed on the reported prefixes and nothing
+else, so rows that genuinely differ still narrow and the rest share one
+answer.
+
+**Dismissal is an htmx swap**, replacing the row with a one-line strip. The
+cost it removes is the same one again: a full navigation rebuilt every
+*other* row on the day, each carrying that `<select>`. The row still collapses
+to something rather than vanishing — a row that disappeared is
+indistinguishable from a click that never arrived, and at pace that is the
+mistake somebody makes twice. Two things ride out-of-band with it, because a
+header still reading "12 open in total" over eleven rows is the page
+contradicting itself: the count, and the orphan-photo list, since dismissing
+a sale can *make* an orphan out of the photo that was beside it.
+
+**No undo on the strip**, unlike the Sunday close's. The difference is who is
+holding the phone: the close has no login and its users have no accounts, so
+a fix they cannot make is a movement that goes unmentioned. This page is
+staff, at a desk, already signed in — and dismissal destroys nothing, it sets
+a timestamp the admin clears. **Matching stays a full navigation**, because it
+moves stock and the sentence saying what moved is worth a page.
+
+The button is an ordinary submit underneath, so with the script blocked the
+page posts and redirects exactly as it did.
 
 **The queue is set to no notification.** Jiminy offers three settings per
 thing — none, a digest, or told when it happens — and this one is none. That

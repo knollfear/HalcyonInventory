@@ -1,0 +1,24 @@
+{% comment %}
+What a dismissed row collapses to. One line, because the queue is worked a
+hundred lines at a time — click and read at pace — and a hundred full-height
+receipts would bury the rows still to do. The rows below move *up* as each
+one collapses, so reading order survives.
+
+Not nothing, though. A row that simply vanished is indistinguishable from a
+click that never arrived, and at pace that is exactly the mistake somebody
+makes twice.
+
+No undo here on purpose: dismissal is a timestamp and a reason, nothing is
+destroyed, and the admin clears it. This differs from the Sunday close's undo
+button because of who is holding the phone — that page has no login and its
+users have no accounts, so a fix they cannot make is a fix that goes
+unmentioned. This one is staff, at a desk, already signed in.
+{% endcomment %}
+<div class="row struck" id="sale-{{ sale.pk }}">
+  <span class="what">Dismissed — {{ sale.name|default:"that line" }}</span>
+  <span class="meta">
+    {{ sale.dismissed_reason|default:"not a scarf" }} ·
+    {{ sale.sold_at|date:"H:i" }}
+  </span>
+</div>
+{% include "scarves/partials/unmatched_oob.html" %}

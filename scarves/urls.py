@@ -54,11 +54,9 @@ urlpatterns = [
         views.raw_inventory_view,
         name="raw_inventory",
     ),
-    path(
-        "private/raw-inventory/adjust/<int:pk>/",
-        views.adjust_raw_stock,
-        name="adjust_raw_stock",
-    ),
+    # No per-row adjust endpoint any more: the page is one form with one
+    # Save, because what gets typed into it is a supplier's bill and a bill
+    # is one document. `raw_inventory` itself takes the POST.
     path(
         "private/bulk-inventory/",
         views.bulk_inventory_update,
@@ -226,6 +224,14 @@ urlpatterns = [
     # the steps after it. The history is a desk page and staff-only.
     path("secret/close/", views.close_index, name="close_index"),
     path("secret/close/<str:token>/", views.close_run, name="close_run"),
+    # The tag search, as an htmx fragment. No @page_meta: it returns a list
+    # of buttons, not a page, so it stays off the site map by having no
+    # metadata rather than by being hidden from it.
+    path(
+        "secret/close/<str:token>/search/",
+        views.close_tag_search,
+        name="close_tag_search",
+    ),
     path(
         "secret/close/<str:token>/tag/",
         views.close_add_tag,

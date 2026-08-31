@@ -1,0 +1,26 @@
+{% comment %}
+Matches for a tag the close didn't predict, as buttons that add one.
+
+Rendered inline on the close page for the first paint and swapped in by htmx
+for every search after it, so there is one copy of this markup rather than
+two that drift — and the way that drift shows is the swapped version quietly
+posting somewhere the inline one doesn't.
+
+A button rather than a link because adding a tag is a POST that changes the
+list. That half stays a full navigation on purpose: the row has to appear in
+the counting list above, and a page that came back looking unchanged is how
+somebody adds the same tag three times.
+{% endcomment %}
+{% if results is not None %}
+  <form method="post" action="{% url 'close_add_tag' run.token %}">
+    {% csrf_token %}
+    {% for p in results %}
+      <button class="result" type="submit" name="product_id" value="{{ p.id }}">
+        {{ p.name }}
+        <span class="muted">{{ p.sku }} — app says {{ p.number_on_hand }} on hand</span>
+      </button>
+    {% empty %}
+      <p class="lead">Nothing matches “{{ query }}”.</p>
+    {% endfor %}
+  </form>
+{% endif %}
