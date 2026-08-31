@@ -30,6 +30,9 @@
   }
   .row.struck .what { font-size: 14px; font-weight: 600; }
   .row.struck .meta { font-size: 13px; }
+  /* Visibly the heavier of the two, because it is: one click for the row, or
+     one click for every row like it on this day. */
+  .btn-quiet.danger { border-color: #d8b4b0; color: #8a2f2a; }
 {% endblock %}
 
 {% block head %}
@@ -144,6 +147,34 @@
                   hx-vals='{"dismiss": "1"}'
                   hx-target="#sale-{{ row.sale.pk }}"
                   hx-swap="outerHTML">Dismiss</button>
+
+          {% comment %}
+          Offered only when this line stands for more than itself — "dismiss
+          all 1 like this" is the button to its left wearing a longer label.
+
+          **The count is on the button and everything it covers is on this
+          page**, so the claim can be checked by looking rather than trusted.
+          The label names which key it matched on, because the two are
+          different claims about different populations: a Square item id
+          means Square has a catalog object this app doesn't know, which is
+          the group most likely to be real scarves, while a bare name with no
+          id is a hand-keyed custom amount and is the group that genuinely
+          never was one.
+          {% endcomment %}
+          {% if row.like_count > 1 %}
+            <button class="btn-quiet danger" type="submit" name="dismiss_all" value="1"
+                    hx-post="{% url 'resolve_unmatched_sale' row.sale.pk %}"
+                    hx-include="closest form"
+                    hx-vals='{"dismiss_all": "1"}'
+                    hx-target="#sale-{{ row.sale.pk }}"
+                    hx-swap="outerHTML">
+              {% if row.like_kind == "item" %}
+                Dismiss all {{ row.like_count }} with this Square item
+              {% else %}
+                Dismiss all {{ row.like_count }} named “{{ row.sale.name }}”
+              {% endif %}
+            </button>
+          {% endif %}
         </div>
       </form>
     </div>

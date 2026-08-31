@@ -1,0 +1,13 @@
+{% comment %}
+One dismissed line, collapsed. `oob` marks the ones a "dismiss all like this"
+took that the click didn't target — htmx swaps the clicked row directly and
+finds the rest by id, so every row the button claimed leaves the page in the
+one response. A row left behind would read as one the button missed.
+{% endcomment %}
+<div class="row struck" id="sale-{{ sale.pk }}"{% if oob %} hx-swap-oob="true"{% endif %}>
+  <span class="what">Dismissed — {{ sale.name|default:"that line" }}</span>
+  <span class="meta">
+    {{ sale.dismissed_reason|default:"not a scarf" }} ·
+    {{ sale.sold_at|date:"H:i" }}
+  </span>
+</div>

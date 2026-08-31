@@ -1,5 +1,6 @@
 import base64
 import colorsys
+from collections import Counter
 from urllib.parse import urlencode
 import hashlib
 import hmac
@@ -4608,6 +4609,75 @@ def _resolution_options(reports, cache=None):
     return answer
 
 
+def _like_key(sale):
+    """What "another one like this" means for this line, or `None`.
+
+    Two keys, and they are not two precisions of one idea — they apply to
+    different populations, which is the thing to keep hold of:
+
+    * **A Square variation id** means Square has a catalog object this app
+      doesn't know. That is the unsynced-variation case, and it is the one
+      *most* likely to be a real scarf. Precise, and precisely the group where
+      dismissing in bulk is expensive: it writes the sales off and the count
+      stays wrong with nothing saying so, which is the silence this queue
+      exists to break.
+    * **A name, with no variation id at all**, is a custom amount somebody
+      hand-keyed. Looser key — and the population where a bulk dismissal is
+      genuinely safe, because these really are the tips, bags and hats.
+
+    So a name match is scoped to lines that have no variation id. Without
+    that, dismissing every `Custom Amount` would sweep up a row that *does*
+    carry a Square item — the dangerous group, taken by the safe group's
+    button, with nothing on screen saying so.
+
+    A line with neither gets no key and no button, because "all like this"
+    would mean "all the nameless ones", which is a grab bag rather than a
+    group.
+    """
+    if sale.square_variation_id:
+        return ("item", sale.square_variation_id)
+    if sale.name:
+        return ("name", sale.name)
+    return None
+
+
+def _like_this_on_day(sale, day):
+    """The open lines on `day` that this one stands for, including itself.
+
+    Day-scoped deliberately. Everything the button claims is on the screen
+    it was clicked from, so the count beside it can be checked by looking
+    rather than trusted.
+    """
+    key = _like_key(sale)
+    if key is None:
+        return [sale]
+
+    kind, value = key
+    group = _open_sales_on(day)
+    if kind == "item":
+        group = group.filter(square_variation_id=value)
+    else:
+        group = group.filter(name=value, square_variation_id="")
+    return list(group)
+
+
+def _dismiss(sales, reason):
+    """Mark every one of them dismissed, in one write.
+
+    Nothing is destroyed — dismissal is a timestamp and a sentence, and the
+    admin clears both. That is what makes a button covering forty-seven rows
+    an acceptable thing to offer at all.
+    """
+    now = timezone.now()
+    UnmatchedSale.objects.filter(pk__in=[s.pk for s in sales]).update(
+        dismissed_at=now, dismissed_reason=reason
+    )
+    for sale in sales:
+        sale.dismissed_at = now
+        sale.dismissed_reason = reason
+    return sales
+
+
 def _open_unmatched_total():
     """Everything still in the queue, any day. One count, shared by the page
     and by the fragment a dismissal swaps in — a header that kept saying 12
@@ -4663,6 +4733,12 @@ def unmatched_sales(request):
     # One cache for the request. Most rows have no photo and so ask the same
     # question, and that question is the whole catalogue.
     options_cache = {}
+    # How many lines each row stands for, counted off the list already in
+    # memory rather than a query per row — which is the mistake this page had
+    # and the reason `options_cache` exists two lines up.
+    like_counts = Counter(
+        key for key in (_like_key(sale) for sale in sales) if key is not None
+    )
     rows = []
     for sale in sales:
         near = [
@@ -4670,11 +4746,17 @@ def unmatched_sales(request):
             if abs(report.when - sale.sold_at) <= UNMATCHED_WINDOW
         ]
         options, narrowed = _resolution_options(near, options_cache)
+        key = _like_key(sale)
         rows.append({
             "sale": sale,
             "reports": near,
             "options": options,
             "narrowed": narrowed,
+            # Offered only when it stands for more than itself: a button
+            # reading "dismiss all 1 like this" is the button beside it,
+            # wearing a longer label.
+            "like_count": like_counts.get(key, 0) if key else 0,
+            "like_kind": key[0] if key else "",
         })
 
     return render(request, "scarves/unmatched_sales.html", {
@@ -4709,21 +4791,40 @@ def resolve_unmatched_sale(request, pk):
         # rather than erroring — the page is already in the state they were
         # asking for.
         if _is_htmx(request) and sale.dismissed_at:
-            return _dismissed_row(request, sale)
+            return _dismissed_row(request, [sale], _posted_day(request, sale))
         messages.info(request, "That sale was already dealt with.")
         return redirect(redirect_to)
 
-    if request.POST.get("dismiss"):
-        sale.dismissed_at = timezone.now()
-        sale.dismissed_reason = (request.POST.get("dismissed_reason") or "").strip()[:200]
-        sale.save(update_fields=["dismissed_at", "dismissed_reason"])
+    if request.POST.get("dismiss") or request.POST.get("dismiss_all"):
+        reason = (request.POST.get("dismissed_reason") or "").strip()[:200]
+        day_of = _posted_day(request, sale)
+        if request.POST.get("dismiss_all"):
+            # The clicked row leads, because it is the one the swap targets;
+            # the rest ride out-of-band.
+            group = [sale] + [
+                other for other in _like_this_on_day(sale, day_of)
+                if other.pk != sale.pk
+            ]
+        else:
+            group = [sale]
+        _dismiss(group, reason)
+
         if _is_htmx(request):
             # No `messages` on this path: it would sit in the session and
             # surface on some later full page load, describing a row the
-            # reader dealt with twenty dismissals ago. The strip that
-            # replaces the row is the receipt.
-            return _dismissed_row(request, sale)
-        messages.success(request, f"Dismissed “{sale.name or 'that line'}” — not a scarf.")
+            # reader dealt with twenty dismissals ago. The strips that
+            # replace the rows are the receipt.
+            return _dismissed_row(request, group, day_of)
+        if len(group) == 1:
+            messages.success(
+                request, f"Dismissed “{sale.name or 'that line'}” — not a scarf."
+            )
+        else:
+            messages.success(
+                request,
+                f"Dismissed {len(group)} lines like “{sale.name or 'that line'}” "
+                f"on {day_of:%d %b %Y} — not scarves.",
+            )
         return redirect(redirect_to)
 
     product = get_object_or_404(FinishedProduct, pk=request.POST.get("product_id"))
@@ -4782,27 +4883,36 @@ def _is_htmx(request):
     return request.headers.get("HX-Request") == "true"
 
 
-def _dismissed_row(request, sale):
-    """The one-line strip a dismissed row collapses to, plus what it changed.
+def _posted_day(request, sale):
+    """The day whose page this came off.
+
+    Falls back to the sale's own day rather than today: an absent or
+    unreadable value would otherwise gather the wrong day's group and rebuild
+    the wrong day's orphan list, and the only symptom is rows appearing or
+    vanishing on a page nobody is looking at.
+    """
+    raw = (request.POST.get("day") or "").strip()
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        return timezone.localtime(sale.sold_at).date()
+
+
+def _dismissed_row(request, sales, day):
+    """The one-line strips dismissed rows collapse to, plus what they changed.
 
     The queue gets worked a hundred lines at a time, and what made that slow
     was structural rather than incidental: every dismissal was a full
     navigation that rebuilt every *other* row on the day, each carrying a
-    `<select>` of the whole active catalogue. Swapping one row for one line
-    replaces all of that with a few hundred bytes.
+    `<select>` of the whole active catalogue. Swapping rows for lines replaces
+    all of that with a few hundred bytes.
 
-    The day comes off the form rather than the query string, and falls back
-    to the sale's own day: an absent or unreadable value would otherwise
-    rebuild the wrong day's orphan list, and the only symptom is a photo
-    appearing or vanishing on a page nobody is looking at.
+    `sales[0]` is what the click targeted and the rest ride out-of-band, so a
+    "dismiss all like this" empties every one of them off the page in the one
+    response — a row left behind would read as one the button missed.
     """
-    raw = (request.POST.get("day") or "").strip()
-    try:
-        day = date.fromisoformat(raw)
-    except ValueError:
-        day = timezone.localtime(sale.sold_at).date()
     return render(request, "scarves/partials/unmatched_dismissed.html", {
-        "sale": sale,
+        "sales": sales,
         "day": day,
         "open_total": _open_unmatched_total(),
         "orphans": _orphan_reports(day),

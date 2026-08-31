@@ -1832,6 +1832,35 @@ header still reading "12 open in total" over eleven rows is the page
 contradicting itself: the count, and the orphan-photo list, since dismissing
 a sale can *make* an orphan out of the photo that was beside it.
 
+**"Dismiss all like this" is day-scoped, and the key it matched on is in the
+button text.** Two keys, and they are not two precisions of one idea — they
+apply to different populations, which is the thing to hold onto:
+
+- **A Square variation id** means Square has a catalog object this app doesn't
+  know: the unsynced-variation case, and the group *most* likely to be real
+  scarves. Precise, and precisely where a bulk dismissal is expensive — it
+  writes the sales off and the count stays wrong with nothing saying so, which
+  is the silence this queue exists to break.
+- **A bare name with no variation id** is a hand-keyed custom amount, and that
+  is the group that genuinely never was a scarf. Looser key, safer population.
+
+So **a name match is scoped to lines with no variation id**. Without that,
+dismissing every `Custom Amount` sweeps up a row that *does* carry a Square
+item — the dangerous group taken by the safe group's button, silently.
+`test_a_name_never_sweeps_up_a_line_carrying_a_square_item` is the pin. A line
+with neither gets no button: "all like this" would mean "all the nameless
+ones", which is a grab bag rather than a group, and one standing only for
+itself gets none either, because that is the Dismiss button beside it wearing
+a longer label.
+
+The count is **on the button and computed off the day's rows already in
+memory** — never a query per row, which is the mistake the same page had two
+paragraphs up. Day-scoped means everything the button claims is on the screen
+it was clicked from, so the number can be checked by looking rather than
+trusted. Every row it takes leaves the page in the one response: the clicked
+row is the swap target and the rest are found by id, because a row left behind
+reads as one the button missed.
+
 **No undo on the strip**, unlike the Sunday close's. The difference is who is
 holding the phone: the close has no login and its users have no accounts, so
 a fix they cannot make is a movement that goes unmentioned. This page is

@@ -7682,6 +7682,187 @@ class UnmatchedSalePaceTests(TestCase):
         self.assertEqual(product.number_on_hand, 3)
 
 
+class DismissAllLikeThisTests(TestCase):
+    """One click for every line like this one, on this day.
+
+    Two keys, and they are not two precisions of one idea — they apply to
+    different populations, which is the whole reason the button names which
+    one it used:
+
+    * **A Square variation id** means Square has a catalog object this app
+      doesn't know. That is the unsynced-variation case and the group *most*
+      likely to be real scarves, so a bulk dismissal there is the expensive
+      click on the page.
+    * **A bare name with no id** is a hand-keyed custom amount, and that is
+      the group that genuinely never was a scarf.
+
+    Day-scoped, so everything the button claims is on the screen it was
+    clicked from and the count beside it can be checked by looking.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("owner", "o@example.test", "pw")
+        self.client.force_login(self.user)
+        self.sold_at = timezone.now().replace(hour=12, minute=0) - timedelta(days=1)
+        self.day = timezone.localtime(self.sold_at).date().isoformat()
+        self.url = reverse("unmatched_sales")
+
+    def _sale(self, name, order, variation="", minutes=0, sold_at=None):
+        return UnmatchedSale.objects.create(
+            order_id=order, line_uid="L1", name=name,
+            square_variation_id=variation, quantity=1, amount_cents=1000,
+            sold_at=(sold_at or self.sold_at) + timedelta(minutes=minutes),
+        )
+
+    def _dismiss_all(self, sale, htmx=True):
+        headers = {"HTTP_HX_REQUEST": "true"} if htmx else {}
+        return self.client.post(
+            reverse("resolve_unmatched_sale", args=[sale.pk]),
+            {"dismiss_all": "1", "day": self.day},
+            **headers,
+        )
+
+    def test_a_name_takes_every_other_line_with_that_name(self):
+        first = self._sale("Custom Amount", "O-1")
+        second = self._sale("Custom Amount", "O-2", minutes=20)
+        keep = self._sale("Scarf", "O-3", minutes=40)
+
+        self._dismiss_all(first)
+
+        for sale in (first, second):
+            sale.refresh_from_db()
+            self.assertIsNotNone(sale.dismissed_at, sale.order_id)
+        keep.refresh_from_db()
+        self.assertIsNone(keep.dismissed_at)
+
+    def test_a_name_never_sweeps_up_a_line_carrying_a_square_item(self):
+        """The one that would be silent. Without scoping the name match to
+        lines with no variation id, dismissing every 'Custom Amount' takes
+        the dangerous group along with the safe one — real sales written off
+        by the button that promised the harmless ones."""
+        hand_keyed = self._sale("Custom Amount", "O-1")
+        real = self._sale("Custom Amount", "O-2", variation="SQVAR1", minutes=20)
+
+        self._dismiss_all(hand_keyed)
+
+        real.refresh_from_db()
+        self.assertIsNone(real.dismissed_at)
+
+    def test_a_square_item_takes_its_own_group_whatever_they_are_called(self):
+        """Square's own identity beats the label, which is why it is the
+        preferred key when there is one."""
+        first = self._sale("Silk Scarf", "O-1", variation="SQVAR1")
+        renamed = self._sale("Scarf", "O-2", variation="SQVAR1", minutes=20)
+        other = self._sale("Silk Scarf", "O-3", variation="SQVAR2", minutes=40)
+
+        self._dismiss_all(first)
+
+        renamed.refresh_from_db()
+        other.refresh_from_db()
+        self.assertIsNotNone(renamed.dismissed_at)
+        self.assertIsNone(other.dismissed_at)
+
+    def test_it_stops_at_the_day(self):
+        """Everything the button claims is on the page it was clicked from."""
+        today = self._sale("Custom Amount", "O-1")
+        yesterday = self._sale(
+            "Custom Amount", "O-2", sold_at=self.sold_at - timedelta(days=1)
+        )
+
+        self._dismiss_all(today)
+
+        yesterday.refresh_from_db()
+        self.assertIsNone(yesterday.dismissed_at)
+
+    def test_every_row_it_took_leaves_the_page_in_the_one_response(self):
+        """A row left behind reads as one the button missed."""
+        first = self._sale("Custom Amount", "O-1")
+        second = self._sale("Custom Amount", "O-2", minutes=20)
+
+        html = self._dismiss_all(first).content.decode()
+
+        self.assertIn(f'id="sale-{first.pk}"', html)
+        self.assertIn(f'id="sale-{second.pk}"', html)
+        # The clicked row is the swap target; the rest are found by id.
+        self.assertEqual(html.count('hx-swap-oob="true"'), 3)
+
+    def test_the_reason_typed_beside_it_covers_the_group(self):
+        first = self._sale("Custom Amount", "O-1")
+        second = self._sale("Custom Amount", "O-2", minutes=20)
+
+        self.client.post(
+            reverse("resolve_unmatched_sale", args=[first.pk]),
+            {"dismiss_all": "1", "day": self.day, "dismissed_reason": "tip jar"},
+            HTTP_HX_REQUEST="true",
+        )
+
+        second.refresh_from_db()
+        self.assertEqual(second.dismissed_reason, "tip jar")
+
+    def test_the_button_says_how_many_and_on_what_key(self):
+        self._sale("Custom Amount", "O-1")
+        self._sale("Custom Amount", "O-2", minutes=20)
+        self._sale("Silk Scarf", "O-3", variation="SQVAR1", minutes=40)
+        self._sale("Renamed", "O-4", variation="SQVAR1", minutes=60)
+
+        html = self.client.get(self.url, {"day": self.day}).content.decode()
+
+        self.assertIn("Dismiss all 2 named", html)
+        self.assertIn("Dismiss all 2 with this Square item", html)
+
+    def test_a_line_standing_only_for_itself_gets_no_button(self):
+        """'Dismiss all 1 like this' is the button beside it wearing a longer
+        label."""
+        self._sale("One Off", "O-1")
+
+        html = self.client.get(self.url, {"day": self.day}).content.decode()
+
+        self.assertNotIn("Dismiss all", html)
+
+    def test_a_line_with_no_name_and_no_item_gets_no_button(self):
+        """'All like this' would mean 'all the nameless ones', which is a
+        grab bag rather than a group."""
+        self._sale("", "O-1")
+        self._sale("", "O-2", minutes=20)
+
+        html = self.client.get(self.url, {"day": self.day}).content.decode()
+
+        self.assertNotIn("Dismiss all", html)
+
+    def test_the_count_costs_no_extra_queries(self):
+        """Counted off the list already in memory. A query per row is the
+        mistake this page just had removed."""
+        self._sale("Custom Amount", "O-1")
+        with CaptureQueriesContext(connection) as one:
+            self.client.get(self.url, {"day": self.day})
+
+        for n in range(2, 8):
+            self._sale("Custom Amount", f"O-{n}", minutes=n * 5)
+
+        with CaptureQueriesContext(connection) as seven:
+            self.client.get(self.url, {"day": self.day})
+
+        self.assertEqual(len(seven), len(one))
+
+    def test_without_htmx_it_posts_redirects_and_says_the_count(self):
+        first = self._sale("Custom Amount", "O-1")
+        self._sale("Custom Amount", "O-2", minutes=20)
+
+        # Followed rather than asserted-then-fetched: `assertRedirects` walks
+        # the redirect itself, and that request is the one that consumes the
+        # message being checked for.
+        response = self.client.post(
+            reverse("resolve_unmatched_sale", args=[first.pk]),
+            {"dismiss_all": "1", "day": self.day},
+            follow=True,
+        )
+
+        self.assertEqual(
+            response.redirect_chain[-1][0], f"{self.url}?day={self.day}"
+        )
+        self.assertContains(response, "Dismissed 2 lines")
+
+
 class CrewCookieTests(TestCase):
     """Remembering name and PIN on the two `secret/` pages.
 
