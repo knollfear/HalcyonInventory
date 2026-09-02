@@ -1781,6 +1781,68 @@ reads a discontinued product line as a decline.
 zone names in its own dialect and they are mapped explicitly; a near-miss
 shifts every hour-of-day figure by hours and looks exactly like a correct one.
 
+### Two doors into the ledger, and the order is the unit
+
+`import_square_orders` pulls from the **Orders API**; `import_sales_history`
+reads an **itemised CSV export**. Both turn their source into line dicts and
+hand them to `scarves/salesimport.py`, which owns the matching, the writing
+and the reconciliation print. One copy on purpose: two would drift, and the
+way drift would show is two totals for the same weekend differing by a handful
+of lines with nothing on either to say which was right.
+
+**Prefer the API.** It needs no export step and no file, `--year 2021` reads
+the faire calendar for its dates, and its line items carry
+`catalog_object_id` — so `Matcher` can match on Square's own variation id
+rather than on a SKU most historical lines do not have or an item name that
+only reaches the blank. The CSV path stays because it needs no credentials and
+loads a file somebody already has.
+
+**Matching is three tiers, best evidence first**: Square variation id, then
+SKU, then item name against a `RawProduct`. Nothing unmatched is dropped —
+`item_name` and `price_point` are text on the row, so an unmatched line still
+counts toward every total, and the report names what it could not place.
+
+**An order already on file from a different pipeline is skipped whole.** The
+export aggregates identical items onto one line and the API does not, so the
+same order loaded through both doors would produce two overlapping sets of
+lines with no way to tell which was double-counted. Within one pipeline
+nothing changes: lines match on `line_key`, so a re-run adds nothing.
+
+**Order lines carry no category, and category decides whether the wax is in a
+season total.** So it is resolved in two passes: Square's catalogue first, then
+— for items Square no longer lists, which is most of a five-year-old season —
+this app's own `RawProduct.category`, named with Square's label via
+`RawProductCategory.square_category_id` so one category does not turn into two
+pills. On the 2021 season that took uncategorised revenue from $24,842 to $773.
+
+**The report names four different totals** — gross before discounts,
+discounts, refunds, net — because "the total" is four numbers and a season
+compared against the wrong one is out by whatever that year's discounts ran
+to. Worth knowing: the old React site's figures are **gross before discounts
+and refunds**. Its 2021 total of $93,578 comes back as $93,458 gross,
+$89,829 net; the 2022 figures agree to $18.
+
+### What the first full pull turned up
+
+Loading 2021–2026 took 12,939 lines across 11,348 orders, and three things in
+it change how the numbers read:
+
+- **Wax was 43% of 2021 revenue** and stops entirely after 2024. Any total
+  spanning that boundary is comparing two different businesses, which is what
+  the category filter is for.
+- **Nothing before 2025 has a Square variation id or a SKU on it.** Those
+  seasons match by item name only, so they are readable at the *blank* and not
+  at the colorway. Colorway-level history starts where the sync does.
+- **A projected weekend is not a counted one.** `Season.total` and
+  `traded_days` deliberately exclude projections; an earlier version summed
+  every weekend, which made the figure captioned "so far" equal the one
+  captioned "on course for" — the page agreeing with itself about a number
+  nobody measured. `ProjectionBasisTests` pins it.
+
+The page also states what a projection rests on and warns below a quarter of a
+season, because a run extrapolated from its opening weekend moves a long way
+on one good Saturday.
+
 ## The faire calendar is a rule, not a table
 
 `scarves/seasons.py` holds it and `generate_faire` applies it:

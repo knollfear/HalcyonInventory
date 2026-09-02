@@ -126,23 +126,42 @@ class Season:
         self.faire = faire
         self.year = faire.year
         self.weekends = weekends
+        #: What a projection over this season was built from. A season
+        #: extrapolated from its opening weekend and one extrapolated from
+        #: eight are both "a projection", and only one of them is worth
+        #: acting on — so the basis is carried rather than left for the
+        #: reader to work out from the dashes on the chart.
+        self.projection_weekends = 0
+        self.projection_share = None
 
     @property
     def total(self):
-        return sum(w.value for w in self.weekends)
+        """What was actually taken. **Projected weekends are not in it.**
+
+        They are in `w.value` — the chart needs them to draw the dashed tail —
+        so a total that summed every weekend would silently become the
+        projection, and the figure captioned "so far" would equal the one
+        captioned "on course for". That is the page agreeing with itself about
+        a number nobody measured.
+        """
+        return sum(w.value for w in self.weekends if w.has_data and not w.projected)
 
     @property
     def units(self):
-        return sum(w.units for w in self.weekends)
+        return sum(w.units for w in self.weekends if w.has_data and not w.projected)
 
     @property
     def traded_days(self):
-        """Only the days a reported weekend covers — the honest denominator.
+        """Only the days a *counted* weekend covers — the honest denominator.
 
         A season half imported would otherwise divide its takings by the whole
-        run and read as a catastrophe.
+        run and read as a catastrophe; a season half projected would divide a
+        projection by days nobody has worked yet.
         """
-        return sum(w.traded_days for w in self.weekends if w.has_data or w.projected)
+        return sum(
+            w.traded_days for w in self.weekends
+            if w.has_data and not w.projected
+        )
 
     @property
     def per_day(self):
@@ -331,6 +350,8 @@ def project(focus, priors):
 
     banked = Decimal(sum(w.value for w in focus.weekends if w.has_data))
     projected_total = banked / share
+    focus.projection_weekends = len(banked_numbers)
+    focus.projection_share = share * 100
     remainder = projected_total - banked
 
     # Spread the remainder the way the prior seasons spent those weekends,

@@ -34,8 +34,8 @@ from zoneinfo import ZoneInfo
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
-from scarves import seasons, skus
-from scarves.models import FaireDay, FinishedProduct, RawProduct, Sale, SaleLine
+from scarves import salesimport
+from scarves.models import Sale, SaleLine
 
 #: Square writes zone names in its own dialect. Mapped explicitly rather than
 #: parsed, because the failure of a near-miss is a whole catalogue of sales
@@ -94,17 +94,15 @@ class Command(BaseCommand):
             raise CommandError("The file has no rows.")
 
         lines, skipped = self._parse(rows)
-        matcher = _Matcher()
+        matcher = salesimport.Matcher()
         for line in lines:
             matcher.attach(line)
 
-        if options["dry_run"]:
-            self._report(lines, skipped, matcher, written=None)
-            self.stdout.write(self.style.WARNING("\nDRY RUN — nothing written."))
-            return
-
-        written, already = self._write(lines, options["source"])
-        self._report(lines, skipped, matcher, written=(written, already))
+        dry_run = options["dry_run"]
+        result = salesimport.Result() if dry_run else salesimport.write(
+            lines, options["source"],
+        )
+        salesimport.report(self, lines, skipped, matcher, result, dry_run)
 
     # ---------------------------------------------------------------- reading
 
@@ -177,6 +175,11 @@ class Command(BaseCommand):
                 "item_name": item,
                 "price_point": price_point,
                 "sku": (row.get("SKU") or "").strip(),
+                # The itemised export carries no catalog object id — which is
+                # the main reason the Orders API path exists. Square's `Token`
+                # column looks like one and is not: it names the product, so
+                # three separate sales of a triangle fringe share it.
+                "square_variation_id": "",
                 "quantity": quantity,
                 "gross_cents": gross,
                 "discount_cents": discount,
@@ -206,161 +209,4 @@ class Command(BaseCommand):
     # ---------------------------------------------------------------- writing
 
     def _write(self, lines, source):
-        written = already = 0
-        by_order = defaultdict(list)
-        for line in lines:
-            by_order[line["order_id"]].append(line)
-
-        with transaction.atomic():
-            for order_id, order_lines in by_order.items():
-                first = order_lines[0]
-                sale, _made = Sale.objects.get_or_create(
-                    order_id=order_id,
-                    defaults={
-                        "sold_at": first["sold_at"],
-                        "location": first["location"],
-                        "device": first["device"],
-                        "customer_name": first["customer_name"],
-                        "card_brand": first["card_brand"],
-                        "source": source,
-                    },
-                )
-                for line in order_lines:
-                    _row, made = SaleLine.objects.get_or_create(
-                        sale=sale,
-                        line_key=line["line_key"],
-                        defaults={
-                            "sold_at": line["sold_at"],
-                            "event_type": line["event_type"],
-                            "category": line["category"],
-                            "item_name": line["item_name"],
-                            "price_point": line["price_point"],
-                            "sku": line["sku"],
-                            "quantity": line["quantity"],
-                            "gross_cents": line["gross_cents"],
-                            "discount_cents": line["discount_cents"],
-                            "net_cents": line["net_cents"],
-                            "tax_cents": line["tax_cents"],
-                            "finished_product": line.get("finished_product"),
-                            "raw_product": line.get("raw_product"),
-                            "source": source,
-                        },
-                    )
-                    written += made
-                    already += not made
-        return written, already
-
-    # -------------------------------------------------------------- reporting
-
-    def _report(self, lines, skipped, matcher, written):
-        out = self.stdout
-        out.write(self.style.MIGRATE_HEADING("\nRead"))
-        out.write(f"  {len(lines)} lines across {len({l['order_id'] for l in lines})} orders")
-        if lines:
-            first = min(l["sold_at"] for l in lines)
-            last = max(l["sold_at"] for l in lines)
-            out.write(f"  {first:%d %b %Y} to {last:%d %b %Y}")
-        for reason, count in skipped.items():
-            out.write(self.style.WARNING(f"  skipped {count}: {reason}"))
-
-        events = Counter(l["raw_event"] or "(blank)" for l in lines)
-        if len(events) > 1 or SaleLine.REFUND in {l["event_type"] for l in lines}:
-            out.write("  event types: " + ", ".join(f"{k} ×{v}" for k, v in events.items()))
-
-        out.write(self.style.MIGRATE_HEADING("\nMoney, as the file states it"))
-        by_category = defaultdict(int)
-        for line in lines:
-            by_category[line["category"] or "(uncategorised)"] += line["net_cents"]
-        for name, cents in sorted(by_category.items(), key=lambda kv: -kv[1]):
-            out.write(f"  {name:<28} {self._usd(cents):>12}")
-        total = sum(l["net_cents"] for l in lines)
-        out.write(f"  {'NET TOTAL':<28} {self._usd(total):>12}")
-        out.write(self.style.HTTP_INFO(
-            "  ↑ reconcile this against Square's own dashboard for the same range "
-            "before trusting anything built on it."
-        ))
-
-        out.write(self.style.MIGRATE_HEADING("\nMatched to the catalogue"))
-        out.write(f"  {matcher.by_sku} lines matched a product by SKU")
-        out.write(f"  {matcher.by_item} more matched a blank by item name")
-        if matcher.unmatched:
-            out.write(self.style.WARNING(
-                f"  {sum(matcher.unmatched.values())} lines matched nothing:"
-            ))
-            for name, count in matcher.unmatched.most_common():
-                out.write(self.style.WARNING(f"      {name or '(no item name)'} ×{count}"))
-            out.write(
-                "    Unmatched lines are kept in full — item and price point are "
-                "text on the row, so they still count toward every total."
-            )
-
-        out.write(self.style.MIGRATE_HEADING("\nPlaced in a season"))
-        placed = Counter()
-        known = {day.date: day for day in FaireDay.objects.all()}
-        for line in lines:
-            day = known.get(line["sold_at"].date())
-            if day is None:
-                placed[seasons.labor_day_season_for(line["sold_at"].date())] += 1
-            else:
-                placed[day.faire.year] += 1
-        for year, count in sorted(placed.items(), key=lambda kv: (kv[0] is None, kv[0])):
-            if year is None:
-                out.write(self.style.WARNING(
-                    f"  {count} lines fall outside any faire — kept, and excluded "
-                    "from season reporting by construction."
-                ))
-            else:
-                generated = year in {day.faire.year for day in known.values()}
-                note = "" if generated else "  (run generate_faire --year %d)" % year
-                out.write(f"  {year}: {count} lines{note}")
-
-        if written is not None:
-            added, existing = written
-            out.write("")
-            out.write(self.style.SUCCESS(
-                f"Written: {added} new lines, {existing} already on file and left alone."
-            ))
-            out.write("No stock was moved and no InventoryLog row was written.")
-
-    @staticmethod
-    def _usd(cents):
-        return f"${cents / 100:,.2f}"
-
-
-class _Matcher:
-    """Links a line to the catalogue, by SKU first and item name second.
-
-    Both lookups are built once. The queue this replaces asked a
-    catalogue-sized question per row; a hundred-thousand-line backfill would
-    make that a hundred thousand queries.
-    """
-
-    def __init__(self):
-        self.products = {
-            product.sku: product
-            for product in FinishedProduct.objects.select_related("raw_product")
-            if product.sku
-        }
-        self.blanks = {}
-        for blank in RawProduct.objects.all():
-            self.blanks.setdefault(skus.slug(blank.name), blank)
-        self.by_sku = 0
-        self.by_item = 0
-        self.unmatched = Counter()
-
-    def attach(self, line):
-        product = self.products.get(line["sku"]) if line["sku"] else None
-        if product is not None:
-            line["finished_product"] = product
-            line["raw_product"] = product.raw_product
-            self.by_sku += 1
-            return
-        blank = self.blanks.get(skus.slug(line["item_name"]))
-        if blank is not None:
-            line["finished_product"] = None
-            line["raw_product"] = blank
-            self.by_item += 1
-            return
-        line["finished_product"] = None
-        line["raw_product"] = None
-        self.unmatched[line["item_name"]] += 1
+        return salesimport.write(lines, source)

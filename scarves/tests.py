@@ -16078,3 +16078,223 @@ class SeasonWeatherRowTests(TestCase):
         self.assertTrue(weekends[1].was_wet)
         self.assertFalse(weekends[2].has_weather)
         self.assertIsNone(weekends[2].mean_f)
+
+
+def square_order(order_id, closed_at, items, refunds=None):
+    return {
+        "id": order_id,
+        "closed_at": closed_at,
+        "location_id": "L1",
+        "tenders": [{"card_details": {"card": {"card_brand": "VISA"}}}],
+        "line_items": items,
+        "refunds": refunds or [],
+    }
+
+
+def square_item(name, variation_name="", variation_id="", quantity="1",
+                gross=9500, discount=0, tax=504):
+    return {
+        "uid": f"u-{name}-{variation_name}",
+        "name": name,
+        "variation_name": variation_name,
+        "catalog_object_id": variation_id,
+        "quantity": quantity,
+        "gross_sales_money": {"amount": gross},
+        "total_discount_money": {"amount": discount},
+        "total_tax_money": {"amount": tax},
+    }
+
+
+class FakeResult:
+    def __init__(self, body):
+        self.body = body
+        self.errors = None
+
+    def is_error(self):
+        return False
+
+
+class SquareOrdersImportTests(TestCase):
+    """The API door. It must agree with the CSV door and not double-count it."""
+
+    def setUp(self):
+        call_command("generate_faire", "--year", "2021", stdout=StringIO())
+        category = RawProductCategory.objects.create(name="Silk")
+        self.blank = RawProduct.objects.create(
+            name="Rectangle Veil", category=category, price=Decimal("21.50"),
+        )
+        recipe = make_recipe("Drucilla")
+        self.product = FinishedProduct.objects.create(
+            name="Rectangle Veil — Drucilla", raw_product=self.blank,
+            recipe=recipe, price=Decimal("95.00"),
+            square_variation_id="VAR-DRUCILLA",
+        )
+        self.day = "2021-08-28T17:30:00Z"
+
+    def _client(self, orders, catalog=None):
+        client = mock.MagicMock()
+        client.orders.search_orders.return_value = FakeResult({"orders": orders})
+        client.catalog.list_catalog.return_value = FakeResult(
+            {"objects": catalog if catalog is not None else []}
+        )
+        return client
+
+    def _run(self, orders, catalog=None, **kwargs):
+        client = self._client(orders, catalog)
+        with mock.patch(
+            "scarves.management.commands.import_square_orders.Command._client",
+            return_value=client,
+        ):
+            out = StringIO()
+            call_command("import_square_orders", "--year", "2021", stdout=out, **kwargs)
+        return out.getvalue(), client
+
+    @override_settings(SQUARE_ACCESS_TOKEN="t", SQUARE_LOCATION_ID="L1")
+    def test_a_line_matches_on_squares_own_variation_id(self):
+        """The reason this door exists — no SKU and no name guessing."""
+        self._run([square_order("O1", self.day, [
+            square_item("Rectangle Veil", "Drucilla", "VAR-DRUCILLA"),
+        ])])
+        line = SaleLine.objects.get()
+        self.assertEqual(line.finished_product, self.product)
+        self.assertEqual(line.raw_product, self.blank)
+        self.assertEqual(line.source, Sale.SOURCE_SQUARE_API)
+
+    @override_settings(SQUARE_ACCESS_TOKEN="t", SQUARE_LOCATION_ID="L1")
+    def test_category_comes_from_squares_catalogue(self):
+        catalog = [
+            {"type": "CATEGORY", "id": "C1", "category_data": {"name": "Wax"}},
+            {"type": "ITEM", "id": "I1", "item_data": {
+                "category_id": "C1",
+                "variations": [{"id": "VAR-WAX"}],
+            }},
+        ]
+        self._run([square_order("O1", self.day, [
+            square_item("Wax Hand", "", "VAR-WAX"),
+        ])], catalog=catalog)
+        self.assertEqual(SaleLine.objects.get().category, "Wax")
+
+    @override_settings(SQUARE_ACCESS_TOKEN="t", SQUARE_LOCATION_ID="L1")
+    def test_a_retired_item_gets_its_category_from_this_apps_catalogue(self):
+        """Square only describes what is still in its catalogue; a line from
+        five years ago usually is not."""
+        self._run([square_order("O1", self.day, [
+            square_item("Rectangle Veil", "Drucilla", "VAR-DRUCILLA"),
+        ])])
+        self.assertEqual(SaleLine.objects.get().category, "Silk")
+
+    @override_settings(SQUARE_ACCESS_TOKEN="t", SQUARE_LOCATION_ID="L1")
+    def test_money_splits_into_gross_discount_and_net(self):
+        self._run([square_order("O1", self.day, [
+            square_item("Rectangle Veil", "Drucilla", "VAR-DRUCILLA",
+                        gross=10000, discount=1250),
+        ])])
+        line = SaleLine.objects.get()
+        self.assertEqual(line.gross_cents, 10000)
+        self.assertEqual(line.discount_cents, -1250)
+        self.assertEqual(line.net_cents, 8750)
+
+    @override_settings(SQUARE_ACCESS_TOKEN="t", SQUARE_LOCATION_ID="L1")
+    def test_a_refund_becomes_its_own_negative_line(self):
+        self._run([square_order("O1", self.day,
+                                [square_item("Rectangle Veil", "Drucilla", "VAR-DRUCILLA")],
+                                refunds=[{"id": "R1", "reason": "Returned",
+                                          "amount_money": {"amount": 9500}}])])
+        refund = SaleLine.objects.get(event_type=SaleLine.REFUND)
+        self.assertEqual(refund.net_cents, -9500)
+        self.assertEqual(SaleLine.objects.count(), 2)
+
+    @override_settings(SQUARE_ACCESS_TOKEN="t", SQUARE_LOCATION_ID="L1")
+    def test_re_running_writes_nothing_new(self):
+        orders = [square_order("O1", self.day, [
+            square_item("Rectangle Veil", "Drucilla", "VAR-DRUCILLA"),
+        ])]
+        self._run(orders)
+        report, _ = self._run(orders)
+        self.assertEqual(SaleLine.objects.count(), 1)
+        self.assertIn("0 new lines", report)
+
+    @override_settings(SQUARE_ACCESS_TOKEN="t", SQUARE_LOCATION_ID="L1")
+    def test_it_will_not_load_an_order_another_door_already_supplied(self):
+        """An export aggregates identical items and the API does not, so
+        merging the two line by line would double-count the order."""
+        when = timezone.make_aware(datetime(2021, 8, 28, 13, 30))
+        sale = Sale.objects.create(order_id="O1", sold_at=when,
+                                   source=Sale.SOURCE_SQUARE_CSV)
+        SaleLine.objects.create(
+            sale=sale, line_key="Rectangle Veil|Drucilla|1", sold_at=when,
+            item_name="Rectangle Veil", price_point="Drucilla",
+            quantity=Decimal(1), gross_cents=9500, net_cents=9500,
+            source=Sale.SOURCE_SQUARE_CSV,
+        )
+        report, _ = self._run([square_order("O1", self.day, [
+            square_item("Rectangle Veil", "Drucilla", "VAR-DRUCILLA"),
+        ])])
+        self.assertEqual(SaleLine.objects.count(), 1)
+        self.assertIn("already on file from", report)
+
+    @override_settings(SQUARE_ACCESS_TOKEN="t", SQUARE_LOCATION_ID="L1")
+    def test_it_moves_no_stock(self):
+        self.product.number_on_hand = 5
+        self.product.save()
+        self._run([square_order("O1", self.day, [
+            square_item("Rectangle Veil", "Drucilla", "VAR-DRUCILLA", quantity="3"),
+        ])])
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.number_on_hand, 5)
+        self.assertFalse(InventoryLog.objects.exists())
+
+    @override_settings(SQUARE_ACCESS_TOKEN="t", SQUARE_LOCATION_ID="L1")
+    def test_dry_run_writes_nothing(self):
+        report, _ = self._run([square_order("O1", self.day, [
+            square_item("Rectangle Veil", "Drucilla", "VAR-DRUCILLA"),
+        ])], dry_run=True)
+        self.assertFalse(SaleLine.objects.exists())
+        self.assertIn("DRY RUN", report)
+
+    @override_settings(SQUARE_ACCESS_TOKEN="t", SQUARE_LOCATION_ID="L1")
+    def test_it_asks_square_for_the_faires_own_dates(self):
+        _report, client = self._run([])
+        body = client.orders.search_orders.call_args.kwargs["body"]
+        window = body["query"]["filter"]["date_time_filter"]["closed_at"]
+        self.assertTrue(window["start_at"].startswith("2021-08-28"))
+        self.assertIn("COMPLETED", body["query"]["filter"]["state_filter"]["states"])
+
+    @override_settings(SQUARE_ACCESS_TOKEN="", SQUARE_LOCATION_ID="L1")
+    def test_missing_credentials_stop_the_run(self):
+        with self.assertRaises(CommandError):
+            call_command("import_square_orders", "--year", "2021", stdout=StringIO())
+
+    @override_settings(SQUARE_ACCESS_TOKEN="t", SQUARE_LOCATION_ID="L1")
+    def test_a_season_with_no_calendar_says_so(self):
+        with self.assertRaises(CommandError) as caught:
+            call_command("import_square_orders", "--year", "2019", stdout=StringIO())
+        self.assertIn("generate_faire", str(caught.exception))
+
+
+class ProjectionBasisTests(TestCase):
+    """A projected weekend is not a counted one, and the page must not blur it."""
+
+    def setUp(self):
+        call_command("generate_faire", "--range", "2021-2022", stdout=StringIO())
+
+    def test_a_projection_never_lands_in_the_so_far_total(self):
+        """Otherwise the figure captioned 'so far' equals the one captioned
+        'on course for', and the page agrees with itself about a number
+        nobody measured."""
+        for number in range(1, 10):
+            day = Faire.objects.get(year=2021).days.filter(weekend=number).first()
+            sale_line(day.date, 100_000, order=f"a{number}")
+        opener = Faire.objects.get(year=2022).days.filter(weekend=1).first()
+        sale_line(opener.date, 50_000, order="b1")
+
+        seasons = seasonreport.build("labor-day-run", today=date(2022, 8, 29))
+        y2021 = next(s for s in seasons if s.year == 2021)
+        y2022 = next(s for s in seasons if s.year == 2022)
+        projected = seasonreport.project(y2022, [y2021])
+
+        self.assertEqual(y2022.total, 50_000, "only what was counted")
+        self.assertGreater(projected, y2022.total)
+        self.assertEqual(y2022.traded_days, 2, "not the whole nineteen")
+        self.assertEqual(y2022.per_day, Decimal(25_000))
+        self.assertEqual(y2022.projection_weekends, 1)

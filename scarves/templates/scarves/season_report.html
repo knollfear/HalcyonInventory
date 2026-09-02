@@ -150,7 +150,11 @@ rest of it.
       {% if projected_total %}
         <div>
           <div class="n est">{% if is_money %}{{ projected_total|money_cents }}{% else %}{{ projected_total|plain }}{% endif %}</div>
-          <div class="what">on course for, from the shape of the seasons behind it — a projection, not a measurement</div>
+          <div class="what">
+            on course for &mdash; projected from
+            {{ focus.projection_weekends }} weekend{{ focus.projection_weekends|pluralize }},
+            {{ focus.projection_share|floatformat:1 }}% of a season. A projection, not a measurement.
+          </div>
         </div>
       {% endif %}
       <div>
@@ -172,6 +176,16 @@ rest of it.
     <div class="note warn">
       Nothing to chart. The calendar exists but no sales have been imported
       against it — run <code>manage.py import_sales_history</code>.
+    </div>
+  {% endif %}
+
+  {% if focus.projection_weekends and focus.projection_share < 25 %}
+    <div class="note warn">
+      <strong>That projection rests on {{ focus.projection_weekends }} weekend{{ focus.projection_weekends|pluralize }}
+      &mdash; {{ focus.projection_share|floatformat:1 }}% of the season.</strong>
+      Early weekends are the smallest and the least like the rest of the run, so
+      a season extrapolated from them moves a long way on one good Saturday.
+      Worth reading as a direction, not a number.
     </div>
   {% endif %}
 
