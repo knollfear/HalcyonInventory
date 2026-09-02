@@ -61,6 +61,23 @@ class Command(BaseCommand):
             help="Season to pull, using the faire calendar for its dates. Repeatable.",
         )
         parser.add_argument("--range", help="Inclusive span of seasons, e.g. 2021-2026.")
+        parser.add_argument(
+            "--current", action="store_true",
+            help=(
+                "The season that is running now, from its first day to today. "
+                "Nothing to look up and nothing to type — this is the one to "
+                "put on a schedule or run after a weekend."
+            ),
+        )
+        parser.add_argument(
+            "--since", type=int, metavar="DAYS",
+            help=(
+                "Only ask Square for the last DAYS days of the window. A "
+                "weekly refresh does not need to re-read August every time; "
+                "re-reading is harmless but it is thousands of orders for the "
+                "handful that are new."
+            ),
+        )
         parser.add_argument("--from", dest="start", help="Explicit start date, YYYY-MM-DD.")
         parser.add_argument("--to", dest="end", help="Explicit end date, YYYY-MM-DD, inclusive.")
         parser.add_argument("--dry-run", action="store_true", help="Fetch and reconcile, write nothing.")
@@ -392,9 +409,14 @@ class Command(BaseCommand):
             except ValueError:
                 raise CommandError(f"Could not read --range {options['range']!r}.")
             years.extend(range(first, last + 1))
+        if options.get("current"):
+            years.append(self._current_year(options["faire"]))
         if not years:
-            raise CommandError("Give --year, --range, or --from and --to.")
+            raise CommandError(
+                "Give --current, --year, --range, or --from and --to."
+            )
 
+        today = timezone.localdate()
         windows = []
         for year in sorted(set(years)):
             faire = Faire.objects.filter(slug=options["faire"], year=year).first()
@@ -407,8 +429,39 @@ class Command(BaseCommand):
             days = list(faire.days.order_by("date"))
             if not days:
                 raise CommandError(f"{faire} has no days generated.")
-            windows.append((str(faire), days[0].date, days[-1].date))
+            start, end = days[0].date, days[-1].date
+            # Never ask for days that have not happened. It earns a 400 from
+            # the archive-shaped APIs and buys nothing from this one.
+            end = min(end, today)
+            if options.get("since"):
+                start = max(start, today - timedelta(days=options["since"]))
+            if end < start:
+                self.stdout.write(self.style.WARNING(
+                    f"{faire}: nothing in range — it has not started yet."
+                ))
+                continue
+            windows.append((str(faire), start, end))
+        if not windows:
+            raise CommandError("Every window resolved to nothing to fetch.")
         return windows
+
+    def _current_year(self, slug):
+        """The season running now, or the most recent one that has begun.
+
+        Between seasons this deliberately answers with the last one rather
+        than refusing: the reason to run this in October is a weekend just
+        gone, and the reason to run it in February is to top up what that
+        season finished with.
+        """
+        today = timezone.localdate()
+        live = Faire.objects.filter(
+            slug=slug, days__date__lte=today,
+        ).order_by("-year").first()
+        if live is None:
+            raise CommandError(
+                f"No {slug} faire has started yet. Run generate_faire first."
+            )
+        return live.year
 
 
 def _cents(money):

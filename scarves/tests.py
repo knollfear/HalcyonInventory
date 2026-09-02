@@ -16495,3 +16495,56 @@ class SeasonPaletteTests(TestCase):
         svg = response.context["chart"]
         self.assertIn('class="line', svg)
         self.assertNotIn("#", svg)
+
+
+class ImportWindowTests(TestCase):
+    """`--current` and `--since`, which are what make this runnable on a
+    schedule without anybody deciding a year or a date."""
+
+    def setUp(self):
+        call_command("generate_faire", "--range", "2021-2026", stdout=StringIO())
+
+    def _windows(self, **options):
+        from scarves.management.commands.import_square_orders import Command
+        merged = {"faire": "labor-day-run", "years": None, "range": None,
+                  "start": None, "end": None, "current": False, "since": None}
+        merged.update(options)
+        command = Command()
+        command.stdout = StringIO()
+        return command._windows(merged)
+
+    def test_current_picks_the_season_that_has_begun(self):
+        windows = self._windows(current=True)
+        self.assertEqual(len(windows), 1)
+        label, start, _end = windows[0]
+        self.assertIn("2026", label)
+        self.assertEqual(start, date(2026, 8, 29))
+
+    def test_a_window_never_runs_past_today(self):
+        """Asking an API for the future buys nothing and can be an error."""
+        _label, _start, end = self._windows(current=True)[0]
+        self.assertLessEqual(end, timezone.localdate())
+
+    def test_since_narrows_the_window_without_leaving_the_season(self):
+        _label, start, _end = self._windows(current=True, since=1)[0]
+        self.assertGreaterEqual(start, timezone.localdate() - timedelta(days=1))
+        # and it never reaches back before the season opened
+        _label, wide, _end = self._windows(current=True, since=9999)[0]
+        self.assertEqual(wide, date(2026, 8, 29))
+
+    def test_a_season_that_has_not_started_is_skipped_not_fetched(self):
+        call_command("generate_faire", "--year", "2030", stdout=StringIO())
+        with self.assertRaises(CommandError):
+            self._windows(years=[2030])
+
+    def test_between_seasons_it_answers_with_the_last_one(self):
+        """Running this in February should top up what the season finished
+        with, not refuse because nothing is on today."""
+        Faire.objects.filter(year=2026).delete()
+        label, _start, _end = self._windows(current=True)[0]
+        self.assertIn("2025", label)
+
+    def test_it_will_not_guess_a_window(self):
+        with self.assertRaises(CommandError) as caught:
+            self._windows()
+        self.assertIn("--current", str(caught.exception))

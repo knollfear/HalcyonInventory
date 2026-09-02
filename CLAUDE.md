@@ -1874,6 +1874,32 @@ to. Worth knowing: the old React site's figures are **gross before discounts
 and refunds**. Its 2021 total of $93,578 comes back as $93,458 gross,
 $89,829 net; the 2022 figures agree to $18.
 
+### Keeping it current
+
+`import_square_orders` is idempotent, so **re-running it is the refresh**.
+Three ways to name the window:
+
+- `--year 2026` — the simple one, and the one to reach for.
+- `--current` — the season that has begun, first day to today. Worth having
+  because a *scheduled* `--year 2026` keeps succeeding forever and silently
+  stops covering the season in 2027; this one cannot go stale that way.
+  Between seasons it answers with the last one that started, because the
+  reason to run it in February is to top up what October finished with.
+- `--since 14` — narrows the window to recent days. Re-reading August is
+  harmless but it is thousands of orders for the handful that are new.
+
+A window never runs past today. Asking for the future buys nothing here and is
+an outright error against the weather archive, so both commands clamp.
+
+**The webhook deliberately does not write this ledger.** It is the one path
+that moves stock during a live season, and the cost of a bug in it is real
+counts during a weekend that cannot be recounted — against which the benefit
+is a few days' freshness on a reporting page. A command that somebody runs is
+the cheaper trade. If that ever changes, the thing to fix first is
+`salesimport.write`'s foreign-pipeline guard: webhook and API rows are the
+same Orders API shape and build the same `line_key`, so they are safe to
+merge, and the guard needs to keep firing only against the CSV door.
+
 ### What the first full pull turned up
 
 Loading 2021–2026 took 12,939 lines across 11,348 orders, and three things in
