@@ -47,6 +47,9 @@ PAGE = 500
 #: API. A faire weekend is a few hundred orders; a whole season is thousands.
 MAX_PAGES = 200
 
+#: Object ids per BatchRetrieveCatalogObjects call. Square caps it at 1000.
+BATCH = 500
+
 
 class Command(BaseCommand):
     help = "Import sales from the Square Orders API into the reporting ledger. Moves no stock."
@@ -97,6 +100,31 @@ class Command(BaseCommand):
         matcher = salesimport.Matcher()
         for line in lines:
             matcher.attach(line)
+
+        # Square's live catalogue only lists what is still in it, and a
+        # season five years old is mostly things that are not. Asking about
+        # those objects by id — with the deleted ones included — is a
+        # different question from listing the catalogue, and it is the one
+        # that gets a real answer. Without this the four base yarns came back
+        # uncategorised, which put roughly $40k of a $48k yarn year into a
+        # bucket labelled "(uncategorised)".
+        missing = {
+            line["square_variation_id"] for line in lines
+            if line["square_variation_id"] and not line["category"]
+        }
+        if missing:
+            recovered = self._deleted_categories(client, missing, category_names)
+            found = 0
+            for line in lines:
+                if line["category"]:
+                    continue
+                label = recovered.get(line["square_variation_id"])
+                if label:
+                    line["category"] = label
+                    found += 1
+            if found:
+                skipped[f"{found} categor(ies) recovered from catalogue objects "
+                        "Square has since deleted"] = 0
 
         # Square's catalogue only describes what is *currently* in it, so a
         # line for something retired years ago comes back with no category.
@@ -216,14 +244,46 @@ class Command(BaseCommand):
             # `category_id` is the older shape and `categories` the newer one;
             # the API version in use still answers with either depending on how
             # the item was written, so both are read.
-            category_id = data.get("category_id") or ""
-            if not category_id:
-                listed = data.get("categories") or []
-                category_id = listed[0].get("id", "") if listed else ""
-            label = names.get(category_id, "")
+            label = _category_name(data, names)
             for variation in data.get("variations") or []:
                 by_variation[variation.get("id")] = label
         return by_variation, names
+
+    def _deleted_categories(self, client, variation_ids, names):
+        """Category per variation id, for objects no longer in the catalogue.
+
+        `ListCatalog` returns the living catalogue; this asks about specific
+        objects and says `include_deleted_objects`, which is the only way to
+        learn what a line sold in 2021 actually was. The parent item comes
+        back as a related object, and the category hangs off that.
+        """
+        found = {}
+        ids = sorted(variation_ids)
+        for start in range(0, len(ids), BATCH):
+            chunk = ids[start:start + BATCH]
+            result = client.catalog.batch_retrieve_catalog_objects(body={
+                "object_ids": chunk,
+                "include_deleted_objects": True,
+                "include_related_objects": True,
+            })
+            if result.is_error():
+                raise CommandError(f"Square refused the catalogue lookup: {result.errors}")
+            payload = result.body or {}
+            items = {
+                obj["id"]: obj for obj in payload.get("related_objects") or []
+                if obj.get("type") == "ITEM"
+            }
+            # A category can be deleted too, in which case its name is not in
+            # the list we already have; fall back to the id rather than to
+            # blank, so the pill at least groups the lines together.
+            for obj in payload.get("objects") or []:
+                if obj.get("type") != "ITEM_VARIATION":
+                    continue
+                item = items.get((obj.get("item_variation_data") or {}).get("item_id"))
+                if item is None:
+                    continue
+                found[obj["id"]] = _category_name(item.get("item_data") or {}, names)
+        return {key: value for key, value in found.items() if value}
 
     # ----------------------------------------------------------------- lines
 
@@ -353,3 +413,23 @@ class Command(BaseCommand):
 
 def _cents(money):
     return int((money or {}).get("amount") or 0)
+
+
+def _category_name(item_data, names):
+    """The category label for an item, across the shapes Square answers in.
+
+    `category_id` is the old field and is `None` on everything written
+    recently; `reporting_category` is the one the dashboard's own reports use;
+    `categories` is the list. All three are read because the catalogue has
+    objects of every vintage in it.
+    """
+    category_id = item_data.get("category_id") or ""
+    if not category_id:
+        reporting = item_data.get("reporting_category") or {}
+        category_id = reporting.get("id") or ""
+    if not category_id:
+        listed = item_data.get("categories") or []
+        category_id = listed[0].get("id", "") if listed else ""
+    if not category_id:
+        return ""
+    return names.get(category_id) or category_id

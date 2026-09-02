@@ -1809,11 +1809,29 @@ lines with no way to tell which was double-counted. Within one pipeline
 nothing changes: lines match on `line_key`, so a re-run adds nothing.
 
 **Order lines carry no category, and category decides whether the wax is in a
-season total.** So it is resolved in two passes: Square's catalogue first, then
-— for items Square no longer lists, which is most of a five-year-old season —
-this app's own `RawProduct.category`, named with Square's label via
-`RawProductCategory.square_category_id` so one category does not turn into two
-pills. On the 2021 season that took uncategorised revenue from $24,842 to $773.
+season total.** It is resolved in three passes, and the middle one is the
+important one:
+
+1. **`ListCatalog`** — but that returns the *living* catalogue, and a season
+   five years old is mostly things that have since been deleted.
+2. **`BatchRetrieveCatalogObjects` with `include_deleted_objects`**, asked
+   about the specific variation ids the first pass could not place. The parent
+   item comes back as a related object and the category hangs off that.
+   Without this the four base yarns resolved to nothing, which put roughly
+   $40k of a $48k yarn year into a bucket labelled "(uncategorised)" — the
+   totals were right and the *page* was wrong, which is the harder version.
+3. **This app's own `RawProduct.category`**, for anything Square cannot
+   answer at all.
+
+`_category_name` reads all three shapes Square names a category in:
+`category_id` (old, and null on anything written recently),
+`reporting_category` (what the dashboard's own reports use) and `categories`.
+Reading only the first two was how this hid.
+
+**`SaleLine.square_variation_id` is kept for exactly this reason.** Item names
+get edited and catalogue objects get deleted, so the variation id is the only
+durable handle on a line — and it is what lets a category be resolved again
+later without re-fetching every order.
 
 **The report names four different totals** — gross before discounts,
 discounts, refunds, net — because "the total" is four numbers and a season
@@ -1827,9 +1845,11 @@ $89,829 net; the 2022 figures agree to $18.
 Loading 2021–2026 took 12,939 lines across 11,348 orders, and three things in
 it change how the numbers read:
 
-- **Wax was 43% of 2021 revenue** and stops entirely after 2024. Any total
-  spanning that boundary is comparing two different businesses, which is what
-  the category filter is for.
+- **The wax and the yarn were swapped.** Wax was 43% of 2021 revenue and
+  stops dead after 2024; yarn is zero until 2025 and then takes $49,356 of
+  that season. Any total spanning that boundary is comparing two different
+  businesses, which is what the category filter is for — and silk grew
+  straight through it regardless (50,787 → 82,856 across 2021–2025).
 - **Nothing before 2025 has a Square variation id or a SKU on it.** Those
   seasons match by item name only, so they are readable at the *blank* and not
   at the colorway. Colorway-level history starts where the sync does.

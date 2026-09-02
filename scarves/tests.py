@@ -16137,6 +16137,11 @@ class SquareOrdersImportTests(TestCase):
         client.catalog.list_catalog.return_value = FakeResult(
             {"objects": catalog if catalog is not None else []}
         )
+        # Without this the MagicMock answers `is_error()` with a truthy mock
+        # and the deleted-object lookup reads it as Square refusing.
+        client.catalog.batch_retrieve_catalog_objects.return_value = FakeResult(
+            {"objects": [], "related_objects": []}
+        )
         return client
 
     def _run(self, orders, catalog=None, **kwargs):
@@ -16327,3 +16332,85 @@ class CategoryPillTests(TestCase):
         body = response.content.decode()
         self.assertEqual(body.count("cat=Silk&"), body.count("cat=Silk&"))
         self.assertLess(body.count('class="pill'), 30)
+
+
+class DeletedCatalogCategoryTests(TestCase):
+    """A season five years old is mostly things Square no longer lists.
+
+    `ListCatalog` returns the living catalogue only, so the four base yarns —
+    deleted from Square since — came back with no category at all, which put
+    roughly $40k of a $48k yarn year in a bucket labelled "(uncategorised)".
+    Asking about specific objects with `include_deleted_objects` is a
+    different question, and the one that gets an answer.
+    """
+
+    def setUp(self):
+        call_command("generate_faire", "--year", "2021", stdout=StringIO())
+        self.day = "2021-08-28T17:30:00Z"
+
+    def _client(self, live_catalog, deleted):
+        client = mock.MagicMock()
+        client.orders.search_orders.return_value = FakeResult({
+            "orders": [square_order("O1", self.day, [
+                square_item("Homespun", "Wasteland", "VAR-GONE"),
+            ])],
+        })
+        client.catalog.list_catalog.return_value = FakeResult({"objects": live_catalog})
+        client.catalog.batch_retrieve_catalog_objects.return_value = FakeResult(deleted)
+        return client
+
+    @override_settings(SQUARE_ACCESS_TOKEN="t", SQUARE_LOCATION_ID="L1")
+    def test_a_deleted_variation_still_gets_its_category(self):
+        live = [{"type": "CATEGORY", "id": "CAT-YARN", "category_data": {"name": "Yarn"}}]
+        deleted = {
+            "objects": [{
+                "type": "ITEM_VARIATION", "id": "VAR-GONE", "is_deleted": True,
+                "item_variation_data": {"item_id": "ITEM-GONE"},
+            }],
+            "related_objects": [{
+                "type": "ITEM", "id": "ITEM-GONE",
+                "item_data": {
+                    "name": "Homespun - Single & Stunning",
+                    "categories": [{"id": "CAT-YARN"}],
+                },
+            }],
+        }
+        client = self._client(live, deleted)
+        with mock.patch(
+            "scarves.management.commands.import_square_orders.Command._client",
+            return_value=client,
+        ):
+            out = StringIO()
+            call_command("import_square_orders", "--year", "2021", stdout=out)
+
+        self.assertEqual(SaleLine.objects.get().category, "Yarn")
+        self.assertIn("since deleted", out.getvalue())
+        asked = client.catalog.batch_retrieve_catalog_objects.call_args.kwargs["body"]
+        self.assertTrue(asked["include_deleted_objects"])
+        self.assertTrue(asked["include_related_objects"])
+
+    @override_settings(SQUARE_ACCESS_TOKEN="t", SQUARE_LOCATION_ID="L1")
+    def test_the_variation_id_is_kept_on_the_line(self):
+        """The only durable handle on a line — names get edited and catalogue
+        objects get deleted, so this is what lets a category be resolved again
+        without re-fetching every order."""
+        client = self._client([], {"objects": [], "related_objects": []})
+        with mock.patch(
+            "scarves.management.commands.import_square_orders.Command._client",
+            return_value=client,
+        ):
+            call_command("import_square_orders", "--year", "2021", stdout=StringIO())
+        self.assertEqual(SaleLine.objects.get().square_variation_id, "VAR-GONE")
+
+    def test_every_shape_square_names_a_category_in_is_read(self):
+        """`category_id` is the old field and null on anything recent;
+        `reporting_category` is what the dashboard's own reports use."""
+        from scarves.management.commands.import_square_orders import _category_name
+        names = {"C1": "Yarn"}
+        self.assertEqual(_category_name({"category_id": "C1"}, names), "Yarn")
+        self.assertEqual(_category_name({"reporting_category": {"id": "C1"}}, names), "Yarn")
+        self.assertEqual(_category_name({"categories": [{"id": "C1"}]}, names), "Yarn")
+        self.assertEqual(_category_name({}, names), "")
+        # A category deleted along with its item has no name left; grouping the
+        # lines under its id beats dropping them into "(uncategorised)".
+        self.assertEqual(_category_name({"categories": [{"id": "C9"}]}, names), "C9")

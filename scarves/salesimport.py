@@ -137,6 +137,7 @@ def write(lines, source, force=False):
                         "item_name": line["item_name"],
                         "price_point": line["price_point"],
                         "sku": line["sku"],
+                        "square_variation_id": line.get("square_variation_id", ""),
                         "quantity": line["quantity"],
                         "gross_cents": line["gross_cents"],
                         "discount_cents": line["discount_cents"],

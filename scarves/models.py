@@ -2433,6 +2433,18 @@ class SaleLine(models.Model):
         help_text="The colorway, where one was rung up. 'Regular Price' means none was.",
     )
     sku = models.CharField(max_length=64, blank=True, db_index=True)
+    square_variation_id = models.CharField(
+        max_length=100,
+        blank=True,
+        db_index=True,
+        help_text=(
+            "Square's own id for the variation sold, where the source carried "
+            "one — the Orders API does, the CSV export does not. Kept because "
+            "it is the only durable handle on a line: item names get edited "
+            "and catalogue objects get deleted, and this is what lets a "
+            "category be resolved again later without re-fetching every order."
+        ),
+    )
 
     quantity = models.DecimalField(max_digits=9, decimal_places=2)
     gross_cents = models.IntegerField(default=0)
