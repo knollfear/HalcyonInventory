@@ -2213,6 +2213,13 @@ class Faire(models.Model):
             "`generate_faire` refuses it rather than inventing a pattern."
         ),
     )
+    latitude = models.DecimalField(
+        max_digits=8, decimal_places=5, null=True, blank=True,
+        help_text="Where the faire is, for the weather fetch. Roughly is fine — the archive grid is about nine kilometres.",
+    )
+    longitude = models.DecimalField(
+        max_digits=8, decimal_places=5, null=True, blank=True,
+    )
     notes = models.TextField(blank=True)
 
     class Meta:
@@ -2472,3 +2479,68 @@ class SaleLine(models.Model):
     def net(self):
         """Net sales as a Decimal of dollars."""
         return Decimal(self.net_cents) / 100
+
+
+class DayWeather(models.Model):
+    """What the sky did on one trading day.
+
+    Your sister already reads this row — the site this replaces carried it by
+    hand — and the reason it is imported rather than pasted is written in that
+    site's own data: its 2022 and 2023 weather are byte-identical copies of
+    2021's, and 2024 has none at all. A row typed nine times a season stops
+    being typed.
+
+    **Fetched once, after the fact, and stored.** Nothing reads the network
+    when a page renders: a report that makes an HTTP call is a report that
+    sometimes does not render, and the weather on a weekend three years ago is
+    not going to change.
+
+    Cascades from its day for the same reason a product image cascades from
+    its product — it is a description of that day, and with the day gone there
+    is nothing left to describe.
+    """
+
+    day = models.OneToOneField(
+        FaireDay,
+        on_delete=models.CASCADE,
+        related_name="weather",
+    )
+    high_f = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
+    low_f = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
+    mean_f = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
+    precipitation_in = models.DecimalField(
+        max_digits=6, decimal_places=3, null=True, blank=True,
+    )
+    cloud_pct = models.DecimalField(
+        max_digits=5, decimal_places=1, null=True, blank=True,
+        help_text=(
+            "Mean cloud cover over opening hours, not over the whole day. "
+            "Fog at four in the morning is not weather anybody stood in."
+        ),
+    )
+    humidity_pct = models.DecimalField(
+        max_digits=5, decimal_places=1, null=True, blank=True,
+        help_text="Mean relative humidity over opening hours.",
+    )
+    source = models.CharField(
+        max_length=60,
+        default="open-meteo",
+        help_text="Where the reading came from, so a re-sourced season is visible.",
+    )
+    fetched_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["day__date"]
+        verbose_name_plural = "day weather"
+
+    def __str__(self):
+        return f"{self.day.date:%d %b %Y}: {self.mean_f}°F"
+
+    @property
+    def was_wet(self):
+        """Enough rain to be worth noticing on a chart.
+
+        A hundredth of an inch is a passing shower nobody remembers; a tenth
+        is the day the stall covers went up.
+        """
+        return self.precipitation_in is not None and self.precipitation_in >= Decimal("0.1")

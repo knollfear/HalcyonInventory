@@ -34,6 +34,7 @@ from .models import (
     ProductionRun,
     ProductionRunRow,
     TimeEntry,
+    DayWeather,
     Faire,
     FaireDay,
     Sale,
@@ -834,6 +835,7 @@ class FaireDayInline(admin.TabularInline):
     model = FaireDay
     extra = 0
     fields = ("date", "weekend", "is_labor_day", "traded", "note")
+    show_change_link = False
     readonly_fields = ("date", "weekend", "is_labor_day")
     ordering = ("date",)
 
@@ -846,7 +848,7 @@ class FaireDayInline(admin.TabularInline):
 
 @admin.register(Faire)
 class FaireAdmin(admin.ModelAdmin):
-    list_display = ("__str__", "slug", "year", "rule", "day_count", "traded_count")
+    list_display = ("__str__", "slug", "year", "rule", "day_count", "traded_count", "weather_count")
     list_filter = ("slug", "rule")
     search_fields = ("slug", "name")
     inlines = [FaireDayInline]
@@ -858,6 +860,13 @@ class FaireAdmin(admin.ModelAdmin):
     @admin.display(description="Traded")
     def traded_count(self, obj):
         return obj.trading_days
+
+    @admin.display(description="Weather")
+    def weather_count(self, obj):
+        """How many days have a reading — the useful question is which season
+        still needs `fetch_weather`, and that is only answerable across the
+        whole list at once."""
+        return obj.days.filter(weather__isnull=False).count()
 
 
 class SaleLineInline(admin.TabularInline):
@@ -917,4 +926,22 @@ class SaleLineAdmin(admin.ModelAdmin):
         return False
 
     def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(DayWeather)
+class DayWeatherAdmin(admin.ModelAdmin):
+    """Read-only: every row comes from `fetch_weather`, and a hand-typed
+    reading beside fetched ones would be indistinguishable from them."""
+
+    list_display = ("day", "high_f", "low_f", "mean_f", "precipitation_in",
+                    "cloud_pct", "humidity_pct", "source")
+    list_filter = ("source", "day__faire")
+    date_hierarchy = "day__date"
+    list_select_related = ("day", "day__faire")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
         return False

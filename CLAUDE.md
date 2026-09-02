@@ -1843,6 +1843,94 @@ time, so a date belongs to at most one faire, and making it a database fact
 means a sale is placed by date alone. A genuine overlap should fail loudly,
 because being in two places is a decision somebody has to make.
 
+## `private/seasons/`: the pace page, and the two things it refuses to draw
+
+`scarves/seasonreport.py` picks and folds; the view renders. Nothing writes.
+
+**The chart is server-rendered SVG and the page runs no script.** It prints,
+it works with scripts blocked, and there is nothing on it that can fail
+silently — the same bargain the restock board and the close make, for a desk
+page rather than a field one.
+
+**Seasons are ordered, so they are drawn on one hue light-to-dark**, not as a
+rainbow of categorical colours: recency then reads without a legend lookup.
+The focused season is the only line carrying a second hue, and **every line is
+labelled at its own end**, so colour never carries identity alone.
+
+**Per trading day sits beside per weekend, and that is not a nicety.** Weekend
+2 carries Labor Day Monday, so its weekly total runs about a third above its
+neighbours for a reason that has nothing to do with trade — across 2021-2024
+it ranks first or second by weekly total and sixth or eighth per day. A page
+offering only the weekly figure would be read, and acted on. The trading-day
+count prints in its own row so the three is never invisible.
+
+Two things the page will not draw, both because the drawn version would read
+as evidence:
+
+- **A weekend still ahead is projected; a weekend already past with no lines
+  is a gap and is left empty.** The second is almost always an import nobody
+  ran, and a projection sitting where a missing import should be is a number
+  that looks like a measurement. `Weekend.to_come` and `Weekend.is_gap` are
+  the split, and the page names the gaps in a warning.
+- **A weekend with nothing known breaks the line rather than dropping to
+  zero.** Joining across it would draw a season that traded nothing.
+  `_segments` keeps a lone point too — an earlier version dropped any single
+  point that was not last, so two non-adjacent weekends drew no line at all,
+  which reads as a season that took nothing.
+
+**A gap only exists inside a season that otherwise arrived.** For a season
+nobody has imported, every weekend flagged says nine times over what one
+sentence says once, and buries the real gaps in the half-loaded seasons. So a
+season with no lines at all is reported once, as a note.
+
+**Categories are a filter because the wax hands were on this till through 2024
+and are gone.** A total that cannot say what it counts reads a discontinued
+product line as a decline. All of the page's state — faire, focus year, mode,
+metric, categories — rides in the query string, and every control carries the
+rest of it.
+
+Season figures are scoped to the weekends actually reported: `Season.per_day`
+divides by the traded days of the weekends that have data, not by the whole
+run, or a half-imported season reads as a catastrophe.
+
+## Weather: fetched once, from a free archive, and never at render time
+
+`scarves/weather.py` reads Open-Meteo's historical archive — no key, no
+account, back to 1940, which matters because the point is filling in seasons
+that happened years ago. `fetch_weather` stores it; `DayWeather` holds it.
+
+**Nothing reads the network when a page renders.** A report that makes an HTTP
+call is a report that sometimes does not render, and the weather on a weekend
+three years ago is not going to change.
+
+**Three reasons a day can have no reading, and they are not the same.**
+Conflating them is how somebody gets told to come back later for a weekend in
+2027:
+
+| State | What it means | What the command does |
+|-------|---------------|-----------------------|
+| still ahead | the day has not happened | never requests it — asking the archive for the future is what returns a 400 |
+| awaiting the archive | the day just passed | names it; the archive lags about five days |
+| on file | fetched | skipped, unless `--force` |
+
+**Cloud and humidity are averaged over opening hours (10:00–19:00), not the
+whole day.** Fog at four in the morning is not weather anybody stood in. This
+makes cloud read lower than the whole-day figure the old React site carried —
+same sky, different question. Temperature and rain are daily aggregates and
+match that site closely: fetched 2021 comes out 78/71/71/73/64/67/68/62/58
+against its hand-collected 78.05/71.7/72.25/74.45/66.35/68.1/68.9/63.6/60.35,
+which is the evidence that the manual row can stop being typed.
+
+**Coordinates live on the `Faire`, and there is no zip lookup.** Turning a zip
+into a latitude and longitude means another service and another failure mode,
+for a value typed once per faire and never again — and the archive grid is
+about nine kilometres across, so anywhere in the right town is the right
+answer. Passing `--lat`/`--lon` once saves them onto the faire.
+
+`DayWeather` cascades from its day for the same reason a product image
+cascades from its product: it describes that day, and with the day gone there
+is nothing left to describe.
+
 ## Timekeeping: the pay week, and the two totals
 
 The hours form (`secret/hours/`) and the timesheet (`private/timesheet/`)

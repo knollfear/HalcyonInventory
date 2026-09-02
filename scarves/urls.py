@@ -67,6 +67,7 @@ urlpatterns = [
     # the state (range, filters, sort) is all query string, so a reading is a
     # link somebody can send.
     path("private/sales/", views.sales_report, name="sales_report"),
+    path("private/seasons/", views.season_report, name="season_report"),
 
     # --- Recipes ---
     # POST-only, from the type-ahead in any dye picker. No @page_meta: there

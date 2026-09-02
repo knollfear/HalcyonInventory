@@ -1,0 +1,265 @@
+{% extends "scarves/base_internal.html" %}
+{% load form_extras %}
+{% comment %}
+Season against season, indexed on the weekend of the run rather than the
+calendar date — Labor Day moves, so week 1 drifts across six calendar days
+and a date-to-date comparison lines up the wrong days.
+
+The chart is server-rendered SVG. No script runs on this page: it prints, it
+works with scripts blocked, and there is nothing on it that can fail
+silently. Seasons are ordered, so prior ones are drawn on one hue
+light-to-dark and only the focused season carries a second hue — and every
+line is labelled at its own end, so colour never carries identity alone.
+
+Everything the page knows is in the query string, and every control keeps the
+rest of it.
+{% endcomment %}
+
+{% block title %}Season Pace{% endblock %}
+{% block heading %}
+  {% if slug %}{{ slug }} — season against season{% else %}Season pace{% endif %}
+{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root {
+      --column: 1180px;
+      --s-1: #86b6ef; --s-2: #5598e7; --s-3: #2a78d6;
+      --focus: #eb6834;
+      --grid: #e4e8de; --tick: #8a8f82;
+  }
+
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 0; }
+  .toolbar .what { font-size: 12px; color: #667; letter-spacing: .06em;
+                   text-transform: uppercase; margin-right: 2px; }
+  .pill {
+      border: 1px solid #cbd6e2; border-radius: 999px; padding: 4px 12px;
+      text-decoration: none; font-size: 14px; background: #fff; color: inherit;
+  }
+  .pill.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .pill.focus.on { background: var(--focus); border-color: var(--focus); }
+
+  .figure { margin: 18px 0 6px; }
+  .figure svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .figure .grid { stroke: var(--grid); stroke-width: 1; }
+  .figure .tick { font-size: 11px; fill: var(--tick); font-variant-numeric: tabular-nums; }
+  .figure .axis-label { font-size: 9.5px; fill: var(--tick); letter-spacing: 1.2px; }
+  .figure .line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  .figure .line.shade-1 { stroke: var(--s-1); }
+  .figure .line.shade-2 { stroke: var(--s-2); }
+  .figure .line.shade-3 { stroke: var(--s-3); }
+  .figure .line.focus { stroke: var(--focus); stroke-width: 3; }
+  .figure .line.focus.forecast { stroke-width: 2.5; stroke-dasharray: 5 5; opacity: .85; }
+  .figure .end-label { font-size: 11px; fill: var(--tick); font-variant-numeric: tabular-nums; }
+  .figure .end-label.focus { fill: var(--focus); font-weight: 700; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; color: #556; }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .legend i { width: 16px; height: 3px; border-radius: 2px; display: inline-block; }
+  .legend i.dash { height: 0; border-top: 3px dashed var(--focus); }
+
+  .totals { display: flex; gap: 30px; flex-wrap: wrap; margin: 20px 0 6px; }
+  .totals .n { font-size: 2.1rem; font-weight: 700; line-height: 1.05;
+               font-variant-numeric: tabular-nums; }
+  .totals .n.est { color: var(--focus); }
+  .totals .what { font-size: .85rem; color: #556; max-width: 24ch; }
+
+  .scroller { overflow-x: auto; margin: 0 -2px; padding: 0 2px; }
+  table.grid-table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  table.grid-table th, table.grid-table td {
+      text-align: right; padding: 6px 10px; border-bottom: 1px solid #e7ebe3;
+      white-space: nowrap; font-variant-numeric: tabular-nums;
+  }
+  table.grid-table th:first-child, table.grid-table td:first-child {
+      text-align: left; position: sticky; left: 0; background: #fff;
+  }
+  table.grid-table thead th { font-size: 12px; color: #667; font-weight: 600;
+                              text-transform: uppercase; letter-spacing: .05em; }
+  table.grid-table tr.focus td, table.grid-table tr.focus th { color: var(--focus); font-weight: 700; }
+  table.grid-table tr.rule td, table.grid-table tr.rule th { border-top: 2px solid #cbd6e2; }
+  table.grid-table td.est { font-style: italic; color: var(--focus); }
+  table.grid-table td.gap { color: #b45309; }
+  table.grid-table td.void { color: #99a; }
+  table.grid-table td.three { color: var(--focus); font-weight: 700; }
+
+  .note { border-left: 3px solid var(--accent); background: #f2f6fb;
+          padding: 10px 14px; margin: 14px 0; border-radius: 0 6px 6px 0; font-size: 14px; }
+  .note.warn { border-left-color: #b45309; background: #fdf6ec; }
+  .note strong { font-weight: 700; }
+  .sources { font-size: 13px; color: #667; margin-top: 18px; }
+  .sources code { background: #f1f4ee; padding: 1px 5px; border-radius: 4px; }
+{% endblock %}
+
+{% block content %}
+
+{% if no_faires %}
+  <div class="note warn">
+    No faires on file yet. Run <code>manage.py generate_faire --range 2021-2026</code>
+    to lay down the calendar, then <code>manage.py import_sales_history &lt;export.csv&gt;</code>
+    to load what the till took.
+  </div>
+{% else %}
+
+  {% if faire_links|length > 1 %}
+    <div class="toolbar">
+      <span class="what">Faire</span>
+      {% for f in faire_links %}
+        <a class="pill {% if f.on %}on{% endif %}" href="{{ f.href }}">{{ f.slug }} <small>({{ f.count }})</small></a>
+      {% endfor %}
+    </div>
+  {% endif %}
+
+  <div class="toolbar">
+    <span class="what">Measure</span>
+    {% for m in metric_links %}
+      <a class="pill {% if m.on %}on{% endif %}" href="{{ m.href }}">{{ m.label }}</a>
+    {% endfor %}
+    <span class="what" style="margin-left:14px">Shown as</span>
+    {% for m in mode_links %}
+      <a class="pill {% if m.on %}on{% endif %}" href="{{ m.href }}">{{ m.label }}</a>
+    {% endfor %}
+  </div>
+
+  {% if year_links|length > 1 %}
+    <div class="toolbar">
+      <span class="what">Focus</span>
+      {% for y in year_links %}
+        <a class="pill focus {% if y.on %}on{% endif %}" href="{{ y.href }}">{{ y.year }}</a>
+      {% endfor %}
+    </div>
+  {% endif %}
+
+  {% if every_category %}
+    <div class="toolbar">
+      <span class="what">Counting</span>
+      <a class="pill {% if not categories %}on{% endif %}" href="{{ href.clear_categories }}">Everything</a>
+      {% for c in category_links %}
+        <a class="pill {% if c.on %}on{% endif %}" href="{{ c.href }}">{{ c.name }}</a>
+      {% endfor %}
+    </div>
+  {% endif %}
+
+  {% if focus %}
+    <div class="totals">
+      <div>
+        <div class="n">{% if is_money %}{{ focus.total|money_cents }}{% else %}{{ focus.units|plain }}{% endif %}</div>
+        <div class="what">
+          {{ focus.year }} so far, over {{ focus.traded_days }} trading day{{ focus.traded_days|pluralize }} counted
+        </div>
+      </div>
+      {% if projected_total %}
+        <div>
+          <div class="n est">{% if is_money %}{{ projected_total|money_cents }}{% else %}{{ projected_total|plain }}{% endif %}</div>
+          <div class="what">on course for, from the shape of the seasons behind it — a projection, not a measurement</div>
+        </div>
+      {% endif %}
+      <div>
+        <div class="n">{% if is_money %}{{ focus.per_day|money_cents }}{% else %}{{ focus.per_day|plain }}{% endif %}</div>
+        <div class="what">per trading day{% if focus.to_come %}, on what has happened so far{% endif %}</div>
+      </div>
+    </div>
+  {% endif %}
+
+  {% if chart %}
+    <div class="figure">{{ chart|safe }}</div>
+    <div class="legend">
+      {% for s in with_data %}
+        <span><i style="background: {% if s.year == focus_year %}var(--focus){% else %}var(--s-2){% endif %}"></i>{{ s.year }}{% if s.year == focus_year %} (focus){% endif %}</span>
+      {% endfor %}
+      {% if projected_total %}<span><i class="dash"></i>Projected</span>{% endif %}
+    </div>
+  {% else %}
+    <div class="note warn">
+      Nothing to chart. The calendar exists but no sales have been imported
+      against it — run <code>manage.py import_sales_history</code>.
+    </div>
+  {% endif %}
+
+  {% if focus and focus.gaps %}
+    <div class="note warn">
+      <strong>Weekend{{ focus.gaps|pluralize }} {{ focus.gaps|join:", " }} of {{ focus.year }}
+      already happened and has nothing recorded against it.</strong>
+      That is almost certainly an import nobody ran, so it is left empty rather
+      than projected — a projection sitting where a missing import should be is
+      a number that looks like evidence.
+    </div>
+  {% endif %}
+
+  {% if empty_seasons %}
+    <div class="note">
+      No sales imported yet for
+      {% for s in empty_seasons %}{{ s.year }}{% if not forloop.last %}, {% endif %}{% endfor %}.
+      Their calendars exist, so they will appear here the moment an export is loaded.
+    </div>
+  {% endif %}
+
+  <h2 style="margin-top:26px">Weekend by weekend</h2>
+  <div class="scroller">
+    <table class="grid-table">
+      <thead>
+        <tr>
+          <th>&nbsp;</th>
+          {% for n in weekend_numbers %}<th>Wk {{ n }}</th>{% endfor %}
+          <th>Season</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in seasons %}
+          <tr class="{% if s.year == focus_year %}focus{% endif %}">
+            <th>{{ s.year }}</th>
+            {% for w in s.weekends %}
+              {% if w.projected %}<td class="est">{% if is_money %}{{ w.value|money_cents }}{% else %}{{ w.value|plain }}{% endif %}</td>
+              {% elif w.is_gap %}<td class="gap" title="Happened, nothing imported">gap</td>
+              {% elif w.to_come %}<td class="void" title="Has not happened yet">—</td>
+              {% elif not w.has_data %}<td class="void">—</td>
+              {% else %}<td>{% if is_money %}{{ w.value|money_cents }}{% else %}{{ w.value|plain }}{% endif %}</td>{% endif %}
+            {% endfor %}
+            <td>{% if s.year == focus_year and projected_total %}<span class="est">{% if is_money %}{{ projected_total|money_cents }}{% else %}{{ projected_total|plain }}{% endif %}</span>{% elif not s.has_any_data %}<span class="void">&mdash;</span>{% elif is_money %}{{ s.total|money_cents }}{% else %}{{ s.total|plain }}{% endif %}</td>
+          </tr>
+        {% endfor %}
+        <tr class="rule">
+          <th>Trading days <small style="font-weight:400;color:#889">Labor Day Mon in wk {{ labor_day_weekend }}</small></th>
+          {% for w in shape.weekends %}
+            <td class="{% if w.days == 3 %}three{% endif %}">{{ w.days }}</td>
+          {% endfor %}
+          <td>{{ shape.calendar_days }}</td>
+        </tr>
+        {% if focus and focus.weekends.0.has_weather or weather_any %}
+          <tr>
+            <th>Weather <small style="font-weight:400;color:#889">{{ focus_year }}, mean °F over open hours</small></th>
+            {% for w in focus.weekends %}
+              {% if w.has_weather %}
+                <td>{{ w.mean_f|floatformat:0 }}°{% if w.was_wet %} <span title="{{ w.wet_days }} wet day{{ w.wet_days|pluralize }}" style="color:var(--accent)">&#9670;</span>{% endif %}</td>
+              {% else %}
+                <td class="void">&mdash;</td>
+              {% endif %}
+            {% endfor %}
+            <td class="void">&mdash;</td>
+          </tr>
+        {% endif %}
+        {% if shares %}
+          <tr>
+            <th>Share of season <small style="font-weight:400;color:#889">complete seasons</small></th>
+            {% for n in weekend_numbers %}
+              <td>{{ shares|lookup:n|floatformat:1 }}%</td>
+            {% endfor %}
+            <td>100%</td>
+          </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if sources %}
+    <div class="sources">
+      Rows by source:
+      {% for row in sources %}
+        <code>{{ row.source }}</code> {{ row.lines }}{% if not forloop.last %} · {% endif %}
+      {% endfor %}
+      — printed rather than filtered on, so a season supplied by a different
+      pipeline is visible without changing what any total means.
+    </div>
+  {% endif %}
+
+{% endif %}
+{% endblock %}

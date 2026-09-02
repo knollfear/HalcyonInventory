@@ -40,7 +40,7 @@ from django.urls import reverse
 
 from . import (
     closing, colorbands, crew, fancy, photowalk, production, restock,
-    sales, seasons, sheetscan, skus, timesheets,
+    sales, seasonreport, seasons, sheetscan, skus, timesheets, weather,
 )
 from .colorutils import (
     delta_e,
@@ -70,6 +70,7 @@ from .models import (
     DisplayPosition,
     Dye,
     DyeBrand,
+    DayWeather,
     Employee,
     Faire,
     FaireDay,
@@ -15735,3 +15736,345 @@ class ImportSalesHistoryTests(TestCase):
         )
         self.assertEqual(Sale.objects.get().source, Sale.SOURCE_SQUARE_API)
         self.assertEqual(SaleLine.objects.get().source, Sale.SOURCE_SQUARE_API)
+
+
+def sale_line(day, cents, category="Silk Scarves", item="Rectangle Veil",
+              units=1, hour=13, order=None):
+    """One line on a given local date, for the season-report tests."""
+    when = timezone.make_aware(datetime.combine(day, time(hour, 30)))
+    order = order or f"T{day.isoformat()}-{cents}-{item}-{hour}"
+    sale, _ = Sale.objects.get_or_create(
+        order_id=order,
+        defaults={"sold_at": when, "source": Sale.SOURCE_SQUARE_CSV},
+    )
+    return SaleLine.objects.create(
+        sale=sale, line_key=f"{item}|x|{SaleLine.objects.count()}",
+        sold_at=when, category=category, item_name=item,
+        quantity=Decimal(units), gross_cents=cents, net_cents=cents,
+        source=Sale.SOURCE_SQUARE_CSV,
+    )
+
+
+class SeasonReportTests(TestCase):
+    """Season against season on the weekend axis.
+
+    The failures guarded here are the ones that read as facts: a weekend-2
+    total compared against two-day weekends, and a projection drawn over a
+    weekend that already happened and simply was not imported.
+    """
+
+    def setUp(self):
+        call_command("generate_faire", "--range", "2021-2022", stdout=StringIO())
+        self.y2021 = Faire.objects.get(year=2021)
+        self.y2022 = Faire.objects.get(year=2022)
+
+    def _fill(self, faire, per_weekend, category="Silk Scarves"):
+        """One line on the first day of each weekend, worth `per_weekend` cents."""
+        for number, cents in per_weekend.items():
+            day = faire.days.filter(weekend=number).first()
+            sale_line(day.date, cents, category=category,
+                      order=f"{faire.year}-w{number}-{category}")
+
+    def test_totals_land_in_the_weekend_the_day_belongs_to(self):
+        self._fill(self.y2021, {1: 100_000, 2: 250_000, 9: 400_000})
+        seasons = seasonreport.build("labor-day-run", today=date(2026, 12, 31))
+        y2021 = next(s for s in seasons if s.year == 2021)
+        values = {w.number: w.value for w in y2021.weekends}
+        self.assertEqual(values[1], 100_000)
+        self.assertEqual(values[2], 250_000)
+        self.assertEqual(values[9], 400_000)
+        self.assertEqual(y2021.total, 750_000)
+
+    def test_weekend_two_is_divided_by_three_days_not_two(self):
+        """The whole reason per-day exists. Weekend 2 carries Labor Day."""
+        self._fill(self.y2021, {2: 300_000, 3: 300_000})
+        seasons = seasonreport.build("labor-day-run", today=date(2026, 12, 31))
+        y2021 = next(s for s in seasons if s.year == 2021)
+        by_number = {w.number: w for w in y2021.weekends}
+
+        self.assertEqual(by_number[2].traded_days, 3)
+        self.assertEqual(by_number[3].traded_days, 2)
+        self.assertEqual(by_number[2].per_day, Decimal(100_000))
+        self.assertEqual(by_number[3].per_day, Decimal(150_000))
+        # Identical weekly totals, and weekend 2 is the weaker weekend.
+        self.assertLess(by_number[2].per_day, by_number[3].per_day)
+
+    def test_a_struck_day_leaves_the_weekend_with_one_denominator(self):
+        washed = self.y2021.days.filter(weekend=5)
+        washed.update(traded=False)
+        self._fill(self.y2021, {5: 0})
+        seasons = seasonreport.build("labor-day-run", today=date(2026, 12, 31))
+        y2021 = next(s for s in seasons if s.year == 2021)
+        by_number = {w.number: w for w in y2021.weekends}
+        self.assertEqual(by_number[5].traded_days, 0)
+        self.assertEqual(by_number[5].per_day, Decimal(0))
+
+    def test_a_weekend_still_ahead_is_projected_and_a_past_gap_is_not(self):
+        """The distinction the module exists to keep: to-come versus missing."""
+        complete = {n: 100_000 for n in range(1, 10)}
+        self._fill(self.y2021, complete)
+        # 2022 has weekends 1 and 2 recorded; 3 happened and was never
+        # imported; the rest are treated as still ahead.
+        self._fill(self.y2022, {1: 100_000, 2: 100_000})
+        seasons = seasonreport.build(
+            "labor-day-run", today=date(2022, 9, 12),
+        )
+        y2022 = next(s for s in seasons if s.year == 2022)
+        y2021 = next(s for s in seasons if s.year == 2021)
+
+        self.assertEqual(y2022.gaps, [3])
+        self.assertNotIn(3, y2022.to_come)
+
+        total = seasonreport.project(y2022, [y2021])
+        self.assertIsNotNone(total)
+        by_number = {w.number: w for w in y2022.weekends}
+        self.assertFalse(by_number[3].projected, "a past gap must never be projected")
+        self.assertTrue(by_number[9].projected)
+
+    def test_nothing_is_projected_without_a_complete_season_behind_it(self):
+        self._fill(self.y2021, {1: 100_000})
+        self._fill(self.y2022, {1: 100_000})
+        seasons = seasonreport.build("labor-day-run", today=date(2022, 9, 1))
+        y2022 = next(s for s in seasons if s.year == 2022)
+        y2021 = next(s for s in seasons if s.year == 2021)
+        self.assertIsNone(seasonreport.project(y2022, [y2021]))
+
+    def test_a_category_filter_changes_the_total(self):
+        """Wax was on this till and is gone; a total must say what it counts."""
+        self._fill(self.y2021, {1: 100_000}, category="Silk Scarves")
+        self._fill(self.y2021, {1: 40_000}, category="Wax")
+
+        everything = seasonreport.build("labor-day-run", today=date(2026, 12, 31))
+        self.assertEqual(next(s for s in everything if s.year == 2021).total, 140_000)
+
+        silk = seasonreport.build(
+            "labor-day-run", categories=["Silk Scarves"], today=date(2026, 12, 31),
+        )
+        self.assertEqual(next(s for s in silk if s.year == 2021).total, 100_000)
+
+    def test_a_season_with_no_lines_is_absent_rather_than_zero(self):
+        self._fill(self.y2021, {1: 100_000})
+        seasons = seasonreport.build("labor-day-run", today=date(2026, 12, 31))
+        y2022 = next(s for s in seasons if s.year == 2022)
+        self.assertFalse(y2022.has_any_data)
+        self.assertEqual(
+            seasonreport.chart(seasons, 2021, seasonreport.MODE_CUMULATIVE,
+                               seasonreport.METRIC_NET).count("2022"), 0,
+            "a season with nothing imported must not be drawn as a flat zero",
+        )
+
+    def test_the_chart_breaks_the_line_over_a_gap(self):
+        self._fill(self.y2021, {1: 100_000, 3: 100_000})
+        seasons = seasonreport.build("labor-day-run", today=date(2026, 12, 31))
+        svg = seasonreport.chart(seasons, 2021, seasonreport.MODE_WEEKEND,
+                                 seasonreport.METRIC_NET)
+        self.assertGreaterEqual(
+            svg.count('class="line focus"'), 2,
+            "a weekend with nothing known is a break, not a zero joined through",
+        )
+
+
+class SeasonReportPageTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user("staff", password="pw")
+        call_command("generate_faire", "--range", "2021-2022", stdout=StringIO())
+        for faire in Faire.objects.all():
+            for number in range(1, 10):
+                day = faire.days.filter(weekend=number).first()
+                sale_line(day.date, 100_000 + number * 1000,
+                          order=f"{faire.year}-{number}")
+        self.url = reverse("season_report")
+
+    def test_it_is_private(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/login", response["Location"])
+
+    def test_it_renders_with_a_chart_and_a_table(self):
+        self.client.force_login(self.user)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn("Weekend by weekend", body)
+        self.assertIn("<svg", body)
+        self.assertIn("2021", body)
+        self.assertIn("2022", body)
+
+    def test_every_control_keeps_the_rest_of_the_state(self):
+        self.client.force_login(self.user)
+        response = self.client.get(
+            self.url, {"metric": "units", "year": "2021", "cat": "Silk Scarves"},
+        )
+        self.assertEqual(response.status_code, 200)
+        for link in response.context["mode_links"]:
+            self.assertIn("metric=units", link["href"])
+            self.assertIn("year=2021", link["href"])
+            self.assertIn("cat=Silk+Scarves", link["href"])
+
+    def test_an_unknown_focus_year_falls_back_rather_than_erroring(self):
+        """A filter is navigation; a stale link should show more, not break."""
+        self.client.force_login(self.user)
+        response = self.client.get(self.url, {"year": "1999"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["focus_year"], 2022)
+
+    def test_an_unreadable_mode_falls_back_to_the_default(self):
+        self.client.force_login(self.user)
+        response = self.client.get(self.url, {"mode": "sideways"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["mode"], seasonreport.DEFAULT_MODE)
+
+    def test_per_day_shows_different_numbers_from_per_weekend(self):
+        self.client.force_login(self.user)
+        weekly = self.client.get(self.url, {"mode": "weekend"}).content.decode()
+        per_day = self.client.get(self.url, {"mode": "day"}).content.decode()
+        self.assertNotEqual(weekly, per_day)
+
+    def test_it_says_so_when_no_sales_have_been_imported(self):
+        SaleLine.objects.all().delete()
+        Sale.objects.all().delete()
+        self.client.force_login(self.user)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Nothing to chart", response.content.decode())
+
+
+WEATHER_PAYLOAD = json.dumps({
+    "daily": {
+        "time": ["2021-08-28", "2021-08-29", "2021-09-04"],
+        "temperature_2m_max": [85.3, 82.1, None],
+        "temperature_2m_min": [73.9, 72.7, None],
+        "temperature_2m_mean": [78.4, 76.8, None],
+        "precipitation_sum": [0.071, 0.4, None],
+    },
+    "hourly": {
+        "time": (
+            [f"2021-08-28T{h:02d}:00" for h in range(24)]
+            + [f"2021-08-29T{h:02d}:00" for h in range(24)]
+        ),
+        # 100% cloud overnight, 20% during opening hours — so a whole-day mean
+        # and an open-hours mean disagree, which is the point of the split.
+        "cloud_cover": (
+            [100 if not 10 <= h <= 19 else 20 for h in range(24)]
+            + [50] * 24
+        ),
+        "relative_humidity_2m": [60] * 24 + [70] * 24,
+    },
+})
+
+
+class WeatherFetchTests(TestCase):
+    """Reading the archive, and the three reasons a day can have no weather."""
+
+    def test_cloud_and_humidity_average_over_opening_hours_only(self):
+        """Fog at four in the morning is not weather anybody stood in."""
+        readings = weather.fetch(
+            39.0, -76.6, date(2021, 8, 28), date(2021, 9, 4), "America/New_York",
+            opener=lambda url: WEATHER_PAYLOAD,
+        )
+        first = readings[date(2021, 8, 28)]
+        self.assertEqual(first["cloud_pct"], Decimal("20.0"))
+        self.assertEqual(first["humidity_pct"], Decimal("60.0"))
+        self.assertEqual(first["high_f"], Decimal("85.3"))
+        self.assertEqual(first["low_f"], Decimal("73.9"))
+
+    def test_a_day_the_archive_has_no_answer_for_is_absent_not_null(self):
+        """The caller has to tell 'not yet' from 'calm and dry'."""
+        readings = weather.fetch(
+            39.0, -76.6, date(2021, 8, 28), date(2021, 9, 4), "America/New_York",
+            opener=lambda url: WEATHER_PAYLOAD,
+        )
+        self.assertIn(date(2021, 8, 28), readings)
+        self.assertNotIn(date(2021, 9, 4), readings)
+
+    def test_an_error_from_the_archive_is_raised_not_swallowed(self):
+        payload = json.dumps({"error": True, "reason": "start_date is out of range"})
+        with self.assertRaises(weather.WeatherUnavailable) as caught:
+            weather.fetch(39.0, -76.6, date(2021, 8, 28), date(2021, 8, 29),
+                          "America/New_York", opener=lambda url: payload)
+        self.assertIn("out of range", str(caught.exception))
+
+    def test_rain_worth_noticing(self):
+        readings = weather.fetch(
+            39.0, -76.6, date(2021, 8, 28), date(2021, 9, 4), "America/New_York",
+            opener=lambda url: WEATHER_PAYLOAD,
+        )
+        call_command("generate_faire", "--year", "2021", stdout=StringIO())
+        day = FaireDay.objects.get(date=date(2021, 8, 28))
+        light = DayWeather.objects.create(day=day, **readings[date(2021, 8, 28)])
+        self.assertFalse(light.was_wet)
+
+        wet_day = FaireDay.objects.get(date=date(2021, 8, 29))
+        wet = DayWeather.objects.create(day=wet_day, **readings[date(2021, 8, 29)])
+        self.assertTrue(wet.was_wet)
+
+
+class FetchWeatherCommandTests(TestCase):
+    def setUp(self):
+        call_command("generate_faire", "--year", "2021", stdout=StringIO())
+        self.faire = Faire.objects.get(year=2021)
+
+    def test_it_needs_coordinates_and_remembers_them(self):
+        with self.assertRaises(CommandError) as caught:
+            call_command("fetch_weather", "--year", "2021", stdout=StringIO())
+        self.assertIn("coordinates", str(caught.exception))
+
+        with mock.patch("scarves.weather._open", return_value=WEATHER_PAYLOAD):
+            call_command("fetch_weather", "--year", "2021",
+                         "--lat", "39.0068", "--lon", "-76.6", stdout=StringIO())
+        self.faire.refresh_from_db()
+        self.assertEqual(float(self.faire.latitude), 39.0068)
+        self.assertEqual(float(self.faire.longitude), -76.6)
+
+    def test_it_stores_what_it_got_and_names_what_it_did_not(self):
+        out = StringIO()
+        with mock.patch("scarves.weather._open", return_value=WEATHER_PAYLOAD):
+            call_command("fetch_weather", "--year", "2021",
+                         "--lat", "39.0068", "--lon", "-76.6", stdout=out)
+        self.assertEqual(DayWeather.objects.count(), 2)
+        report = out.getvalue()
+        self.assertIn("no reading for yet", report)
+        self.assertIn("come back later", report)
+
+    def test_re_running_fetches_nothing_already_on_file(self):
+        with mock.patch("scarves.weather._open", return_value=WEATHER_PAYLOAD) as opener:
+            call_command("fetch_weather", "--year", "2021",
+                         "--lat", "39.0068", "--lon", "-76.6", stdout=StringIO())
+            first_calls = opener.call_count
+            call_command("fetch_weather", "--year", "2021", stdout=StringIO())
+            self.assertEqual(opener.call_count, first_calls + 1,
+                             "one call for the days still missing, not a re-fetch of the lot")
+        self.assertEqual(DayWeather.objects.count(), 2)
+
+    def test_days_still_ahead_are_never_requested(self):
+        """Asking the archive for the future is what earns a 400."""
+        call_command("generate_faire", "--year", "2099", stdout=StringIO())
+        out = StringIO()
+        with mock.patch("scarves.weather._open") as opener:
+            call_command("fetch_weather", "--year", "2099",
+                         "--lat", "39.0", "--lon", "-76.6", stdout=out)
+        opener.assert_not_called()
+        self.assertIn("still ahead", out.getvalue())
+        self.assertEqual(DayWeather.objects.count(), 0)
+
+    def test_dry_run_writes_nothing(self):
+        with mock.patch("scarves.weather._open", return_value=WEATHER_PAYLOAD):
+            call_command("fetch_weather", "--year", "2021", "--lat", "39.0",
+                         "--lon", "-76.6", "--dry-run", stdout=StringIO())
+        self.assertEqual(DayWeather.objects.count(), 0)
+
+
+class SeasonWeatherRowTests(TestCase):
+    def test_a_weekend_with_no_reading_is_absent_not_cold_and_dry(self):
+        call_command("generate_faire", "--year", "2021", stdout=StringIO())
+        day = FaireDay.objects.get(date=date(2021, 8, 28))
+        DayWeather.objects.create(day=day, mean_f=Decimal("78.4"),
+                                  precipitation_in=Decimal("0.400"))
+
+        seasons = seasonreport.build("labor-day-run", today=date(2026, 12, 31))
+        weekends = {w.number: w for w in seasons[0].weekends}
+        self.assertTrue(weekends[1].has_weather)
+        self.assertEqual(weekends[1].mean_f, Decimal("78.4"))
+        self.assertTrue(weekends[1].was_wet)
+        self.assertFalse(weekends[2].has_weather)
+        self.assertIsNone(weekends[2].mean_f)

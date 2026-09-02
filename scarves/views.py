@@ -52,8 +52,9 @@ from django.template.response import TemplateResponse
 
 from . import (
     closing, colorbands, crew, fancy, labels, photowalk, production, restock,
-    sales, sheetscan, skus, timesheets,
+    sales, seasonreport, sheetscan, skus, timesheets,
 )
+from . import seasons as seasons_mod
 from .colorutils import hex_to_rgb, nearest_by_color, pick_color_cluster
 from .forms import (
     BoothPhotoForm,
@@ -6026,6 +6027,168 @@ def _hidden(base, *keys):
     """The subset of the page's state one form has to carry for the other."""
     return [(k, base[k]) for k in keys
             if base.get(k) not in (None, "", 0)]
+
+
+def _seasons_href(base, **overrides):
+    """`private/seasons/` with the current reading's state, minus overrides.
+
+    Every control carries the rest of the state — switching to per-day keeps
+    the focused season, the categories and the faire. Same rule the colour
+    page's pills and the sales report's headings follow: the useful views are
+    combinations, and a control that resets the others means a combination can
+    only be reached by starting over.
+    """
+    params = dict(base)
+    params.update(overrides)
+    categories = params.pop("cat", None) or []
+    pairs = [(k, v) for k, v in params.items() if v not in (None, "", 0)]
+    pairs += [("cat", name) for name in categories]
+    query = urlencode(pairs)
+    return reverse("season_report") + (f"?{query}" if query else "")
+
+
+@page_meta(
+    title="Season Pace",
+    description="This season against the ones behind it, indexed on the "
+                "weekend of the run rather than the calendar date. Dollars or "
+                "units, cumulative, per weekend, or per trading day.",
+    category="Inventory",
+    note="?faire=&year=&mode=cum|weekend|day&metric=net|units&cat=",
+)
+@login_required
+def season_report(request):
+    """Season against season on the weekend axis.
+
+    **Per trading day is offered beside per weekend because weekend 2 carries
+    Labor Day Monday.** Its weekly total runs about a third above its
+    neighbours for a reason that has nothing to do with trade, and a page
+    offering only the weekly figure would be read and acted on.
+
+    **A projection is drawn only over weekends still ahead.** A past weekend
+    with no lines is a gap — almost certainly an import nobody ran — and is
+    named as one rather than filled in, because a projection sitting where a
+    missing import should be is a number that looks like evidence.
+
+    Everything is in the query string so a reading is a link somebody can
+    send, and the categories are there because the wax hands were on this till
+    through 2024 and are gone: a total that cannot say what it counts reads a
+    discontinued line as a decline.
+    """
+    slugs = seasonreport.faire_slugs()
+    if not slugs:
+        return render(request, "scarves/season_report.html", {"no_faires": True})
+
+    slug = request.GET.get("faire") or ""
+    if slug not in {name for name, _count in slugs}:
+        slug = slugs[0][0]
+
+    every_category = seasonreport.categories_on_file()
+    categories = [c for c in request.GET.getlist("cat") if c in every_category]
+
+    metric = request.GET.get("metric", "")
+    if metric not in seasonreport.METRIC_KEYS:
+        metric = seasonreport.DEFAULT_METRIC
+    mode = request.GET.get("mode", "")
+    if mode not in seasonreport.MODE_KEYS:
+        mode = seasonreport.DEFAULT_MODE
+
+    seasons = seasonreport.build(slug, categories or None)
+    for season in seasons:
+        seasonreport.metric_of(season, metric)
+
+    with_data = [s for s in seasons if s.has_any_data]
+    known_years = [s.year for s in with_data]
+
+    # Default focus is the most recent season that has anything in it — the
+    # one somebody opening the page is asking about. An unreadable or unknown
+    # year falls back rather than erroring: a filter is navigation, and a
+    # stale link should show something rather than break.
+    focus_year = _int_or_none(request.GET.get("year"))
+    if focus_year not in known_years:
+        # Falling back to the newest season with sales in it is the ordinary
+        # case. With none imported at all it still focuses the newest season,
+        # because the calendar and the weather are real data worth showing
+        # before any export has been loaded — a page that waits for sales to
+        # say anything is a page that looks broken on the day it ships.
+        focus_year = known_years[-1] if known_years else (
+            seasons[-1].year if seasons else None
+        )
+
+    focus = next((s for s in seasons if s.year == focus_year), None)
+    priors = [s for s in with_data if s.year != focus_year]
+    projected_total = seasonreport.project(focus, priors) if focus else None
+
+    shares = seasonreport.share_of_season(with_data)
+    weekend_numbers = sorted({w.number for s in seasons for w in s.weekends})
+
+    base = {
+        "faire": slug,
+        "year": focus_year,
+        "mode": mode,
+        "metric": metric,
+        "cat": categories,
+    }
+
+    return render(request, "scarves/season_report.html", {
+        "slugs": slugs,
+        "slug": slug,
+        "seasons": seasons,
+        "with_data": with_data,
+        "empty_seasons": [s for s in seasons if not s.has_any_data],
+        "focus": focus,
+        "focus_year": focus_year,
+        "priors": priors,
+        "projected_total": projected_total,
+        "shares": shares,
+        "weekend_numbers": weekend_numbers,
+        # The trading-day row is a property of the run, not of any one
+        # season, so it is read off whichever season is on screen first.
+        "shape": focus or (seasons[0] if seasons else None),
+        "labor_day_weekend": seasons_mod.LABOR_DAY_WEEKEND,
+        "weather_any": bool(focus and any(w.has_weather for w in focus.weekends)),
+        "chart": seasonreport.chart(seasons, focus_year, mode, metric),
+        "mode": mode,
+        "metric": metric,
+        "modes": seasonreport.MODES,
+        "metrics": seasonreport.METRICS,
+        "every_category": every_category,
+        "categories": categories,
+        "sources": seasonreport.source_breakdown(slug, categories or None),
+        "is_money": metric == seasonreport.METRIC_NET,
+        "href": {
+            "base": base,
+            "clear_categories": _seasons_href(base, cat=[]),
+        },
+        "mode_links": [
+            {"key": key, "label": label, "on": key == mode,
+             "href": _seasons_href(base, mode=key)}
+            for key, label in seasonreport.MODES
+        ],
+        "metric_links": [
+            {"key": key, "label": label, "on": key == metric,
+             "href": _seasons_href(base, metric=key)}
+            for key, label in seasonreport.METRICS
+        ],
+        "year_links": [
+            {"year": s.year, "on": s.year == focus_year,
+             "href": _seasons_href(base, year=s.year)}
+            for s in with_data
+        ],
+        "faire_links": [
+            {"slug": name, "count": count, "on": name == slug,
+             "href": _seasons_href(base, faire=name, year=None)}
+            for name, count in slugs
+        ],
+        "category_links": [
+            {"name": name, "on": name in categories,
+             "href": _seasons_href(
+                 base,
+                 cat=[c for c in categories if c != name] if name in categories
+                     else sorted(categories + [name]),
+             )}
+            for name in every_category
+        ],
+    })
 
 
 def _sales_href(base, **overrides):

@@ -24,3 +24,28 @@ def lookup(mapping, key):
     if mapping is None:
         return ""
     return mapping.get(key, "")
+
+
+@register.filter
+def money_cents(value):
+    """Integer cents → `$1,234`. Whole dollars, because these are season totals.
+
+    The ledger stores cents so nothing rounds on the way in; every page that
+    shows a season figure wants dollars, and doing the division in the
+    template rather than the model keeps one storage unit and one display
+    unit instead of a third thing in between.
+    """
+    try:
+        dollars = round(float(value) / 100)
+    except (TypeError, ValueError):
+        return ""
+    return f"${dollars:,}"
+
+
+@register.filter
+def plain(value):
+    """A number with thousands separators and no decimals."""
+    try:
+        return f"{round(float(value)):,}"
+    except (TypeError, ValueError):
+        return ""
