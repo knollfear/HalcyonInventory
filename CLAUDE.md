@@ -1398,6 +1398,40 @@ outcome records is the **direction** — the app was under, the
 stock-arrived-unrecorded end of the pipeline — and the direction is what is
 being counted.
 
+### The close is also the stockout measure
+
+A `CloseRunRow` answered at **`counted == 0`** is the record that a product
+was sold out on a Sunday night. That is the measure of a stockout in this
+shop, and it needs nothing built to collect — the close already produces it
+every weekend as a by-product of truing the count.
+
+**It counts weekends, not units, and never a rate.** One `(product, close)`
+pair at zero is one observation. A colorway sold out across two weekends
+counts twice, and **that is right whether or not a bath was run in between**:
+the customer could not buy it on either night, which is the whole of what is
+being measured. A restock that sells out again is a better *outcome* than
+making none — more was sold — but it is not a different *reading*, and trying
+to separate them would mean estimating what would have sold, which nothing
+here can know. Same bargain as "absolute counts, never a rate" and
+`closing.tally()` having no denominator.
+
+**Only an answered row counts.** A walk that covered 23 of 40 pegs leaves the
+rest `pending`, and a pending row is "nobody looked", never "not sold out" —
+so the count is over rows that came back, and the silence stays silent rather
+than being read as a zero in either direction.
+
+**It cannot be backfilled.** A close is a physical count made on the night,
+and `CloseRun.day` locks at midnight, so a weekend nobody closed is a weekend
+whose stockouts are simply not knowable. That is the cost of the measure being
+free, and it is the reason the ritual matters more than any report built on
+it: the series starts at the first close somebody actually does.
+
+This is deliberately **not** derived from `number_on_hand` hitting zero in
+`InventoryLog`. That number is the app's belief, which is exactly what the
+close exists to check — reading the stockout off it would be the app marking
+its own homework, and the sale clamp means it reaches zero and stays there
+whether or not anybody looked at the peg.
+
 ### The counting list: what's left, and the search
 
 **Answered rows come off the counting list.** What somebody is looking for
