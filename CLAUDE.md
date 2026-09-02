@@ -1815,6 +1815,33 @@ reads a discontinued product line as a decline.
 zone names in its own dialect and they are mapped explicitly; a near-miss
 shifts every hour-of-day figure by hours and looks exactly like a correct one.
 
+### The work is separate from what triggers it
+
+Three modules, and the split is deliberate rather than tidy:
+
+| Module | Knows about |
+|--------|-------------|
+| `squareorders.py` | Square's API, and turning an order into line dicts |
+| `salesimport.py` | matching those lines to the catalogue and writing them |
+| `management/commands/…` | what the operator asked for, and what gets printed |
+
+**Nothing in the first two knows why it is being called.** No argument
+parsing, no `self.stdout`, and no `CommandError` — a Square failure raises
+`squareorders.SquareUnavailable`, and each caller translates that into
+whatever it needs to say. A module that raises `CommandError` is telling its
+caller what kind of program it is.
+
+The reason is the next trigger. The webhook already holds a retrieved order,
+so the day it writes the ledger it either calls `lines_from_order` or copies
+it — and a copy is how two totals for one weekend appear with nothing on
+either to say which is right. Same for a queue consumer, or a backfill. The
+trigger is expected to change; the work is not.
+
+`WorkIsSeparableFromItsTriggerTests` pins it, including walking the import
+graph of both modules and failing on anything from `management`. It was worth
+writing: the first version of this split imported `CommandError` without
+anybody noticing.
+
 ### Two doors into the ledger, and the order is the unit
 
 `import_square_orders` pulls from the **Orders API**; `import_sales_history`

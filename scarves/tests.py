@@ -16405,7 +16405,7 @@ class DeletedCatalogCategoryTests(TestCase):
     def test_every_shape_square_names_a_category_in_is_read(self):
         """`category_id` is the old field and null on anything recent;
         `reporting_category` is what the dashboard's own reports use."""
-        from scarves.management.commands.import_square_orders import _category_name
+        from scarves.squareorders import category_name as _category_name
         names = {"C1": "Yarn"}
         self.assertEqual(_category_name({"category_id": "C1"}, names), "Yarn")
         self.assertEqual(_category_name({"reporting_category": {"id": "C1"}}, names), "Yarn")
@@ -16550,3 +16550,68 @@ class ImportWindowTests(TestCase):
         label, start, _end = self._windows()[0]
         self.assertIn("2026", label)
         self.assertEqual(start, date(2026, 8, 29))
+
+
+class WorkIsSeparableFromItsTriggerTests(TestCase):
+    """Turning an order into ledger lines must not need a management command.
+
+    The webhook already holds a retrieved order, and the moment it wants to
+    write the ledger it either calls this or copies it — and a copy is how two
+    totals for one weekend appear with nothing to say which is right. So the
+    conversion lives in `squareorders`, which knows nothing about why it is
+    being called, and swapping the trigger is a change to the caller only.
+    """
+
+    def test_an_order_becomes_lines_with_no_command_involved(self):
+        from scarves import squareorders
+        order = square_order("O1", "2021-08-28T17:30:00Z", [
+            square_item("Rectangle Veil", "Drucilla", "VAR-1", gross=9500),
+        ])
+        lines = squareorders.lines_from_order(order, {"VAR-1": "Silk Scarves"}, Counter())
+        self.assertEqual(len(lines), 1)
+        line = lines[0]
+        self.assertEqual(line["item_name"], "Rectangle Veil")
+        self.assertEqual(line["price_point"], "Drucilla")
+        self.assertEqual(line["square_variation_id"], "VAR-1")
+        self.assertEqual(line["category"], "Silk Scarves")
+        self.assertEqual(line["net_cents"], 9500)
+
+    def test_those_lines_go_straight_into_the_ledger(self):
+        """The whole path, with nothing from `management` imported."""
+        from scarves import salesimport, squareorders
+        order = square_order("O-DIRECT", "2021-08-28T17:30:00Z", [
+            square_item("Shawl", "Lost Woods", "VAR-2", gross=8000),
+        ])
+        lines = squareorders.lines_from_order(order, {}, Counter())
+        matcher = salesimport.Matcher()
+        for line in lines:
+            matcher.attach(line)
+        result = salesimport.write(lines, Sale.SOURCE_SQUARE_API)
+
+        self.assertEqual(result.written, 1)
+        self.assertEqual(SaleLine.objects.get().item_name, "Shawl")
+
+    def test_the_modules_import_nothing_from_management(self):
+        """Including the exception. A module that raises `CommandError` is
+        telling its caller what kind of program it is."""
+        import ast, inspect
+        from scarves import salesimport, squareorders
+        for module in (squareorders, salesimport):
+            with self.subTest(module=module.__name__):
+                tree = ast.parse(inspect.getsource(module))
+                imported = [
+                    node.module or ""
+                    for node in ast.walk(tree)
+                    if isinstance(node, ast.ImportFrom)
+                ] + [
+                    alias.name
+                    for node in ast.walk(tree)
+                    if isinstance(node, ast.Import)
+                    for alias in node.names
+                ]
+                for name in imported:
+                    self.assertNotIn("management", name)
+
+    def test_a_square_failure_is_not_a_command_error(self):
+        from scarves import squareorders
+        self.assertFalse(issubclass(squareorders.SquareUnavailable, CommandError))
