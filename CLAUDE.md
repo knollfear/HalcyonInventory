@@ -1978,6 +1978,16 @@ Worth knowing how it hid, because the same trap is waiting for the next
 correct number**, so checking the count says four and iterating says twelve
 thousand. Verify a `distinct()` by iterating it, never by counting it.
 
+**The page reports what happened and never why.** There is no annotation
+field, no commentary column, and no place to record a reason a weekend was
+soft — and there should not be. A season figure is read by the people who
+made the stock, so a cause attached to a dip is an accusation with a number
+behind it, and the causes available are almost never supported: a single
+season's back half, with a product line arriving the same year, is one
+observation with an unmodelled variable in it. Print the figure and let a
+person say what they think happened. Same bargain `colorbands` makes, and the
+same reason `closing.tally()` has no `rate` key.
+
 **Categories are a filter because the wax hands were on this till through 2024
 and are gone.** A total that cannot say what it counts reads a discontinued
 product line as a decline. All of the page's state — faire, focus year, mode,
