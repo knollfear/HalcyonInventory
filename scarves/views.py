@@ -6085,6 +6085,13 @@ def season_report(request):
     every_category = seasonreport.categories_on_file()
     categories = [c for c in request.GET.getlist("cat") if c in every_category]
 
+    # A palette is a mode: it follows you round the page the way `?photos=1`
+    # follows a restock circuit, so every link carries it. Unknown values fall
+    # back rather than erroring — it decides colours and nothing else.
+    palette = request.GET.get("palette", "")
+    if palette not in seasonreport.PALETTE_KEYS:
+        palette = seasonreport.DEFAULT_PALETTE
+
     metric = request.GET.get("metric", "")
     if metric not in seasonreport.METRIC_KEYS:
         metric = seasonreport.DEFAULT_METRIC
@@ -6126,6 +6133,7 @@ def season_report(request):
         "year": focus_year,
         "mode": mode,
         "metric": metric,
+        "palette": palette,
         "cat": categories,
     }
 
@@ -6149,6 +6157,7 @@ def season_report(request):
         "chart": seasonreport.chart(seasons, focus_year, mode, metric),
         "mode": mode,
         "metric": metric,
+        "palette": palette,
         "modes": seasonreport.MODES,
         "metrics": seasonreport.METRICS,
         "every_category": every_category,
@@ -6163,6 +6172,11 @@ def season_report(request):
             {"key": key, "label": label, "on": key == mode,
              "href": _seasons_href(base, mode=key)}
             for key, label in seasonreport.MODES
+        ],
+        "palette_links": [
+            {"key": key, "label": label, "on": key == palette,
+             "href": _seasons_href(base, palette=key)}
+            for key, label in seasonreport.PALETTES
         ],
         "metric_links": [
             {"key": key, "label": label, "on": key == metric,

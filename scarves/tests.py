@@ -16414,3 +16414,48 @@ class DeletedCatalogCategoryTests(TestCase):
         # A category deleted along with its item has no name left; grouping the
         # lines under its id beats dropping them into "(uncategorised)".
         self.assertEqual(_category_name({"categories": [{"id": "C9"}]}, names), "C9")
+
+
+class SeasonPaletteTests(TestCase):
+    """The palette is a mode: it follows you round the page.
+
+    Cosmetic, so an unknown value falls back rather than erroring — but it has
+    to ride in the query string like every other piece of this page's state,
+    or a reading sent to somebody arrives looking like a different reading.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user("staff3", password="pw")
+        call_command("generate_faire", "--year", "2021", stdout=StringIO())
+        day = FaireDay.objects.filter(faire__year=2021, weekend=1).first().date
+        sale_line(day, 100_000, order="P1")
+        self.client.force_login(self.user)
+        self.url = reverse("season_report")
+
+    def test_it_defaults_to_the_house_palette(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.context["palette"], seasonreport.DEFAULT_PALETTE)
+        self.assertIn('data-palette="silk"', response.content.decode())
+
+    def test_a_chosen_palette_reaches_the_body(self):
+        response = self.client.get(self.url, {"palette": "eyebleed"})
+        self.assertIn('data-palette="eyebleed"', response.content.decode())
+
+    def test_every_other_control_carries_it(self):
+        response = self.client.get(self.url, {"palette": "autumn", "metric": "units"})
+        for group in ("mode_links", "metric_links", "year_links", "category_links"):
+            for link in response.context[group]:
+                self.assertIn("palette=autumn", link["href"], group)
+
+    def test_an_unknown_palette_falls_back_rather_than_erroring(self):
+        response = self.client.get(self.url, {"palette": "chartreuse"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["palette"], seasonreport.DEFAULT_PALETTE)
+
+    def test_the_chart_names_classes_not_colours(self):
+        """Which is why swapping palettes needs no redraw — and why the SVG
+        carries no hex at all."""
+        response = self.client.get(self.url, {"palette": "autumn"})
+        svg = response.context["chart"]
+        self.assertIn('class="line', svg)
+        self.assertNotIn("#", svg)

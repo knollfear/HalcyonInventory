@@ -57,6 +57,18 @@ MODES = [
 ]
 MODE_KEYS = {key for key, _ in MODES}
 
+#: Chart palettes. Purely cosmetic — nothing downstream reads this, and it is
+#: in the query string rather than a cookie so a reading stays the reading
+#: when the link is sent on.
+PALETTES = [
+    ("silk", "Undyed silk"),
+    ("autumn", "Autumn"),
+    ("seascape", "Seascape"),
+    ("eyebleed", "Eye bleed"),
+]
+PALETTE_KEYS = {key for key, _ in PALETTES}
+DEFAULT_PALETTE = "silk"
+
 DEFAULT_METRIC = METRIC_NET
 DEFAULT_MODE = MODE_CUMULATIVE
 
