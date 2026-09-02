@@ -1945,6 +1945,19 @@ nobody has imported, every weekend flagged says nine times over what one
 sentence says once, and buries the real gaps in the half-loaded seasons. So a
 season with no lines at all is reported once, as a note.
 
+**A `distinct()` on this ledger needs an explicit `.order_by()`.** `SaleLine`
+carries a default `Meta.ordering`, and Django puts ordering columns into the
+SELECT — so `values_list("category", flat=True).distinct()` de-duplicates on
+`(category, sold_at, item_name)` and returns one row per line. That shipped,
+and rendered the category filter as **eleven thousand pills**. Aggregates are
+unaffected: `values().annotate()` drops the default ordering, which is why the
+totals were right the whole time.
+
+Worth knowing how it hid, because the same trap is waiting for the next
+`distinct()` here: **`.count()` wraps the query in a subquery and reports the
+correct number**, so checking the count says four and iterating says twelve
+thousand. Verify a `distinct()` by iterating it, never by counting it.
+
 **Categories are a filter because the wax hands were on this till through 2024
 and are gone.** A total that cannot say what it counts reads a discontinued
 product line as a decline. All of the page's state — faire, focus year, mode,

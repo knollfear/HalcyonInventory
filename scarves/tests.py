@@ -16298,3 +16298,32 @@ class ProjectionBasisTests(TestCase):
         self.assertEqual(y2022.traded_days, 2, "not the whole nineteen")
         self.assertEqual(y2022.per_day, Decimal(25_000))
         self.assertEqual(y2022.projection_weekends, 1)
+
+
+class CategoryPillTests(TestCase):
+    """`SaleLine` has a default ordering, and Django puts ordering columns
+    into a `SELECT DISTINCT` — so the category filter once rendered one pill
+    per line instead of one per category. Iterating is the only check that
+    catches it: `.count()` wraps the query and reports the right number."""
+
+    def setUp(self):
+        call_command("generate_faire", "--year", "2021", stdout=StringIO())
+        day = FaireDay.objects.filter(faire__year=2021).first().date
+        for index in range(6):
+            sale_line(day, 1000 + index,
+                      category="Wax" if index % 2 else "Silk",
+                      item=f"Thing {index}", hour=10 + index,
+                      order=f"O{index}")
+
+    def test_one_pill_per_category_not_one_per_line(self):
+        self.assertEqual(SaleLine.objects.count(), 6)
+        self.assertEqual(seasonreport.categories_on_file(), ["Silk", "Wax"])
+
+    def test_the_page_renders_one_pill_per_category(self):
+        user = User.objects.create_user("staff2", password="pw")
+        self.client.force_login(user)
+        response = self.client.get(reverse("season_report"))
+        self.assertEqual(len(response.context["category_links"]), 2)
+        body = response.content.decode()
+        self.assertEqual(body.count("cat=Silk&"), body.count("cat=Silk&"))
+        self.assertLess(body.count('class="pill'), 30)

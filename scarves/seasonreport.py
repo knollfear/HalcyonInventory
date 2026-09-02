@@ -214,10 +214,26 @@ def faire_slugs():
 
 
 def categories_on_file():
-    """Categories that appear in the ledger, for the filter pills."""
+    """Categories that appear in the ledger, for the filter pills.
+
+    **`.order_by()` is load-bearing, not tidying.** `SaleLine` has a default
+    `Meta.ordering`, and Django puts ordering columns into the SELECT — so a
+    `values_list(...).distinct()` without it de-duplicates on
+    `(category, sold_at, item_name)` and hands back one row per line. On a
+    twelve-thousand-line ledger that rendered the filter as eleven thousand
+    pills.
+
+    Worth knowing how it hid: `.count()` wraps the query in a subquery and
+    reports the right number, so checking the count says five and iterating
+    says twelve thousand. Verify a `distinct()` by iterating it.
+
+    Aggregates are not affected — `values().annotate()` drops the default
+    ordering, which is why `_totals_by_date` and `source_breakdown` were
+    always right.
+    """
     return sorted(
         name for name in
-        SaleLine.objects.values_list("category", flat=True).distinct()
+        SaleLine.objects.order_by().values_list("category", flat=True).distinct()
         if name
     )
 
