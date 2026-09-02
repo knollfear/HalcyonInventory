@@ -1879,12 +1879,14 @@ $89,829 net; the 2022 figures agree to $18.
 `import_square_orders` is idempotent, so **re-running it is the refresh**.
 Three ways to name the window:
 
-- `--year 2026` — the simple one, and the one to reach for.
-- `--current` — the season that has begun, first day to today. Worth having
-  because a *scheduled* `--year 2026` keeps succeeding forever and silently
-  stops covering the season in 2027; this one cannot go stale that way.
-  Between seasons it answers with the last one that started, because the
-  reason to run it in February is to top up what October finished with.
+- **No arguments at all** — the season running now, first day to today. This
+  is the one to run after a weekend and the one to schedule, because a
+  scheduled `--year 2026` keeps exiting 0 forever while quietly covering
+  nothing from 2027 on. Between seasons it answers with the last season that
+  started, since the reason to run it in February is to top up what October
+  finished with.
+- `--year 2026` — naming the year still works and is the plain way to say it,
+  including catching up a season that went a year or two stale.
 - `--since 14` — narrows the window to recent days. Re-reading August is
   harmless but it is thousands of orders for the handful that are new.
 

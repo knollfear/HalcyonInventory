@@ -16544,7 +16544,9 @@ class ImportWindowTests(TestCase):
         label, _start, _end = self._windows(current=True)[0]
         self.assertIn("2025", label)
 
-    def test_it_will_not_guess_a_window(self):
-        with self.assertRaises(CommandError) as caught:
-            self._windows()
-        self.assertIn("--current", str(caught.exception))
+    def test_no_arguments_means_the_season_running_now(self):
+        """The bare command has to mean something useful — a scheduled
+        `--year 2026` keeps exiting 0 in 2027 while covering nothing."""
+        label, start, _end = self._windows()[0]
+        self.assertIn("2026", label)
+        self.assertEqual(start, date(2026, 8, 29))

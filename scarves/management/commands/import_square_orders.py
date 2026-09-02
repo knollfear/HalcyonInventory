@@ -64,9 +64,9 @@ class Command(BaseCommand):
         parser.add_argument(
             "--current", action="store_true",
             help=(
-                "The season that is running now, from its first day to today. "
-                "Nothing to look up and nothing to type — this is the one to "
-                "put on a schedule or run after a weekend."
+                "The season running now, from its first day to today. This is "
+                "also what no arguments at all means, so the bare command is "
+                "the one to run after a weekend and the one to schedule."
             ),
         )
         parser.add_argument(
@@ -409,12 +409,13 @@ class Command(BaseCommand):
             except ValueError:
                 raise CommandError(f"Could not read --range {options['range']!r}.")
             years.extend(range(first, last + 1))
-        if options.get("current"):
+        # No arguments means the season running now. Naming a year is still
+        # the simple way to say it and always works — but the bare command
+        # has to mean something useful, because the alternative is a
+        # scheduled `--year 2026` that keeps exiting 0 in 2027 while quietly
+        # covering nothing.
+        if options.get("current") or not years:
             years.append(self._current_year(options["faire"]))
-        if not years:
-            raise CommandError(
-                "Give --current, --year, --range, or --from and --to."
-            )
 
         today = timezone.localdate()
         windows = []
