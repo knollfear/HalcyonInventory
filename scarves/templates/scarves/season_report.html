@@ -27,36 +27,33 @@ rest of it.
   :root {
       --column: 1180px;
       --s-1: #86b6ef; --s-2: #5598e7; --s-3: #2a78d6;
-      --focus: #eb6834;
+      --focus: #eb6834; --focus-ink: #b8431a;
       --grid: #e4e8de; --tick: #8a8f82;
   }
 
-  /* Palettes. Seasons are ordered, so the prior ones are always one hue
-     light-to-dark and only the focused season carries a second — each ramp
-     was validated as an ordinal scale and each focus colour against its own
-     ramp for colour-vision separation. Swapping them is a re-point of these
-     six properties and nothing else: the chart is server-rendered SVG that
-     names CSS classes rather than colours, so it re-colours without being
-     redrawn. `--accent` is the base template's own, repointed so the pills
-     and links come along. */
-  body[data-palette="autumn"] {
-      --s-1: #dd8a80; --s-2: #c0504a; --s-3: #8a1f22;
-      --focus: #e8a33c; --accent: #8a1f22; --accent-dark: #6d1719;
-      --grid: #ece0d1; --tick: #8a705f;
+  /* Palettes, rendered from `seasonreport.PALETTES` so there is one copy of
+     the values and the contrast rule can be tested rather than remembered.
+     `--focus` is the mark and `--focus-ink` is the text: the same colour does
+     both jobs badly, and on a white ground the bright one is unreadable. */
+  {% for p in palettes %}
+  body[data-palette="{{ p.key }}"] {
+      --s-1: {{ p.s1 }}; --s-2: {{ p.s2 }}; --s-3: {{ p.s3 }};
+      --focus: {{ p.focus }}; --focus-ink: {{ p.focus_ink }};
+      --accent: {{ p.accent }}; --accent-dark: {{ p.accent_dark }};
+      --grid: {{ p.grid }}; --tick: {{ p.tick }};
   }
-  body[data-palette="seascape"] {
-      --s-1: #5fb0c6; --s-2: #2c86a2; --s-3: #12566f;
-      --focus: #e8a33c; --accent: #12566f; --accent-dark: #0d4054;
-      --grid: #dce9ee; --tick: #6d858f;
+  {% endfor %}
+
+  /* Eye bleed is the one palette that commits to a ground. Its focus colour
+     only works on black, so the figure gets one — and the chart keeps the
+     bright green there while every word on the page still uses the ink. */
+  body[data-palette="eyebleed"] .figure {
+      background: #050008; border-radius: 8px; padding: 12px 4px;
   }
-  body[data-palette="eyebleed"] {
-      --s-1: #ff9fe0; --s-2: #ff3fc0; --s-3: #c400a8;
-      --focus: #ccff00; --accent: #c400a8; --accent-dark: #8f007b;
-      --grid: #f4d9ee; --tick: #a0489a;
-  }
-  body[data-palette="eyebleed"] .figure { background: #050008; border-radius: 8px; padding: 10px 4px; }
-  body[data-palette="eyebleed"] .figure .tick,
+  body[data-palette="eyebleed"] .figure .tick { fill: #ff9fe0; }
   body[data-palette="eyebleed"] .figure .end-label { fill: #ff9fe0; }
+  body[data-palette="eyebleed"] .figure .end-label.focus { fill: #ccff00; }
+  body[data-palette="eyebleed"] .figure .axis-label { fill: #b98ad4; }
   body[data-palette="eyebleed"] .figure .grid { stroke: #3a0033; }
 
   .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 0; }
@@ -67,7 +64,7 @@ rest of it.
       text-decoration: none; font-size: 14px; background: #fff; color: inherit;
   }
   .pill.on { background: var(--accent); border-color: var(--accent); color: #fff; }
-  .pill.focus.on { background: var(--focus); border-color: var(--focus); }
+  .pill.focus.on { background: var(--focus-ink); border-color: var(--focus-ink); }
 
   .figure { margin: 18px 0 6px; }
   .figure svg { display: block; width: 100%; height: auto; overflow: visible; }
@@ -81,7 +78,7 @@ rest of it.
   .figure .line.focus { stroke: var(--focus); stroke-width: 3; }
   .figure .line.focus.forecast { stroke-width: 2.5; stroke-dasharray: 5 5; opacity: .85; }
   .figure .end-label { font-size: 11px; fill: var(--tick); font-variant-numeric: tabular-nums; }
-  .figure .end-label.focus { fill: var(--focus); font-weight: 700; }
+  .figure .end-label.focus { fill: var(--focus-ink); font-weight: 700; }
 
   .legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; color: #556; }
   .legend span { display: inline-flex; align-items: center; gap: 7px; }
@@ -91,7 +88,7 @@ rest of it.
   .totals { display: flex; gap: 30px; flex-wrap: wrap; margin: 20px 0 6px; }
   .totals .n { font-size: 2.1rem; font-weight: 700; line-height: 1.05;
                font-variant-numeric: tabular-nums; }
-  .totals .n.est { color: var(--focus); }
+  .totals .n.est { color: var(--focus-ink); }
   .totals .what { font-size: .85rem; color: #556; max-width: 24ch; }
 
   .scroller { overflow-x: auto; margin: 0 -2px; padding: 0 2px; }
@@ -105,12 +102,12 @@ rest of it.
   }
   table.grid-table thead th { font-size: 12px; color: #667; font-weight: 600;
                               text-transform: uppercase; letter-spacing: .05em; }
-  table.grid-table tr.focus td, table.grid-table tr.focus th { color: var(--focus); font-weight: 700; }
+  table.grid-table tr.focus td, table.grid-table tr.focus th { color: var(--focus-ink); font-weight: 700; }
   table.grid-table tr.rule td, table.grid-table tr.rule th { border-top: 2px solid #cbd6e2; }
-  table.grid-table td.est { font-style: italic; color: var(--focus); }
+  table.grid-table td.est { font-style: italic; color: var(--focus-ink); }
   table.grid-table td.gap { color: #b45309; }
   table.grid-table td.void { color: #99a; }
-  table.grid-table td.three { color: var(--focus); font-weight: 700; }
+  table.grid-table td.three { color: var(--focus-ink); font-weight: 700; }
 
   .note { border-left: 3px solid var(--accent); background: #f2f6fb;
           padding: 10px 14px; margin: 14px 0; border-radius: 0 6px 6px 0; font-size: 14px; }

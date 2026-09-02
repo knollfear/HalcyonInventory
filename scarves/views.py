@@ -6173,10 +6173,12 @@ def season_report(request):
              "href": _seasons_href(base, mode=key)}
             for key, label in seasonreport.MODES
         ],
+        "palettes": seasonreport.PALETTES,
         "palette_links": [
-            {"key": key, "label": label, "on": key == palette,
-             "href": _seasons_href(base, palette=key)}
-            for key, label in seasonreport.PALETTES
+            {"key": entry["key"], "label": entry["label"],
+             "on": entry["key"] == palette,
+             "href": _seasons_href(base, palette=entry["key"])}
+            for entry in seasonreport.PALETTES
         ],
         "metric_links": [
             {"key": key, "label": label, "on": key == metric,

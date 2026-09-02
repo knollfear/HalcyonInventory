@@ -57,17 +57,74 @@ MODES = [
 ]
 MODE_KEYS = {key for key, _ in MODES}
 
-#: Chart palettes. Purely cosmetic — nothing downstream reads this, and it is
-#: in the query string rather than a cookie so a reading stays the reading
-#: when the link is sent on.
+#: Chart palettes, as data rather than as CSS, so the contrast rule below can
+#: be tested instead of remembered. Purely cosmetic — nothing downstream reads
+#: the choice — and it rides in the query string rather than a cookie so a
+#: reading stays the reading when the link is sent on.
+#:
+#: **`focus` and `focus_ink` are two different colours on purpose.** `focus` is
+#: the mark: a 3px stroke on a chart, where a bright saturated colour is
+#: exactly right. `focus_ink` is the text: a table cell, a stat figure, a pill
+#: background behind white — and there the same colour is unreadable. Every
+#: one of these palettes failed that way at first, from 3.2:1 for the house
+#: colours down to 1.18:1 for the acid green, which is invisible rather than
+#: merely loud. Text wears text tokens, never the series colour.
 PALETTES = [
-    ("silk", "Undyed silk"),
-    ("autumn", "Autumn"),
-    ("seascape", "Seascape"),
-    ("eyebleed", "Eye bleed"),
+    {
+        "key": "silk", "label": "Undyed silk",
+        "s1": "#86b6ef", "s2": "#5598e7", "s3": "#2a78d6",
+        "focus": "#eb6834", "focus_ink": "#b8431a",
+        "accent": "#1558a0", "accent_dark": "#0d3d73",
+        "grid": "#e4e8de", "tick": "#8a8f82",
+    },
+    {
+        "key": "autumn", "label": "Autumn",
+        "s1": "#dd8a80", "s2": "#c0504a", "s3": "#8a1f22",
+        "focus": "#e8a33c", "focus_ink": "#8a5a00",
+        "accent": "#8a1f22", "accent_dark": "#6d1719",
+        "grid": "#ece0d1", "tick": "#8a705f",
+    },
+    {
+        "key": "seascape", "label": "Seascape",
+        "s1": "#5fb0c6", "s2": "#2c86a2", "s3": "#12566f",
+        "focus": "#e8a33c", "focus_ink": "#8a5a00",
+        "accent": "#12566f", "accent_dark": "#0d4054",
+        "grid": "#dce9ee", "tick": "#6d858f",
+    },
+    {
+        "key": "eyebleed", "label": "Eye bleed",
+        "s1": "#ff9fe0", "s2": "#ff3fc0", "s3": "#c400a8",
+        "focus": "#ccff00", "focus_ink": "#4f6b00",
+        "accent": "#c400a8", "accent_dark": "#8f007b",
+        "grid": "#f4d9ee", "tick": "#a0489a",
+    },
 ]
-PALETTE_KEYS = {key for key, _ in PALETTES}
+PALETTE_KEYS = {p["key"] for p in PALETTES}
 DEFAULT_PALETTE = "silk"
+
+#: The page ground everything above is read against.
+PAGE_GROUND = "#ffffff"
+
+#: WCAG AA for body text. `focus_ink` is held to it; `focus` is not, because a
+#: stroke on a chart is a mark and not text.
+MIN_TEXT_CONTRAST = 4.5
+
+
+def contrast_ratio(one: str, two: str) -> float:
+    """WCAG contrast between two hex colours."""
+    def channel(value):
+        value /= 255
+        return value / 12.92 if value <= 0.03928 else ((value + 0.055) / 1.055) ** 2.4
+
+    def luminance(colour):
+        colour = colour.lstrip("#")
+        red, green, blue = (int(colour[i:i + 2], 16) for i in (0, 2, 4))
+        return 0.2126 * channel(red) + 0.7152 * channel(green) + 0.0722 * channel(blue)
+
+    first, second = luminance(one), luminance(two)
+    high, low = max(first, second), min(first, second)
+    return (high + 0.05) / (low + 0.05)
+
 
 DEFAULT_METRIC = METRIC_NET
 DEFAULT_MODE = MODE_CUMULATIVE

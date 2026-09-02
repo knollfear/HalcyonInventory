@@ -16452,6 +16452,42 @@ class SeasonPaletteTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["palette"], seasonreport.DEFAULT_PALETTE)
 
+    def test_every_palette_has_readable_text(self):
+        """The bug the eye-bleed palette made obvious and all four had.
+
+        `--focus` is a 3px stroke on a chart and a bright colour is right
+        there. The same colour as table text, a stat figure, or a pill
+        background behind white is unreadable — 3.2:1 for the house colours,
+        1.18:1 for the acid green, which is invisible rather than loud.
+        """
+        for entry in seasonreport.PALETTES:
+            with self.subTest(palette=entry["key"]):
+                ratio = seasonreport.contrast_ratio(
+                    entry["focus_ink"], seasonreport.PAGE_GROUND,
+                )
+                self.assertGreaterEqual(
+                    ratio, seasonreport.MIN_TEXT_CONTRAST,
+                    f"{entry['key']} ink {entry['focus_ink']} is {ratio:.2f}:1 "
+                    "on the page — text has to clear 4.5",
+                )
+
+    def test_the_mark_and_the_ink_are_not_the_same_colour(self):
+        """If they ever converge, one of the two jobs is being done wrong."""
+        for entry in seasonreport.PALETTES:
+            with self.subTest(palette=entry["key"]):
+                self.assertNotEqual(entry["focus"], entry["focus_ink"])
+
+    def test_the_prior_season_ramp_reads_light_to_dark(self):
+        """Seasons are ordered, so recency has to be legible without a legend."""
+        for entry in seasonreport.PALETTES:
+            with self.subTest(palette=entry["key"]):
+                steps = [
+                    seasonreport.contrast_ratio(entry[key], seasonreport.PAGE_GROUND)
+                    for key in ("s1", "s2", "s3")
+                ]
+                self.assertEqual(steps, sorted(steps),
+                                 "the ramp must darken from oldest to newest")
+
     def test_the_chart_names_classes_not_colours(self):
         """Which is why swapping palettes needs no redraw — and why the SVG
         carries no hex at all."""
