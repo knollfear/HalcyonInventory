@@ -1713,6 +1713,136 @@ headings that mysteriously aren't links. An unreadable date contributes
 nothing and the heading states the range actually used, which is what stops
 the answer being mistaken for the question that was asked.
 
+## The sales ledger: what the till took, kept apart from what the shelf holds
+
+`Sale` and `SaleLine` are a second ledger, imported from Square by
+`import_sales_history`, and they exist so seasons can be compared with each
+other. **Nothing in them moves stock and nothing in them writes an
+`InventoryLog` row.**
+
+**Running the wrong importer is the mistake to guard against.**
+`import_square_sales` decrements `number_on_hand` and writes an
+`InventoryLog`; it is part of the inventory pipeline and belongs to the
+current weekend. `import_sales_history` writes only the reporting ledger, and
+is pointed at seasons that in most cases ended years before this app existed.
+Aiming the first one at 2021 would wreck every count in the shop.
+
+**Why `InventoryLog` could not be the base for this**, since extending it is
+the obvious move and it fails four ways at once:
+
+- `created_at` is when the row was *written*. A webhook lands in seconds so
+  those agree, but a CSV loaded on Monday piles Saturday's sales onto Monday
+  — and hour-of-day is one of the questions being asked.
+- A line the app cannot identify never reaches it; it goes to
+  `UnmatchedSale`. A revenue total built on it is silently short.
+- There is no money on the row. `private/sales/` values at *today's* price
+  and says so on the page, which is fine for ranking and useless for history.
+- The product FK is `PROTECT`, so a line item from a season before this app
+  existed can never live there at all.
+
+`SaleLine`'s product links are therefore `SET_NULL`, which is the opposite of
+what the inventory side does and deliberate: an `InventoryLog` row is *about*
+a product, so losing it strands the row, while a `SaleLine` carries
+`item_name` and `price_point` as text and means something with no link at all.
+
+**`source` is on every row and nothing branches on it.** The expectation is
+that in six or eight years this app's own records replace Square as the
+writer. Reports read the table and print the breakdown underneath, the way
+`private/sales/` already does with `InventoryLog.source` — so the changeover
+is one new writer and no new pages, and the overlap is safe because dedupe is
+on the order id rather than on who supplied the row.
+
+### Identity: item and price point, never the SKU, and never the Token
+
+**Twenty of the thirty-six lines in a 2026 itemised export carry no SKU**, and
+the older seasons are worse. A SKU-keyed importer would drop most of the
+history and report success. Item is the style and price point is the
+colorway, and both are on every row of every season — so `line_key` is
+`item|price point|occurrence`, and the occurrence counter keeps a second
+identical line addressable instead of overwriting the first.
+
+**Square's `Token` column looks like a line id and is not.** It names the
+product, so three separate triangle-fringe sales come back carrying one
+token; keying on it collapses them into a single line and the revenue goes
+missing with nothing to show for it.
+`test_a_repeated_token_is_three_sales_not_one` is the pin.
+
+Matching to the catalogue is SKU first, then `skus.slug(item_name)` against
+`RawProduct.name` — which works because `sync_to_square` built the Square item
+from that name, so `Noble - Diamond Extra` slugs to `NOBLED` at both ends.
+Unmatched lines are kept in full and **named and counted in the report**, since
+a shorter total is exactly the kind of quiet wrong this ledger exists to avoid.
+
+**Keep `Category`.** The wax hands were on this till through 2024 and are
+gone. A season-over-season total that cannot name the categories it counts
+reads a discontinued product line as a decline.
+
+**An unknown time zone stops the run** rather than falling back. Square writes
+zone names in its own dialect and they are mapped explicitly; a near-miss
+shifts every hour-of-day figure by hours and looks exactly like a correct one.
+
+## The faire calendar is a rule, not a table
+
+`scarves/seasons.py` holds it and `generate_faire` applies it:
+
+> Labor Day is the first Monday in September. **Week 1's Saturday is nine days
+> before it.** Nine weekends follow, Saturday and Sunday — plus Labor Day
+> Monday, which always falls in **weekend 2**. Nineteen trading days.
+
+It reproduces every season on record exactly (2017→26 Aug, 2018→25 Aug,
+2019→24 Aug, 2021→28 Aug), which is what `FaireCalendarTests` pins. Getting it
+wrong is invisible: the pages still render nine weekends, they are simply the
+wrong nine.
+
+**This is why nothing is typed.** The React site this replaces died of
+hand-feeding — its data is hardcoded in the JS bundle, 2024 stops at week 7,
+and the 2022 and 2023 weather rows are byte-identical copies of 2021's. Same
+rule the rest of the app follows: never add a step that has to be remembered
+to be correct.
+
+**Labor Day drifts over 1–7 September, so week 1 drifts across six calendar
+days** — Sat 23 Aug in 2025, Sat 29 Aug in 2026. No comparison between seasons
+may key on a calendar date; the weekend index is the axis.
+
+**Weekend 2 has three trading days and every per-weekend total for it reads
+about a third high.** Across 2021–2024 it ranks #1, #2, #4 and #5 by weekly
+total and #6, #6, #8 and #8 per day — in every season it is one of the
+*weakest* stretches of the run, and the Monday is doing the work. Anything
+printing a per-weekend figure needs a per-day companion, or it will be acted
+on.
+
+**2020 is an absent `Faire`, not a zero one.** `generate_faire` skips it by
+name, so every query that walks faires excludes it by construction rather
+than by remembering to.
+
+**`FaireDay.traded` is a checkbox with no workflow behind it.** Three days in
+twenty-two years — a washed-out weekend in 2023 and one hurricane. It earns
+its column because it is the denominator: counting that washout as two traded
+days moves 2023's per-day figure by nearly 12%. Do **not** infer a closure
+from a day with no sales — a dead terminal looks identical, and the inference
+would fire wrongly far more often than the thing it detects. Regenerating a
+season never re-opens a day somebody struck.
+
+### More than one faire, and what never gets compared
+
+`Faire.slug` is the event across years, `Faire.year` is the instance, and
+`rule` says how its days are known. A second rule-based faire is one function
+and one entry in `seasons.RULES`; a faire whose dates are announced is
+`manual`, and `generate_faire --dates` numbers them by the gaps between them
+(so Sat–Sun is one weekend, and Sat–Sun–Mon is too).
+
+**Comparison never crosses slugs, and no page should offer it.** Week 1 of one
+faire against week 1 of another is not asked here and the number could not
+answer it — a weekend index counts position within *that* run, so two faires
+of different lengths and audiences share nothing but the integer. Scope every
+comparison to one slug and let the years vary.
+
+`FaireDay.date` is unique across all faires, not just within one. That is a
+real constraint rather than a convenience: the booth is in one place at a
+time, so a date belongs to at most one faire, and making it a database fact
+means a sale is placed by date alone. A genuine overlap should fail loudly,
+because being in two places is a decision somebody has to make.
+
 ## Timekeeping: the pay week, and the two totals
 
 The hours form (`secret/hours/`) and the timesheet (`private/timesheet/`)

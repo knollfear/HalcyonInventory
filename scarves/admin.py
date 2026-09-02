@@ -34,6 +34,10 @@ from .models import (
     ProductionRun,
     ProductionRunRow,
     TimeEntry,
+    Faire,
+    FaireDay,
+    Sale,
+    SaleLine,
 )
 
 
@@ -818,3 +822,99 @@ class UnmatchedSaleAdmin(admin.ModelAdmin):
     list_filter = ("resolved_at", "dismissed_at")
     search_fields = ("name", "variation_name", "order_id")
     readonly_fields = ("order_id", "line_uid", "sold_at", "created_at")
+
+
+class FaireDayInline(admin.TabularInline):
+    """The generated calendar, editable only where editing is meaningful.
+
+    `date` and `weekend` are read-only because they come from the rule; the
+    one thing a person decides is whether the day traded.
+    """
+
+    model = FaireDay
+    extra = 0
+    fields = ("date", "weekend", "is_labor_day", "traded", "note")
+    readonly_fields = ("date", "weekend", "is_labor_day")
+    ordering = ("date",)
+
+    def has_add_permission(self, request, obj=None):
+        # Days come from `generate_faire`, or from `--dates` for a faire whose
+        # dates are announced. Adding one here would produce a day the rule
+        # does not know about, which the next regeneration would not repair.
+        return False
+
+
+@admin.register(Faire)
+class FaireAdmin(admin.ModelAdmin):
+    list_display = ("__str__", "slug", "year", "rule", "day_count", "traded_count")
+    list_filter = ("slug", "rule")
+    search_fields = ("slug", "name")
+    inlines = [FaireDayInline]
+
+    @admin.display(description="Days")
+    def day_count(self, obj):
+        return obj.days.count()
+
+    @admin.display(description="Traded")
+    def traded_count(self, obj):
+        return obj.trading_days
+
+
+class SaleLineInline(admin.TabularInline):
+    model = SaleLine
+    extra = 0
+    fields = ("item_name", "price_point", "sku", "quantity", "net_cents", "category", "event_type")
+    readonly_fields = fields
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(Sale)
+class SaleAdmin(admin.ModelAdmin):
+    """Read-only, because this is a record of what the till took.
+
+    Nothing in the app writes it except the importer, and a hand-edited sale
+    would be a number with no provenance sitting in the middle of a ledger
+    whose whole value is that every row came from somewhere.
+    """
+
+    list_display = ("order_id", "sold_at", "device", "card_brand", "source")
+    list_filter = ("source", "device", "card_brand")
+    search_fields = ("order_id", "customer_name")
+    date_hierarchy = "sold_at"
+    inlines = [SaleLineInline]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(SaleLine)
+class SaleLineAdmin(admin.ModelAdmin):
+    list_display = (
+        "sold_at", "item_name", "price_point", "sku", "quantity",
+        "net_display", "category", "event_type", "source",
+    )
+    list_filter = ("category", "event_type", "source", "item_name")
+    search_fields = ("item_name", "price_point", "sku", "sale__order_id")
+    date_hierarchy = "sold_at"
+    list_select_related = ("sale", "finished_product", "raw_product")
+
+    @admin.display(description="Net", ordering="net_cents")
+    def net_display(self, obj):
+        return f"${obj.net_cents / 100:,.2f}"
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False

@@ -11,6 +11,7 @@ Two things here are worth more than they look:
 """
 import base64
 import csv
+from collections import Counter
 import hashlib
 import hmac
 import json
@@ -39,7 +40,7 @@ from django.urls import reverse
 
 from . import (
     closing, colorbands, crew, fancy, photowalk, production, restock,
-    sales, sheetscan, skus, timesheets,
+    sales, seasons, sheetscan, skus, timesheets,
 )
 from .colorutils import (
     delta_e,
@@ -70,6 +71,8 @@ from .models import (
     Dye,
     DyeBrand,
     Employee,
+    Faire,
+    FaireDay,
     LabelStock,
     FinishedProduct,
     FinishedProductImage,
@@ -87,6 +90,8 @@ from .models import (
     RecipeDye,
     RestockCheck,
     RestockPass,
+    Sale,
+    SaleLine,
     TimeEntry,
     UnmatchedSale,
     sync_display_slots,
@@ -15351,3 +15356,382 @@ class SalesReportTests(TestCase):
         self.assertIsNone(rng.start)
         self.assertEqual(rng.end, end)
         self.assertTrue(rng.label.startswith("Up to "))
+
+
+class FaireCalendarTests(TestCase):
+    """The season rule, which everything season-over-season stands on.
+
+    Getting it wrong is invisible: the pages still render nine weekends, they
+    are simply the wrong nine, and every comparison quietly comes from a week
+    nobody traded. So the rule is pinned against the four seasons whose week-1
+    date is independently on record.
+    """
+
+    def test_labor_day_is_the_first_monday_in_september(self):
+        self.assertEqual(seasons.labor_day(2026), date(2026, 9, 7))
+        self.assertEqual(seasons.labor_day(2025), date(2025, 9, 1))
+        self.assertEqual(seasons.labor_day(2021), date(2021, 9, 6))
+
+    def test_week_one_reproduces_every_recorded_season(self):
+        recorded = {
+            2017: date(2017, 8, 26),
+            2018: date(2018, 8, 25),
+            2019: date(2019, 8, 24),
+            2021: date(2021, 8, 28),
+        }
+        for year, saturday in recorded.items():
+            with self.subTest(year=year):
+                self.assertEqual(seasons.week_one_saturday(year), saturday)
+                self.assertEqual(saturday.weekday(), 5)
+
+    def test_a_run_is_nineteen_days_over_nine_weekends(self):
+        days = seasons.labor_day_run(2026)
+        self.assertEqual(len(days), seasons.SEASON_DAYS)
+        self.assertEqual(len(days), 19)
+        self.assertEqual(max(weekend for _d, weekend, _m in days), 9)
+
+    def test_labor_day_monday_lands_in_weekend_two(self):
+        """The one asymmetry in the run, and the reason weekly totals mislead."""
+        for year in (2021, 2022, 2023, 2024, 2025, 2026):
+            with self.subTest(year=year):
+                mondays = [
+                    (when, weekend)
+                    for when, weekend, monday in seasons.labor_day_run(year)
+                    if monday
+                ]
+                self.assertEqual(len(mondays), 1)
+                when, weekend = mondays[0]
+                self.assertEqual(when, seasons.labor_day(year))
+                self.assertEqual(weekend, seasons.LABOR_DAY_WEEKEND)
+                self.assertEqual(when.weekday(), 0)
+
+    def test_weekend_two_has_three_days_and_every_other_has_two(self):
+        counts = Counter(weekend for _d, weekend, _m in seasons.labor_day_run(2026))
+        self.assertEqual(counts[seasons.LABOR_DAY_WEEKEND], 3)
+        for weekend in range(1, 10):
+            if weekend != seasons.LABOR_DAY_WEEKEND:
+                self.assertEqual(counts[weekend], 2)
+
+    def test_days_are_only_saturdays_sundays_and_the_one_monday(self):
+        for when, _weekend, monday in seasons.labor_day_run(2026):
+            self.assertIn(when.weekday(), {5, 6, 0})
+            self.assertEqual(when.weekday() == 0, monday)
+
+    def test_a_midweek_day_is_not_in_the_season(self):
+        """A range test would put a Wednesday in September inside the run."""
+        self.assertEqual(seasons.labor_day_season_for(date(2026, 9, 7)), 2026)
+        self.assertIsNone(seasons.labor_day_season_for(date(2026, 9, 9)))
+        self.assertIsNone(seasons.labor_day_season_for(date(2026, 1, 5)))
+
+    def test_manual_dates_group_into_weekends_by_the_gap(self):
+        """Sat-Sun is one weekend; Sat-Sun-Mon is too; a six-day gap is not."""
+        numbered = seasons.group_into_weekends([
+            date(2027, 5, 1), date(2027, 5, 2),
+            date(2027, 5, 8), date(2027, 5, 9), date(2027, 5, 10),
+        ])
+        self.assertEqual([w for _d, w in numbered], [1, 1, 2, 2, 2])
+
+    def test_a_manual_rule_generates_nothing_rather_than_an_empty_season(self):
+        with self.assertRaises(ValueError):
+            seasons.days_for(seasons.MANUAL, 2027)
+
+
+class GenerateFaireTests(TestCase):
+    def test_it_writes_a_whole_season(self):
+        call_command("generate_faire", "--year", "2026", stdout=StringIO())
+        faire = Faire.objects.get(slug=seasons.DEFAULT_FAIRE_SLUG, year=2026)
+        self.assertEqual(faire.days.count(), 19)
+        self.assertEqual(faire.trading_days, 19)
+        self.assertEqual(faire.days.first().date, date(2026, 8, 29))
+
+    def test_2020_is_skipped_because_there_was_no_faire(self):
+        out = StringIO()
+        call_command("generate_faire", "--range", "2019-2021", stdout=out)
+        self.assertFalse(Faire.objects.filter(year=2020).exists())
+        self.assertTrue(Faire.objects.filter(year=2019).exists())
+        self.assertTrue(Faire.objects.filter(year=2021).exists())
+        self.assertIn("2020", out.getvalue())
+
+    def test_rerunning_changes_nothing_and_keeps_a_struck_day_struck(self):
+        """Regenerating must never quietly re-open a washed-out day."""
+        call_command("generate_faire", "--year", "2023", stdout=StringIO())
+        washed = FaireDay.objects.get(date=date(2023, 9, 23))
+        washed.traded = False
+        washed.note = "Rained out"
+        washed.save()
+
+        call_command("generate_faire", "--year", "2023", stdout=StringIO())
+
+        self.assertEqual(FaireDay.objects.filter(faire__year=2023).count(), 19)
+        washed.refresh_from_db()
+        self.assertFalse(washed.traded)
+        self.assertEqual(washed.note, "Rained out")
+        self.assertEqual(Faire.objects.get(year=2023).trading_days, 18)
+
+    def test_dry_run_writes_nothing(self):
+        call_command("generate_faire", "--year", "2026", "--dry-run", stdout=StringIO())
+        self.assertFalse(Faire.objects.exists())
+        self.assertFalse(FaireDay.objects.exists())
+
+    def test_a_second_faire_is_a_new_slug_and_leaves_the_first_alone(self):
+        call_command("generate_faire", "--year", "2027", stdout=StringIO())
+        call_command(
+            "generate_faire", "--faire", "madison-hill",
+            "--dates", "2027-05-01,2027-05-02,2027-05-08,2027-05-09",
+            stdout=StringIO(),
+        )
+        other = Faire.objects.get(slug="madison-hill", year=2027)
+        self.assertEqual(other.rule, seasons.MANUAL)
+        self.assertEqual(other.days.count(), 4)
+        self.assertEqual([d.weekend for d in other.days.all()], [1, 1, 2, 2])
+        self.assertEqual(Faire.objects.get(slug=seasons.DEFAULT_FAIRE_SLUG, year=2027).days.count(), 19)
+
+    def test_a_year_needs_saying(self):
+        with self.assertRaises(CommandError):
+            call_command("generate_faire", stdout=StringIO())
+
+
+SALES_CSV_HEADER = (
+    "Date,Time,Time Zone,Category,Item,Qty,Price Point Name,SKU,Gross Sales,"
+    "Discounts,Net Sales,Tax,Transaction ID,Device Name,Event Type,Location,"
+    "Customer Name,Channel,Token,Card Brand\n"
+)
+
+
+def sales_csv(rows, path):
+    """Write a Square-shaped itemised export. `rows` are dicts of overrides."""
+    default = {
+        "Date": "2026-09-05", "Time": "13:14:15",
+        "Time Zone": "Eastern Time (US & Canada)",
+        "Category": "Silk Scarves", "Item": "Rectangle Veil", "Qty": "1.0",
+        "Price Point Name": "Regular Price", "SKU": "",
+        "Gross Sales": "$95.00", "Discounts": "$0.00", "Net Sales": "$95.00",
+        "Tax": "$5.04", "Transaction ID": "TXN1", "Device Name": "Terminal 1",
+        "Event Type": "Payment", "Location": "Michael Knoll", "Customer Name": "",
+        "Channel": "Michael Knoll", "Token": "TOKEN-A", "Card Brand": "Visa",
+    }
+    order = SALES_CSV_HEADER.strip().split(",")
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(SALES_CSV_HEADER)
+        for row in rows:
+            merged = {**default, **row}
+            handle.write(",".join(str(merged[key]) for key in order) + "\n")
+    return path
+
+
+class ImportSalesHistoryTests(TestCase):
+    """The reporting ledger's importer.
+
+    Everything here is about the ledger being *complete* and *re-runnable*.
+    Both failures it guards are silent: a dropped line makes a season look
+    quieter than it was, and a double-counted one makes it look busier, and
+    neither shows up as an error anywhere.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.path = os.path.join(self.dir, "sales.csv")
+        category = RawProductCategory.objects.create(name="Silk Scarves")
+        self.blank = RawProduct.objects.create(
+            name="Rectangle Veil", category=category, price=Decimal("21.50"),
+        )
+        recipe = make_recipe("Drucilla")
+        self.product = FinishedProduct.objects.create(
+            name="Rectangle Veil — Drucilla", raw_product=self.blank,
+            recipe=recipe, price=Decimal("95.00"),
+        )
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_it_imports_lines_and_records_squares_own_time(self):
+        sales_csv([{}], self.path)
+        call_command("import_sales_history", self.path, stdout=StringIO())
+
+        line = SaleLine.objects.get()
+        self.assertEqual(line.item_name, "Rectangle Veil")
+        self.assertEqual(line.net_cents, 9500)
+        self.assertEqual(line.tax_cents, 504)
+        self.assertEqual(line.source, Sale.SOURCE_SQUARE_CSV)
+        local = timezone.localtime(line.sold_at)
+        self.assertEqual(local.date(), date(2026, 9, 5))
+        self.assertEqual((local.hour, local.minute), (13, 14))
+
+    def test_it_moves_no_stock_and_writes_no_inventory_log(self):
+        """The whole point of the second ledger. `import_square_sales` is the
+        one that moves stock; running this one must never look like that."""
+        self.product.number_on_hand = 7
+        self.product.save()
+        sales_csv([{"SKU": self.product.sku, "Qty": "3.0"}], self.path)
+
+        call_command("import_sales_history", self.path, stdout=StringIO())
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.number_on_hand, 7)
+        self.assertFalse(InventoryLog.objects.exists())
+
+    def test_re_importing_the_same_file_writes_nothing_new(self):
+        sales_csv([{}, {"Item": "Infinity", "Token": "TOKEN-B"}], self.path)
+        call_command("import_sales_history", self.path, stdout=StringIO())
+        self.assertEqual(SaleLine.objects.count(), 2)
+
+        out = StringIO()
+        call_command("import_sales_history", self.path, stdout=out)
+
+        self.assertEqual(SaleLine.objects.count(), 2)
+        self.assertEqual(Sale.objects.count(), 1)
+        self.assertIn("0 new lines", out.getvalue())
+
+    def test_a_repeated_token_is_three_sales_not_one(self):
+        """Square's `Token` names the product, not the line — the same token
+        comes back on every sale of a triangle fringe. Keying on it would
+        collapse three sales into one and lose the revenue silently."""
+        sales_csv([
+            {"Transaction ID": "T1", "Item": "Triangle Fringe", "Token": "SAME",
+             "Net Sales": "$50.00"},
+            {"Transaction ID": "T2", "Item": "Triangle Fringe", "Token": "SAME",
+             "Net Sales": "$50.00"},
+            {"Transaction ID": "T3", "Item": "Triangle Fringe", "Token": "SAME",
+             "Net Sales": "$50.00"},
+        ], self.path)
+
+        call_command("import_sales_history", self.path, stdout=StringIO())
+
+        self.assertEqual(Sale.objects.count(), 3)
+        self.assertEqual(SaleLine.objects.count(), 3)
+        self.assertEqual(
+            sum(line.net_cents for line in SaleLine.objects.all()), 15000
+        )
+
+    def test_two_identical_lines_in_one_order_both_survive(self):
+        """Square usually aggregates them, but nothing promises it always will."""
+        sales_csv([
+            {"Transaction ID": "T1", "Net Sales": "$95.00"},
+            {"Transaction ID": "T1", "Net Sales": "$95.00"},
+        ], self.path)
+
+        call_command("import_sales_history", self.path, stdout=StringIO())
+
+        self.assertEqual(Sale.objects.count(), 1)
+        self.assertEqual(SaleLine.objects.count(), 2)
+
+    def test_a_line_with_no_sku_is_kept_in_full(self):
+        """Most historical lines have none. Dropping them would lose the
+        seasons this ledger exists to read."""
+        sales_csv([{"SKU": "", "Item": "Half Circle Veil", "Price Point Name": "Sea Smoke"}], self.path)
+
+        call_command("import_sales_history", self.path, stdout=StringIO())
+
+        line = SaleLine.objects.get()
+        self.assertEqual(line.sku, "")
+        self.assertEqual(line.price_point, "Sea Smoke")
+        self.assertEqual(line.net_cents, 9500)
+        self.assertIsNone(line.finished_product)
+
+    def test_it_matches_by_sku_and_falls_back_to_the_blank(self):
+        sales_csv([
+            {"Transaction ID": "T1", "SKU": self.product.sku},
+            {"Transaction ID": "T2", "SKU": "", "Item": "Rectangle Veil",
+             "Price Point Name": "Some Colorway"},
+            {"Transaction ID": "T3", "SKU": "", "Item": "Wax Hands",
+             "Category": "Wax"},
+        ], self.path)
+
+        call_command("import_sales_history", self.path, stdout=StringIO())
+
+        matched = SaleLine.objects.get(sale__order_id="T1")
+        self.assertEqual(matched.finished_product, self.product)
+        self.assertEqual(matched.raw_product, self.blank)
+
+        by_blank = SaleLine.objects.get(sale__order_id="T2")
+        self.assertIsNone(by_blank.finished_product)
+        self.assertEqual(by_blank.raw_product, self.blank)
+
+        unmatched = SaleLine.objects.get(sale__order_id="T3")
+        self.assertIsNone(unmatched.raw_product)
+        self.assertEqual(unmatched.item_name, "Wax Hands")
+        self.assertEqual(unmatched.category, "Wax")
+
+    def test_category_survives_so_a_retired_line_can_be_excluded(self):
+        """Wax was on this till through 2024 and is gone. A season total that
+        cannot name its categories reads that as a decline."""
+        sales_csv([
+            {"Transaction ID": "T1", "Category": "Silk Scarves", "Net Sales": "$95.00"},
+            {"Transaction ID": "T2", "Category": "Wax", "Item": "Wax Hands", "Net Sales": "$10.00"},
+        ], self.path)
+
+        call_command("import_sales_history", self.path, stdout=StringIO())
+
+        silk = SaleLine.objects.filter(category="Silk Scarves")
+        self.assertEqual(sum(l.net_cents for l in silk), 9500)
+        self.assertEqual(SaleLine.objects.exclude(category="Wax").count(), 1)
+
+    def test_a_discount_is_read_as_a_negative(self):
+        sales_csv([{
+            "Gross Sales": "$100.00", "Discounts": "-$12.50", "Net Sales": "$87.50",
+        }], self.path)
+
+        call_command("import_sales_history", self.path, stdout=StringIO())
+
+        line = SaleLine.objects.get()
+        self.assertEqual(line.gross_cents, 10000)
+        self.assertEqual(line.discount_cents, -1250)
+        self.assertEqual(line.net_cents, 8750)
+        self.assertEqual(line.gross_cents + line.discount_cents, line.net_cents)
+
+    def test_a_refund_is_marked_as_one(self):
+        sales_csv([{
+            "Event Type": "Refund", "Gross Sales": "-$95.00",
+            "Net Sales": "-$95.00", "Tax": "-$5.04",
+        }], self.path)
+
+        call_command("import_sales_history", self.path, stdout=StringIO())
+
+        line = SaleLine.objects.get()
+        self.assertEqual(line.event_type, SaleLine.REFUND)
+        self.assertEqual(line.net_cents, -9500)
+
+    def test_an_unknown_time_zone_stops_the_run(self):
+        """A wrong zone shifts every hour-of-day figure and looks correct."""
+        sales_csv([{"Time Zone": "Middle-earth Standard Time"}], self.path)
+
+        with self.assertRaises(CommandError) as caught:
+            call_command("import_sales_history", self.path, stdout=StringIO())
+
+        self.assertIn("Middle-earth", str(caught.exception))
+        self.assertFalse(SaleLine.objects.exists())
+
+    def test_dry_run_writes_nothing_but_still_reconciles(self):
+        sales_csv([{}, {"Transaction ID": "T2", "Net Sales": "$50.00"}], self.path)
+        out = StringIO()
+
+        call_command("import_sales_history", self.path, "--dry-run", stdout=out)
+
+        self.assertFalse(Sale.objects.exists())
+        self.assertFalse(SaleLine.objects.exists())
+        self.assertIn("$145.00", out.getvalue())
+        self.assertIn("DRY RUN", out.getvalue())
+
+    def test_it_says_which_season_the_lines_landed_in(self):
+        call_command("generate_faire", "--year", "2026", stdout=StringIO())
+        sales_csv([
+            {"Transaction ID": "T1", "Date": "2026-09-05"},
+            {"Transaction ID": "T2", "Date": "2026-12-25"},
+        ], self.path)
+        out = StringIO()
+
+        call_command("import_sales_history", self.path, stdout=out)
+
+        report = out.getvalue()
+        self.assertIn("2026: 1 lines", report)
+        self.assertIn("outside any faire", report)
+        self.assertEqual(SaleLine.objects.count(), 2)
+
+    def test_the_source_is_recorded_and_selectable(self):
+        sales_csv([{}], self.path)
+        call_command(
+            "import_sales_history", self.path, "--source", Sale.SOURCE_SQUARE_API,
+            stdout=StringIO(),
+        )
+        self.assertEqual(Sale.objects.get().source, Sale.SOURCE_SQUARE_API)
+        self.assertEqual(SaleLine.objects.get().source, Sale.SOURCE_SQUARE_API)

@@ -13,6 +13,8 @@ from django.core.validators import (
 )
 from django.utils import timezone
 
+from . import seasons
+
 from .colorbands import BAND_CHOICES
 
 
@@ -2162,3 +2164,311 @@ class CloseRunRow(models.Model):
     @property
     def is_answered(self) -> bool:
         return self.outcome != self.PENDING
+
+
+class Faire(models.Model):
+    """One year's run of the faire.
+
+    Deliberately thin: a faire is an event, a year, and a way of knowing its
+    days. `rule` says which — the Labor Day run generates them from
+    `scarves/seasons.py`, and a faire whose dates are announced rather than
+    derived is `manual` and has them entered.
+
+    **`slug` is the event across years and `year` is the instance**, which is
+    what makes "this faire against the same faire last year" a query. A second
+    event — a spring faire, somewhere else entirely — is a new slug and
+    changes nothing about this one.
+
+    **Comparison never crosses slugs, and no report should offer it.** Week 1
+    of one faire against week 1 of another is not a question anybody here
+    asks, and it is not a question the number could answer: a weekend index
+    counts position within *that* run, so two faires of different lengths,
+    seasons and audiences share nothing but the integer. Scope every
+    comparison to one slug and let the years vary.
+
+    A year with no faire — 2020 — is simply a row that does not exist. That is
+    better than a row marked cancelled, because every query that walks faires
+    then excludes it by construction instead of by remembering to.
+    """
+
+    slug = models.SlugField(
+        max_length=50,
+        help_text="The event, stable across years — what a season-over-season comparison groups on.",
+    )
+    year = models.PositiveIntegerField(
+        help_text="The calendar year this instance of it falls in.",
+    )
+    name = models.CharField(
+        max_length=120,
+        blank=True,
+        help_text="Optional label. Blank reads as the slug and the year.",
+    )
+    rule = models.CharField(
+        max_length=20,
+        choices=seasons.RULE_CHOICES,
+        default=seasons.LABOR_DAY_RULE,
+        help_text=(
+            "How this faire's days are known. A generated rule can be re-run "
+            "for any year; a manual one has its dates entered, and "
+            "`generate_faire` refuses it rather than inventing a pattern."
+        ),
+    )
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["-year", "slug"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["slug", "year"],
+                name="one_faire_per_event_per_year",
+            ),
+        ]
+
+    def __str__(self):
+        return self.name or f"{self.slug} {self.year}"
+
+    @property
+    def trading_days(self) -> int:
+        """Days that actually traded — the denominator for any per-day figure."""
+        return self.days.filter(traded=True).count()
+
+
+class FaireDay(models.Model):
+    """One trading day, carrying the weekend it belongs to.
+
+    The weekend number is the axis every season-over-season comparison runs
+    on, because Labor Day moves and so the calendar dates do not line up
+    between years.
+
+    `date` is unique across all faires, not just within one. That is a real
+    constraint rather than a convenience: the booth is in one place at a time,
+    so a date cannot belong to two faires, and making it a database fact means
+    a sale is placed by date alone without first deciding which event to ask.
+    If a second faire ever genuinely overlaps this one, the insert should fail
+    loudly — being in two places is the thing that needs a decision, not a
+    default.
+    """
+
+    faire = models.ForeignKey(
+        Faire,
+        on_delete=models.CASCADE,
+        related_name="days",
+    )
+    date = models.DateField(unique=True)
+    weekend = models.PositiveSmallIntegerField(
+        help_text="Which weekend of the run, 1-based.",
+    )
+    is_labor_day = models.BooleanField(
+        default=False,
+        help_text=(
+            "The Monday. It always lands in weekend 2, which is why that "
+            "weekend has three trading days and every per-weekend total for "
+            "it reads about a third high."
+        ),
+    )
+    traded = models.BooleanField(
+        default=True,
+        help_text=(
+            "Untick for a day the faire did not open. Three days in "
+            "twenty-two years — a washed-out weekend in 2023 and one "
+            "hurricane — so there is deliberately no workflow around this, "
+            "just this checkbox. It matters because it is the denominator: "
+            "counting 2023's washout as two traded days moves that season's "
+            "per-day figure by nearly 12%."
+        ),
+    )
+    note = models.CharField(max_length=200, blank=True)
+
+    class Meta:
+        ordering = ["date"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["faire", "date"],
+                name="one_faire_day_per_date",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.date:%a %d %b %Y} (weekend {self.weekend})"
+
+
+class Sale(models.Model):
+    """One order rung up at the till.
+
+    **This is not `InventoryLog` and must never become it.** The two answer
+    different questions and only one of them can answer this one:
+
+    - `InventoryLog.created_at` is when the row was *written*, not when the
+      sale happened — a CSV loaded on Monday piles Saturday onto Monday. Here
+      `sold_at` is Square's own timestamp, which is what makes hour-of-day and
+      weekend-over-weekend comparison possible at all.
+    - A line `InventoryLog` cannot identify never reaches it; it goes to
+      `UnmatchedSale`. A revenue total built on it is silently short.
+    - There is no money on an `InventoryLog` row.
+    - Its product FK is `PROTECT`, so a line item from a season before this
+      app existed could never live there.
+
+    So this ledger sits beside that one and **never moves stock**. Nothing here
+    writes `number_on_hand`, and nothing here writes an `InventoryLog` row.
+    """
+
+    SOURCE_SQUARE_CSV = "square_csv"
+    SOURCE_SQUARE_API = "square_api"
+    SOURCE_APP = "app"
+    SOURCE_CHOICES = [
+        (SOURCE_SQUARE_CSV, "Square itemised CSV export"),
+        (SOURCE_SQUARE_API, "Square Orders API"),
+        (SOURCE_APP, "This app's own records"),
+    ]
+
+    order_id = models.CharField(
+        max_length=100,
+        unique=True,
+        help_text="Square's Transaction ID, which is the order id.",
+    )
+    sold_at = models.DateTimeField(
+        db_index=True,
+        help_text="When Square says it happened, never when we imported it.",
+    )
+    location = models.CharField(max_length=120, blank=True)
+    device = models.CharField(max_length=120, blank=True)
+    customer_name = models.CharField(max_length=200, blank=True)
+    card_brand = models.CharField(max_length=40, blank=True)
+    source = models.CharField(
+        max_length=20,
+        choices=SOURCE_CHOICES,
+        db_index=True,
+        help_text=(
+            "Which pipeline supplied this row. Square is today's writer, not "
+            "the schema — when this app's own records take over, that is one "
+            "new writer and no new reports, because nothing downstream "
+            "branches on this. It is printed as a breakdown, the way "
+            "`InventoryLog.source` already is, never used as a filter that "
+            "changes what a total means."
+        ),
+    )
+    imported_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-sold_at"]
+
+    def __str__(self):
+        return f"{self.order_id} on {timezone.localtime(self.sold_at):%d %b %Y, %H:%M}"
+
+
+class SaleLine(models.Model):
+    """One line of an order: an item, a price point, a quantity and its money.
+
+    **Identity is `item` plus `price point`, not the SKU.** Twenty of the
+    thirty-six lines in a 2026 itemised export carry no SKU at all, and the
+    seasons before that are worse — so a SKU-keyed importer would drop most of
+    the history without saying so. Item is the style and price point is the
+    colorway, and both are present on every row of every season.
+
+    **It is also not Square's `Token` column**, which looks like a line
+    identifier and is not: the same token repeats across orders for the same
+    product, so keying on it collapses three separate sales of a triangle
+    fringe into one. That mistake is silent and costs revenue off the total.
+
+    The product links are `SET_NULL` rather than `PROTECT`, which is the
+    opposite of what `InventoryLog` does, and deliberately. There the log is
+    *about* a product, so losing the product would strand the row. Here the
+    row carries `item_name` and `price_point` as text and means something
+    without any link at all — the link is enrichment, so it is allowed to go.
+    """
+
+    PAYMENT = "payment"
+    REFUND = "refund"
+    EVENT_CHOICES = [
+        (PAYMENT, "Payment"),
+        (REFUND, "Refund"),
+    ]
+
+    sale = models.ForeignKey(
+        Sale,
+        on_delete=models.CASCADE,
+        related_name="lines",
+    )
+    line_key = models.CharField(
+        max_length=300,
+        help_text=(
+            "Item, price point and an occurrence counter — what makes this "
+            "line unique inside its order, and what re-importing the same "
+            "export matches on."
+        ),
+    )
+    sold_at = models.DateTimeField(
+        db_index=True,
+        help_text="Copied from the order so hour-of-day queries need no join.",
+    )
+    event_type = models.CharField(
+        max_length=20,
+        choices=EVENT_CHOICES,
+        default=PAYMENT,
+        db_index=True,
+    )
+
+    category = models.CharField(
+        max_length=120,
+        blank=True,
+        db_index=True,
+        help_text=(
+            "Square's category. Load-bearing for season-over-season totals: "
+            "the wax hands were on this till through 2024 and are gone now, "
+            "so a total that does not name its categories reads a "
+            "discontinued line as a decline."
+        ),
+    )
+    item_name = models.CharField(max_length=255, db_index=True)
+    price_point = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="The colorway, where one was rung up. 'Regular Price' means none was.",
+    )
+    sku = models.CharField(max_length=64, blank=True, db_index=True)
+
+    quantity = models.DecimalField(max_digits=9, decimal_places=2)
+    gross_cents = models.IntegerField(default=0)
+    discount_cents = models.IntegerField(default=0)
+    net_cents = models.IntegerField(default=0)
+    tax_cents = models.IntegerField(default=0)
+
+    finished_product = models.ForeignKey(
+        FinishedProduct,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="sale_lines",
+    )
+    raw_product = models.ForeignKey(
+        RawProduct,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="sale_lines",
+        help_text="The blank, matched off the item name. Coarser than the SKU and available for every season.",
+    )
+
+    source = models.CharField(
+        max_length=20,
+        choices=Sale.SOURCE_CHOICES,
+        db_index=True,
+    )
+    notes = models.CharField(max_length=300, blank=True)
+
+    class Meta:
+        ordering = ["-sold_at", "item_name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["sale", "line_key"],
+                name="one_sale_line_per_key",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.quantity:g} × {self.item_name} ({self.price_point or 'no colorway'})"
+
+    @property
+    def net(self):
+        """Net sales as a Decimal of dollars."""
+        return Decimal(self.net_cents) / 100
