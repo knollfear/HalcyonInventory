@@ -2,6 +2,7 @@ import io
 import json
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
@@ -65,6 +66,16 @@ class Command(BaseCommand):
             "--update",
             action="store_true",
             help="Push updated prices and SKUs to existing Square variations, then sync inventory.",
+        )
+        parser.add_argument(
+            "--force-prices",
+            action="store_true",
+            help=(
+                "Let --update overwrite a price Square holds differently. "
+                "Without it those variations are skipped and named: a price "
+                "edited in the dashboard is somebody's decision, and this "
+                "command is the one thing that can erase it without trace."
+            ),
         )
         parser.add_argument(
             "--relink",
@@ -298,7 +309,7 @@ class Command(BaseCommand):
             return
 
         if options["update"]:
-            self._update_existing(client)
+            self._update_existing(client, force_prices=options["force_prices"])
             # A renamed recipe renames its variation, which is the other way
             # the till's ordering goes wrong.
             self._reorder_variations(client)
@@ -441,7 +452,7 @@ class Command(BaseCommand):
 
         self._push_inventory(client)
 
-    def _update_existing(self, client):
+    def _update_existing(self, client, force_prices=False):
         self.stdout.write("Fetching existing variation versions from Square...")
 
         synced_fps = list(
@@ -453,6 +464,7 @@ class Command(BaseCommand):
 
         var_ids = [fp.square_variation_id for fp in synced_fps]
         versions = {}
+        square_prices = {}
         for i in range(0, len(var_ids), 100):
             result = client.catalog.batch_retrieve_catalog_objects(body={
                 "object_ids": var_ids[i:i + 100],
@@ -464,9 +476,18 @@ class Command(BaseCommand):
                 self._fail("Could not read current variation versions", result)
             for obj in result.body.get("objects", []):
                 versions[obj["id"]] = obj["version"]
+                # The same read already carries the price, so guarding
+                # against an overwrite costs no extra call — which is the
+                # whole reason it can be on by default.
+                money = (obj.get("item_variation_data") or {}).get("price_money") or {}
+                if money.get("amount") is not None:
+                    square_prices[obj["id"]] = (
+                        Decimal(money["amount"]) / 100
+                    ).quantize(Decimal("0.01"))
 
         objects = []
         stale = []
+        diverged = []
         for fp in synced_fps:
             if versions.get(fp.square_variation_id) is None:
                 # Square doesn't know this ID any more — deleted or moved
@@ -474,10 +495,43 @@ class Command(BaseCommand):
                 # duplicate rather than update anything.
                 stale.append(fp)
                 continue
+
+            # A price this app disagrees with was almost certainly typed into
+            # the dashboard, because that is the only other place one can be
+            # set — and this is the only command that can replace it, with
+            # nothing afterwards to say a different number was ever there.
+            # So the disagreement stops the row rather than riding through
+            # it. `compare_square_prices` is where it gets settled.
+            square_price = square_prices.get(fp.square_variation_id)
+            if (
+                not force_prices
+                and square_price is not None
+                and square_price != fp.price
+            ):
+                diverged.append((fp, square_price))
+                continue
+
             variation = self._variation(fp, self._item_id_for(fp))
             variation["id"] = fp.square_variation_id
             variation["version"] = versions.get(fp.square_variation_id)
             objects.append(variation)
+
+        if diverged:
+            self.stdout.write(self.style.WARNING(
+                f"{len(diverged)} variation(s) have a price in Square that "
+                f"disagrees with ours and were left alone:"
+            ))
+            for fp, square_price in diverged[:10]:
+                self.stdout.write(
+                    f"  {fp.sku or '(none)':<16} here ${fp.price:.2f} "
+                    f"vs Square ${square_price:.2f}"
+                )
+            if len(diverged) > 10:
+                self.stdout.write(f"  ... and {len(diverged) - 10} more")
+            self.stdout.write(
+                "  Settle them with `compare_square_prices`, or re-run with "
+                "--force-prices to overwrite Square."
+            )
 
         if stale:
             self.stdout.write(self.style.WARNING(

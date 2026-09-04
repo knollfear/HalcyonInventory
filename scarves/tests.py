@@ -16615,3 +16615,195 @@ class WorkIsSeparableFromItsTriggerTests(TestCase):
     def test_a_square_failure_is_not_a_command_error(self):
         from scarves import squareorders
         self.assertFalse(issubclass(squareorders.SquareUnavailable, CommandError))
+
+
+@override_settings(
+    SQUARE_ACCESS_TOKEN="test-token",
+    SQUARE_LOCATION_ID="LOC123",
+    SQUARE_ENVIRONMENT="sandbox",
+)
+class SquarePriceDivergenceTests(TestCase):
+    """A price can be set in two places and only one of them writes it down.
+
+    `sync_to_square --update` sends `FinishedProduct.price` at every variation
+    Square already has, so a price typed into the dashboard survives until the
+    next `--update` and is then replaced with nothing to say a different
+    number was ever there. The till starts charging a figure nobody chose, and
+    the only symptom is a receipt.
+    """
+
+    def setUp(self):
+        self.recipe = make_recipe("Stormy Sea")
+        self.product = make_product(self.recipe, "Stormy Silk", with_image=False)
+        self.product.price = Decimal("32.00")
+        self.product.save()
+        FinishedProduct.objects.filter(pk=self.product.pk).update(
+            square_variation_id="SQ_VAR"
+        )
+        RawProduct.objects.filter(pk=self.product.raw_product.pk).update(
+            square_item_id="SQ_ITEM"
+        )
+        self.product.refresh_from_db()
+
+    def _square_variation(self, amount, version=42, updated_at="2026-08-28T10:00:00Z"):
+        return {
+            "id": "SQ_VAR",
+            "type": "ITEM_VARIATION",
+            "version": version,
+            "updated_at": updated_at,
+            "item_variation_data": {
+                "item_id": "SQ_ITEM",
+                "name": self.recipe.name,
+                "sku": self.product.sku,
+                "pricing_type": "FIXED_PRICING",
+                "price_money": {"amount": amount, "currency": "USD"},
+            },
+        }
+
+    def _run(self, command, client, **kwargs):
+        out, err = StringIO(), StringIO()
+        with mock.patch("square.client.Client", return_value=client):
+            call_command(command, stdout=out, stderr=err, **kwargs)
+        return out.getvalue() + err.getvalue()
+
+    # --- the guard on --update ------------------------------------------
+
+    def test_update_leaves_a_price_square_disagrees_with_alone(self):
+        """The whole point. Square says $38, we say $32, and the run must not
+        quietly make it $32 again."""
+        client = FakeSquareClient(retrieve_results=[
+            FakeSquareResult({"objects": [self._square_variation(3800)]}),
+            FakeSquareResult({"objects": []}),
+        ])
+        output = self._run("sync_to_square", client, update=True)
+
+        self.assertIn("disagrees with ours", output)
+        self.assertIn("$32.00", output)
+        self.assertIn("$38.00", output)
+        sent = client.upserts[0]["batches"][0]["objects"] if client.upserts else []
+        self.assertEqual(sent, [], "nothing went up for the diverged row")
+
+    def test_force_prices_still_overwrites(self):
+        """The escape hatch has to exist — sometimes ours really is right."""
+        client = FakeSquareClient(retrieve_results=[
+            FakeSquareResult({"objects": [self._square_variation(3800)]}),
+            FakeSquareResult({"objects": []}),
+        ])
+        self._run("sync_to_square", client, update=True, force_prices=True)
+
+        sent = client.upserts[0]["batches"][0]["objects"][0]
+        self.assertEqual(sent["item_variation_data"]["price_money"]["amount"], 3200)
+
+    def test_an_agreeing_price_updates_as_it_always_did(self):
+        """The guard must not turn --update into a no-op for the ordinary
+        case, which is what would make somebody pass --force-prices always."""
+        client = FakeSquareClient(retrieve_results=[
+            FakeSquareResult({"objects": [self._square_variation(3200)]}),
+            FakeSquareResult({"objects": []}),
+        ])
+        self._run("sync_to_square", client, update=True)
+
+        sent = client.upserts[0]["batches"][0]["objects"][0]
+        self.assertEqual(sent["version"], 42)
+        self.assertEqual(sent["item_variation_data"]["sku"], self.product.sku)
+
+    # --- the diff --------------------------------------------------------
+
+    def test_the_diff_reports_both_prices_and_changes_nothing(self):
+        client = FakeSquareClient(retrieve_result=FakeSquareResult({
+            "objects": [self._square_variation(3800)],
+        }))
+        output = self._run("compare_square_prices", client)
+
+        self.assertIn("32.00", output)
+        self.assertIn("38.00", output)
+        self.assertIn("2026-08-28", output)
+        self.assertEqual(client.upserts, [])
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.price, Decimal("32.00"))
+
+    def test_pull_takes_squares_price(self):
+        client = FakeSquareClient(retrieve_result=FakeSquareResult({
+            "objects": [self._square_variation(3800)],
+        }))
+        self._run("compare_square_prices", client, pull=True)
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.price, Decimal("38.00"))
+        self.assertEqual(client.upserts, [], "a pull never writes to Square")
+
+    def test_push_echoes_squares_own_object_back(self):
+        """Same rule the ordering pass follows: never *build* a variation.
+        A payload assembled here would drop whatever field this app does not
+        model — and the drop is silent."""
+        obj = self._square_variation(3800)
+        obj["item_variation_data"]["location_overrides"] = [{"location_id": "LOC123"}]
+        client = FakeSquareClient(retrieve_result=FakeSquareResult({"objects": [obj]}))
+        self._run("compare_square_prices", client, push=True)
+
+        sent = client.upserts[0]["batches"][0]["objects"][0]
+        self.assertEqual(sent["item_variation_data"]["price_money"]["amount"], 3200)
+        self.assertEqual(sent["version"], 42)
+        self.assertIn("location_overrides", sent["item_variation_data"])
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.price, Decimal("32.00"))
+
+    def test_a_dry_run_resolves_nothing(self):
+        client = FakeSquareClient(retrieve_result=FakeSquareResult({
+            "objects": [self._square_variation(3800)],
+        }))
+        output = self._run("compare_square_prices", client, pull=True, dry_run=True)
+
+        self.assertIn("DRY RUN", output)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.price, Decimal("32.00"))
+
+    def test_a_mistyped_sku_stops_rather_than_matching_nothing(self):
+        """Applying it as 'no rows' reads on screen exactly like a catalogue
+        that already agreed."""
+        client = FakeSquareClient(retrieve_result=FakeSquareResult({
+            "objects": [self._square_variation(3800)],
+        }))
+        with self.assertRaises(CommandError) as caught:
+            self._run("compare_square_prices", client, pull=True, skus=["NOSUCH"])
+        self.assertIn("NOSUCH", str(caught.exception))
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.price, Decimal("32.00"))
+
+    def test_changed_since_scopes_to_what_square_touched(self):
+        client = FakeSquareClient(retrieve_result=FakeSquareResult({
+            "objects": [self._square_variation(3800, updated_at="2026-07-01T10:00:00Z")],
+        }))
+        with self.assertRaises(CommandError) as caught:
+            self._run(
+                "compare_square_prices", client, pull=True, changed_since="2026-08-01"
+            )
+        self.assertIn("2026-08-01", str(caught.exception))
+
+    def test_variable_pricing_is_named_not_pulled_as_zero(self):
+        """Variable pricing is the till asking the cashier, not a price of
+        nothing. Pulling it would set a real product to whatever None became."""
+        obj = self._square_variation(3800)
+        obj["item_variation_data"]["pricing_type"] = "VARIABLE_PRICING"
+        del obj["item_variation_data"]["price_money"]
+        client = FakeSquareClient(retrieve_result=FakeSquareResult({"objects": [obj]}))
+        output = self._run("compare_square_prices", client, pull=True)
+
+        self.assertIn("no fixed price", output)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.price, Decimal("32.00"))
+
+    def test_a_read_failure_is_never_read_as_agreement(self):
+        """An empty answer and a catalogue that agrees on every price look
+        identical, and only one of them is safe to act on."""
+        client = FakeSquareClient(retrieve_result=FakeSquareResult(
+            errors=[{"category": "AUTHENTICATION_ERROR", "detail": "nope"}]
+        ))
+        with self.assertRaises(CommandError) as caught:
+            self._run("compare_square_prices", client)
+        self.assertIn("catalogue", str(caught.exception))
+
+    def test_two_directions_in_one_run_are_refused(self):
+        client = FakeSquareClient()
+        with self.assertRaises(CommandError):
+            self._run("compare_square_prices", client, pull=True, push=True)

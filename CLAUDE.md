@@ -2605,6 +2605,56 @@ items is closer to a thousand objects and the batch limit counts the children.
 
 Items themselves need nothing — the POS already lists those alphabetically.
 
+### A price has two authors, and only one of them writes it down
+
+A price can be set here or typed into the Square dashboard, and the dashboard
+is what gets edited when the stall is open and this app is not. `--update`
+sends `FinishedProduct.price` at **every** variation Square already has, so a
+price changed in Square survives exactly until the next `--update` — at which
+point it is replaced with nothing anywhere to say a different number was ever
+there. The till starts charging a figure nobody chose and the only symptom is
+a receipt.
+
+**So `--update` refuses a row whose price Square holds differently**, names
+it, and carries on with the rest. The read it already makes for `version`
+carries `price_money` too, which is why the guard costs no extra call and can
+be on by default. `--force-prices` overwrites, for when ours really is right.
+
+`compare_square_prices` is where a divergence gets settled:
+
+```
+python manage.py compare_square_prices                    # read-only diff
+python manage.py compare_square_prices --pull             # Square wins
+python manage.py compare_square_prices --push --sku X     # we win, named
+python manage.py compare_square_prices --interactive      # one at a time
+```
+
+Four things in it are the same bargains the rest of the app makes:
+
+- **The diff sorts by Square's own `updated_at`, newest first.** Nobody
+  writes down which prices they changed during a busy morning, but Square
+  did — so the run of rows edited on one afternoon clumps at the top instead
+  of scattering through an alphabetical list. `--changed-since` is that
+  observation made into a scope.
+- **A read failure is never read as agreement.** An empty answer and a
+  catalogue that agrees on every price look identical, and only one is safe
+  to act on — same reasoning as the version read in `--update` and the
+  ordering pass.
+- **`--push` never *builds* a variation.** It takes the object as Square
+  returned it, replaces the amount, and sends that back, so a field this app
+  doesn't model can't be dropped by being absent from a payload assembled
+  here. The rule `_reorder_variations` already follows, for the same reason.
+- **Variable pricing is named, not pulled as zero.** It is the till asking
+  the cashier, not a price of nothing, and a mistyped `--sku` stops the run
+  rather than matching no rows — "nothing to do" reads on screen exactly like
+  a catalogue that already agreed.
+
+Worth stating plainly, because the instinct is to fix this by remembering to
+check: **nothing here depends on anyone remembering.** The guard is what makes
+the divergence impossible to drive over silently; the command is only how it
+gets settled once it has been raised. Same rule as everywhere else — never add
+a step that has to be remembered to be correct.
+
 ### Colour bands are not synced, on purpose
 
 `Recipe.color_bands` stays local. The POS never displays custom attributes, so
