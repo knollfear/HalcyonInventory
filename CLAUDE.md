@@ -2057,6 +2057,63 @@ headings that mysteriously aren't links. An unreadable date contributes
 nothing and the heading states the range actually used, which is what stops
 the answer being mistaken for the question that was asked.
 
+## Slow sellers: a zero means two opposite things
+
+`private/slow-sellers/` is the other end of `private/sales/`, and a different
+question rather than the same one sorted backwards. **A product that sold
+nothing has no row to aggregate**, so this starts from the catalogue and
+subtracts — a different query, with a different set of things that can go
+wrong. `scarves/slowsellers.py` does the picking; nothing in it writes.
+
+**Every zero is printed with the stock beside it**, because a colorway that
+sold nothing either sat on the display all weekend or was never out there to
+be wanted, and those argue for opposite decisions — stop dyeing it, or dye
+more of it. The shop's own answer is that everything on hand goes out, so
+stock is a good proxy for "it was on the table". A zero with none is not a
+slow seller at all; it is a colorway nobody could buy, and it is the reason
+the page exists.
+
+**It reads `SaleLine`, not `InventoryLog`**, which is the opposite of the top
+sellers page and deliberate. `sold_at` is Square's own clock, so a
+season-scoped window means what it says where `created_at` would land a
+Saturday's sales on Monday. And a sale the app could not identify never
+reaches `InventoryLog` at all — missing sales inflate a top-sellers list by
+nothing, but they *invent* bottom sellers out of products that did sell. The
+two pages will not agree to the unit and the page says so.
+
+**Scope is what this app tracks.** Roughly 43% of a season's Square lines tie
+to nothing here — accessories, unsynced items, flat-price buttons — and that
+is a known gap worked elsewhere, not something this page reasons about.
+
+### Three ways the attribution lies, and only one of them is loud
+
+Worth separating, because they need different handling and only the third is
+dangerous:
+
+1. **Untracked** — the line matches nothing. Out of scope, and it announces
+   itself by never appearing.
+2. **Colourless** — the blank rang up on a flat price button, so the units are
+   real and belong to *some* colorway with nothing to say which.
+   `unattributed()` counts these per blank and the page prints one line of it
+   under the table. A line rather than a panel: it qualifies the list without
+   competing with it.
+3. **Miscoded** — every sale of a blank landed on one colorway. This is the
+   one to watch, because it looks like complete data: one runaway hit and
+   forty duds, and both halves are false. The duds are exactly what this page
+   reports. Sash Belt is the worked case — 55 of 59 attributed units came
+   back as `Amethyst` against 48 colorways in the catalogue.
+
+`lopsided()` finds the third **by arithmetic rather than by name**, so the
+next blank to break is caught without anybody remembering to add it: a
+majority of a blank's attributed units on one colorway, on a blank carrying
+at least ten. Both bounds are needed — a blank with three colorways can
+honestly put 60% on one — and it currently flags exactly one thing.
+
+**It reports the numbers and draws no conclusion.** A genuinely popular colour
+and a miscoded button produce identical figures, and only somebody who knows
+the shop can say which. Same call `colorbands` makes: fill the form in, a
+person decides.
+
 ## The sales ledger: what the till took, kept apart from what the shelf holds
 
 `Sale` and `SaleLine` are a second ledger, imported from Square by

@@ -1,0 +1,190 @@
+{% extends "scarves/base_internal.html" %}
+{% comment %}
+The bottom of the list. Every zero is printed with the stock beside it,
+because a zero on a full peg and a zero on an empty one argue for opposite
+things — stop dyeing it, or dye more of it.
+{% endcomment %}
+
+{% block title %}Slow Sellers{% endblock %}
+{% block heading %}Slow Sellers{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 1000px; }
+
+  .controls { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end;
+              margin: 4px 0 16px; }
+  .controls label { display: block; font-size: 12px; font-weight: 600;
+                    color: #667; margin-bottom: 3px; }
+  .pills { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+  .pill { font-size: 13px; text-decoration: none; padding: 5px 12px;
+          border: 1px solid #cfd6de; border-radius: 999px; color: var(--ink);
+          background: #fff; }
+  .pill.on { border-color: var(--accent); background: #eef2f7;
+             color: var(--accent); font-weight: 600; }
+
+  .figures { display: flex; flex-wrap: wrap; gap: 22px; margin: 0 0 16px; }
+  .fig .n { font-size: 26px; font-weight: 700; color: var(--accent); }
+  .fig .n.quiet { color: #6b7280; }
+  .fig .what { font-size: 12px; color: #667; }
+
+  table.rows td.num, table.rows th.num { text-align: right;
+      font-variant-numeric: tabular-nums; }
+  tr.never td { background: #f1f6fb; }
+  .tag { font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+         color: #1558a0; font-weight: 700; }
+  .zero { color: #8a2f2a; font-weight: 700; }
+  .caveat { font-size: 12px; color: #667; margin-top: 14px; line-height: 1.5; }
+{% endblock %}
+
+{% block content %}
+
+  <p class="lead">
+    What this app tracks and isn't selling, over {{ range.label|lower }}.
+    Reads what Square rang up, on Square's own clock — not the stock log.
+  </p>
+
+  <form method="get" class="controls">
+    <div>
+      <label for="id_max">Sold this many or fewer</label>
+      <input type="number" name="max" id="id_max" value="{{ max_units }}"
+             min="0" max="20">
+    </div>
+    <div>
+      <label for="id_category">Category</label>
+      <select name="category" id="id_category">
+        <option value="">Everything</option>
+        {% for c in categories %}
+          <option value="{{ c.pk }}" {% if category and category.pk == c.pk %}selected{% endif %}>
+            {{ c.name }}
+          </option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label for="id_range">Range</label>
+      <select name="range" id="id_range">
+        <option value="season" {% if range.key == "season" %}selected{% endif %}>Season so far</option>
+        <option value="30" {% if range.key == "30" %}selected{% endif %}>Last 30 days</option>
+        <option value="7" {% if range.key == "7" %}selected{% endif %}>Last 7 days</option>
+        <option value="all" {% if range.key == "all" %}selected{% endif %}>All time</option>
+      </select>
+    </div>
+    <button class="btn" type="submit">Show</button>
+  </form>
+
+  {% comment %}
+  Counts are scoped to what is on screen — a figure over a list it doesn't
+  describe is the page contradicting itself, the same rule the colour page's
+  pills follow.
+  {% endcomment %}
+  <div class="figures">
+    <div class="fig">
+      <div class="n">{{ tally.zero }}</div>
+      <div class="what">sold none</div>
+    </div>
+    <div class="fig">
+      <div class="n quiet">{{ tally.zero_with_stock }}</div>
+      <div class="what">…and were on the table</div>
+    </div>
+    <div class="fig">
+      <div class="n">{{ tally.never_out }}</div>
+      <div class="what">…and had none to sell</div>
+    </div>
+    <div class="fig">
+      <div class="n quiet">{{ tally.units_sitting }}</div>
+      <div class="what">units sitting on these</div>
+    </div>
+  </div>
+
+  {% comment %}
+  A reveal rather than a mode: nothing else on the page carries `never`
+  onward, so it evaporates on the next submit. Same inversion `?bare=1` makes
+  on the restock board, and for the same reason — this is a question you ask
+  once, not a lens you walk around in.
+  {% endcomment %}
+  <div class="pills">
+    <a class="pill {% if not never_only %}on{% endif %}"
+       href="?max={{ max_units }}&range={{ range.key }}{% if category %}&category={{ category.pk }}{% endif %}">
+      Everything quiet ({{ tally.listed }})
+    </a>
+    <a class="pill {% if never_only %}on{% endif %}"
+       href="?max={{ max_units }}&range={{ range.key }}{% if category %}&category={{ category.pk }}{% endif %}&never=1">
+      Nothing on hand to sell ({{ tally.never_out }})
+    </a>
+  </div>
+
+  <table class="rows">
+    <thead>
+      <tr>
+        <th>Colorway</th><th>Blank</th>
+        <th class="num">Sold</th><th class="num">On hand</th><th class="num">Par</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+        <tr {% if row.never_out %}class="never"{% endif %}>
+          <td><a href="{% url 'recipe_detail' row.product.recipe_id %}">{{ row.product.recipe.name }}</a></td>
+          <td>{{ row.product.raw_product.name }}</td>
+          <td class="num {% if not row.units %}zero{% endif %}">{{ row.units }}</td>
+          <td class="num">{{ row.on_hand }}</td>
+          <td class="num">{{ row.product.par }}</td>
+          <td>
+            {% comment %}
+            The distinction the page is for. A zero with nothing on hand is
+            not a slow seller — nobody could buy it — so it reads as a
+            candidate rather than a dud.
+            {% endcomment %}
+            {% if row.never_out %}<span class="tag">none to sell</span>{% endif %}
+          </td>
+        </tr>
+      {% empty %}
+        <tr><td colspan="6" class="empty">Nothing sold that little over {{ range.label|lower }}.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% if unattributed %}
+    {% comment %}
+    The page's own blind spot, said once and kept small. These blanks sell on
+    a flat price button, so those units belong to some colorway and nothing
+    can say which — which means colorways of these blanks can appear above
+    having actually sold. A line rather than a panel: it qualifies the list
+    without competing with it.
+    {% endcomment %}
+    <p class="caveat">
+      Some sales carry no colorway, so a few of these zeros may be wrong:
+      {% for name, units in unattributed %}{% if not forloop.first %}, {% endif %}<strong>{{ name }}</strong> {{ units }}{% endfor %}.
+      Those rang up on a flat price rather than a variation, so the units are
+      real and there is nothing to say which colorway they were.
+    </p>
+  {% endif %}
+
+  {% if lopsided %}
+    {% comment %}
+    The confidently-wrong case, and the reason it gets its own line rather
+    than joining the one above: missing sales leave a gap and colourless
+    sales announce themselves, but a miscoded variation looks like complete
+    data — one runaway hit and forty duds, both of them false.
+
+    Stated as arithmetic with no verdict attached. A genuinely popular colour
+    and a miscoded button produce identical numbers, and only somebody who
+    knows the shop can say which this is.
+    {% endcomment %}
+    <p class="caveat">
+      Worth a look before believing the zeros on
+      {% for row in lopsided %}{% if not forloop.first %}; {% endif %}<strong>{{ row.blank }}</strong>:
+      {{ row.units }} of {{ row.total }} attributed units rang up as
+      <strong>{{ row.colorway }}</strong>, across {{ row.seen }} of
+      {{ row.known }} colorways{% endfor %}.
+    </p>
+  {% endif %}
+
+  <p class="caveat">
+    <a href="{% url 'sales_report' %}">Top sellers</a> answers the other end,
+    and reads the stock log rather than the till — so the two will not agree
+    to the unit.
+  </p>
+
+{% endblock %}

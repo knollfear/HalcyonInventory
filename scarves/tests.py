@@ -17,6 +17,7 @@ import hmac
 import json
 import os
 import random
+import pathlib
 import re
 import shutil
 import tempfile
@@ -10135,6 +10136,183 @@ class PrintSubmitsTheListItselfTests(TestCase):
         response = self.client.get(self.url, {"items": [f"{self.product.pk}:2"]})
 
         self.assertContains(response, 'hx-params="not csrfmiddlewaretoken"')
+
+
+class SlowSellersTests(TestCase):
+    """The bottom of the list, where a zero means two opposite things.
+
+    A colorway that sold nothing either sat on the display and nobody wanted
+    it, or was never out there to be wanted. Those argue for opposite
+    decisions, so the page never reports a zero without the stock beside it.
+    """
+
+    def setUp(self):
+        self.client.force_login(User.objects.create_user("staff", password="pw"))
+        self.url = reverse("slow_sellers")
+        self.dud = make_bathable(
+            make_recipe("Wasteland"), "Sash Belt", on_hand=12, par=8, bath=4
+        )
+        self.never = make_bathable(
+            make_recipe("Aegean"), "Half Circle Veil", on_hand=0, par=8, bath=4
+        )
+        self.mover = make_bathable(
+            make_recipe("Ember"), "Rectangle Veil", on_hand=4, par=8, bath=4
+        )
+        self.day = timezone.now()
+
+    def _sell(self, product, units, colorway=None):
+        sale = Sale.objects.create(
+            order_id=f"o-{product.pk}-{units}-{timezone.now().timestamp()}",
+            sold_at=self.day, source=Sale.SOURCE_SQUARE_API,
+        )
+        return SaleLine.objects.create(
+            sale=sale, line_key=f"k{product.pk}-{units}", sold_at=self.day,
+            item_name=product.raw_product.name,
+            price_point=colorway or product.recipe.name,
+            quantity=units, finished_product=product,
+            raw_product=product.raw_product, source=Sale.SOURCE_SQUARE_API,
+        )
+
+    def _rows(self, **params):
+        params.setdefault("range", "all")
+        return self.client.get(self.url, params).context["rows"]
+
+    def test_a_colorway_that_sold_nothing_is_listed(self):
+        names = [r.product.recipe.name for r in self._rows()]
+
+        self.assertIn("Wasteland", names)
+
+    def test_something_that_sold_well_is_not(self):
+        self._sell(self.mover, 9)
+
+        names = [r.product.recipe.name for r in self._rows()]
+
+        self.assertNotIn("Ember", names)
+
+    def test_the_max_is_settable_because_three_is_not_worth_a_bath(self):
+        self._sell(self.mover, 3)
+
+        self.assertNotIn("Ember", [r.product.recipe.name for r in self._rows(max="1")])
+        self.assertIn("Ember", [r.product.recipe.name for r in self._rows(max="3")])
+
+    def test_a_zero_with_stock_is_told_apart_from_a_zero_without(self):
+        """The distinction the page exists for: one says stop dyeing it, the
+        other says nobody could have bought it."""
+        rows = {r.product.recipe.name: r for r in self._rows()}
+
+        self.assertFalse(rows["Wasteland"].never_out)
+        self.assertTrue(rows["Aegean"].never_out)
+
+    def test_the_stock_is_on_the_row(self):
+        rows = {r.product.recipe.name: r for r in self._rows()}
+
+        self.assertEqual(rows["Wasteland"].on_hand, 12)
+
+    def test_the_counts_split_the_two_kinds_of_zero(self):
+        tally = self.client.get(self.url, {"range": "all"}).context["tally"]
+
+        self.assertEqual(tally["zero"], 3)
+        self.assertEqual(tally["zero_with_stock"], 2)
+        self.assertEqual(tally["never_out"], 1)
+
+    def test_the_never_out_pill_narrows_to_them(self):
+        rows = self._rows(never="1")
+
+        self.assertEqual([r.product.recipe.name for r in rows], ["Aegean"])
+
+    def test_biggest_pile_of_unsold_stock_leads(self):
+        """Sorted by what the answer costs, not alphabetically."""
+        rows = [r for r in self._rows() if r.units == 0]
+
+        self.assertEqual(rows[0].product.recipe.name, "Wasteland")
+
+    def test_a_colourless_sale_is_named_rather_than_ignored(self):
+        """Those units are real and belong to some colorway; nothing can say
+        which, so the page says so instead of accusing every colorway."""
+        self._sell(self.dud, 26, colorway="Regular Price")
+
+        response = self.client.get(self.url, {"range": "all"})
+
+        self.assertContains(response, "Some sales carry no colorway")
+        self.assertContains(response, "Sash Belt")
+
+    def test_an_undyed_passthrough_is_not_a_colorway(self):
+        """It has no recipe, and its shortfall is a reorder decision."""
+        make_bathable(None, "Undyed Skein", on_hand=3, par=8, bath=4)
+
+        names = [r.product.raw_product.name for r in self._rows()]
+
+        self.assertNotIn("Undyed Skein", names)
+
+    def test_it_needs_a_login(self):
+        self.client.logout()
+
+        self.assertEqual(self.client.get(self.url).status_code, 302)
+
+
+class MiscodedColorwayIsCalledOutTests(TestCase):
+    """Sales that all landed on one colorway — the confidently-wrong case.
+
+    Missing sales leave a gap and colourless sales announce themselves, but a
+    miscoded variation looks like complete data: one runaway hit and forty
+    duds, both false. The duds are exactly what this page reports.
+    """
+
+    def setUp(self):
+        self.client.force_login(User.objects.create_user("staff", password="pw"))
+        self.url = reverse("slow_sellers")
+        self.blank = None
+        self.products = []
+        for i in range(12):
+            p = make_bathable(
+                make_recipe(f"Colour {i}"), "Sash Belt", on_hand=2, par=8, bath=4
+            ) if i == 0 else FinishedProduct.objects.create(
+                name=f"Sash Belt - Colour {i}", raw_product=self.blank,
+                recipe=make_recipe(f"Colour {i}"), price=10, par=8,
+                number_on_hand=2,
+            )
+            if i == 0:
+                self.blank = p.raw_product
+            self.products.append(p)
+
+    def _sell(self, product, units, colorway):
+        sale = Sale.objects.create(
+            order_id=f"o{product.pk}-{colorway}", sold_at=timezone.now(),
+            source=Sale.SOURCE_SQUARE_API,
+        )
+        SaleLine.objects.create(
+            sale=sale, line_key=f"k{product.pk}", sold_at=timezone.now(),
+            item_name="Sash Belt", price_point=colorway, quantity=units,
+            finished_product=product, raw_product=self.blank,
+            source=Sale.SOURCE_SQUARE_API,
+        )
+
+    def test_a_blank_with_everything_on_one_colorway_is_flagged(self):
+        self._sell(self.products[0], 55, "Colour 0")
+        self._sell(self.products[1], 4, "Colour 1")
+
+        response = self.client.get(self.url, {"range": "all"})
+
+        self.assertContains(response, "Worth a look before believing the zeros")
+        self.assertContains(response, "Colour 0")
+
+    def test_an_evenly_spread_blank_is_not_flagged(self):
+        for p in self.products[:6]:
+            self._sell(p, 10, p.recipe.name)
+
+        response = self.client.get(self.url, {"range": "all"})
+
+        self.assertNotContains(response, "Worth a look before believing the zeros")
+
+    def test_it_is_detected_rather_than_named(self):
+        """No blank is hardcoded, so the next one to break is caught without
+        anybody remembering to add it."""
+        import scarves.slowsellers as mod
+
+        self.assertNotIn("sash", mod.__file__.lower().split("/")[-1])
+        source = pathlib.Path(mod.__file__).read_text().lower()
+        self.assertNotIn('"sash belt"', source)
+        self.assertNotIn("'sash belt'", source)
 
 
 class AnHtmxEditSendsAFragmentTests(TestCase):

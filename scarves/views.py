@@ -52,7 +52,7 @@ from django.template.response import TemplateResponse
 
 from . import (
     closing, colorbands, crew, fancy, labels, photowalk, production, restock,
-    sales, seasonreport, sheetscan, skus, timesheets,
+    sales, seasonreport, sheetscan, skus, slowsellers, timesheets,
 )
 from . import seasons as seasons_mod
 from .colorutils import hex_to_rgb, nearest_by_color, pick_color_cluster
@@ -3973,6 +3973,56 @@ def _without(rows, product):
         {"items": [f"{p.pk}:{n}" for p, n in rows if p.pk != product.pk]},
         doseq=True,
     )
+
+
+@page_meta(
+    title="Slow Sellers",
+    description="Colorways that sold one or none over a range, with what was "
+                "on hand — so a zero that sat on the table is told apart from "
+                "a zero nobody could buy.",
+    category="Reports",
+)
+@login_required
+def slow_sellers(request):
+    """The bottom of the list, which is a different question from the top.
+
+    A product that sold nothing has no row to aggregate, so this starts from
+    the catalogue and subtracts — and the number that decides what to do
+    about a zero is the stock beside it, not the zero itself.
+    """
+    rng = slowsellers.season_range(request.GET)
+
+    raw = (request.GET.get("max") or "").strip()
+    # A cap somebody typed, because "not worth dyeing" is a judgement about
+    # this shop's season and not a constant. Clamped rather than refused: a
+    # silly number is a typo, and losing the page to it helps nobody.
+    max_units = int(raw) if raw.isdigit() else 1
+    max_units = min(max_units, 20)
+
+    category = None
+    category_id = request.GET.get("category")
+    if category_id and category_id.isdigit():
+        category = RawProductCategory.objects.filter(pk=category_id).first()
+
+    found = slowsellers.rows(rng, max_units=max_units, category=category)
+    # A reveal, not a mode — nothing carries it onward, the same inversion
+    # `?bare=1` makes on the restock board.
+    if request.GET.get("never") == "1":
+        found = [row for row in found if row.never_out]
+
+    return render(request, "scarves/slow_sellers.html", {
+        "rows": found,
+        "tally": slowsellers.tally(found),
+        "range": rng,
+        "max_units": max_units,
+        "categories": RawProductCategory.objects.order_by("name"),
+        "category": category,
+        "never_only": request.GET.get("never") == "1",
+        # The page's own blind spots, printed under the table: sales with no
+        # colorway at all, and sales that all landed on one.
+        "unattributed": slowsellers.unattributed(rng, category=category),
+        "lopsided": slowsellers.lopsided(rng, category=category),
+    })
 
 
 @page_meta(

@@ -67,6 +67,11 @@ urlpatterns = [
     # the state (range, filters, sort) is all query string, so a reading is a
     # link somebody can send.
     path("private/sales/", views.sales_report, name="sales_report"),
+    # The other end of the same question, and a different query: a product
+    # that sold nothing has no row to aggregate, so this starts from the
+    # catalogue. Reads the Square ledger rather than the stock log — see
+    # `scarves/slowsellers.py` for why that matters more at this end.
+    path("private/slow-sellers/", views.slow_sellers, name="slow_sellers"),
     path("private/seasons/", views.season_report, name="season_report"),
 
     # --- Recipes ---
