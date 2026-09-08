@@ -1,0 +1,25 @@
+{% comment %}
+The answer to "add this tag", as a swap rather than a navigation.
+
+The row arrives beside the search that found it — appended to `#added-rows`,
+which sits directly under the results — because this happens late in a long
+evening with the form above half-filled. A redirect would throw away every
+answer typed but not yet saved and land somebody back at the top of a page
+they were at the bottom of. Nothing above is re-rendered, so nothing above
+can be lost.
+
+Alphabetical order is given up to do it, deliberately: the row somebody just
+asked for has to be somewhere they can see, and the list re-sorts itself on
+the next load anyway.
+
+A repeated tap is safe without a page load to prove it: `closing.add_tag`
+hands back the row that already exists rather than making a second one, so
+the sentence is the whole of what comes back.
+{% endcomment %}
+{% for entry in count_fields %}
+  {% include "scarves/partials/close_count_row.html" %}
+{% endfor %}
+
+<p id="tag-notice" class="lead added" hx-swap-oob="true">{{ note }}</p>
+{% include "scarves/partials/close_tables.html" with oob=True %}
+{% include "scarves/partials/close_left.html" with oob=True %}

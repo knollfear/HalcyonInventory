@@ -1,0 +1,22 @@
+{% comment %}
+How much of the pile is left, and the drawer holding what is already
+answered. Swapped out of band when a tag is added, because a line reading
+"9 left to count" over ten rows is the contradiction the scoping rule exists
+to prevent — and it sits above the fold, so nobody would see it happen.
+
+Always rendered, empty when there is nothing to say, so the out-of-band swap
+always has somewhere to land.
+{% endcomment %}
+<p id="count-left" class="lead"{% if oob %} hx-swap-oob="true"{% endif %}>
+  {% if answered_count and run.is_open %}
+    {% if show_answered %}
+      Showing all {{ answered_count }} already answered.
+      <a href="{{ hide_answered_url }}">Hide them</a> to get back to
+      what's left.
+    {% else %}
+      <strong>{{ pending_count }}</strong> left to count.
+      <a href="{{ show_answered_url }}">Show the {{ answered_count }}
+      already answered</a> — to change one, or to undo it.
+    {% endif %}
+  {% endif %}
+</p>

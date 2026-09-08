@@ -377,8 +377,14 @@ def card_status(rows):
     return cards, no_cards, uncounted
 
 
-def tally(run):
+def tally(run, rows=None):
     """The numbers this run exists to produce: what was found wrong.
+
+    `rows` narrows it to a subset already in memory — the counting page passes
+    the table on screen, because a score of seven over a list of three is the
+    page contradicting itself, and the number somebody acts on is the one
+    beside the list they are reading. Left out, it is the whole run, which is
+    what the picker and the history page want.
 
     Absolute counts, deliberately, and no rate anywhere. Ten corrections in a
     weekend is ten corrections whether the list was twelve products long or
@@ -400,7 +406,7 @@ def tally(run):
     than an omission. See the module docstring: capacity is not a target, and
     a gap counted here would be acted on.
     """
-    rows = list(run.rows.all())
+    rows = list(run.rows.all()) if rows is None else list(rows)
     expected = [r for r in rows if not r.added_by_tag]
     unpredicted = [r for r in rows if r.added_by_tag]
     confirmed = [r for r in rows if r.outcome == CloseRunRow.CONFIRMED]
@@ -431,3 +437,58 @@ def tally(run):
             max(r.on_hand_before - (r.counted or 0), 0) for r in extra
         ),
     }
+
+
+def categories_present(rows):
+    """The categories tonight's rows fall into, in name order, no repeats.
+
+    Category means "which table at the stall" — that is why reference sheets
+    print per category — and it is the axis a close is physically worked on:
+    the yarn boards are one walk and the silk racks are another. So it is
+    what the counting list filters on.
+
+    Derived from the rows rather than from a list of names, for the reason
+    `RawProductCategory` is a table in the first place: a shop that grows a
+    third table gets a third choice with nothing to change here. A run whose
+    rows all sit on one table yields one entry, and the page draws no filter
+    at all — a filter offering one choice is furniture.
+    """
+    seen = {}
+    for row in rows:
+        category = row.finished_product.raw_product.category
+        seen.setdefault(category.pk, category)
+    return sorted(seen.values(), key=lambda category: category.name)
+
+
+def in_category(rows, category):
+    """The rows on one table. `None` is every table, which is the default.
+
+    **Filtering is a reading, never a scope.** `sync_expected` still folds in
+    every emptied bag whatever is on screen, every row stays on the run, and
+    nothing here decides what gets asked about — it decides what is in front
+    of somebody standing at one table. That distinction is what makes it safe
+    to hide rows on a page whose whole job is to be complete: the hidden ones
+    are still on the run, still unanswered, and still counted by the pill
+    that is not selected.
+
+    **A tag somebody added by hand is on every table**, because it is not on
+    a table at all — it is in their hand. The predictions are what the filter
+    is for; a row that exists because a person searched the catalogue and
+    said "this one too" is a decision, and hiding it behind the table it
+    happens to belong to would answer that decision by making it disappear.
+    So a silk tag typed in at the yarn boards stays in front of the person
+    who typed it, on whichever list they are working.
+
+    The cost is that `All` no longer equals the tables summed once an
+    unpredicted tag is on the run. That is the right way round: each pill
+    promises exactly what its own list holds, which is the count somebody can
+    check by looking.
+    """
+    if category is None:
+        return list(rows)
+    return [
+        row
+        for row in rows
+        if row.added_by_tag
+        or row.finished_product.raw_product.category_id == category.pk
+    ]

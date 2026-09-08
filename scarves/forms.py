@@ -1243,8 +1243,16 @@ class CloseCountFormBase(forms.Form):
         return cleaned
 
 
-def build_close_count_form_class(rows):
+def build_close_count_form_class(rows, form_id=None):
     """One count per unanswered row: how many of these are actually here.
+
+    `form_id` puts an HTML `form=` attribute on every input, which is what
+    lets a row live somewhere other than inside the form it submits with.
+    The unpredicted-tag search swaps its new rows in beside the search box
+    rather than at the far end of a twenty-row list, and this is what keeps
+    them part of the one Save. It is set on the page's own rows too, where it
+    names the form they are already inside and so does nothing — one shape of
+    row, rendered by one partial, wherever it lands.
 
     **The count is the total** — everything on the display plus whatever is
     left in the bag once the display has been filled. One question for all
@@ -1272,13 +1280,14 @@ def build_close_count_form_class(rows):
     """
     fields = {}
     slots_by_pk = {}
+    owner = {"form": form_id} if form_id else {}
     for row in rows:
         slots = row.display_slots or 0
         slots_by_pk[row.pk] = slots
         fields[f"counted_{row.pk}"] = forms.ChoiceField(
             required=False,
             choices=[(str(n), str(n)) for n in range(slots + 1)] + [("more", "more…")],
-            widget=forms.RadioSelect,
+            widget=forms.RadioSelect(attrs=dict(owner)),
             label=row.finished_product.name,
         )
         fields[f"more_{row.pk}"] = forms.IntegerField(
@@ -1290,6 +1299,7 @@ def build_close_count_form_class(rows):
                 "inputmode": "numeric",
                 "min": 0,
                 "placeholder": "total",
+                **owner,
             }),
         )
     fields["row_slots"] = slots_by_pk

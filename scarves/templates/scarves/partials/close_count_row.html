@@ -1,0 +1,43 @@
+{% comment %}
+One product's question: how many of these are actually here, altogether.
+
+Rendered by the counting list and again by `close_tag_added.html` when a tag
+nobody predicted is swapped in beside the search that found it. One partial
+rather than two copies, for the reason the rest of the app gives: the way
+that drift shows is a swapped-in row posting something the rendered one
+doesn't, which reads as an answer that was given and lost.
+
+Every input carries `form="{{ count_form_id }}"`, which is what lets a row
+live outside the form it submits with. On the page it names the form the row
+is already inside and does nothing; below the search box it is the whole
+reason one Save still covers everything.
+{% endcomment %}
+<div class="row{% if entry.row.outcome == 'confirmed' %} settled{% endif %}">
+  <div class="grow">
+    <div class="what">{{ entry.row.finished_product.name }}</div>
+    <div class="detail">
+      {{ entry.row.finished_product.sku }} —
+      app says {{ entry.row.finished_product.number_on_hand }} on hand,
+      display holds {{ entry.row.display_slots }}
+    </div>
+
+    <ul class="counts">
+      {% for choice in entry.field %}
+        <li>{{ choice }}</li>
+      {% endfor %}
+    </ul>
+    {% for error in entry.field.errors %}
+      <div class="detail" style="color:#8a2f2a">{{ error }}</div>
+    {% endfor %}
+
+    <div class="morebox">
+      <label for="{{ entry.more.id_for_label }}">
+        More than {{ entry.row.display_slots }}? Total here:
+      </label>
+      {{ entry.more }}
+      {% for error in entry.more.errors %}
+        <div class="detail" style="color:#8a2f2a">{{ error }}</div>
+      {% endfor %}
+    </div>
+  </div>
+</div>

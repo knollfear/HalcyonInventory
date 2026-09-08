@@ -22,6 +22,13 @@ the only question left. The card lists deliberately say nothing about which
 rows the close predicted and which turned up as unexpected tags: that is
 where the work came from, not what should be in the stack at the end of it.
 
+A third piece of state, `?category=`, says which table is on screen: the yarn
+boards are one circuit and the silk racks another, and a list that mixes them
+makes somebody standing at one read past the other on every pass. It filters
+the reading and never the run — every row is still on the close, still folded
+in by the sync, and still counted by the pill for the table nobody has
+selected.
+
 Rows nobody answered are a third list rather than a fourth column, because
 they are a different job: finishing the counting is work remaining, settling
 the stack is what the counting was for. They carry the app's belief rather
@@ -132,6 +139,40 @@ to be checked would make the stack agree with itself.
      tab strip, because it is one word and the page has forty rows under it. */
   .modes { font-size: .95rem; margin: 0 0 18px; }
 
+  /* Which table. Thumb-sized, like everything else answered standing up. */
+  .tables { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
+  .tables a {
+      display: block; padding: 11px 16px; text-decoration: none;
+      font-size: 1rem; font-weight: 600; color: #334;
+      border: 1px solid #c8cfd8; border-radius: 8px; background: #fff;
+  }
+  .tables a.on {
+      background: var(--accent); border-color: var(--accent); color: #fff;
+  }
+  .tables .n { font-weight: 400; opacity: .8; }
+  .lead.added:empty { display: none; }
+
+  /* The Save follows the screen. A close is worked down a long list with a
+     thumb, and a button at the bottom of the page is a scroll away from
+     every row above it — which is what put a second copy of it further
+     down before this. Fixed rather than sticky: the list is long enough
+     that a sticky footer spends most of its life off screen anyway.
+
+     `:empty` is exact — `#added-rows` is rendered with nothing inside it,
+     whitespace included — so the bar going away when there is nothing to
+     save is a fact about the DOM rather than a guess. */
+  .savebar {
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 5;
+      padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px));
+      background: rgba(255, 255, 255, .96);
+      border-top: 1px solid #c8cfd8;
+  }
+  .savebar .btn { display: block; max-width: var(--column); margin: 0 auto; }
+  #added-rows:empty + .savebar:not(.always) { display: none; }
+  /* Room for it, so the last row is never underneath the button. */
+  body { padding-bottom: 92px; }
+  .elsewhere { font-size: .92rem; color: #556; margin: -4px 0 16px; }
+
   /* Our own indicator rules rather than htmx's: its default fades opacity,
      which leaves the line taking up room and reading as a permanent label. */
   .htmx-indicator { display: none; }
@@ -158,16 +199,33 @@ to be checked would make the stack agree with itself.
   {% endcomment %}
   <script>
     (function () {
-      var form = document.querySelector("form.search");
-      var failed = document.getElementById("tag-failed");
-      if (!form || !failed) { return; }
-      form.addEventListener("htmx:beforeRequest", function () {
-        failed.hidden = true;
-      });
-      ["htmx:sendError", "htmx:responseError", "htmx:timeout"].forEach(
-        function (name) {
-          form.addEventListener(name, function () { failed.hidden = false; });
-        }
+      var FAILURES = ["htmx:sendError", "htmx:responseError", "htmx:timeout"];
+
+      function announce(source, failed, clear) {
+        if (!source || !failed) { return; }
+        source.addEventListener("htmx:beforeRequest", function () {
+          failed.hidden = true;
+          if (clear) { clear.textContent = ""; }
+        });
+        FAILURES.forEach(function (name) {
+          source.addEventListener(name, function () { failed.hidden = false; });
+        });
+      }
+
+      var notice = document.getElementById("tag-notice");
+      announce(
+        document.querySelector("form.search"),
+        document.getElementById("tag-failed"),
+        notice
+      );
+      // The results form is replaced by every search, so the listener sits on
+      // the container it lands in — an add that never arrives has to be as
+      // visible as a search that never arrived, and it is the one with a row
+      // riding on it.
+      announce(
+        document.getElementById("tag-results"),
+        document.getElementById("add-failed"),
+        null
       );
     })();
   </script>
@@ -214,6 +272,25 @@ to be checked would make the stack agree with itself.
     {% endif %}
   </p>
 
+  {% comment %}
+  Which table this is. A close is walked one table at a time — the yarn
+  boards are one circuit, the silk racks another — and a list that mixes them
+  makes somebody standing at one read past the other on every pass down the
+  pile.
+
+  Each pill counts what is on its own screen, in the reading currently
+  showing: what is left to count, or the cards that should be in a hand. A
+  pill claiming fourteen over a list of nine is the page contradicting
+  itself.
+
+  The filter changes what is in front of somebody and never what the close
+  asks about. Every row stays on the run, every emptied bag still gets folded
+  in, and the number on the pill nobody has selected is the standing evidence
+  that the other table has not been done — which is what makes it safe to
+  hide rows on a page whose whole job is to be complete.
+  {% endcomment %}
+  {% include "scarves/partials/close_tables.html" %}
+
   {% if mode == cards_mode %}
 
     {% comment %}
@@ -229,7 +306,8 @@ to be checked would make the stack agree with itself.
     <div class="banner">
       <div class="score">{{ cards|length }}</div>
       card{{ cards|length|pluralize }} you should be holding{% if no_cards %},
-      {{ no_cards|length }} to put back{% endif %}.
+      {{ no_cards|length }} to put back{% endif %}{% if category %} on the
+      {{ category.name }} table{% endif %}.
       {% comment %}
       Said here as well as in its own section, because the two lists below
       read as the whole answer otherwise — and a short list nobody was told
@@ -318,7 +396,8 @@ to be checked would make the stack agree with itself.
   {% endcomment %}
   <div class="banner">
     <div class="score">{{ tally.disagreements }}</div>
-    put right so far{% if tally.missing %} — {{ tally.missing }} the app had
+    put right so far{% if category %} on the {{ category.name }} table{% endif %}{% if tally.missing %} —
+    {{ tally.missing }} the app had
     too low{% endif %}{% if tally.extra %}{% if tally.missing %},{% endif %}
     {{ tally.extra }} it had too high{% endif %}.
     {% if run.employee %}<br><span class="muted">Started by {{ run.employee.name }}.</span>{% endif %}
@@ -348,80 +427,47 @@ to be checked would make the stack agree with itself.
     nobody can find is a fix that gets left unmentioned, which is the failure
     the undo button exists to prevent.
     {% endcomment %}
-    {% if answered_count and run.is_open %}
-      <p class="lead">
-        {% if show_answered %}
-          Showing all {{ answered_count }} already answered.
-          <a href="{{ hide_answered_url }}">Hide them</a> to get back to
-          what's left.
-        {% else %}
-          <strong>{{ pending_count }}</strong> left to count.
-          <a href="{{ show_answered_url }}">Show the {{ answered_count }}
-          already answered</a> — to change one, or to undo it.
-        {% endif %}
-      </p>
+    {% include "scarves/partials/close_left.html" %}
+
+    {% if not count_fields %}
+      {% if answered_count %}
+        {% comment %}
+        Different news from an empty list, and worth saying apart: the pile
+        is worked through, rather than there being nothing on it.
+        {% endcomment %}
+        <p class="lead">
+          Everything on the list is counted. Anything else you're holding a
+          tag for goes in below.
+        </p>
+      {% else %}
+        <p class="lead">
+          Nothing to count right now — the app thinks every display still has
+          a bag behind it.
+        </p>
+      {% endif %}
     {% endif %}
 
-    {% if count_fields %}
-      {% comment %}
-      One loop in one order. Rendering the answered ones first would reorder
-      the list every time it is saved, and this is worked down a physical
-      pile — the person's place in it is on the table, not on the screen.
+    {% comment %}
+    One loop in one order. Rendering the answered ones first would reorder
+    the list every time it is saved, and this is worked down a physical
+    pile — the person's place in it is on the table, not on the screen.
 
-      An answered row stays in this list with its number showing, because it
-      moved no stock if it agreed and a bag found under the table at seven
-      has to be able to correct what was counted at four.
-      {% endcomment %}
-      <form method="post">
-        {% csrf_token %}
-        {% for entry in count_fields %}
-          <div class="row{% if entry.row.outcome == 'confirmed' %} settled{% endif %}">
-            <div class="grow">
-              <div class="what">{{ entry.row.finished_product.name }}</div>
-              <div class="detail">
-                {{ entry.row.finished_product.sku }} —
-                app says {{ entry.row.finished_product.number_on_hand }} on hand,
-                display holds {{ entry.row.display_slots }}
-              </div>
+    An answered row stays in this list with its number showing, because it
+    moved no stock if it agreed and a bag found under the table at seven has
+    to be able to correct what was counted at four.
 
-              <ul class="counts">
-                {% for choice in entry.field %}
-                  <li>{{ choice }}</li>
-                {% endfor %}
-              </ul>
-              {% for error in entry.field.errors %}
-                <div class="detail" style="color:#8a2f2a">{{ error }}</div>
-              {% endfor %}
-
-              <div class="morebox">
-                <label for="{{ entry.more.id_for_label }}">
-                  More than {{ entry.row.display_slots }}? Total here:
-                </label>
-                {{ entry.more }}
-                {% for error in entry.more.errors %}
-                  <div class="detail" style="color:#8a2f2a">{{ error }}</div>
-                {% endfor %}
-              </div>
-            </div>
-          </div>
-        {% endfor %}
-        <button class="btn" type="submit">Save these counts</button>
-      </form>
-    {% elif answered_count %}
-      {% comment %}
-      Different news from an empty list, and worth saying apart: the pile is
-      worked through, rather than there being nothing on it.
-      {% endcomment %}
-      <p class="lead">
-        Everything on the list is counted. Anything else you're holding a tag
-        for goes in below.
-      </p>
-    {% else %}
-      <p class="lead">
-        Nothing to count right now — the app thinks every display still has a
-        bag behind it.
-      </p>
-    {% endif %}
+    The form is here even with nothing in it. A row swapped in beside the
+    search below belongs to it by `form=` attribute, and an attribute
+    pointing at a form that isn't on the page names nothing — which is
+    precisely the state somebody is in once they have counted the list and
+    are working through a handful of unexpected tags.
+    {% endcomment %}
+    <form method="post" id="{{ count_form_id }}">
+      {% csrf_token %}
+      {% for entry in count_fields %}
+        {% include "scarves/partials/close_count_row.html" %}
+      {% endfor %}
+    </form>
 
     <h2><span class="step">Step 2.</span> A tag nobody predicted</h2>
     <p class="lead">
@@ -455,6 +501,7 @@ to be checked would make the stack agree with itself.
       {% endcomment %}
       <input type="hidden" name="mode" value="{{ count_mode }}">
       <input type="hidden" name="answered" value="{% if show_answered %}1{% else %}0{% endif %}">
+      {% if category %}<input type="hidden" name="category" value="{{ category.name }}">{% endif %}
       <input type="search" name="q" value="{{ query }}"
              placeholder="Name or barcode" autocomplete="off">
       <button class="btn" type="submit">Search</button>
@@ -472,8 +519,54 @@ to be checked would make the stack agree with itself.
       again; nothing is lost.
     </p>
 
+    {% comment %}
+    What came back from adding one. Always here so the out-of-band swap has
+    somewhere to land, and above the results because that is where the eye
+    already is when a result has just been tapped.
+    {% endcomment %}
+    <p id="tag-adding" class="htmx-indicator lead">Adding…</p>
+    <p id="add-failed" class="lead failed" hidden>
+      That tag didn't reach the app — signal, most likely. Tap it again;
+      nothing you've typed above is lost.
+    </p>
+    <p id="tag-notice" class="lead added"></p>
+
     <div id="tag-results">
       {% include "scarves/partials/close_tag_results.html" %}
+    </div>
+
+    {% comment %}
+    Where an added tag lands: beside the search that found it, not at the far
+    end of a twenty-row list two screens up. It gives up the list's
+    alphabetical order for the evening, on purpose — the row somebody just
+    asked for has to be where they can see it, and the next page load sorts
+    it back into place.
+
+    The inputs are outside the counting form and belong to it by `form=`, so
+    one Save still covers everything and nothing above is re-rendered to make
+    room for them. The button here is that same Save, reachable without
+    scrolling back up; it is hidden by CSS while there is nothing under it,
+    which is why the container must render with nothing inside it at all.
+    {% endcomment %}
+    <div id="added-rows"></div>
+
+    {% comment %}
+    **One Save, pinned to the bottom of the screen.** There used to be two —
+    one under the counting list and one under the added rows — which read as
+    two forms and were never that: every count field carries `form=`, so a
+    row swapped in beside the search has always submitted with the rest. A
+    button that follows the screen makes the second copy unnecessary and
+    fixes what the second copy was there for, which was a scroll back up to
+    reach the first.
+
+    It sits after `#added-rows` in the markup so CSS can hide it when there
+    is genuinely nothing to save: `always` is set whenever the counting list
+    has rows, and without it the bar goes when the added list is empty too.
+    {% endcomment %}
+    <div class="savebar{% if count_fields %} always{% endif %}">
+      <button class="btn" type="submit" form="{{ count_form_id }}">
+        Save these counts
+      </button>
     </div>
 
   {% endif %}
@@ -508,6 +601,12 @@ to be checked would make the stack agree with itself.
         {% if run.is_open %}
           <form method="post" action="{% url 'close_undo' run.token row.pk %}">
             {% csrf_token %}
+            {% comment %}
+            This posts to its own URL, so there is no query string to inherit
+            the table from — without this an undo lands back on the whole
+            list and loses somebody's place at the boards.
+            {% endcomment %}
+            {% if category %}<input type="hidden" name="category" value="{{ category.name }}">{% endif %}
             <button class="undo" type="submit">Undo</button>
           </form>
         {% endif %}

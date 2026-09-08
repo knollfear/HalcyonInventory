@@ -1827,6 +1827,61 @@ close exists to check — reading the stockout off it would be the app marking
 its own homework, and the sale clamp means it reaches zero and stays there
 whether or not anybody looked at the peg.
 
+### One table at a time
+
+`?category=` narrows the close to one of the shop's tables — Yarn, Silk,
+whatever `RawProductCategory` holds — because that is the axis the evening is
+physically walked on. The yarn boards are one circuit and the silk racks are
+another, and a forty-row list that mixes them makes somebody standing at one
+read past the other on every pass down the pile.
+
+**It filters the reading and never the run.** `sync_expected` still folds in
+every emptied bag, every row stays on the close, and nothing about what gets
+asked about changes. That distinction is what makes it safe to hide rows on a
+page whose whole job is to be complete — and it is only safe because of two
+further things: **the pill for the table nobody selected still counts what is
+left on it**, and a filtered list says out loud how many rows it is leaving
+out. A page reading as finished while a table's worth of rows has never been
+asked about is exactly the silence the "still to count" list exists to break.
+
+Hiding is structurally safe for the reason a half-worked close already is:
+`counts()` records only the rows somebody answered, so a row absent from the
+POST is one nobody touched, never an answer of any kind.
+
+**Every count is scoped to what is on screen**, including the score in the
+banner — `tally()` takes an optional row subset for this. Seven put right,
+printed over a list of three, is the page contradicting itself; the number
+people act on is the one beside the list they are reading. Same call
+`private/colors/` makes about its pills.
+
+The choices are derived from the rows, not from a list of names, so a shop
+that grows a third table gets a third pill with nothing to change. **A run
+whose rows all sit on one table draws no filter at all** — a filter offering
+one choice is furniture, the same reason the recipe page draws no product
+chips for a colorway dyed on one blank.
+
+Two things carry it and one thing overrides it:
+
+- **It rides alongside `mode=` and every action carries it back** — saving
+  counts, undo, the tag search. A close is worked in several passes across an
+  evening, so a submit that landed back on the other table would cost a tap
+  every time. Undo and add-tag post to their own URLs and have no query string
+  to inherit, so the forms carry a hidden field. It is named rather than
+  numbered (`?category=Yarn`) so a reading is a link somebody can read as well
+  as send, and an unknown name is no filter rather than an error.
+- **`?answered=1` is still a reveal and the pills do not carry it.** A pill
+  that dragged the drawer along would put the long list back on the table
+  somebody just switched to.
+- **A hand-added tag is on every table.** The unpredicted-tag search is over
+  the whole catalogue, so a silk scarf found at the yarn boards is an ordinary
+  thing to add — and being made to switch tables to answer a tag you are
+  holding is the app arguing with the person who found it. A row somebody put
+  there on purpose isn't on a table at all, it is in their hand, so
+  `in_category` keeps `added_by_tag` rows whatever is selected. The cost is
+  that `All` stops equalling the tables summed once an unpredicted tag exists,
+  and that is the right way round: each pill promises exactly what its own
+  list holds, which is the count somebody can check by looking.
+
 ### The counting list: what's left, and the search
 
 **Answered rows come off the counting list.** What somebody is looking for
@@ -1864,13 +1919,53 @@ scroll position, so every search was paid for with a scrub back down the
 page. That is paid every time; a dropped request is rare and is now visible.
 
 Still **submit-only, never a type-ahead** — the original objection applies
-with full force to a request nobody asked for. Adding a tag stays a full
-POST and navigation, because it changes the list above and a page that came
-back looking unchanged is how the same tag gets added three times. Without
-htmx the form is the ordinary GET it always was, `q` lands in the URL, and
-the page renders `partials/close_tag_results.html` inline — the same partial
-the fragment returns, so the two cannot drift into the swapped copy posting
-somewhere the inline one doesn't.
+with full force to a request nobody asked for. Without htmx the form is the
+ordinary GET it always was, `q` lands in the URL, and the page renders
+`partials/close_tag_results.html` inline — the same partial the fragment
+returns, so the two cannot drift into the swapped copy posting somewhere the
+inline one doesn't.
+
+**Adding a tag is a swap too, and the argument that kept it a navigation was
+half-right in the same way.** It was: the row has to visibly appear in the
+list above, and a page that came back looking unchanged is how the same tag
+gets added three times. What that never weighed is what a redirect costs
+*here* — this is late in a long evening with the counting form above
+half-filled, so it threw away every answer typed but not yet saved and landed
+somebody at the top of a page they were at the bottom of. Paid on every tag.
+The double-add it was guarding against was never really its doing anyway:
+`closing.add_tag` hands back the row that exists rather than making a second
+one, so a repeated tap is a sentence, not a duplicate.
+
+So the row arrives **beside the search that found it**, appended to
+`#added-rows` directly under the results, and nothing above is re-rendered —
+which is the whole of why nothing above can be lost. **Alphabetical order is
+given up to do it**, deliberately: a row appended to the far end of a
+twenty-row list is two screens from the person who just asked for it, and the
+next page load sorts it back into place.
+
+The mechanism is an HTML `form=` attribute, not a script. Every count field
+carries the counting form's id (`build_close_count_form_class(rows, form_id)`),
+so a row rendered outside that form still submits with it. **The counting
+form is rendered even when there is nothing to count**, because "counted the
+list, now working through tags" is an ordinary state and a `form=` naming a
+form that isn't on the page names nothing.
+
+**One Save, fixed to the bottom of the screen.** There were briefly two — one
+under the counting list and one under the added rows — which read as two
+forms and never were. The second existed because the first was a scroll away
+from every row above it, which is the actual complaint; a button that follows
+the screen answers it and makes the copy unnecessary. The bar sits after
+`#added-rows` in the markup so `#added-rows:empty + .savebar:not(.always)`
+can drop it when there is genuinely nothing to save, `always` being set
+whenever the counting list has rows.
+
+Three things ride back out of band: the notice, the table pills and the "N
+left to count" line. The last two are above the fold and would otherwise sit
+there contradicting the list — the same rule the recipe page's figures
+follow. Both containers render unconditionally, empty if they have nothing to
+say, because an out-of-band swap with nowhere to land is dropped silently. A
+dropped add says so on the page for the reason a dropped search does, and
+more so: this one has a row riding on it.
 
 ### Two readings: counting, then the cards
 

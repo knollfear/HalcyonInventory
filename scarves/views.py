@@ -6001,9 +6001,12 @@ def close_run(request, token):
     if request.method == "POST":
         if not run.is_open:
             messages.error(request, _CLOSED_RUN_MESSAGE)
-            return redirect(_close_run_url(run, _COUNT))
+            return redirect(_close_run_url(run, _COUNT, _close_category(request)))
 
-        # Everything still answerable, freshly read: `sync_expected` may have
+        # Everything still answerable, freshly read. Deliberately the whole
+        # run rather than the table on screen: a row that isn't in the POST
+        # is one nobody touched, which is exactly what `counts()` already
+        # assumes, so the filter needs no say in what a submit may answer.: `sync_expected` may have
         # added rows since this page was drawn, and a submit that only knew
         # about the older ones would leave the newcomers out of the form it
         # validates against.
@@ -6044,10 +6047,12 @@ def close_run(request, token):
                 request,
                 f"Counted {len(counts)} — all agreed with the app. Nothing moved.",
             )
-        # Back to the counting list, not the cards. This is worked in several
-        # passes across an evening, and defaulting a mid-pile submit into the
-        # summary would put the person back through a link every time.
-        return redirect(_close_run_url(run, _COUNT))
+        # Back to the counting list, not the cards, and back to the table
+        # this was submitted from. Worked in several passes across an
+        # evening, so defaulting a mid-pile submit into the summary — or
+        # onto the other table — would put the person back through a link
+        # every time.
+        return redirect(_close_run_url(run, _COUNT, _close_category(request)))
 
     # New zeros since the page was last opened get folded in here, so a close
     # started at noon still asks about the scarf that sold out at four.
@@ -6084,11 +6089,49 @@ _CLOSED_RUN_MESSAGE = (
 _COUNT, _CARDS = "count", "cards"
 _CLOSE_MODES = (_COUNT, _CARDS)
 
+#: The counting form's DOM id. Every count field carries it as an HTML
+#: `form=` attribute, which is what lets a row added mid-session sit beside
+#: the search box that found it and still submit with the rest — the row is
+#: where somebody is looking, and one Save covers the lot.
+_COUNT_FORM = "count-form"
 
-def _close_run_url(run, mode=None):
-    """This run's URL, in a mode. Reversed by name, never hardcoded."""
+
+def _close_run_url(run, mode=None, category=None):
+    """This run's URL, in a mode and on a table. Reversed by name, never
+    hardcoded.
+
+    The category rides alongside the mode and for the same reason: a close is
+    walked one table at a time, in several passes across an evening, so every
+    action on the page has to come back to the table the person is standing
+    at. It is named rather than numbered so a reading is a link somebody can
+    read as well as send — `?category=Yarn` says what it does.
+    """
     url = reverse("close_run", args=[run.token])
-    return f"{url}?mode={mode}" if mode else url
+    params = []
+    if mode:
+        params.append(("mode", mode))
+    if category is not None:
+        params.append(("category", category.name))
+    return f"{url}?{urlencode(params)}" if params else url
+
+
+def _close_category(request):
+    """Which table's rows are on screen, or `None` for all of them.
+
+    Read from the POST first so the undo and add-tag forms can carry it —
+    those post to their own URLs and have no query string to inherit.
+
+    An unknown name is no filter rather than an error, the same call the
+    recipe page's `?product=` makes: a filter is navigation, the catch-all
+    redirect makes stale links ordinary here, and the worst a renamed
+    category should do is show more than was asked for.
+    """
+    wanted = (
+        request.POST.get("category") or request.GET.get("category") or ""
+    ).strip()
+    if not wanted:
+        return None
+    return RawProductCategory.objects.filter(name__iexact=wanted).first()
 
 
 def _close_mode(request, run, rows):
@@ -6115,13 +6158,114 @@ def _close_mode(request, run, rows):
     return _COUNT
 
 
+def _close_category_pills(run, rows, mode, selected):
+    """One pill per table, plus All, each counting what is on its own screen.
+
+    **The count is the reading's own number**, not a total that survives the
+    filter: on the counting list it is what is left to count, on the cards it
+    is the stack that should be in a hand. A pill reading "Yarn 14" over a
+    list of nine is the page contradicting itself, and the number people act
+    on is the one beside the list they are looking at — the same call
+    `private/colors/` makes about its pills.
+
+    Nothing carries `?answered=1`, which is deliberate: the drawer is a
+    reveal that evaporates on the next link, and a pill that dragged it along
+    would quietly put the long list back on the table somebody just switched
+    to.
+
+    **No pills at all when every row is on one table.** A filter offering one
+    choice is furniture, the same reason the recipe page draws no product
+    chips for a colorway dyed on a single blank.
+    """
+    present = closing.categories_present(rows)
+    if len(present) < 2:
+        return []
+
+    def counted(subset):
+        if mode == _CARDS:
+            return len(closing.card_status(subset)[0])
+        return len([
+            row
+            for row in subset
+            if row.outcome == CloseRunRow.PENDING and not closing.is_frozen(run, row)
+        ])
+
+    pills = [{
+        "label": "All",
+        "count": counted(rows),
+        "href": _close_run_url(run, mode),
+        "selected": selected is None,
+    }]
+    for category in present:
+        subset = closing.in_category(rows, category)
+        pills.append({
+            "label": category.name,
+            "count": counted(subset),
+            "href": _close_run_url(run, mode, category),
+            "selected": selected is not None and category.pk == selected.pk,
+        })
+    return pills
+
+
+def _close_status(run, rows, category, mode, show_answered=False):
+    """The numbers that sit above the counting list, computed in one place.
+
+    The page renders these and the add-tag fragment swaps them out of band,
+    for the reason the recipe page does the same with its figures: a header
+    reading "9 left to count" over a list of ten is the page contradicting
+    itself, and it is above the fold, so nobody sees it happen.
+    """
+    visible = closing.in_category(rows, category)
+    open_rows = [r for r in visible if not closing.is_frozen(run, r)]
+    pending = [r for r in open_rows if r.outcome == CloseRunRow.PENDING]
+    answered = [
+        r for r in visible
+        if r.is_applied or r.outcome == CloseRunRow.CONFIRMED
+    ]
+    return {
+        "run": run,
+        "category": category,
+        "category_pills": _close_category_pills(run, rows, mode, category),
+        # What this reading is leaving out. Said out loud wherever a filter
+        # is on, because the failure to avoid is a table's worth of rows
+        # going unasked while the page in front of somebody reads as
+        # finished — the same silence the "still to count" list exists to
+        # break.
+        "hidden_count": len(rows) - len(visible),
+        "pending_count": len(pending),
+        "answered_count": len(answered),
+        "show_answered": show_answered,
+        # The drawer, both ways, with the mode and the table still on them.
+        "show_answered_url": (
+            _close_run_url(run, _COUNT, category) + "&answered=1"
+        ),
+        "hide_answered_url": _close_run_url(run, _COUNT, category),
+    }
+
+
 def _close_run_page(request, run, count_form=None, mode=None, show_answered=None):
-    """Render one close, in one of its two readings."""
+    """Render one close, in one of its two readings, for one of its tables."""
     rows = list(
         run.rows.select_related(
-            "finished_product__recipe", "finished_product__raw_product"
+            "finished_product__recipe",
+            "finished_product__raw_product__category",
         )
     )
+    mode = mode or _close_mode(request, run, rows)
+
+    # **The table, and it narrows the reading rather than the run.** A close
+    # is walked one table at a time — the yarn boards are one circuit and the
+    # silk racks another — and a forty-row list that mixes them asks somebody
+    # standing at one to read past the other on every pass. So the rows are
+    # filtered here, at the last moment, and nowhere else: `sync_expected` has
+    # already folded in every emptied bag, every row is still on the run, and
+    # the pill for the table nobody is standing at still counts what is left
+    # on it. Hiding is only safe because of that last part, and because an
+    # absent field was already how a half-worked close works — `counts()`
+    # records the rows somebody answered, so a row that isn't in the POST is
+    # one nobody touched rather than an answer of any kind.
+    category = _close_category(request)
+    all_rows, rows = rows, closing.in_category(rows, category)
     # Everything still answerable, in one stable order. Deliberately not
     # answered-first: this is worked down a physical pile, and a list that
     # reorders itself under a thumb between submits loses somebody's place.
@@ -6154,7 +6298,7 @@ def _close_run_page(request, run, count_form=None, mode=None, show_answered=None
     form_rows = open_rows if show_answered else pending_rows
 
     if count_form is None:
-        count_form = build_close_count_form_class(form_rows)(
+        count_form = build_close_count_form_class(form_rows, _COUNT_FORM)(
             initial=_count_initial(form_rows)
         )
 
@@ -6176,38 +6320,44 @@ def _close_run_page(request, run, count_form=None, mode=None, show_answered=None
 
     return render(request, "scarves/close_run.html", {
         "run": run,
-        "mode": mode or _close_mode(request, run, rows),
+        "mode": mode,
         "count_mode": _COUNT,
         "cards_mode": _CARDS,
-        "count_url": _close_run_url(run, _COUNT),
-        "cards_url": _close_run_url(run, _CARDS),
+        "count_url": _close_run_url(run, _COUNT, category),
+        "cards_url": _close_run_url(run, _CARDS, category),
+        **_close_status(run, all_rows, category, mode, show_answered),
         "cards": cards,
         "no_cards": no_cards,
         "uncounted": uncounted,
-        "show_answered": show_answered,
-        "answered_count": len(applied_rows) + len(confirmed_rows),
-        "pending_count": len(pending_rows),
-        # The drawer, both ways, with the mode still on them.
-        "show_answered_url": _close_run_url(run, _COUNT) + "&answered=1",
-        "hide_answered_url": _close_run_url(run, _COUNT),
+        "count_form_id": _COUNT_FORM,
         "tag_search_url": reverse("close_tag_search", args=[run.token]),
         "query": query,
         "results": search_products(query) if query else None,
-        "tally": closing.tally(run),
+        "tally": closing.tally(run, rows),
         "rows": rows,
         "applied_rows": applied_rows,
         "confirmed_rows": confirmed_rows,
-        "count_fields": [
-            {
-                "row": row,
-                "field": count_form[f"counted_{row.pk}"],
-                "more": count_form[f"more_{row.pk}"],
-            }
-            for row in form_rows
-            if f"counted_{row.pk}" in count_form.fields
-        ],
+        "count_fields": _count_field_entries(count_form, form_rows),
         "count_form": count_form,
     })
+
+
+def _count_field_entries(count_form, rows):
+    """A row and its two fields, ready to render.
+
+    One shape, built once, so the page's rows and a row swapped in beside the
+    search are the same markup — the drift to avoid is a swapped-in row that
+    posts something the rendered one doesn't.
+    """
+    return [
+        {
+            "row": row,
+            "field": count_form[f"counted_{row.pk}"],
+            "more": count_form[f"more_{row.pk}"],
+        }
+        for row in rows
+        if f"counted_{row.pk}" in count_form.fields
+    ]
 
 
 def _count_initial(rows):
@@ -6265,6 +6415,10 @@ def close_tag_search(request, token):
         "run": run,
         "query": query,
         "results": search_products(query) if query else None,
+        # The form sends the table along with the query, so the buttons this
+        # renders carry it too — the swapped copy and the inline one have to
+        # post the same thing or they drift.
+        "category": _close_category(request),
     })
 
 
@@ -6279,32 +6433,78 @@ def close_add_tag(request, token):
     product on the list and the person counts it like the rest.
     """
     run = get_object_or_404(CloseRun, token=token)
+    category = _close_category(request)
     if not run.is_open:
         messages.error(request, _CLOSED_RUN_MESSAGE)
-        return redirect(_close_run_url(run, _COUNT))
+        return redirect(_close_run_url(run, _COUNT, category))
 
     product = (
         FinishedProduct.objects.filter(
             pk=request.POST.get("product_id"), is_active=True
         )
-        .select_related("raw_product")
+        .select_related("raw_product__category")
         .first()
     )
     if product is None:
         messages.error(request, "Couldn't find that product — try the search again.")
-        return redirect(_close_run_url(run, _COUNT))
+        return redirect(_close_run_url(run, _COUNT, category))
 
     row, created = closing.add_tag(run, product)
-    if not created:
-        messages.info(request, f"{product.name} was already on this close.")
-    else:
-        messages.success(
-            request,
-            f"Added {product.name} to the list — the app has "
-            f"{row.on_hand_before} on hand. Count what's on the display and "
-            f"say how many.",
+    # **A tag typed in at the yarn boards stays put, whatever it is.** The
+    # search is over the whole catalogue, so a silk scarf found there is an
+    # ordinary thing to add — and `closing.in_category` keeps every
+    # hand-added row on every table, so it does not need the page moved to
+    # its own to be visible. Making somebody switch tables to answer a tag
+    # they are holding is the app arguing with the person who found it.
+    if created:
+        note = (
+            f"Added {product.name} — the app has {row.on_hand_before} on "
+            f"hand. Count what's on the display and say how many."
         )
-    return redirect(_close_run_url(run, _COUNT))
+    else:
+        note = f"{product.name} was already on this close."
+
+    if request.headers.get("HX-Request"):
+        # **A swap, not a navigation.** This is late in a long evening and
+        # the form above is half-filled: a redirect throws away every answer
+        # typed but not yet saved and lands the person back at the top of a
+        # page they were at the bottom of. So the new row arrives beside the
+        # search that found it, carrying `form=` so it still submits with the
+        # rest, and the counts above it are never re-rendered and so cannot
+        # be lost.
+        #
+        # The double-add this used to guard against with a full page load is
+        # handled where it always really was: `closing.add_tag` hands back
+        # the row that exists rather than making a second one, so the worst a
+        # repeated tap does is say so.
+        return render(request, "scarves/partials/close_tag_added.html", {
+            "run": run,
+            "note": note,
+            "row": row if created else None,
+            "count_fields": _count_field_entries(
+                build_close_count_form_class([row], _COUNT_FORM)(
+                    initial=_count_initial([row])
+                ),
+                [row],
+            ) if created else [],
+            "count_form_id": _COUNT_FORM,
+            **_close_status(
+                run,
+                list(
+                    run.rows.select_related(
+                        "finished_product__raw_product__category"
+                    )
+                ),
+                category,
+                _COUNT,
+            ),
+        })
+
+    if created:
+        messages.success(request, note)
+    else:
+        messages.info(request, note)
+    return redirect(_close_run_url(run, _COUNT, category))
 
 
 @require_POST
@@ -6318,16 +6518,17 @@ def close_undo(request, token, pk):
     the history is not rewritten.
     """
     run = get_object_or_404(CloseRun, token=token)
+    category = _close_category(request)
     if not run.is_open:
         messages.error(request, _CLOSED_RUN_MESSAGE)
-        return redirect(_close_run_url(run, _COUNT))
+        return redirect(_close_run_url(run, _COUNT, category))
 
     row = run.rows.filter(pk=pk).select_related("finished_product").first()
     if row is None:
         # Already undone, most likely a double tap. Says so plainly rather
         # than erroring, because the page is now in the state they wanted.
         messages.info(request, "That one's already been put back.")
-        return redirect(_close_run_url(run, _COUNT))
+        return redirect(_close_run_url(run, _COUNT, category))
 
     name = row.finished_product.name
     closing.undo(run, row)
@@ -6336,7 +6537,7 @@ def close_undo(request, token, pk):
         f"Put {name} back the way it was. Nothing to tell anyone about — the "
         f"log keeps both entries.",
     )
-    return redirect(_close_run_url(run, _COUNT))
+    return redirect(_close_run_url(run, _COUNT, category))
 
 
 @page_meta(

@@ -13449,6 +13449,19 @@ def count_post(row, total):
     return {f"counted_{row.pk}": "more", f"more_{row.pk}": str(total)}
 
 
+def on_table(product, category_name):
+    """Move a product's blank onto another table.
+
+    Category is which table at the stall — the one axis a close is physically
+    walked on — and `make_product` puts everything on Silk, so this is how a
+    test gets a yarn board to walk.
+    """
+    category, _ = RawProductCategory.objects.get_or_create(name=category_name)
+    RawProduct.objects.filter(pk=product.raw_product_id).update(category=category)
+    product.refresh_from_db()
+    return product
+
+
 def make_board(name="Yarn Pegboard", rows=7, columns=6, capacity=2):
     """A fixture with a price tag where the real board has one.
 
@@ -16663,6 +16676,304 @@ class CloseModeTests(TestCase):
             reverse("close_run", args=[run.token]), {"mode": "sideways"}
         ).content.decode()
         self.assertIn("Count what you've got", html)
+
+
+class CloseAddTagSwapTests(TestCase):
+    """Adding an unpredicted tag without losing the half-filled form above.
+
+    This was a full POST and navigation, and the argument for it was that the
+    row has to visibly appear or the same tag gets added three times. What it
+    did not weigh is the cost on the page it is on: late in a long evening the
+    counting form above is part-answered, and a redirect throws all of that
+    away and lands somebody at the top of a page they were at the bottom of.
+
+    So the row is swapped in beside the search that found it, nothing above is
+    re-rendered, and the double-add is handled where it always really was —
+    `closing.add_tag` hands back the row that exists.
+    """
+
+    def setUp(self):
+        self.employee = Employee.objects.create(name="Closer", pin="1234")
+        self.listed = make_close_product("On The List", on_hand=0)
+        self.tagged = make_close_product("Sought After", on_hand=9, slots=2)
+        self.run, _ = closing.run_for_today(employee=self.employee)
+        self.url = reverse("close_run", args=[self.run.token])
+        self.add_url = reverse("close_add_tag", args=[self.run.token])
+
+    def listed_row(self):
+        return self.run.rows.get(finished_product=self.listed)
+
+    def add(self, product, **extra):
+        return self.client.post(
+            self.add_url, {"product_id": product.pk}, HTTP_HX_REQUEST="true", **extra
+        )
+
+    def test_the_row_comes_back_instead_of_a_redirect(self):
+        response = self.add(self.tagged)
+
+        self.assertEqual(response.status_code, 200)
+        html = response.content.decode()
+        row = self.run.rows.get(finished_product=self.tagged)
+        self.assertIn(f'name="counted_{row.pk}"', html)
+        self.assertIn("Sought After", html)
+
+    def test_the_swapped_row_still_submits_with_the_rest(self):
+        """It lands outside the counting form, so it belongs to it by
+        `form=` — otherwise the answer is typed and then goes nowhere."""
+        html = self.add(self.tagged).content.decode()
+
+        self.assertIn('form="count-form"', html)
+
+    def test_nothing_above_is_re_rendered_so_nothing_above_is_lost(self):
+        """The whole point. A response carrying the other rows would be a
+        page load wearing a swap's clothes, and it would take the answers
+        typed into them with it."""
+        html = self.add(self.tagged).content.decode()
+
+        self.assertNotIn("On The List", html)
+
+    def test_an_answer_typed_but_not_saved_survives_adding_a_tag(self):
+        """The failure this replaces, stated as the sequence that produced
+        it: type an answer, add a tag, save. The answer has to still be
+        there — and it is, because the swap never touched it."""
+        listed_row = self.run.rows.get(finished_product=self.listed)
+        self.add(self.tagged)
+        added_row = self.run.rows.get(finished_product=self.tagged)
+
+        payload = count_post(listed_row, 1)
+        payload.update(count_post(added_row, 4))
+        self.client.post(self.url, payload)
+
+        listed_row.refresh_from_db()
+        added_row.refresh_from_db()
+        self.assertEqual(listed_row.counted, 1)
+        self.assertEqual(added_row.counted, 4)
+
+    def test_a_second_tap_adds_nothing_and_says_so(self):
+        """A repeated tap is normal — no page load proved anything the first
+        time — so the guard is that adding is idempotent, not that the page
+        navigated."""
+        self.add(self.tagged)
+        html = self.add(self.tagged).content.decode()
+
+        self.assertEqual(self.run.rows.filter(finished_product=self.tagged).count(), 1)
+        self.assertIn("already on this close", html)
+        row = self.run.rows.get(finished_product=self.tagged)
+        self.assertNotIn(f'name="counted_{row.pk}"', html)
+
+    def test_the_numbers_above_the_list_come_back_out_of_band(self):
+        """A line reading "1 left to count" over two rows is the page
+        contradicting itself, and it is above the fold — so it rides along
+        rather than waiting for a reload nobody is going to do."""
+        html = self.add(self.tagged).content.decode()
+
+        self.assertIn('id="count-tables"', html)
+        self.assertIn('id="count-left"', html)
+        self.assertIn("hx-swap-oob", html)
+
+    def test_one_save_button_serves_the_whole_form(self):
+        """Two of them read as two forms, and never were: every count field
+        carries `form=`, so a row swapped in beside the search has always
+        submitted with the rest. The one that is left follows the screen."""
+        html = self.client.get(self.url, {"mode": "count"}).content.decode()
+
+        self.assertEqual(html.count("Save these counts"), 1)
+        self.assertIn('class="savebar always"', html)
+        self.assertIn('form="count-form"', html)
+
+    def test_the_save_bar_goes_when_there_is_nothing_to_save(self):
+        """A button over an empty list is furniture. `always` is what keeps
+        it while the counting list has rows; without it the CSS drops the bar
+        until a tag is added."""
+        self.client.post(self.url, count_post(self.listed_row(), 2))
+
+        html = self.client.get(self.url, {"mode": "count"}).content.decode()
+
+        self.assertIn('class="savebar"', html)
+        self.assertNotIn("savebar always", html)
+
+    def test_the_counting_form_is_there_even_with_nothing_to_count(self):
+        """A `form=` attribute naming a form that isn't on the page names
+        nothing, and "counted the list, now working through tags" is an
+        ordinary state to be in."""
+        self.client.post(self.url, count_post(self.listed_row(), 2))
+
+        html = self.client.get(self.url, {"mode": "count"}).content.decode()
+
+        self.assertNotIn("counted_", html.split('id="added-rows"')[0].split(
+            'id="count-form"')[1])
+        self.assertIn('id="count-form"', html)
+        self.assertIn('id="added-rows"', html)
+
+    def test_without_the_script_it_is_the_post_and_redirect_it_always_was(self):
+        response = self.client.post(self.add_url, {"product_id": self.tagged.pk})
+
+        self.assertRedirects(response, self.url + "?mode=count")
+        self.assertTrue(self.run.rows.filter(finished_product=self.tagged).exists())
+
+    def test_a_dropped_add_has_somewhere_to_say_so(self):
+        """Same rule as the search: a request that never arrived must not
+        look like nothing happening, and this one has a row riding on it."""
+        html = self.client.get(
+            self.url, {"mode": "count", "q": "Sought"}
+        ).content.decode()
+
+        self.assertIn('id="add-failed"', html)
+        self.assertIn(f'hx-post="{self.add_url}"', html)
+
+
+class CloseCategoryFilterTests(TestCase):
+    """Which table is on screen, and what the filter is not allowed to do.
+
+    A close is walked one table at a time — the yarn boards are one circuit
+    and the silk racks another — so the counting list narrows to the table
+    somebody is standing at. The whole risk of that is a page reading as
+    finished while a table's worth of rows has never been asked about, so
+    every test below is really about the same thing: the filter changes the
+    reading and never the run.
+    """
+
+    def setUp(self):
+        self.employee = Employee.objects.create(name="Walker", pin="1234")
+
+    def open_close(self, yarn=True):
+        make_close_product("Silk Sash", on_hand=0)
+        if yarn:
+            on_table(make_close_product("Yarn Skein", on_hand=0), "Yarn")
+        run, _ = closing.run_for_today(employee=self.employee)
+        return run, reverse("close_run", args=[run.token])
+
+    def test_the_counting_list_narrows_to_one_table(self):
+        run, url = self.open_close()
+
+        html = self.client.get(
+            url, {"mode": "count", "category": "Yarn"}
+        ).content.decode()
+
+        self.assertIn("Yarn Skein", html)
+        self.assertNotIn("Silk Sash", html)
+
+    def test_the_hidden_table_is_still_on_the_run_and_still_counted(self):
+        """The pill nobody selected is the standing evidence of what is left.
+
+        Hiding rows on a page whose whole job is to be complete is only safe
+        because the other table's count stays on screen — and because the row
+        is still on the run, so `counts()` reads its absence from the POST as
+        "nobody touched it", which is what a half-worked close already means.
+        """
+        run, url = self.open_close()
+
+        response = self.client.get(url, {"mode": "count", "category": "Yarn"})
+
+        self.assertEqual(run.rows.count(), 2)
+        self.assertEqual(
+            {p["label"]: p["count"] for p in response.context["category_pills"]},
+            {"All": 2, "Silk": 1, "Yarn": 1},
+        )
+        self.assertEqual(response.context["hidden_count"], 1)
+        self.assertIn("hidden, not done", response.content.decode())
+
+    def test_the_pills_count_what_is_left_rather_than_what_was_asked(self):
+        """A pill reading 1 over an empty list is the page contradicting
+        itself, so the number follows the reading it sits above."""
+        run, url = self.open_close()
+        yarn_row = run.rows.get(finished_product__name="Yarn Skein")
+        self.client.post(url, count_post(yarn_row, 1))
+
+        response = self.client.get(url, {"mode": "count"})
+
+        self.assertEqual(
+            {p["label"]: p["count"] for p in response.context["category_pills"]},
+            {"All": 1, "Silk": 1, "Yarn": 0},
+        )
+
+    def test_the_cards_reading_narrows_too_and_counts_cards(self):
+        """The stack is checked at the table it belongs to, so the same
+        filter follows into the second reading — counting cards there, not
+        rows left."""
+        run, url = self.open_close()
+        for row in run.rows.all():
+            self.client.post(url, count_post(row, 1))
+
+        response = self.client.get(url, {"mode": "cards", "category": "Yarn"})
+
+        self.assertEqual([r.finished_product.name for r in response.context["cards"]],
+                         ["Yarn Skein"])
+        self.assertEqual(
+            {p["label"]: p["count"] for p in response.context["category_pills"]},
+            {"All": 2, "Silk": 1, "Yarn": 1},
+        )
+
+    def test_saving_counts_comes_back_to_the_same_table(self):
+        """Worked in several passes, so a submit at the yarn boards must not
+        land back on a list that starts with the silk."""
+        run, url = self.open_close()
+        row = run.rows.get(finished_product__name="Yarn Skein")
+
+        response = self.client.post(
+            url + "?mode=count&category=Yarn", count_post(row, 1)
+        )
+
+        self.assertRedirects(response, url + "?mode=count&category=Yarn")
+
+    def test_undo_comes_back_to_the_same_table(self):
+        """Undo posts to its own URL, so the table rides in the form or it is
+        lost."""
+        run, url = self.open_close()
+        row = run.rows.get(finished_product__name="Yarn Skein")
+        self.client.post(url, count_post(row, 5))
+
+        response = self.client.post(
+            reverse("close_undo", args=[run.token, row.pk]), {"category": "Yarn"}
+        )
+
+        self.assertRedirects(response, url + "?mode=count&category=Yarn")
+
+    def test_a_tag_from_another_table_stays_where_you_are(self):
+        """The search is over the whole catalogue, so a silk scarf found at
+        the yarn boards is an ordinary thing to add — and being made to
+        switch tables to answer a tag you are holding is the app arguing
+        with the person who found it.
+
+        A hand-added row is on every table's list for that reason: it isn't
+        on a table, it is in somebody's hand.
+        """
+        run, url = self.open_close()
+        stray = make_close_product("Stray Silk", on_hand=9, slots=2)
+
+        response = self.client.post(
+            reverse("close_add_tag", args=[run.token]),
+            {"product_id": stray.pk, "category": "Yarn"},
+        )
+
+        self.assertRedirects(response, url + "?mode=count&category=Yarn")
+        html = self.client.get(
+            url, {"mode": "count", "category": "Yarn"}
+        ).content.decode()
+        self.assertIn("Stray Silk", html)
+        self.assertIn("Yarn Skein", html)
+        self.assertNotIn("Silk Sash", html)
+
+    def test_an_unknown_table_shows_every_row(self):
+        """A renamed category or a hand-edited link degrades to the whole
+        list, never to an error or to a shorter one — a filter is
+        navigation."""
+        run, url = self.open_close()
+
+        response = self.client.get(url, {"mode": "count", "category": "Denim"})
+
+        self.assertIsNone(response.context["category"])
+        self.assertEqual(response.context["hidden_count"], 0)
+        self.assertContains(response, "Yarn Skein")
+        self.assertContains(response, "Silk Sash")
+
+    def test_one_table_draws_no_filter_at_all(self):
+        """A filter offering one choice is furniture."""
+        run, url = self.open_close(yarn=False)
+
+        response = self.client.get(url, {"mode": "count"})
+
+        self.assertEqual(response.context["category_pills"], [])
 
 
 class WebhookOutageRecoveryTests(TestCase):

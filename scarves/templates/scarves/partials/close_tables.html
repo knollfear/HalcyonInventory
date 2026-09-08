@@ -1,0 +1,29 @@
+{% comment %}
+Which table is on screen: the yarn boards, the silk racks, or all of it.
+
+Each pill counts what is on its own screen in the reading currently showing —
+what is left to count, or the cards that should be in a hand. A pill claiming
+fourteen over a list of nine is the page contradicting itself.
+
+The container is always here, empty or not, because the add-tag fragment
+swaps it out of band and an out-of-band swap with nowhere to land is
+silently dropped.
+{% endcomment %}
+<div id="count-tables"{% if oob %} hx-swap-oob="true"{% endif %}>
+  {% if category_pills %}
+    <nav class="tables">
+      {% for pill in category_pills %}
+        <a href="{{ pill.href }}"{% if pill.selected %} class="on"{% endif %}>
+          {{ pill.label }} <span class="n">{{ pill.count }}</span>
+        </a>
+      {% endfor %}
+    </nav>
+  {% endif %}
+  {% if hidden_count %}
+    <p class="elsewhere">
+      {{ category.name }} only — {{ hidden_count }} row{{ hidden_count|pluralize }}
+      on the other tables {% if hidden_count == 1 %}is{% else %}are{% endif %}
+      hidden, not done.
+    </p>
+  {% endif %}
+</div>

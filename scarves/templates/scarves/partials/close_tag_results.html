@@ -7,15 +7,44 @@ two that drift — and the way that drift shows is the swapped version quietly
 posting somewhere the inline one doesn't.
 
 A button rather than a link because adding a tag is a POST that changes the
-list. That half stays a full navigation on purpose: the row has to appear in
-the counting list above, and a page that came back looking unchanged is how
-somebody adds the same tag three times.
+list.
+
+**It swaps rather than navigating**, and the argument that used to keep it a
+full page load is worth recording as it was: the row has to appear in the
+counting list, and a page that came back looking unchanged is how somebody
+adds the same tag three times. What that missed is the cost on the page it is
+on. This is late in a long evening, the counting form above is half-filled,
+and a redirect throws away every answer typed but not yet saved and lands
+somebody at the top of a page they were at the bottom of — paid on every tag,
+where the double-add is rare and was never really prevented here anyway:
+`closing.add_tag` hands back the row that exists rather than making a second
+one. The row still arrives visibly, in `#added-rows` directly below.
+
+With the script blocked this is the ordinary POST and redirect it always was.
 {% endcomment %}
 {% if results is not None %}
-  <form method="post" action="{% url 'close_add_tag' run.token %}">
+  {% comment %}
+  `hx-post` sits on each button rather than on the form, so the clicked
+  button's own `name`/`value` is what names the product — the same thing the
+  plain submit sends. `hx-include` picks up the CSRF token and the table
+  beside it. The rest is inherited from the form.
+  {% endcomment %}
+  <form method="post" action="{% url 'close_add_tag' run.token %}"
+        hx-target="#added-rows"
+        hx-swap="beforeend"
+        hx-include="closest form"
+        hx-indicator="#tag-adding">
     {% csrf_token %}
+    {% comment %}
+    The table on screen, so a closed run or an unfindable product comes back
+    to where somebody was standing. A tag that does land moves the page to
+    its own table regardless — the search is over the whole catalogue, and a
+    row added into a filtered-out list reads as one that was never added.
+    {% endcomment %}
+    {% if category %}<input type="hidden" name="category" value="{{ category.name }}">{% endif %}
     {% for p in results %}
-      <button class="result" type="submit" name="product_id" value="{{ p.id }}">
+      <button class="result" type="submit" name="product_id" value="{{ p.id }}"
+              hx-post="{% url 'close_add_tag' run.token %}">
         {{ p.name }}
         <span class="muted">{{ p.sku }} — app says {{ p.number_on_hand }} on hand</span>
       </button>
