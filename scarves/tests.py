@@ -9920,6 +9920,107 @@ class FancyAtProductionTests(TestCase):
         self.assertEqual(self.product.number_on_hand, 5)
 
 
+class TheListIsEditableHoweverItWasSeededTests(TestCase):
+    """One list, two ways to fill it, and every row editable either way.
+
+    The version this replaced had two modes: a suggested list you could only
+    look at, and a picked list you could edit — with a read-only preview of
+    one sitting underneath the editable copy of the other. A suggestion you
+    cannot change is a suggestion somebody works around on paper.
+    """
+
+    def setUp(self):
+        self.client.force_login(User.objects.create_user("staff", password="pw"))
+        self.short = make_bathable(
+            make_recipe("Stormy Sea"), "Stormy Silk", on_hand=0, par=8, bath=4
+        )
+        self.also = make_bathable(
+            make_recipe("Ember"), "Ember Silk", on_hand=0, par=10, bath=5
+        )
+        self.url = reverse("production_sheet_index")
+
+    def test_a_suggestion_comes_back_as_an_editable_list(self):
+        response = self.client.get(self.url, {"baths": "20"})
+
+        # A count box and a remove link per row, not a read-only preview.
+        self.assertContains(response, f'name="qty-{self.short.pk}"')
+        self.assertContains(response, "Take this off the list")
+
+    def test_a_suggested_row_can_be_removed(self):
+        """The ✕ is a plain link to the list without that row, so it works
+        with the script blocked."""
+        response = self.client.get(
+            self.url,
+            {"items": [f"{self.short.pk}:2", f"{self.also.pk}:2"]},
+        )
+        self.assertContains(response, "Ember")
+
+        # The link the page rendered for dropping Ember.
+        response = self.client.get(self.url, {"items": [f"{self.short.pk}:2"]})
+
+        self.assertNotContains(response, "Ember")
+        self.assertContains(response, "Stormy Sea")
+
+    def test_a_suggested_count_can_be_edited(self):
+        response = self.client.get(self.url, {
+            "items": [f"{self.short.pk}:2"],
+            f"qty-{self.short.pk}": "5",
+        })
+
+        self.assertContains(response, "5 baths")
+
+    def test_editing_to_zero_drops_the_row(self):
+        """Typing it away has to mean the same as the ✕, not a bath of
+        nothing."""
+        response = self.client.get(self.url, {
+            "items": [f"{self.short.pk}:2", f"{self.also.pk}:2"],
+            f"qty-{self.short.pk}": "0",
+        })
+
+        self.assertNotContains(response, "Stormy Sea")
+        self.assertContains(response, "Ember")
+
+    def test_an_edit_is_what_gets_printed(self):
+        self.client.post(self.url, {
+            "items": [f"{self.short.pk}:2"],
+            f"qty-{self.short.pk}": "3",
+        })
+
+        self.assertEqual(ProductionRun.objects.get().rows.count(), 3)
+
+    def test_the_collection_plan_follows_the_edit(self):
+        """Every edit is a round trip precisely so this can't go stale — a
+        short dye list sends somebody to the shelf for the wrong things."""
+        two = self.client.get(self.url, {"items": [f"{self.short.pk}:2"]})
+        five = self.client.get(self.url, {
+            "items": [f"{self.short.pk}:2"], f"qty-{self.short.pk}": "5",
+        })
+
+        self.assertContains(two, "2 baths")
+        self.assertContains(five, "5 baths")
+
+    def test_there_is_only_one_table_of_rows(self):
+        """The wonk being fixed: an editable list and a read-only preview of
+        the same thing, one under the other."""
+        response = self.client.get(self.url, {"baths": "20"})
+
+        self.assertEqual(response.content.decode().count("<tbody>"), 1)
+
+    def test_an_old_bare_baths_link_still_works(self):
+        """`?baths=20` predates the list and must still resolve — now
+        editable rather than as something to look at."""
+        response = self.client.get(self.url, {"baths": "20"})
+
+        self.assertContains(response, "Stormy Sea")
+        self.assertContains(response, "Print this sheet")
+
+    def test_a_bare_page_asks_nothing_and_says_nothing(self):
+        response = self.client.get(self.url)
+
+        self.assertNotContains(response, "Print this sheet")
+        self.assertNotContains(response, "Nothing is below par")
+
+
 class HandPickedSheetTests(TestCase):
     """Creating a run from colorways somebody chose, not from par.
 
@@ -9941,7 +10042,7 @@ class HandPickedSheetTests(TestCase):
         self.url = reverse("production_sheet_index")
 
     def _pick(self, *pairs, **extra):
-        data = {"dataset": "items", "items": [f"{p.pk}:{n}" for p, n in pairs]}
+        data = {"items": [f"{p.pk}:{n}" for p, n in pairs]}
         data.update(extra)
         return data
 
@@ -9984,16 +10085,25 @@ class HandPickedSheetTests(TestCase):
         self.assertContains(response, "Ember")
         self.assertContains(response, "2 baths")
 
+    def test_a_pick_wins_over_a_suggestion(self):
+        """A suggestion seeds the list; once it is a list, it is the list."""
+        make_bathable(make_recipe("Rosy"), "Rosy Silk", on_hand=0, par=8, bath=4)
+
+        response = self.client.get(
+            self.url, self._pick((self.ember, 1), **{"baths": "20"})
+        )
+
+        self.assertContains(response, "Ember")
+        self.assertNotContains(response, "Rosy")
+
     def test_a_pick_is_a_link_somebody_can_send(self):
         """State in the query string, like every other picker here."""
-        response = self.client.get(
-            f"{self.url}?dataset=items&items={self.stormy.pk}:3"
-        )
+        response = self.client.get(f"{self.url}?items={self.stormy.pk}:3")
 
         self.assertContains(response, "3 baths")
 
     def test_an_empty_pick_is_refused_rather_than_printing_nothing(self):
-        self.client.post(self.url, {"dataset": "items"})
+        self.client.post(self.url, {"items": []})
 
         self.assertEqual(ProductionRun.objects.count(), 0)
 

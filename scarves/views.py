@@ -3932,19 +3932,46 @@ def _crew_run_url(request, run):
     )
 
 
-def _baths_for(form):
-    """The baths a valid picker form is asking for, either way it was asked.
+def sheet_list(form):
+    """`[(product, baths)]` — the editable list, however it was seeded.
 
-    One function so the preview and the print cannot disagree about what a
-    sheet contains — the same reason `_recipe_history` serves both renderers
-    on the recipe page.
+    One list with two ways to fill it. `items` wins when present, so a
+    suggestion seeds the page and every edit after that is the list speaking
+    for itself. An old `?baths=20` link still resolves, and now comes back
+    editable rather than as something to look at.
     """
-    if form.cleaned_data["dataset"] == ProductionSheetForm.ITEMS:
-        return production.baths_from_picks(form.cleaned_data["items"])
-    return production.plan_baths(
+    picked = form.cleaned_data.get("items")
+    if picked:
+        return picked
+    if not form.cleaned_data.get("baths"):
+        return []
+
+    plan = production.plan_baths(
         form.cleaned_data["baths"],
         category=form.cleaned_data.get("category"),
         include_overshoot=form.cleaned_data["include_overshoot"],
+    )
+    # Back to one row per colorway. `plan_baths` returns a bath at a time
+    # because that is what the paper prints; the list is edited per colorway,
+    # because "three of that one" is how somebody says it.
+    counts, order = {}, []
+    for bath in plan:
+        if bath.product.pk not in counts:
+            order.append(bath.product)
+        counts[bath.product.pk] = counts.get(bath.product.pk, 0) + 1
+    return [(product, counts[product.pk]) for product in order]
+
+
+def _without(rows, product):
+    """`?items=` for the list minus one row, for that row's remove link.
+
+    Server-rendered rather than built in the browser, so removing a row is an
+    ordinary link that works with the script blocked — and the address it
+    produces is the same sendable URL every other filter here uses.
+    """
+    return urlencode(
+        {"items": [f"{p.pk}:{n}" for p, n in rows if p.pk != product.pk]},
+        doseq=True,
     )
 
 
@@ -3968,7 +3995,7 @@ def production_sheet_index(request):
     if request.method == "POST":
         form = ProductionSheetForm(request.POST)
         if form.is_valid():
-            baths = _baths_for(form)
+            baths = production.baths_from_picks(sheet_list(form))
             if not baths:
                 messages.warning(request, "Nothing needs dyeing for those settings.")
                 return redirect(f"{reverse('production_sheet_index')}?{request.POST.urlencode()}")
@@ -3998,9 +4025,10 @@ def production_sheet_index(request):
     else:
         form = ProductionSheetForm(request.GET or None)
 
-    baths = []
+    rows = []
     if form.is_bound and form.is_valid():
-        baths = _baths_for(form)
+        rows = sheet_list(form)
+    baths = production.baths_from_picks(rows)
 
     return render(request, "scarves/production_sheet_index.html", {
         "form": form,
@@ -4011,12 +4039,25 @@ def production_sheet_index(request):
         # Keyed on validity rather than "was anything submitted", or a typo in
         # the bath count reads back as "nothing needs dyeing" — which is a
         # different and much more alarming statement.
-        "submitted": form.is_bound and form.is_valid(),
+        "submitted": form.is_bound and form.is_valid() and form.asked_anything,
         "short_blanks": production.short_blanks(baths),
-        # Re-rendered off raw data so a failed submit doesn't lose a list
-        # somebody hand-built — the expensive failure on this half of the page.
-        "picked": form.items_value,
-        "picked_dataset": form.picked_dataset,
+        # One list, with a remove link per row. Paired here rather than in the
+        # template because "the list without this row" is a query-string
+        # question, and the template has no business assembling one.
+        "rows": [
+            {
+                "product": product,
+                "baths": n,
+                # What those baths actually make. Worked out here rather than
+                # left to a template filter: baths are the unit of work and
+                # scarves are the unit everybody thinks in, and the page has
+                # to show both without anybody multiplying.
+                "makes": product.bath_size * n,
+                "without": _without(rows, product),
+            }
+            for product, n in rows
+        ],
+        "asked": form.is_bound and form.asked_anything,
         # Two lists, because they ask for different things. Live sheets are a
         # convenience — "what you might still be working from" — and are
         # truncated, since a long one is just noise.

@@ -82,7 +82,33 @@ the preview is deliberately a GET and the print button is the only POST.
   table.picked th.num, table.picked td.num { text-align: right; }
   table.picked .qty { width: 62px; font: inherit; padding: 4px 6px;
       border: 1px solid #cfd6de; border-radius: 5px; text-align: right; }
-  #picked-empty { font-size: 13px; color: #8b929b; margin-top: 8px; }
+  /* Two ways in, side by side rather than behind a mode switch — they
+     compose, so hiding one behind the other would be the page insisting you
+     pick a lane it doesn't actually have. */
+  .starts { display: grid; grid-template-columns: 1fr 1fr; gap: 0 28px;
+            align-items: start; }
+  @media (max-width: 720px) { .starts { grid-template-columns: 1fr; gap: 20px 0; } }
+  .start h2 { font-size: 15px; margin: 0 0 10px; }
+  .start + .start { border-left: 1px solid #e6eaee; padding-left: 28px; }
+  @media (max-width: 720px) {
+      .start + .start { border-left: 0; padding-left: 0;
+                        border-top: 1px solid #e6eaee; padding-top: 18px; }
+  }
+  .start > label { display: block; font-size: 13px; font-weight: 600;
+                   margin-bottom: 4px; }
+  .start input[type="text"] {
+      width: 100%; font: inherit; padding: 6px 9px;
+      border: 1px solid #cfd6de; border-radius: 6px; background: #fff;
+  }
+  table.rows .qty {
+      width: 58px; font: inherit; padding: 3px 6px; text-align: right;
+      border: 1px solid #cfd6de; border-radius: 5px;
+  }
+  /* Quiet until reached for: removing a row is a normal thing to do, not a
+     danger, so it reads as punctuation rather than as a warning. */
+  a.drop { color: #99a1ab; text-decoration: none; font-size: 15px;
+           padding: 0 4px; }
+  a.drop:hover { color: #8a2f2a; }
 {% endblock %}
 
 {% block head %}
@@ -156,42 +182,46 @@ the preview is deliberately a GET and the print button is the only POST.
     </div>
   {% endif %}
 
-  <form method="get" id="sheet-form">
-    {% comment %}
-    Two datasets. The default asks the shortage question; the other is a list
-    somebody picked, because par is not the only reason to dye — an order
-    taken at the stall, a colour worth trying, room beside a pot already being
-    heated. It is also the only way to plan a session when nothing is short,
-    which is exactly when there is time for one.
-    {% endcomment %}
-    <div class="field">
-      <label for="{{ form.dataset.id_for_label }}">{{ form.dataset.label }}</label>
-      {{ form.dataset }}
-      {{ form.dataset.errors }}
-    </div>
+  {% comment %}
+  Two ways to start and then one list. Either the app suggests baths from
+  what is below par, or you already know what you are dyeing — and both fill
+  the same list, which is editable from that point on either way.
 
-    <div class="grid2">
-      <div class="field" data-when="shortage">
+  They sit side by side rather than behind a mode switch, because they
+  compose: suggest twenty, add the two you promised somebody, drop the one
+  you have no blanks for.
+  {% endcomment %}
+  <div class="starts">
+    <form method="get" class="start">
+      <h2>Suggest dye baths to me</h2>
+      <div class="field">
         <label for="{{ form.baths.id_for_label }}">{{ form.baths.label }}</label>
         {{ form.baths }}
         <div class="help">{{ form.baths.help_text }}</div>
         {{ form.baths.errors }}
       </div>
-      <div class="field" data-when="shortage">
+      <div class="field">
         <label for="{{ form.category.id_for_label }}">{{ form.category.label }}</label>
         {{ form.category }}
         {{ form.category.errors }}
       </div>
-    </div>
-    <div class="field tick" data-when="shortage">
-      {{ form.include_overshoot }}
-      <div>
-        <label for="{{ form.include_overshoot.id_for_label }}">{{ form.include_overshoot.label }}</label>
-        <div class="help">{{ form.include_overshoot.help_text }}</div>
+      <div class="field tick">
+        {{ form.include_overshoot }}
+        <div>
+          <label for="{{ form.include_overshoot.id_for_label }}">{{ form.include_overshoot.label }}</label>
+          <div class="help">{{ form.include_overshoot.help_text }}</div>
+        </div>
       </div>
-    </div>
+      {% comment %}
+      Carries no `items`, which is what makes this re-seed rather than do
+      nothing — the list wins when it is there, so the button that builds a
+      new one has to arrive without it.
+      {% endcomment %}
+      <button class="btn" type="submit">Suggest baths</button>
+    </form>
 
-    <div class="field" data-when="items">
+    <div class="start">
+      <h2>I know what to dye</h2>
       <label for="bath-search">Find a colorway</label>
       <input type="text" id="bath-search" name="q" autocomplete="off"
              placeholder="Type a colorway or blank…"
@@ -201,37 +231,87 @@ the preview is deliberately a GET and the print button is the only POST.
              hx-vals='{"mode": "plan"}'>
       <div class="results" id="bath-results"></div>
       <div class="help">
-        Click a result to add it. The count is <strong>baths</strong>, not
-        scarves — a row is one bath, and a bath yields whatever that blank
-        yields. Nothing here is filtered on par.
+        Click a result to add it. Nothing here is filtered on par — this is
+        the half that exists because par is not the only reason to dye.
       </div>
       {{ form.items.errors }}
+    </div>
+  </div>
 
-      <table class="picked" id="picked-baths" hidden>
+  {% comment %}
+  Everything below is one swap target. An edit re-renders the whole of it
+  from this same page — `hx-select` pulls this block out of the ordinary
+  response — so the list, the totals, the collection plan and the print
+  button cannot disagree with each other. A second partial would be a second
+  renderer to drift.
+  {% endcomment %}
+  <div id="sheet">
+  {% if submitted and rows %}
+    <hr>
+    <form method="get" id="sheet-list">
+      <table class="rows">
         <thead>
-          <tr><th>Colorway</th><th class="num">Baths</th><th class="num">Makes</th><th></th></tr>
+          <tr>
+            <th>Colorway</th><th>Blank</th>
+            <th class="num">Baths</th><th class="num">Makes</th>
+            <th class="num">On hand</th><th class="num">Par</th><th></th>
+          </tr>
         </thead>
         <tbody>
-          {% for product, n in picked %}
-            <tr data-pk="{{ product.pk }}" data-size="{{ product.bath_size }}">
-              <td>{{ product.name }}</td>
+          {% for row in rows %}
+            <tr>
+              <td>{{ row.product.recipe.name }}</td>
+              <td>{{ row.product.raw_product.name }}</td>
               <td class="num">
-                <input type="number" class="qty" min="1" max="20" value="{{ n }}">
+                <input type="hidden" name="items"
+                       value="{{ row.product.pk }}:{{ row.baths }}">
+                {% comment %}
+                Every row is editable, however the list was seeded. Changing
+                a count re-renders the block on `change` — one round trip per
+                edit, which is what keeps the collection plan below honest;
+                a client-side edit would leave it describing the list as it
+                was a moment ago.
+                {% endcomment %}
+                <input type="number" name="qty-{{ row.product.pk }}" class="qty"
+                       value="{{ row.baths }}" min="0" max="20"
+                       hx-get="{% url 'production_sheet_index' %}"
+                       hx-include="#sheet-list"
+                       hx-trigger="change"
+                       hx-target="#sheet"
+                       hx-select="#sheet"
+                       hx-swap="outerHTML"
+                       hx-push-url="true">
               </td>
-              <td class="num makes"></td>
-              <td><button type="button" class="btn-quiet drop">Remove</button></td>
+              <td class="num">{{ row.makes }}</td>
+              <td class="num">{{ row.product.number_on_hand }}</td>
+              <td class="num">{{ row.product.par }}</td>
+              <td class="num">
+                {% comment %}
+                A server-rendered link to the list without this row, so
+                removing one is an ordinary navigation that works with the
+                script blocked — and the address it lands on is the same
+                sendable URL everything else here uses.
+                {% endcomment %}
+                <a class="drop" title="Take this off the list"
+                   href="?{{ row.without }}"
+                   hx-get="?{{ row.without }}"
+                   hx-target="#sheet"
+                   hx-select="#sheet"
+                   hx-swap="outerHTML"
+                   hx-push-url="true">✕</a>
+              </td>
             </tr>
           {% endfor %}
         </tbody>
       </table>
-      <div id="picked-empty" class="empty">Nothing picked yet.</div>
-    </div>
+      {% comment %}
+      The no-script path for an edited count. With htmx the `change` above has
+      already done it, so this is the button nobody presses — kept because the
+      alternative is a number you can type and nothing that reads it.
+      {% endcomment %}
+      <button class="btn-quiet" type="submit">Update the list</button>
+    </form>
 
-    <button class="btn" type="submit">Preview</button>
-  </form>
-
-  {% if submitted and baths %}
-    <hr>
     <p class="headline">{{ baths|length }} bath{{ baths|length|pluralize }}</p>
 
     {% if short_blanks %}
@@ -249,46 +329,17 @@ the preview is deliberately a GET and the print button is the only POST.
       </div>
     {% endif %}
 
-    <table class="rows">
-      <thead>
-        <tr>
-          <th>#</th><th>Colorway</th><th>Blank</th><th>SKU</th>
-          <th class="num">Yields</th><th class="num">On hand</th><th class="num">Par</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for bath in baths %}
-          <tr>
-            <td>{{ forloop.counter }}</td>
-            <td>{{ bath.recipe_name }}</td>
-            <td>{{ bath.blank_name }}</td>
-            <td>{{ bath.product.sku|default:"—" }}</td>
-            <td class="num">{{ bath.quantity }}</td>
-            <td class="num">{{ bath.product.number_on_hand }}</td>
-            <td class="num">{{ bath.product.par }}</td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-
     {% include "scarves/partials/dye_plan.html" %}
 
     <form method="post" style="margin-top:18px">
       {% csrf_token %}
       {% comment %}
-      The preview's own question, restated so the POST asks for exactly what
-      is on screen. Re-deriving it would let the shortage move between the
-      preview and the print, and the sheet somebody printed would not be the
-      sheet they read.
+      The list as the server currently has it. Every edit is a round trip, so
+      this cannot disagree with what is on screen — which is the reason the
+      edits are round trips.
       {% endcomment %}
-      <input type="hidden" name="dataset" value="{{ form.cleaned_data.dataset }}">
-      <input type="hidden" name="baths" value="{{ form.cleaned_data.baths|default_if_none:'' }}">
-      <input type="hidden" name="category" value="{{ form.cleaned_data.category.pk|default_if_none:'' }}">
-      {% if form.cleaned_data.include_overshoot %}
-        <input type="hidden" name="include_overshoot" value="on">
-      {% endif %}
-      {% for product, n in form.cleaned_data.items %}
-        <input type="hidden" name="items" value="{{ product.pk }}:{{ n }}">
+      {% for row in rows %}
+        <input type="hidden" name="items" value="{{ row.product.pk }}:{{ row.baths }}">
       {% endfor %}
       <button class="btn" type="submit">Print this sheet</button>
       <p class="muted">
@@ -296,19 +347,15 @@ the preview is deliberately a GET and the print button is the only POST.
         recorded against inventory until they do.
       </p>
     </form>
-  {% elif submitted %}
+  {% elif asked %}
     <hr>
-    {% if picked_dataset %}
-      <p>Nothing to print — add a colorway above.</p>
-    {% else %}
-      <p>
-        Nothing needs dyeing for those settings. To dye something anyway,
-        switch <strong>{{ form.dataset.label }}</strong> to
-        <strong>Colorways I pick</strong> — par isn't the only reason to
-        run a session.
-      </p>
-    {% endif %}
+    <p>
+      Nothing is below par for those settings. To dye something anyway,
+      search for it under <strong>I know what to dye</strong> — par is not
+      the only reason to run a session.
+    </p>
   {% endif %}
+  </div>
 
 {% endblock %}
 

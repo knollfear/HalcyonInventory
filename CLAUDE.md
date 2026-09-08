@@ -811,21 +811,44 @@ the app will ask for *next*; it does not edit the paper already printed.
 
 ### What lands on the sheet
 
-**Two datasets, because par is not the only reason to dye.** The default asks
-the shortage question; the other is a list somebody picked — an order taken at
-the stall, a colour worth trying, room beside a pot already being heated.
-Neither of those is a shortage, and a planner that can only answer "what is
-below par" cannot express any of them. It is also **the only way to plan a
-session when nothing is short**, which is exactly when there is time for one:
-the picker used to refuse to create a run at all in that case.
+**Two ways to start, and then one list.** Either the app suggests baths from
+what is below par, or somebody says what they already know they are dyeing —
+an order taken at the stall, a colour worth trying, room beside a pot already
+being heated. Neither of those last three is a shortage, and a planner that
+can only answer "what is below par" cannot express any of them. It is also
+**the only way to plan a session when nothing is short**, which is exactly
+when there is time for one: the picker used to refuse to create a run at all.
 
-The picked count is **baths, not scarves** — two baths of a blank yielding
-four print as `4 ×` twice, because a row is a bath and a bath is what somebody
-physically does. The list is `items=<pk>:<baths>` in the query string, so a
-hand-built sheet is a link somebody can send, and it is re-rendered off raw
-data after a failed submit rather than out of `cleaned_data`: losing a
-hand-built list because an unrelated field was wrong is the expensive failure
-on that half of the page.
+**The two are entry points, not modes, and they compose** — suggest twenty,
+add the two you promised somebody, drop the one you have no blanks for. They
+sit side by side with no toggle. An earlier version made them modes and it
+came out wrong in a way worth recording: a suggested list you could only look
+at, an editable picked list, and a read-only preview of the first sitting
+underneath the editable copy of the second. **A suggestion you cannot change
+is a suggestion somebody works around on paper**, which is the whole failure
+the editable sheet exists to prevent.
+
+So **every row is editable however the list was seeded** — a bath count and a
+✕ per row. `items=<pk>:<baths>` is the canonical list and rides in the query
+string, so a sheet is a link somebody can send; the ✕ is a server-rendered
+link to the list *without* that row, which is why removing one works with the
+script blocked. A count box can't edit half of a `pk:n` pair, so each row also
+posts `qty-<pk>` and the form applies it as an override — membership and order
+stay with `items`, and only the count comes from the box. Editing to zero
+removes the row, because typing it away has to mean what the ✕ means.
+
+**Every edit is a round trip, and that is the point.** The bath total, the
+short-blank warning and the dye collection plan all read the list, and a
+client-side edit would leave them describing it as it was a moment ago — a
+short dye list sends somebody to the shelf for the wrong things. htmx swaps
+the whole block using `hx-select` on this same page rather than a partial, so
+there is no second renderer to drift, and `hx-push-url` keeps the address the
+sendable one. Without the script it is an ordinary GET form with an "Update
+the list" button.
+
+The count is **baths, not scarves** — two baths of a blank yielding four print
+as `4 ×` twice, because a row is a bath and a bath is what somebody physically
+does. The list shows what they make beside it so nobody multiplies.
 
 **Nothing about a pick is filtered on par, and none of it is subtracted for
 what is already in flight.** `plan_baths` derives what is needed and so must

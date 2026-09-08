@@ -513,46 +513,36 @@ class PickedBathsField(forms.Field):
 
 
 class ProductionSheetForm(forms.Form):
-    """What to put on a printed production sheet.
+    """What goes on a printed production sheet.
 
-    **Two datasets.** The default asks the shortage question — how many baths
-    are you good for, which table, and do you want the ones a bath takes past
-    par. The other is a list somebody picked.
+    **Two ways to start, and then one list.** Either the app suggests baths
+    from what is below par, or somebody says what they already know they are
+    dyeing. Both produce the same thing — a list of colorways and bath counts
+    — and from that point it is one editable list, because the two questions
+    only differ in how the first draft got made.
 
-    The picked one exists because par is not the only reason to dye. An order
-    taken at the stall, a colour somebody wants to try, a pot being heated
-    anyway with room beside it — none of those are shortages, and a planner
-    that can only answer "what is below par" cannot express any of them. It
-    is also the only way to plan a session at all when nothing is short,
-    which is exactly when there is time for one.
+    That is the whole shape, and the earlier version got it wrong by making
+    them two *modes*: a suggested list you could only look at, and a picked
+    list you could edit, with a read-only preview of one sitting underneath
+    the editable copy of the other. A suggestion you cannot change is a
+    suggestion you have to work around on paper.
+
+    `items` wins when present. A suggestion seeds the list and the moment
+    anything is edited the list is what the page is about — so an old
+    `?baths=20` link still works and now comes back editable.
     """
 
     #: A day's dyeing, generously. High enough that nobody hits it planning a
     #: real session, low enough that a typo can't produce a hundred-page PDF.
     MAX_BATHS = 60
 
-    SHORTAGE = "shortage"
-    ITEMS = "items"
-    DATASET_CHOICES = [
-        (SHORTAGE, "What's below par"),
-        (ITEMS, "Colorways I pick"),
-    ]
-
-    dataset = forms.ChoiceField(
-        choices=DATASET_CHOICES,
-        initial=SHORTAGE,
-        # Absent means the shortage question, which is what every link and
-        # bookmark made before this field existed is asking.
-        required=False,
-        label="What goes on the sheet",
-    )
     baths = forms.IntegerField(
         min_value=1,
         max_value=MAX_BATHS,
         initial=20,
         required=False,
         label="How many baths?",
-        help_text="One row per dye bath, most urgent first.",
+        help_text="Most urgent first — what a whole bath still leaves at or under par.",
     )
     items = PickedBathsField(required=False)
     category = forms.ModelChoiceField(
@@ -565,11 +555,11 @@ class ProductionSheetForm(forms.Form):
         required=False,
         label="Include ones a bath would take past par",
         help_text=(
-            "Off, the sheet only lists products where a whole bath still "
-            "lands at or under par. On, it also lists the ones that are "
-            "short by less than a bath — overshoot is a bath being a fixed "
-            "size, not overproduction, and those shortages get rounded away "
-            "next time the recipe is dyed anyway."
+            "Off, it only suggests products where a whole bath still lands at "
+            "or under par. On, it also suggests the ones that are short by "
+            "less than a bath — overshoot is a bath being a fixed size, not "
+            "overproduction, and those shortages get rounded away next time "
+            "the recipe is dyed anyway."
         ),
     )
 
@@ -580,50 +570,45 @@ class ProductionSheetForm(forms.Form):
         self.fields["category"].queryset = RawProductCategory.objects.order_by("name")
 
     @property
-    def picked_dataset(self) -> bool:
-        return (self.data.get("dataset") or self.SHORTAGE) == self.ITEMS
+    def asked_anything(self) -> bool:
+        """Whether this form is a question at all, rather than a bare page."""
+        return bool(self.data.get("baths") or self.data.getlist("items"))
 
-    @property
-    def items_value(self):
-        """The picked list, for re-rendering the table after a failed submit.
+    def _edited(self, product, current):
+        """The bath count for one row, after any inline edit.
 
-        Parsed leniently off raw data rather than read from `cleaned_data`,
-        because the whole point is to survive the submit that *didn't* clean —
-        losing somebody's hand-built list because an unrelated field was wrong
-        is the expensive failure here.
+        The list rides as `items=<pk>:<n>` because that is what a remove link
+        and the print POST need — one value naming both the row and its size.
+        A number box cannot edit half of that, so each row also posts
+        `qty-<pk>`, and this is where the two meet.
+
+        Kept as an override rather than replacing `items` outright so the
+        canonical list stays one thing: membership and order come from
+        `items`, and this only ever changes a count.
         """
-        from .models import FinishedProduct
-
-        wanted = parse_label_items(self.data.getlist("items")) if self.data else {}
-        if not wanted:
-            return []
-        found = {
-            p.pk: p
-            for p in FinishedProduct.objects.filter(pk__in=wanted)
-            .select_related("raw_product", "recipe")
-        }
-        return [(found[pk], n) for pk, n in wanted.items() if pk in found]
+        typed = (self.data.get(f"qty-{product.pk}") or "").strip()
+        if not typed.isdigit():
+            return current
+        return min(int(typed), PickedBathsField.MAX_PER_ITEM)
 
     def clean(self):
         cleaned = super().clean()
-        dataset = cleaned.get("dataset") or self.SHORTAGE
+        picked = cleaned.get("items")
+        if picked:
+            # Zero is how a row is removed by typing rather than by the ✕,
+            # and it must not become a bath of nothing.
+            picked = [
+                (product, self._edited(product, n)) for product, n in picked
+            ]
+            picked = [(product, n) for product, n in picked if n > 0]
+            cleaned["items"] = picked
 
-        if dataset == self.SHORTAGE and not cleaned.get("baths"):
-            self.add_error("baths", "Say how many baths you are good for.")
-        if dataset == self.ITEMS:
-            picked = cleaned.get("items")
-            if not picked:
-                self.add_error(
-                    "items", "Search for a colorway and add it before printing."
-                )
-            elif sum(n for _, n in picked) > self.MAX_BATHS:
-                self.add_error(
-                    "items",
-                    f"That is more than {self.MAX_BATHS} baths. A sheet is one "
-                    f"session's work.",
-                )
-
-        cleaned["dataset"] = dataset
+        if picked and sum(n for _, n in picked) > self.MAX_BATHS:
+            self.add_error(
+                "items",
+                f"That is more than {self.MAX_BATHS} baths. A sheet is one "
+                f"session's work.",
+            )
         return cleaned
 
 
