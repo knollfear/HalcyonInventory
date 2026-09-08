@@ -36,7 +36,7 @@ from django.db.models import ProtectedError
 from django.db import connection
 from django.test import TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
-from django.urls import reverse
+from django.urls import NoReverseMatch, reverse
 
 from . import (
     closing, colorbands, crew, fancy, photowalk, production, restock,
@@ -55,6 +55,8 @@ from .forms import (
     CrewHandbookForm,
     HoursForm,
     LabelRunForm,
+    PickedBathsField,
+    ProductionSheetForm,
     QuickRecipeRowForm,
     RecipeDyesForm,
 )
@@ -8461,6 +8463,90 @@ class ProductionPlanTests(TestCase):
         self.assertGreater(needed, 6)
 
 
+class BathsAlreadyInFlightTests(TestCase):
+    """A sheet must not re-ask for baths another sheet is already out getting.
+
+    This is the bug the whole "production is not momentary" change exists to
+    fix. Dyeing runs one to three days, so the stock a sheet asked for has not
+    arrived while that sheet is being worked — the colorway still reads as
+    short, and the next sheet asks for it again. In season that is a session
+    spent dyeing something twice.
+    """
+
+    def setUp(self):
+        self.recipe = make_recipe("Stormy Sea")
+        self.product = make_bathable(
+            self.recipe, "Stormy Silk", on_hand=0, par=8, bath=4
+        )
+
+    def _print(self, count=10):
+        run = ProductionRun.objects.create()
+        ProductionRunRow.objects.bulk_create([
+            ProductionRunRow(
+                run=run, finished_product=bath.product,
+                order=i, quantity=bath.quantity,
+            )
+            for i, bath in enumerate(production.plan_baths(count), start=1)
+        ])
+        return run
+
+    def test_a_second_sheet_does_not_repeat_the_first(self):
+        self._print()
+
+        self.assertEqual(production.plan_baths(10), [])
+
+    def test_it_asks_only_for_what_the_first_sheet_left_short(self):
+        """One bath printed against a shortage of two leaves one to ask for."""
+        run = ProductionRun.objects.create()
+        ProductionRunRow.objects.create(
+            run=run, finished_product=self.product, order=1, quantity=4
+        )
+
+        self.assertEqual(len(production.plan_baths(10)), 1)
+
+    def test_an_accepted_bath_is_counted_once_not_twice(self):
+        """Once it lands in `number_on_hand`, counting it as in flight too
+        would subtract the same bath from the plan twice."""
+        run = self._print()
+        for row in run.rows.all():
+            production.apply_row(row)
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.number_on_hand, 8)
+        self.assertEqual(production.plan_baths(10), [])
+
+    def test_a_cancelled_bath_is_asked_for_again(self):
+        """It is never coming, so the colorway is short again — which is the
+        whole difference between cancelling and binning a lot."""
+        run = self._print()
+        for row in run.rows.all():
+            production.cancel_row(row)
+
+        self.assertEqual(len(production.plan_baths(10)), 2)
+
+    def test_an_overdue_sheet_releases_its_claim(self):
+        """Paper that has been lost must not suppress a colorway forever."""
+        run = self._print()
+        ProductionRun.objects.filter(pk=run.pk).update(
+            created_at=timezone.now() - production.OVERDUE_AFTER - timedelta(days=1)
+        )
+
+        self.assertEqual(len(production.plan_baths(10)), 2)
+
+    def test_a_binned_bath_is_not_asked_for_again(self):
+        """The blanks are gone, so re-dyeing it needs blanks that no longer
+        exist — and the shortage it leaves is answered by the ordinary par
+        check on the next sheet, not by this one's claim."""
+        run = self._print()
+        rows = list(run.rows.all())
+        production.apply_row(rows[0], yielded=0)
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.number_on_hand, 0)
+        # The other row is still pending, so it still claims its bath.
+        self.assertEqual(len(production.plan_baths(10)), 1)
+
+
 class ProductionSheetViewTests(TestCase):
     """Planning and printing, from the office side."""
 
@@ -8575,7 +8661,7 @@ class ProductionReturnTests(TestCase):
         self._report(self.rows[0])
 
         self.rows[1].refresh_from_db()
-        self.assertIsNone(self.rows[1].done_at)
+        self.assertIsNone(self.rows[1].accepted_at)
         self.product.refresh_from_db()
         self.assertEqual(self.product.number_on_hand, 4)
 
@@ -8597,20 +8683,111 @@ class ProductionReturnTests(TestCase):
         self.assertEqual(self.product.number_on_hand, 8)
         self.assertEqual(InventoryLog.objects.count(), 2)
 
-    def test_reporting_closes_the_sheet(self):
+    def test_one_bath_back_does_not_close_the_sheet(self):
+        """The rule this replaced said one tick was enough.
+
+        That was right while a bath was an atomic event. Dyeing runs one to
+        three days, so a sheet answered once is usually a sheet with most of
+        its baths still on a line — and calling it finished there is what put
+        the app one to three days ahead of the shelf.
+        """
+        self._report(self.rows[0])
+
+        self.run.refresh_from_db()
+        self.assertTrue(self.run.is_open)
+        self.assertEqual(self.run.pending_count, 1)
+
+    def test_the_sheet_closes_when_nothing_is_left_pending(self):
+        self._report(self.rows[0])
+        self._report(self.rows[1])
+
+        self.run.refresh_from_db()
+        self.assertTrue(self.run.is_closed)
+
+    def test_a_reply_is_still_recorded_even_though_it_decides_nothing(self):
         self._report(self.rows[0])
 
         self.run.refresh_from_db()
         self.assertIsNotNone(self.run.submitted_at)
-        self.assertFalse(self.run.is_open)
 
-    def test_an_applied_row_is_shown_not_hidden(self):
+    def test_an_accepted_row_is_shown_not_hidden(self):
         """A row that vanished would read as 'I never ticked that'."""
         self._report(self.rows[0])
 
         response = self.client.get(self.url)
 
-        self.assertContains(response, "Already recorded")
+        self.assertContains(response, "In stock")
+
+    def test_a_short_bath_credits_what_came_out_and_consumes_the_blanks(self):
+        """The scarves that failed still used their blanks up."""
+        self.client.post(self.url, {
+            "done": [str(self.rows[0].pk)],
+            f"yielded-{self.rows[0].pk}": "3",
+        })
+
+        self.product.refresh_from_db()
+        self.product.raw_product.refresh_from_db()
+        self.assertEqual(self.product.number_on_hand, 3)
+        self.assertEqual(self.product.raw_product.number_on_hand, 96)
+
+    def test_a_binned_bath_is_a_log_at_zero_not_a_missing_log(self):
+        """`applied_log` is the only guard against a row being counted
+        twice, so a total loss has to write one like everything else."""
+        self.client.post(self.url, {
+            "done": [str(self.rows[0].pk)],
+            f"yielded-{self.rows[0].pk}": "0",
+        })
+
+        self.rows[0].refresh_from_db()
+        self.product.refresh_from_db()
+        self.product.raw_product.refresh_from_db()
+        self.assertTrue(self.rows[0].is_accepted)
+        self.assertEqual(self.rows[0].yielded, 0)
+        self.assertEqual(self.product.number_on_hand, 0)
+        self.assertEqual(self.product.raw_product.number_on_hand, 96)
+        self.assertEqual(InventoryLog.objects.count(), 1)
+
+    def test_a_tick_with_no_number_still_means_the_whole_bath(self):
+        """A thumb that never reaches the number box reports what a tick has
+        always reported."""
+        self._report(self.rows[0])
+
+        self.rows[0].refresh_from_db()
+        self.assertEqual(self.rows[0].yielded, 4)
+
+    def test_a_cancelled_bath_moves_nothing_and_writes_no_log(self):
+        production.cancel_row(self.rows[0])
+
+        self.rows[0].refresh_from_db()
+        self.product.refresh_from_db()
+        self.product.raw_product.refresh_from_db()
+        self.assertTrue(self.rows[0].is_cancelled)
+        self.assertEqual(self.product.number_on_hand, 0)
+        self.assertEqual(self.product.raw_product.number_on_hand, 100)
+        self.assertEqual(InventoryLog.objects.count(), 0)
+
+    def test_cancelling_is_not_the_same_as_binning_a_bath(self):
+        """Cancelled means it never ran, so the blanks are still there.
+
+        Binned means it ran and the lot was lost, so they are not. Both end
+        with no scarves, and only one of them costs stock — which is why they
+        are different states rather than two names for one.
+        """
+        production.cancel_row(self.rows[0])
+        self.client.post(self.url, {
+            "done": [str(self.rows[1].pk)],
+            f"yielded-{self.rows[1].pk}": "0",
+        })
+
+        self.product.raw_product.refresh_from_db()
+        self.assertEqual(self.product.raw_product.number_on_hand, 96)
+
+    def test_an_accepted_row_cannot_then_be_cancelled(self):
+        """Stock has moved; taking it back is an adjustment with a reason."""
+        self._report(self.rows[0])
+        self.rows[0].refresh_from_db()
+
+        self.assertFalse(production.cancel_row(self.rows[0]))
 
     def test_the_phone_records_who_reported_if_it_knows(self):
         """A record, not a check — the token on the paper is what lets the
@@ -8639,8 +8816,24 @@ class ProductionReturnTests(TestCase):
 
         self.assertContains(response, f"Run {self.run.pk}")
 
-    def test_a_reported_sheet_leaves_the_fallback_list(self):
+    def test_a_part_reported_sheet_stays_on_the_fallback_list(self):
+        """It used to drop off on the first tick.
+
+        That is the wrong list to be taken off: this is the page somebody
+        reaches for when the QR won't scan, and a sheet with baths still
+        drying is exactly the one they are holding. Reporting the first bath
+        of a three-day session would have left the rest with no way back in
+        short of typing the code.
+        """
         self._report(self.rows[0])
+
+        response = self.client.get(reverse("production_run_index"))
+
+        self.assertContains(response, f"Run {self.run.pk}")
+
+    def test_a_finished_sheet_leaves_the_fallback_list(self):
+        self._report(self.rows[0])
+        self._report(self.rows[1])
 
         response = self.client.get(reverse("production_run_index"))
 
@@ -9322,14 +9515,19 @@ class PassthroughStockTakeTests(TestCase):
         self.assertNotContains(response, "Merino Worsted Natural")
 
 
-class OutstandingSheetCapTests(TestCase):
-    """Only the newest few sheets stay outstanding.
+class SheetsAgeOutRatherThanBeingRetiredTests(TestCase):
+    """Nothing closes a sheet on the app's own initiative any more.
 
-    Five out at once already means the reporting loop has stopped working.
-    But *blocking* a sixth print deadlocks exactly when the paper has gone
-    missing, which is the same moment a sheet gets abandoned — so the newest
-    five are kept and the rest retire. Nothing is lost by that: a run is a
-    work aid, and the record of what was actually dyed is the inventory log.
+    Printing a sixth sheet used to close the oldest, on the reasoning that
+    five out at once means the reporting loop has already failed. The
+    reasoning holds; the remedy was the app guessing. Closing an unanswered
+    sheet silently decided its session never happened — and since a bath
+    takes one to three days, a sheet with four still drying looks exactly
+    like a sheet somebody abandoned.
+
+    What replaced it destroys nothing: an old sheet stops *claiming* its
+    baths, so the colorways come back onto new sheets, and it is named on
+    the picker for a person to settle.
     """
 
     def setUp(self):
@@ -9340,77 +9538,757 @@ class OutstandingSheetCapTests(TestCase):
     def _print(self):
         return self.client.post(self.url, {"baths": "2"})
 
-    def _open_runs(self):
-        return list(
-            ProductionRun.objects.filter(submitted_at__isnull=True)
-            .order_by("-created_at", "-pk")
+    def _age(self, run, days):
+        ProductionRun.objects.filter(pk=run.pk).update(
+            created_at=timezone.now() - timedelta(days=days)
         )
 
     def test_printing_is_never_refused(self):
-        for _ in range(production.MAX_OPEN_RUNS + 3):
+        for _ in range(8):
             self._print()
 
-        self.assertEqual(
-            ProductionRun.objects.count(), production.MAX_OPEN_RUNS + 3
+        self.assertEqual(ProductionRun.objects.count(), 8)
+
+    def test_no_sheet_is_closed_behind_anyones_back(self):
+        for _ in range(8):
+            self._print()
+
+        self.assertEqual(production.closed_runs().count(), 0)
+        self.assertFalse(
+            ProductionRun.objects.exclude(note="").exists(),
+            "nothing should be writing a closing note on its own",
         )
 
-    def test_only_the_newest_stay_outstanding(self):
-        for _ in range(production.MAX_OPEN_RUNS + 2):
-            self._print()
+    def test_an_old_sheet_goes_overdue_rather_than_away(self):
+        run = ProductionRun.objects.get(pk=self._print_one().pk)
+        self._age(run, production.OVERDUE_AFTER.days + 1)
 
-        self.assertEqual(len(self._open_runs()), production.MAX_OPEN_RUNS)
+        self.assertIn(run, production.overdue_runs())
+        self.assertTrue(production.open_runs().filter(pk=run.pk).exists())
 
-    def test_it_is_the_oldest_that_go(self):
-        """Most recent five, not a random five."""
-        for _ in range(production.MAX_OPEN_RUNS + 2):
-            self._print()
+    def test_a_recent_sheet_is_counted_not_overdue(self):
+        run = self._print_one()
 
-        newest = list(
-            ProductionRun.objects.order_by("-created_at", "-pk")[:production.MAX_OPEN_RUNS]
-        )
-        self.assertEqual([r.pk for r in self._open_runs()], [r.pk for r in newest])
+        self.assertIn(run, production.counted_runs())
+        self.assertEqual(production.overdue_runs().count(), 0)
 
-    def test_a_retired_sheet_is_closed_not_deleted(self):
-        for _ in range(production.MAX_OPEN_RUNS + 1):
-            self._print()
+    def test_the_picker_names_an_overdue_sheet(self):
+        """Going overdue changes what gets asked for, so it cannot be
+        silent — a colorway would quietly start being dyed twice."""
+        run = self._print_one()
+        self._age(run, production.OVERDUE_AFTER.days + 1)
 
-        retired = ProductionRun.objects.exclude(submitted_at__isnull=True).get()
-        self.assertIn("Closed automatically", retired.note)
-        self.assertEqual(retired.done_count, 0)
+        response = self.client.get(self.url)
 
-    def test_retiring_moves_no_stock(self):
-        """A sheet nobody reported describes a session that didn't happen."""
-        for _ in range(production.MAX_OPEN_RUNS + 1):
-            self._print()
+        self.assertContains(response, "open longer than expected")
+        self.assertContains(response, f"Run {run.pk}")
 
+    def test_retiring_a_sheet_is_cancelling_what_is_left_on_it(self):
+        """There is no run-level retired flag, so closed cannot disagree
+        with the rows it is derived from."""
+        run = self._print_one()
+        for row in run.rows.all():
+            production.cancel_row(row)
+
+        run.refresh_from_db()
+        self.assertTrue(run.is_closed)
         self.assertEqual(InventoryLog.objects.count(), 0)
 
-    def test_one_tick_closes_a_sheet(self):
-        """Somebody is working from it, so the loop is closing — it doesn't
-        need to keep showing up as outstanding."""
+    def _print_one(self):
         self._print()
-        run = ProductionRun.objects.get()
-        self.client.post(
-            reverse("production_run", args=[run.token]),
-            {"done": [str(run.rows.first().pk)]},
-        )
+        return ProductionRun.objects.order_by("-pk").first()
 
-        self.assertEqual(self._open_runs(), [])
 
-    def test_a_closed_sheet_is_still_reachable_by_its_code(self):
-        """The QR is how you get back to it, and adding the rest later has
-        to keep working."""
-        self._print()
-        run = ProductionRun.objects.get()
-        rows = list(run.rows.all())
-        url = reverse("production_run", args=[run.token])
+class SheetStaysReachableTests(TestCase):
+    """A partly-reported sheet is still live, and still openable by its code."""
+
+    def setUp(self):
+        self.client.force_login(User.objects.create_user("staff", password="pw"))
+        make_bathable(make_recipe("Stormy Sea"), "Stormy Silk", on_hand=0, par=80, bath=4)
+        self.client.post(reverse("production_sheet_index"), {"baths": "2"})
+        self.run = ProductionRun.objects.get()
+
+    def test_a_part_reported_sheet_is_still_reachable_by_its_code(self):
+        rows = list(self.run.rows.all())
+        url = reverse("production_run", args=[self.run.token])
         self.client.post(url, {"done": [str(rows[0].pk)]})
 
         self.assertEqual(self.client.get(url).status_code, 200)
 
         self.client.post(url, {"done": [str(rows[1].pk)]})
-        run.refresh_from_db()
-        self.assertEqual(run.done_count, 2)
+        self.run.refresh_from_db()
+        self.assertEqual(self.run.accepted_count, 2)
+
+    def test_it_stays_on_the_working_list_until_every_bath_is_settled(self):
+        """It used to drop off on the first tick, which read one answered
+        bath as a finished session."""
+        rows = list(self.run.rows.all())
+        url = reverse("production_run", args=[self.run.token])
+        self.client.post(url, {"done": [str(rows[0].pk)]})
+
+        self.assertTrue(production.open_runs().filter(pk=self.run.pk).exists())
+
+        self.client.post(url, {"done": [str(rows[1].pk)]})
+
+        self.assertFalse(production.open_runs().filter(pk=self.run.pk).exists())
+
+
+
+class WorkSheetAndReportingSheetTests(TestCase):
+    """Three documents in one print, in the order the job happens.
+
+    The reason they are separate is the one-to-three-day process: the sheet
+    marked up mid-session and the sheet photographed at the end want opposite
+    things, and the working copy carrying nothing scannable is what stops it
+    being read as a report of baths that are still on a drying line.
+    """
+
+    def setUp(self):
+        self.client.force_login(User.objects.create_user("staff", password="pw"))
+        self.product = make_bathable(
+            make_recipe("Stormy Sea"), "Stormy Silk", on_hand=0, par=8, bath=4
+        )
+        self.run = ProductionRun.objects.create()
+        self.rows = [
+            ProductionRunRow.objects.create(
+                run=self.run, finished_product=self.product, order=i, quantity=4
+            )
+            for i in (1, 2)
+        ]
+
+    def _pdf(self):
+        return production.render_sheet(self.run, "https://x.test/report/")
+
+    def _text(self):
+        return _pdf_text(self._pdf())
+
+    def test_it_renders(self):
+        self.assertTrue(self._pdf().startswith(b"%PDF"))
+
+    def test_the_working_copy_says_what_it_is(self):
+        self.assertIn("WORKING COPY", self._text())
+
+    def test_the_working_copy_names_no_stages(self):
+        """The boxes are blank, and that is the decision.
+
+        Printing DYED / DRIED / TAGGED / BAGGED across the top would be the
+        app telling somebody how to do a job it doesn't do — the stages are
+        hers, they vary with what is in the pot, and a printed name is an
+        instruction whether or not it was meant as one. There is a ruled line
+        over each column instead, which is an invitation.
+        """
+        # Scoped to the working copy's own rows. "Bagged" appears legitimately
+        # on the *reporting* sheet, where it says what the tick box claims —
+        # that is the acceptance wording, not a stage caption.
+        work_page = (
+            self._text().upper()
+            .split("DO NOT PHOTOGRAPH THIS PAGE")[1]
+            .split("PRODUCTION SHEET")[0]
+        )
+
+        for word in ("DYED", "DRIED", "TAGGED", "BAGGED"):
+            self.assertNotIn(word, work_page)
+        self.assertFalse(
+            hasattr(production, "WORK_STAGES"),
+            "the named stage list is gone — the count is what remains",
+        )
+
+    def test_the_working_copy_still_has_boxes_to_mark(self):
+        """A column of boxes is the useful part — it is how twenty baths at
+        different points across three days get held on one page."""
+        self.assertEqual(production.WORK_BOXES, 4)
+        self.assertEqual(
+            len(production._stage_columns(612)), production.WORK_BOXES
+        )
+
+    def test_a_reprint_does_not_read_the_run_state_back(self):
+        """Information flows paper → app.
+
+        A reprint mid-session has to be the same document as the first print.
+        The moment a PDF starts hiding rows that have come back, two sheets
+        for one run disagree about how many baths are on it — and the one
+        that disagrees is the one already in somebody's hand.
+        """
+        before = self._text().count("Stormy Sea")
+        production.apply_row(self.rows[0])
+        self.rows[1].refresh_from_db()
+        production.cancel_row(self.rows[1])
+
+        self.assertEqual(self._text().count("Stormy Sea"), before)
+
+    def test_a_sheet_with_every_bath_settled_still_prints_them_all(self):
+        production.apply_row(self.rows[0])
+        production.apply_row(self.rows[1])
+
+        self.assertTrue(self._pdf().startswith(b"%PDF"))
+        self.assertIn("Stormy Sea", self._text())
+
+    def test_the_pdf_route_serves_it(self):
+        response = self.client.get(
+            reverse("production_sheet_pdf", args=[self.run.pk])
+        )
+
+        self.assertEqual(response["Content-Type"], "application/pdf")
+        self.assertTrue(response.content.startswith(b"%PDF"))
+
+
+class FancyAtProductionTests(TestCase):
+    """Routing a bath's output to fancy at the moment it is made.
+
+    The conversion page records the other route — a plain scarf already in
+    stock that had line work added later — which has to be noticed and
+    leaves the plain side overstated until it is. Deciding it here is better
+    evidence and nearly free: the scarf is never counted as plain at all.
+    """
+
+    def setUp(self):
+        self.recipe = make_recipe("Stormy Sea")
+        self.product = make_bathable(
+            self.recipe, "Half Circle Veil", on_hand=0, par=8, bath=5
+        )
+        self.plain_blank = self.product.raw_product
+        # The fancy counterpart: same colorway, a blank no bath makes.
+        self.fancy_blank = RawProduct.objects.create(
+            name="Fancy Half Circle Veil",
+            category=self.plain_blank.category,
+            price=self.plain_blank.price,
+            made_in_a_dye_bath=False,
+            number_per_dye_bath=5,
+        )
+        self.fancy_product = FinishedProduct.objects.create(
+            name="Fancy Half Circle Veil - Stormy Sea",
+            raw_product=self.fancy_blank,
+            recipe=self.recipe,
+            price=self.product.price,
+            par=0,
+        )
+        self.plain_blank.fancy_counterpart = self.fancy_blank
+        self.plain_blank.save(update_fields=["fancy_counterpart"])
+
+        self.run = ProductionRun.objects.create()
+        self.row = ProductionRunRow.objects.create(
+            run=self.run, finished_product=self.product, order=1, quantity=5
+        )
+        self.url = reverse("production_run", args=[self.run.token])
+
+    def _report(self, **extra):
+        data = {"done": [str(self.row.pk)]}
+        data.update(extra)
+        return self.client.post(self.url, data)
+
+    def test_the_counterpart_is_found_one_to_one(self):
+        self.assertEqual(self.row.fancy_target, self.fancy_product)
+
+    def test_four_plain_and_one_fancy(self):
+        """The worked case: a bath of five, one delivered fancy."""
+        self._report(**{
+            f"yielded-{self.row.pk}": "5", f"fancy-{self.row.pk}": "1",
+        })
+
+        self.product.refresh_from_db()
+        self.fancy_product.refresh_from_db()
+        self.assertEqual(self.product.number_on_hand, 4)
+        self.assertEqual(self.fancy_product.number_on_hand, 1)
+
+    def test_the_blanks_are_consumed_the_same_either_way(self):
+        """A fancy veil is a plain scarf with line work, so the bath still
+        ate five blanks off the shelf."""
+        self._report(**{
+            f"yielded-{self.row.pk}": "5", f"fancy-{self.row.pk}": "1",
+        })
+
+        self.plain_blank.refresh_from_db()
+        self.assertEqual(self.plain_blank.number_on_hand, 95)
+
+    def test_fancy_is_a_subset_so_nothing_reads_as_lost(self):
+        self._report(**{
+            f"yielded-{self.row.pk}": "5", f"fancy-{self.row.pk}": "1",
+        })
+
+        self.row.refresh_from_db()
+        self.assertEqual(self.row.yielded, 5)
+        self.assertEqual(self.row.fancy_yield, 1)
+        self.assertEqual(self.row.loss, 0)
+
+    def test_a_short_bath_and_a_fancy_one_are_separate_questions(self):
+        """Four of five came out, and one of those four is fancy."""
+        self._report(**{
+            f"yielded-{self.row.pk}": "4", f"fancy-{self.row.pk}": "1",
+        })
+
+        self.row.refresh_from_db()
+        self.product.refresh_from_db()
+        self.fancy_product.refresh_from_db()
+        self.assertEqual(self.row.loss, 1)
+        self.assertEqual(self.product.number_on_hand, 3)
+        self.assertEqual(self.fancy_product.number_on_hand, 1)
+
+    def test_fancy_cannot_exceed_what_came_out(self):
+        self._report(**{
+            f"yielded-{self.row.pk}": "2", f"fancy-{self.row.pk}": "5",
+        })
+
+        self.row.refresh_from_db()
+        self.fancy_product.refresh_from_db()
+        self.assertEqual(self.row.fancy_yield, 2)
+        self.assertEqual(self.fancy_product.number_on_hand, 2)
+
+    def test_a_whole_bath_can_go_out_fancy(self):
+        """And the plain log is still written, at zero, because it is what
+        `applied_log` points at and so what stops a second submission."""
+        self._report(**{
+            f"yielded-{self.row.pk}": "5", f"fancy-{self.row.pk}": "5",
+        })
+
+        self.row.refresh_from_db()
+        self.product.refresh_from_db()
+        self.assertTrue(self.row.is_accepted)
+        self.assertEqual(self.product.number_on_hand, 0)
+        self.assertEqual(
+            InventoryLog.objects.filter(finished_product=self.product).count(), 1
+        )
+
+    def test_the_fancy_units_are_production_not_a_conversion(self):
+        """Nothing was converted — this scarf was never plain."""
+        self._report(**{
+            f"yielded-{self.row.pk}": "5", f"fancy-{self.row.pk}": "1",
+        })
+
+        log = InventoryLog.objects.get(finished_product=self.fancy_product)
+        self.assertEqual(log.log_type, InventoryLog.PRODUCTION)
+        self.assertEqual(log.source, InventoryLog.SOURCE_PRODUCTION_SHEET)
+        self.assertEqual(log.quantity, 1)
+
+    def test_reporting_twice_routes_it_once(self):
+        self._report(**{
+            f"yielded-{self.row.pk}": "5", f"fancy-{self.row.pk}": "1",
+        })
+        self._report(**{
+            f"yielded-{self.row.pk}": "5", f"fancy-{self.row.pk}": "1",
+        })
+
+        self.fancy_product.refresh_from_db()
+        self.assertEqual(self.fancy_product.number_on_hand, 1)
+
+    def test_no_fancy_box_where_there_is_no_counterpart(self):
+        """Every yarn row, and most silk — and nothing had to check for
+        silk to get there."""
+        yarn = make_bathable(
+            make_recipe("Aegean"), "Heavenly Yarn", on_hand=0, par=8, bath=4
+        )
+        row = ProductionRunRow.objects.create(
+            run=self.run, finished_product=yarn, order=2, quantity=4
+        )
+
+        self.assertIsNone(row.fancy_target)
+
+        response = self.client.get(self.url)
+        self.assertNotContains(response, f'name="fancy-{row.pk}"')
+
+    def test_a_stray_fancy_count_on_such_a_row_is_ignored(self):
+        """There is nowhere for it to go, so it must not silently vanish
+        into the plain count either."""
+        yarn = make_bathable(
+            make_recipe("Aegean"), "Heavenly Yarn", on_hand=0, par=8, bath=4
+        )
+        row = ProductionRunRow.objects.create(
+            run=self.run, finished_product=yarn, order=2, quantity=4
+        )
+
+        self.client.post(self.url, {
+            "done": [str(row.pk)], f"yielded-{row.pk}": "4", f"fancy-{row.pk}": "2",
+        })
+
+        row.refresh_from_db()
+        yarn.refresh_from_db()
+        self.assertEqual(row.fancy_yield, 0)
+        self.assertEqual(yarn.number_on_hand, 4)
+
+    def test_the_fancy_box_is_offered_where_there_is_one(self):
+        response = self.client.get(self.url)
+
+        self.assertContains(response, f'name="fancy-{self.row.pk}"')
+        self.assertContains(response, "Fancy Half Circle Veil")
+
+    def test_a_plain_report_still_works_untouched(self):
+        """No fancy field posted at all — the overwhelmingly common case."""
+        self._report()
+
+        self.row.refresh_from_db()
+        self.product.refresh_from_db()
+        self.assertEqual(self.row.fancy_yield, 0)
+        self.assertEqual(self.product.number_on_hand, 5)
+
+
+class HandPickedSheetTests(TestCase):
+    """Creating a run from colorways somebody chose, not from par.
+
+    Par is not the only reason to dye — an order taken at the stall, a colour
+    worth trying, room beside a pot already being heated. And a planner that
+    can only answer "what is below par" cannot plan a session at all when
+    nothing is short, which is exactly when there is time for one.
+    """
+
+    def setUp(self):
+        self.client.force_login(User.objects.create_user("staff", password="pw"))
+        # Deliberately *above* par: no shortage query would ever offer these.
+        self.stormy = make_bathable(
+            make_recipe("Stormy Sea"), "Stormy Silk", on_hand=40, par=8, bath=4
+        )
+        self.ember = make_bathable(
+            make_recipe("Ember"), "Ember Silk", on_hand=40, par=8, bath=5
+        )
+        self.url = reverse("production_sheet_index")
+
+    def _pick(self, *pairs, **extra):
+        data = {"dataset": "items", "items": [f"{p.pk}:{n}" for p, n in pairs]}
+        data.update(extra)
+        return data
+
+    def test_the_shortage_planner_offers_nothing_here(self):
+        """The premise: everything is above par."""
+        self.assertEqual(production.plan_baths(10), [])
+
+    def test_a_sheet_can_be_printed_when_nothing_is_short(self):
+        response = self.client.post(self.url, self._pick((self.stormy, 2)))
+
+        run = ProductionRun.objects.get()
+        self.assertEqual(run.rows.count(), 2)
+        self.assertRedirects(
+            response, reverse("production_run_detail", args=[run.pk])
+        )
+
+    def test_the_count_is_baths_not_scarves(self):
+        """Two baths of a blank yielding four is two rows of four, because a
+        row is a bath and a bath is what somebody physically does."""
+        self.client.post(self.url, self._pick((self.stormy, 2)))
+
+        rows = list(ProductionRun.objects.get().rows.all())
+        self.assertEqual([r.quantity for r in rows], [4, 4])
+
+    def test_baths_of_one_colorway_stay_together(self):
+        """One mix and one pot serve several loads."""
+        self.client.post(
+            self.url, self._pick((self.stormy, 2), (self.ember, 1), (self.stormy, 1))
+        )
+
+        names = [
+            r.finished_product.recipe.name
+            for r in ProductionRun.objects.get().rows.all()
+        ]
+        self.assertEqual(names, ["Stormy Sea"] * 3 + ["Ember"])
+
+    def test_the_preview_shows_what_was_picked(self):
+        response = self.client.get(self.url, self._pick((self.ember, 2)))
+
+        self.assertContains(response, "Ember")
+        self.assertContains(response, "2 baths")
+
+    def test_a_pick_is_a_link_somebody_can_send(self):
+        """State in the query string, like every other picker here."""
+        response = self.client.get(
+            f"{self.url}?dataset=items&items={self.stormy.pk}:3"
+        )
+
+        self.assertContains(response, "3 baths")
+
+    def test_an_empty_pick_is_refused_rather_than_printing_nothing(self):
+        self.client.post(self.url, {"dataset": "items"})
+
+        self.assertEqual(ProductionRun.objects.count(), 0)
+
+    def test_too_many_baths_of_one_colorway_is_refused(self):
+        """A typo guard, not a policy — twenty of one colour is already an
+        unusual day."""
+        self.client.post(
+            self.url,
+            self._pick((self.stormy, PickedBathsField.MAX_PER_ITEM + 1)),
+        )
+
+        self.assertEqual(ProductionRun.objects.count(), 0)
+
+    def test_more_baths_than_a_session_holds_is_refused(self):
+        """Distinct from the per-colorway cap: each of these is individually
+        fine and the sheet as a whole is not."""
+        picks = [(self.stormy, PickedBathsField.MAX_PER_ITEM),
+                 (self.ember, PickedBathsField.MAX_PER_ITEM)]
+        for name in ("Rosy", "Slate"):
+            picks.append((
+                make_bathable(make_recipe(name), f"{name} Silk",
+                              on_hand=40, par=8, bath=4),
+                PickedBathsField.MAX_PER_ITEM,
+            ))
+        total = sum(n for _, n in picks)
+        self.assertGreater(total, ProductionSheetForm.MAX_BATHS)
+
+        self.client.post(self.url, self._pick(*picks))
+
+        self.assertEqual(ProductionRun.objects.count(), 0)
+
+    def test_the_two_caps_are_different_rules(self):
+        """Guarding the test above: if MAX_PER_ITEM ever reaches MAX_BATHS,
+        the total cap becomes unreachable and stops being tested."""
+        self.assertLess(
+            PickedBathsField.MAX_PER_ITEM, ProductionSheetForm.MAX_BATHS
+        )
+
+    def test_an_undyed_passthrough_cannot_be_picked(self):
+        """You order those, you don't dye them."""
+        passthrough = make_bathable(
+            None, "Undyed Skein", on_hand=5, par=8, bath=4
+        )
+
+        self.client.post(self.url, self._pick((passthrough, 1)))
+
+        self.assertEqual(ProductionRun.objects.count(), 0)
+
+    def test_nothing_about_the_shortage_path_changed(self):
+        """Every bookmark and every test predating the dataset field omits
+        it, and must still ask the shortage question."""
+        short = make_bathable(
+            make_recipe("Rosy"), "Rosy Silk", on_hand=0, par=8, bath=4
+        )
+
+        self.client.post(self.url, {"baths": "2"})
+
+        rows = list(ProductionRun.objects.get().rows.all())
+        self.assertTrue(all(r.finished_product == short for r in rows))
+
+    def test_the_search_offers_a_colorway_that_is_not_short(self):
+        response = self.client.get(
+            reverse("product_search"), {"q": "Ember", "mode": "plan"}
+        )
+
+        self.assertContains(response, "Ember")
+        self.assertContains(response, f'data-pk="{self.ember.pk}"')
+
+    def test_the_search_greys_out_what_is_not_made_in_a_bath(self):
+        """Shown rather than hidden: dropping it silently means somebody
+        searches, doesn't see it, and never learns why."""
+        make_bathable(None, "Undyed Skein", on_hand=5, par=8, bath=4)
+
+        response = self.client.get(
+            reverse("product_search"), {"q": "Undyed", "mode": "plan"}
+        )
+
+        self.assertContains(response, "disabled")
+        self.assertContains(response, "ordered, not dyed")
+
+    def test_picking_is_not_filtered_on_what_is_already_in_flight(self):
+        """`plan_baths` subtracts live sheets; a pick is somebody deciding,
+        and asking for it twice may be exactly what was meant."""
+        self.client.post(self.url, self._pick((self.stormy, 1)))
+        self.client.post(self.url, self._pick((self.stormy, 1)))
+
+        self.assertEqual(ProductionRun.objects.count(), 2)
+
+
+class SheetEditorTests(TestCase):
+    """A plan somebody can edit.
+
+    The planner only knows about shortages against par, and there are real
+    reasons to dye something that isn't one — an order taken at the stall,
+    room left in a pot already being heated. A plan that can't be edited gets
+    worked around on paper, and then the paper and the app disagree about
+    what the session was.
+    """
+
+    def setUp(self):
+        self.client.force_login(User.objects.create_user("staff", password="pw"))
+        self.recipe = make_recipe("Stormy Sea")
+        self.product = make_bathable(
+            self.recipe, "Stormy Silk", on_hand=0, par=8, bath=4
+        )
+        self.other = make_bathable(
+            make_recipe("Ember"), "Ember Silk", on_hand=20, par=8, bath=5
+        )
+        self.run = ProductionRun.objects.create()
+        self.row = ProductionRunRow.objects.create(
+            run=self.run, finished_product=self.product, order=1, quantity=4
+        )
+
+    def test_a_bath_can_be_added_that_the_planner_would_never_pick(self):
+        """`self.other` is above par, so no shortage query would offer it."""
+        self.client.post(
+            reverse("production_run_add_row", args=[self.run.pk]),
+            {"product": self.other.pk},
+        )
+
+        self.assertEqual(self.run.rows.count(), 2)
+        added = self.run.rows.order_by("-order").first()
+        self.assertEqual(added.finished_product, self.other)
+
+    def test_an_added_bath_takes_the_bath_size_as_its_quantity(self):
+        self.client.post(
+            reverse("production_run_add_row", args=[self.run.pk]),
+            {"product": self.other.pk},
+        )
+
+        self.assertEqual(self.run.rows.order_by("-order").first().quantity, 5)
+
+    def test_an_added_bath_is_appended_not_slotted_in(self):
+        """`order` is the position on a printed sheet, so renumbering would
+        make an existing printout disagree about which row is which."""
+        self.client.post(
+            reverse("production_run_add_row", args=[self.run.pk]),
+            {"product": self.other.pk},
+        )
+
+        self.assertEqual(
+            [r.order for r in self.run.rows.order_by("order")], [1, 2]
+        )
+
+    def test_striking_a_row_cancels_it_rather_than_deleting_it(self):
+        """The run is a record — a deleted row would leave a line on a
+        printed sheet the app has never heard of."""
+        self.client.post(
+            reverse("production_run_strike_row", args=[self.run.pk, self.row.pk])
+        )
+
+        self.row.refresh_from_db()
+        self.assertTrue(self.row.is_cancelled)
+        self.assertEqual(self.run.rows.count(), 1)
+
+    def test_striking_moves_no_stock(self):
+        self.client.post(
+            reverse("production_run_strike_row", args=[self.run.pk, self.row.pk])
+        )
+
+        self.product.refresh_from_db()
+        self.product.raw_product.refresh_from_db()
+        self.assertEqual(self.product.number_on_hand, 0)
+        self.assertEqual(self.product.raw_product.number_on_hand, 100)
+        self.assertEqual(InventoryLog.objects.count(), 0)
+
+    def test_an_accepted_row_cannot_be_struck(self):
+        production.apply_row(self.row)
+
+        self.client.post(
+            reverse("production_run_strike_row", args=[self.run.pk, self.row.pk])
+        )
+
+        self.row.refresh_from_db()
+        self.assertIsNone(self.row.cancelled_at)
+
+    def test_a_row_from_another_sheet_cannot_be_struck(self):
+        other_run = ProductionRun.objects.create()
+        stranger = ProductionRunRow.objects.create(
+            run=other_run, finished_product=self.product, order=1, quantity=4
+        )
+
+        response = self.client.post(
+            reverse("production_run_strike_row", args=[self.run.pk, stranger.pk])
+        )
+
+        self.assertEqual(response.status_code, 404)
+        stranger.refresh_from_db()
+        self.assertIsNone(stranger.cancelled_at)
+
+    def test_the_search_renders_inline_with_no_script(self):
+        """Same partial the fragment returns, so the two cannot drift into
+        the swapped copy posting somewhere the inline one doesn't."""
+        response = self.client.get(
+            reverse("production_run_detail", args=[self.run.pk]), {"q": "Ember"}
+        )
+
+        self.assertContains(response, "Ember")
+        self.assertContains(
+            response, reverse("production_run_add_row", args=[self.run.pk])
+        )
+
+    def test_the_fragment_serves_the_same_rows(self):
+        response = self.client.get(
+            reverse("product_search"),
+            {"q": "Ember", "mode": "sheet", "run": self.run.pk},
+        )
+
+        self.assertContains(response, "Ember")
+        self.assertContains(
+            response, reverse("production_run_add_row", args=[self.run.pk])
+        )
+
+    def test_editing_needs_a_login(self):
+        self.client.logout()
+
+        self.client.post(
+            reverse("production_run_add_row", args=[self.run.pk]),
+            {"product": self.other.pk},
+        )
+
+        self.assertEqual(self.run.rows.count(), 1)
+
+
+class CancelAllButNeverAcceptAllTests(TestCase):
+    """Direction decides which bulk actions are allowed.
+
+    Cancelling gives a claim back: nothing moves, and the colorways return to
+    the next sheet. Accepting puts stock on the books for piles nobody
+    looked at, and every one it gets wrong is then wrong on the pegs, at the
+    close and in Square. So one of them is a button and the other has to cost
+    a mark per row — the same bargain the restock board makes by having no
+    "check all".
+    """
+
+    def setUp(self):
+        self.client.force_login(User.objects.create_user("staff", password="pw"))
+        self.recipe = make_recipe("Stormy Sea")
+        self.product = make_bathable(
+            self.recipe, "Stormy Silk", on_hand=0, par=8, bath=4
+        )
+        self.run = ProductionRun.objects.create()
+        self.rows = [
+            ProductionRunRow.objects.create(
+                run=self.run, finished_product=self.product, order=i, quantity=4
+            )
+            for i in (1, 2)
+        ]
+        self.url = reverse("production_run_cancel_remaining", args=[self.run.pk])
+
+    def test_it_cancels_what_nobody_answered_for(self):
+        self.client.post(self.url)
+
+        self.run.refresh_from_db()
+        self.assertEqual(self.run.cancelled_count, 2)
+        self.assertTrue(self.run.is_closed)
+
+    def test_it_moves_no_stock(self):
+        self.client.post(self.url)
+
+        self.product.refresh_from_db()
+        self.product.raw_product.refresh_from_db()
+        self.assertEqual(self.product.number_on_hand, 0)
+        self.assertEqual(self.product.raw_product.number_on_hand, 100)
+        self.assertEqual(InventoryLog.objects.count(), 0)
+
+    def test_it_leaves_an_accepted_bath_alone(self):
+        """Stock has moved on that row; taking it back is an adjustment."""
+        production.apply_row(self.rows[0])
+
+        self.client.post(self.url)
+
+        self.rows[0].refresh_from_db()
+        self.assertTrue(self.rows[0].is_accepted)
+        self.assertIsNone(self.rows[0].cancelled_at)
+
+    def test_the_cancelled_colorway_is_asked_for_again(self):
+        self.client.post(self.url)
+
+        self.assertEqual(len(production.plan_baths(10)), 2)
+
+    def test_there_is_no_accept_all(self):
+        """Pinned rather than merely absent, because it is exactly the
+        convenience somebody reasonable asks for after a long session."""
+        with self.assertRaises(NoReverseMatch):
+            reverse("production_run_accept_remaining", args=[self.run.pk])
+
+    def test_it_needs_a_login(self):
+        self.client.logout()
+
+        response = self.client.post(self.url)
+
+        self.assertEqual(response.status_code, 302)
+        self.run.refresh_from_db()
+        self.assertEqual(self.run.cancelled_count, 0)
 
 
 def sheet_photo(rows, filled=(), ink=(190, 30, 40), token=None, scale=5.0,
@@ -10097,33 +10975,43 @@ class ProductionRunAdminTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Silk Infinity")
 
-    def test_an_unreported_run_deletes_cleanly(self):
+    def test_a_run_does_not_delete(self):
+        """It used to, on the reasoning that a run was scaffolding and the
+        `InventoryLog` was the record.
+
+        That held while a bath was an atomic event. It stopped holding once
+        the sheet had to carry a one-to-three-day session: the ledger only
+        records what *entered* inventory, so a bath that was cancelled and a
+        bath that was never printed leave the same trace there — none. The
+        rows are the only account of what the session was asked to do and
+        what it found.
+        """
         self.client.post(
             reverse("admin:scarves_productionrun_delete", args=[self.run.pk]),
             {"post": "yes"},
         )
 
-        self.assertEqual(ProductionRun.objects.count(), 0)
-        self.assertEqual(ProductionRunRow.objects.count(), 0)
+        self.assertEqual(ProductionRun.objects.count(), 1)
+        self.assertEqual(ProductionRunRow.objects.count(), 2)
 
-    def test_deleting_a_run_does_not_un_move_stock(self):
-        """Those baths really were dyed. What goes is the trail from the
-        sheet to the movement, not the movement."""
-        production.apply_row(self.rows[0])
-        self.product.refresh_from_db()
-        self.assertEqual(self.product.number_on_hand, 4)
+    def test_a_run_cannot_be_typed_in_by_hand(self):
+        """One would have a token on no paper and rows nobody was asked
+        to dye."""
+        response = self.client.get(reverse("admin:scarves_productionrun_add"))
 
-        self.client.post(
-            reverse("admin:scarves_productionrun_delete", args=[self.run.pk]),
-            {"post": "yes"},
-        )
+        self.assertEqual(response.status_code, 403)
 
-        self.product.refresh_from_db()
-        self.assertEqual(self.product.number_on_hand, 4)
-        self.assertEqual(InventoryLog.objects.count(), 1)
+    def test_retiring_a_sheet_is_cancelling_it_not_deleting_it(self):
+        for row in self.run.rows.all():
+            production.cancel_row(row)
+
+        self.run.refresh_from_db()
+        self.assertTrue(self.run.is_closed)
+        self.assertEqual(self.run.rows.count(), 2)
+        self.assertEqual(InventoryLog.objects.count(), 0)
 
     def test_the_list_says_how_much_was_reported(self):
-        """A run showing 0 reported has moved nothing and is free to go."""
+        """How far a session got, at a glance, across every sheet."""
         production.apply_row(self.rows[0])
 
         response = self.client.get(reverse("admin:scarves_productionrun_changelist"))

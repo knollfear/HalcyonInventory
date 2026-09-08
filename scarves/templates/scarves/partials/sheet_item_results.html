@@ -1,0 +1,30 @@
+{% comment %}
+Type-ahead results for the sheet editor, and the third click behaviour on the
+one `product_search` endpoint — the upload page assigns a photo, the label
+page adds to a client-side list, and here a result is a form that posts
+straight onto the run.
+
+A form per result rather than a JavaScript handler, because this has to work
+with the script blocked: the search itself degrades to an ordinary GET, and
+what it renders has to be clickable when it lands. Same partial either way,
+so the swapped copy cannot start posting somewhere the inline one doesn't.
+
+No SKU filter here, unlike the label list. A bath does not need a barcode to
+be dyed — the sticker is printed afterwards, and refusing the row would be
+the sheet enforcing a rule that belongs to the label run.
+{% endcomment %}
+{% for p in products %}
+  <form method="post"
+        action="{% url 'production_run_add_row' run_pk %}"
+        class="addrow">
+    {% csrf_token %}
+    <input type="hidden" name="product" value="{{ p.id }}">
+    <button type="submit" class="result">
+      <span class="who">{{ p.name }}</span>
+      <span class="muted">{{ p.sku|default:"no SKU" }}</span>
+      <span class="qty">+{{ p.bath_size }}</span>
+    </button>
+  </form>
+{% empty %}
+  <div class="muted">No matching products.</div>
+{% endfor %}

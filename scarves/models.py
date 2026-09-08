@@ -248,6 +248,30 @@ class RawProduct(models.Model):
             "dyed at all, a fancy veil was dyed and then worked on."
         ),
     )
+    fancy_counterpart = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="plain_counterparts",
+        limit_choices_to={"made_in_a_dye_bath": False},
+        help_text=(
+            "The fancy version of this blank, if it has one. A half circle "
+            "veil becomes a fancy half circle veil and nothing else — the "
+            "pairing is one to one, because a veil cannot become a fancy "
+            "shawl.\n\n"
+            "Set on the *plain* blank, pointing at the fancy one. What it "
+            "buys is routing at production time: a bath of five can be "
+            "reported as four plain and one fancy, so a fancy veil is "
+            "recorded as it is made rather than reconstructed later from a "
+            "conversion.\n\n"
+            "Blank means this has no fancy version, which is every yarn and "
+            "most silk. That is what keeps fancy a silk-only concern without "
+            "anything having to check for silk — a category test would break "
+            "the day a fancy shawl exists, the same way it would have for "
+            "'made in a dye bath'."
+        ),
+    )
     order_url = models.URLField(
         blank=True,
         help_text="Where you buy this from (supplier URL).",
@@ -1485,6 +1509,22 @@ class ProductionRun(models.Model):
     is genuinely one session's work. The token in that URL is what authorises
     the return — the same bargain as the other `secret/` pages, except scoped
     to a single sheet rather than standing open forever.
+
+    **A run is a record, not scaffolding.** It used to be the latter — the
+    paper was a work aid and the `InventoryLog` was the only thing that
+    survived it — and that was right while a bath was modelled as one atomic
+    event. It stopped being right once the sheet had to carry a session that
+    takes one to three days: the plan gets edited, baths get called off, and
+    a lot occasionally comes out of the pot ruined. None of those are
+    answerable from the ledger, because the ledger only ever says what
+    *entered* inventory. So the rows are kept, nothing here deletes, and the
+    admin is read-only — the same bargain `CloseRun` makes for the same
+    reason.
+
+    This is also the surface a bill will eventually hang off, which is the
+    other reason the rows have to mean something on their own. Do not build
+    that on `submitted_by`: it is filled in from a remembered-PIN cookie as a
+    record of who replied, and it is not a claim about who did the work.
     """
 
     token = models.CharField(
@@ -1502,9 +1542,13 @@ class ProductionRun(models.Model):
         null=True,
         blank=True,
         help_text=(
-            "When the crew first reported back. Null means this sheet is "
-            "still out — which has to be visible, because a session nobody "
-            "reported looks exactly like a session that never happened."
+            "When the crew first reported back. A record of the first reply "
+            "and nothing more — it decides no state on this sheet.\n\n"
+            "It used to mean 'closed', on the reasoning that one tick proved "
+            "somebody was working from the paper. That is true and it is not "
+            "the same question: dyeing takes one to three days, so a sheet "
+            "answered once is usually a sheet with most of its baths still "
+            "wet. What is open, overdue or finished is read off the rows."
         ),
     )
     submitted_by = models.ForeignKey(
@@ -1547,13 +1591,75 @@ class ProductionRun(models.Model):
     def __str__(self):
         return f"Production run #{self.pk} ({self.rows.count()} baths)"
 
-    @property
-    def is_open(self) -> bool:
-        return self.submitted_at is None
+    # --- what state this sheet is in ---------------------------------------
+    #
+    # All four questions are answered off the *rows*, never off
+    # `submitted_at`. A sheet used to be "open" until the first tick came
+    # back, which made one tick out of twenty look like a finished session —
+    # and since dyeing takes one to three days, that is exactly the window
+    # the app was wrong in. The rows know how much of the work has actually
+    # been accepted; the timestamp only knows that somebody once replied.
+    #
+    # `production.run_states` is the same four questions asked of a queryset,
+    # and `production.OVERDUE_AFTER` is the one copy of the age bound.
 
     @property
-    def done_count(self) -> int:
-        return sum(1 for row in self.rows.all() if row.done_at is not None)
+    def accepted_count(self) -> int:
+        return sum(1 for row in self.rows.all() if row.is_accepted)
+
+    @property
+    def cancelled_count(self) -> int:
+        return sum(1 for row in self.rows.all() if row.is_cancelled)
+
+    @property
+    def pending_count(self) -> int:
+        return sum(1 for row in self.rows.all() if row.is_pending)
+
+    @property
+    def is_open(self) -> bool:
+        """Something on this sheet is still waiting to be settled."""
+        return self.pending_count > 0
+
+    @property
+    def is_closed(self) -> bool:
+        """Nothing pending — every row was either accepted or cancelled.
+
+        There is no run-level "retired" flag to go with this, on purpose.
+        Retiring a sheet *is* cancelling what is left on it, so the closed
+        state has exactly one meaning and cannot disagree with its own rows.
+        """
+        return not self.is_open
+
+    @property
+    def is_unreported(self) -> bool:
+        """Nothing on this sheet has been accepted at all.
+
+        Distinct from `is_open`, which a mostly-finished sheet also satisfies.
+        This is the one that means the paper has not come back.
+        """
+        return self.accepted_count == 0
+
+    @property
+    def is_overdue(self) -> bool:
+        """Open for longer than a dyeing session plausibly takes.
+
+        The moment a sheet stops claiming the planner it has to become
+        visible, or a colorway quietly stops being asked for — see
+        `production.OVERDUE_AFTER`.
+        """
+        from . import production
+
+        return self.is_open and self.created_at < timezone.now() - production.OVERDUE_AFTER
+
+    @property
+    def counts_against_the_plan(self) -> bool:
+        """Open, and recent enough that its baths are still expected.
+
+        The only one of the four that changes behaviour: these are the sheets
+        `production.candidates()` subtracts, so a second sheet does not
+        re-ask for baths the first one is already out getting dyed.
+        """
+        return self.is_open and not self.is_overdue
 
 
 class ProductionRunRow(models.Model):
@@ -1582,10 +1688,52 @@ class ProductionRunRow(models.Model):
     quantity = models.PositiveSmallIntegerField(
         help_text="Units this bath yields, as printed on the sheet.",
     )
-    done_at = models.DateTimeField(
+    yielded = models.PositiveSmallIntegerField(
         null=True,
         blank=True,
-        help_text="When this bath was reported done. Null means it wasn't.",
+        help_text=(
+            "How many units this bath actually produced, once somebody "
+            "accepted it into inventory. Null means nobody has yet.\n\n"
+            "Zero is a real answer and is not the same as null: it means the "
+            "bath ran and the whole lot was binned, so the blanks really were "
+            "consumed. A cancelled row is the other thing — the bath never "
+            "happened and nothing was used."
+        ),
+    )
+    fancy_yield = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        help_text=(
+            "How many of `yielded` were finished as fancy rather than plain. "
+            "A subset, never an addition: five came out of a bath of five and "
+            "one of them is fancy, so `yielded` is 5 and this is 1.\n\n"
+            "Recorded here as well as in the ledger because this is the only "
+            "place that says a fancy veil was made *as* one. The conversion "
+            "page answers the other route — a plain scarf that had line work "
+            "added later — and a question about fancy supply has to read "
+            "both."
+        ),
+    )
+    accepted_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=(
+            "When this bath was accepted into inventory — dyed, dried, "
+            "tagged, bagged and ready for the booth. Not when it went into "
+            "the pot: dyeing takes one to three days and the stock does not "
+            "exist for any of them."
+        ),
+    )
+    cancelled_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=(
+            "When this bath was called off. The bath never ran, so no blanks "
+            "were consumed and the colorway goes back to being asked for on "
+            "the next sheet.\n\n"
+            "Deliberately not the same as accepting a yield of zero, which "
+            "means the bath ran and the lot was lost."
+        ),
     )
     applied_log = models.ForeignKey(
         InventoryLog,
@@ -1608,9 +1756,55 @@ class ProductionRunRow(models.Model):
     def __str__(self):
         return f"{self.finished_product.sku or self.finished_product.name} x{self.quantity}"
 
+    # A row ends in exactly one of three states, and `is_pending` is the
+    # honest fourth: nobody has said anything about it yet. A blank box is a
+    # complete statement — "not accepted yet" — which is what lets a sheet be
+    # five-of-twenty finished rather than fifteen-baths lossy.
+
     @property
-    def is_applied(self) -> bool:
+    def is_accepted(self) -> bool:
+        """Accepted into inventory, at whatever `yielded` says — including 0.
+
+        Keyed on the log rather than on `accepted_at`, because the log is
+        what stops a bath being counted twice and there must not be a second
+        answer to "has this row moved anything".
+        """
         return self.applied_log_id is not None
+
+    @property
+    def is_cancelled(self) -> bool:
+        return self.cancelled_at is not None
+
+    @property
+    def fancy_target(self):
+        """The fancy product this bath's output could be finished as.
+
+        `None` for anything with no fancy counterpart, which is every yarn
+        and most silk — so the crew's form simply has no fancy box on those
+        rows rather than offering one that leads nowhere.
+        """
+        from . import fancy
+
+        return fancy.counterpart_for(self.finished_product)
+
+    @property
+    def is_pending(self) -> bool:
+        return not self.is_accepted and not self.is_cancelled
+
+    @property
+    def loss(self) -> int:
+        """Units the bath was expected to make and didn't.
+
+        Derived rather than stored, and answered from the row rather than
+        from `InventoryLog`: the ledger says what entered inventory, and the
+        row says what the session found. Raw movements have never been
+        ledgered here, so this is the only place a scrap question can be
+        asked — the same split the close makes when `closing.tally()` reads
+        `CloseRunRow` instead of the log.
+        """
+        if self.yielded is None:
+            return 0
+        return max(self.quantity - self.yielded, 0)
 
 
 class DisplayFixture(models.Model):

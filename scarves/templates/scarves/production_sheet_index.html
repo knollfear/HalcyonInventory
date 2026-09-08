@@ -58,28 +58,71 @@ the preview is deliberately a GET and the print button is the only POST.
   }
   .dyeplan .gap ul.missing { margin: 8px 0; padding-left: 1.1rem; color: #445; }
   .dyeplan .gap p { margin: 8px 0 0; }
+
+  /* Type-ahead results, matching the label page's picker. */
+  .results { margin-top: 6px; display: grid; gap: 3px; }
+  .results:empty { margin-top: 0; }
+  .result {
+      display: flex; gap: 10px; align-items: baseline; width: 100%;
+      text-align: left; font: inherit; font-size: 13px; padding: 6px 9px;
+      border: 1px solid #dfe4ea; border-radius: 6px; background: #fff;
+      cursor: pointer;
+  }
+  .result:hover:not(:disabled) { border-color: var(--accent); background: #f4f8fd; }
+  .result:disabled { cursor: not-allowed; background: #f7f8fa; color: #8b929b; }
+  .result .who { flex: 1; }
+  .result .muted, .results .muted { color: #8b929b; font-size: 12px; }
+  .results .muted { padding: 4px 2px; }
+  table.picked { width: 100%; border-collapse: collapse; margin-top: 10px; }
+  table.picked th, table.picked td {
+      text-align: left; padding: 5px 8px; border-bottom: 1px solid #e6eaee;
+      font-size: 13px;
+  }
+  table.picked th { font-size: 11px; text-transform: uppercase; color: #667; }
+  table.picked th.num, table.picked td.num { text-align: right; }
+  table.picked .qty { width: 62px; font: inherit; padding: 4px 6px;
+      border: 1px solid #cfd6de; border-radius: 5px; text-align: right; }
+  #picked-empty { font-size: 13px; color: #8b929b; margin-top: 8px; }
+{% endblock %}
+
+{% block head %}
+  {% comment %}
+  Only the picked half needs this — the shortage half is an ordinary GET form
+  and works with the script blocked. Without it the type-ahead doesn't fire,
+  which is why the picked dataset says so on the page rather than silently
+  offering a search box that does nothing.
+  {% endcomment %}
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
 {% endblock %}
 
 {% block content %}
 
-  {% if open_runs %}
-    <div class="panel">
-      <strong>Sheets you might still be working from</strong>
-      {% comment %}
-      A convenience list, not a queue to be worked off. The record of what
-      was actually dyed is the inventory log; a sheet is scaffolding, and it
-      drops off here the moment anything on it is reported. Only the newest
-      few are kept — printing another retires the oldest.
-      {% endcomment %}
-      {% comment %}
-      A printed sheet that never comes back is the failure mode this whole
-      design leans on not happening quietly, so it is listed first.
-      {% endcomment %}
+  {% if overdue_runs %}
+    {% comment %}
+    The one list on this page that is asking for something, so it is first
+    and it is the loud one.
+
+    These sheets have stopped claiming their baths, which means the colorways
+    on them are being asked for again on anything printed from here. That is
+    the right answer when the paper has been lost and the wrong one when the
+    session is still going — and the app cannot tell which, so it names them
+    and a person decides. Never truncated, and never counted or escalated:
+    how often sheets go overdue measures nothing worth knowing, the same
+    bargain the restock board makes about bare pegs.
+    {% endcomment %}
+    <div class="panel warn">
+      <strong>{{ overdue_runs|length }} sheet{{ overdue_runs|length|pluralize }}
+      open longer than expected</strong>
+      <p>
+        Their unanswered baths have stopped counting towards what's on order,
+        so those colorways will appear on new sheets again. Accept what came
+        out of them, or call off what isn't going to happen.
+      </p>
       <ul>
-        {% for run in open_runs %}
+        {% for run in overdue_runs %}
           <li>
             <a href="{% url 'production_run_detail' run.pk %}">Run {{ run.pk }}</a>
-            — {{ run.rows.count }} bath{{ run.rows.count|pluralize }},
+            — {{ run.pending_rows }} of {{ run.rows.count }} still unanswered,
             printed {{ run.created_at|date:"d M Y" }}
           </li>
         {% endfor %}
@@ -87,27 +130,103 @@ the preview is deliberately a GET and the print button is the only POST.
     </div>
   {% endif %}
 
-  <form method="get">
+  {% if open_runs %}
+    <div class="panel">
+      <strong>Sheets you might still be working from</strong>
+      {% comment %}
+      A convenience list, not a queue to be worked off — the QR on the paper
+      is the permanent door to a sheet, so losing one from this list costs
+      nothing. Truncated for that reason, and it is the *live* sheets that
+      get truncated rather than the overdue ones above.
+
+      A sheet stays here until every bath on it is settled. It used to drop
+      off as soon as anything was reported, which read one tick as a finished
+      session — and with dyeing taking one to three days, that is most of a
+      sheet's life.
+      {% endcomment %}
+      <ul>
+        {% for run in open_runs %}
+          <li>
+            <a href="{% url 'production_run_detail' run.pk %}">Run {{ run.pk }}</a>
+            — {{ run.pending_rows }} of {{ run.rows.count }} still to come,
+            printed {{ run.created_at|date:"d M Y" }}
+          </li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+
+  <form method="get" id="sheet-form">
+    {% comment %}
+    Two datasets. The default asks the shortage question; the other is a list
+    somebody picked, because par is not the only reason to dye — an order
+    taken at the stall, a colour worth trying, room beside a pot already being
+    heated. It is also the only way to plan a session when nothing is short,
+    which is exactly when there is time for one.
+    {% endcomment %}
+    <div class="field">
+      <label for="{{ form.dataset.id_for_label }}">{{ form.dataset.label }}</label>
+      {{ form.dataset }}
+      {{ form.dataset.errors }}
+    </div>
+
     <div class="grid2">
-      <div class="field">
+      <div class="field" data-when="shortage">
         <label for="{{ form.baths.id_for_label }}">{{ form.baths.label }}</label>
         {{ form.baths }}
         <div class="help">{{ form.baths.help_text }}</div>
         {{ form.baths.errors }}
       </div>
-      <div class="field">
+      <div class="field" data-when="shortage">
         <label for="{{ form.category.id_for_label }}">{{ form.category.label }}</label>
         {{ form.category }}
         {{ form.category.errors }}
       </div>
     </div>
-    <div class="field tick">
+    <div class="field tick" data-when="shortage">
       {{ form.include_overshoot }}
       <div>
         <label for="{{ form.include_overshoot.id_for_label }}">{{ form.include_overshoot.label }}</label>
         <div class="help">{{ form.include_overshoot.help_text }}</div>
       </div>
     </div>
+
+    <div class="field" data-when="items">
+      <label for="bath-search">Find a colorway</label>
+      <input type="text" id="bath-search" name="q" autocomplete="off"
+             placeholder="Type a colorway or blank…"
+             hx-get="{% url 'product_search' %}"
+             hx-trigger="keyup changed delay:250ms"
+             hx-target="#bath-results"
+             hx-vals='{"mode": "plan"}'>
+      <div class="results" id="bath-results"></div>
+      <div class="help">
+        Click a result to add it. The count is <strong>baths</strong>, not
+        scarves — a row is one bath, and a bath yields whatever that blank
+        yields. Nothing here is filtered on par.
+      </div>
+      {{ form.items.errors }}
+
+      <table class="picked" id="picked-baths" hidden>
+        <thead>
+          <tr><th>Colorway</th><th class="num">Baths</th><th class="num">Makes</th><th></th></tr>
+        </thead>
+        <tbody>
+          {% for product, n in picked %}
+            <tr data-pk="{{ product.pk }}" data-size="{{ product.bath_size }}">
+              <td>{{ product.name }}</td>
+              <td class="num">
+                <input type="number" class="qty" min="1" max="20" value="{{ n }}">
+              </td>
+              <td class="num makes"></td>
+              <td><button type="button" class="btn-quiet drop">Remove</button></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <div id="picked-empty" class="empty">Nothing picked yet.</div>
+    </div>
+
     <button class="btn" type="submit">Preview</button>
   </form>
 
@@ -156,11 +275,21 @@ the preview is deliberately a GET and the print button is the only POST.
 
     <form method="post" style="margin-top:18px">
       {% csrf_token %}
-      <input type="hidden" name="baths" value="{{ form.cleaned_data.baths }}">
+      {% comment %}
+      The preview's own question, restated so the POST asks for exactly what
+      is on screen. Re-deriving it would let the shortage move between the
+      preview and the print, and the sheet somebody printed would not be the
+      sheet they read.
+      {% endcomment %}
+      <input type="hidden" name="dataset" value="{{ form.cleaned_data.dataset }}">
+      <input type="hidden" name="baths" value="{{ form.cleaned_data.baths|default_if_none:'' }}">
       <input type="hidden" name="category" value="{{ form.cleaned_data.category.pk|default_if_none:'' }}">
       {% if form.cleaned_data.include_overshoot %}
         <input type="hidden" name="include_overshoot" value="on">
       {% endif %}
+      {% for product, n in form.cleaned_data.items %}
+        <input type="hidden" name="items" value="{{ product.pk }}:{{ n }}">
+      {% endfor %}
       <button class="btn" type="submit">Print this sheet</button>
       <p class="muted">
         Creates a run and a QR code the crew scan to report back. Nothing is
@@ -169,7 +298,128 @@ the preview is deliberately a GET and the print button is the only POST.
     </form>
   {% elif submitted %}
     <hr>
-    <p>Nothing needs dyeing for those settings.</p>
+    {% if picked_dataset %}
+      <p>Nothing to print — add a colorway above.</p>
+    {% else %}
+      <p>
+        Nothing needs dyeing for those settings. To dye something anyway,
+        switch <strong>{{ form.dataset.label }}</strong> to
+        <strong>Colorways I pick</strong> — par isn't the only reason to
+        run a session.
+      </p>
+    {% endif %}
   {% endif %}
 
+{% endblock %}
+
+{% block scripts %}
+<script>
+  (function () {
+    // Only show the controls the chosen dataset actually reads. A bath count
+    // that changes nothing is worse than no bath count: it looks like it is
+    // planning and quietly isn't. Fields stay in the DOM and keep submitting;
+    // the view ignores what the dataset doesn't use.
+    var dataset = document.getElementById("{{ form.dataset.auto_id }}");
+    var conditional = document.querySelectorAll("#sheet-form .field[data-when]");
+    if (dataset) {
+      var sync = function () {
+        conditional.forEach(function (el) {
+          el.hidden = el.dataset.when.split(" ").indexOf(dataset.value) === -1;
+        });
+      };
+      dataset.addEventListener("change", sync);
+      sync();   // the form comes back server-rendered after a preview
+    }
+
+    // --- the hand-picked bath list ---------------------------------------
+    // Rows carry their own hidden `items=<pk>:<baths>` input, so the ordinary
+    // GET submit takes the list with it and a hand-built sheet stays a URL
+    // somebody can re-open or send. The server renders existing rows back
+    // after a preview; this only wires behaviour on top of them.
+    var picked = document.getElementById("picked-baths");
+    if (!picked) { return; }
+
+    var body = picked.querySelector("tbody");
+    var emptyNote = document.getElementById("picked-empty");
+    var search = document.getElementById("bath-search");
+    var results = document.getElementById("bath-results");
+
+    var refresh = function () {
+      var any = body.children.length > 0;
+      picked.hidden = !any;
+      emptyNote.hidden = any;
+    };
+
+    var syncRow = function (row) {
+      var qty = row.querySelector(".qty").value || "1";
+      var hidden = row.querySelector("input[name='items']");
+      if (!hidden) {
+        hidden = document.createElement("input");
+        hidden.type = "hidden";
+        hidden.name = "items";
+        row.appendChild(hidden);
+      }
+      hidden.value = row.dataset.pk + ":" + qty;
+      // What the baths actually make, worked out here rather than left for
+      // somebody to multiply. Baths are the unit of work and scarves are the
+      // unit everybody thinks in, and the sheet is planned in the first.
+      var size = parseInt(row.dataset.size || "1", 10);
+      row.querySelector(".makes").textContent =
+        (parseInt(qty, 10) || 0) * size;
+    };
+
+    var addRow = function (pk, name, size) {
+      var existing = body.querySelector('tr[data-pk="' + pk + '"]');
+      if (existing) {
+        // Adding something already on the list bumps its count rather than
+        // stacking a duplicate row — two rows for one colorway is a sum
+        // written confusingly.
+        var q = existing.querySelector(".qty");
+        q.value = Math.min(parseInt(q.value || "0", 10) + 1, 20);
+        syncRow(existing);
+        return;
+      }
+      var row = document.createElement("tr");
+      row.dataset.pk = pk;
+      row.dataset.size = size;
+      row.innerHTML =
+        "<td></td>" +
+        '<td class="num"><input type="number" class="qty" min="1" max="20" value="1"></td>' +
+        '<td class="num makes"></td>' +
+        '<td><button type="button" class="btn-quiet drop">Remove</button></td>';
+      row.children[0].textContent = name;
+      body.appendChild(row);
+      syncRow(row);
+      refresh();
+    };
+
+    // Delegated, so results swapped in by htmx are covered.
+    results.addEventListener("click", function (e) {
+      var hit = e.target.closest(".result");
+      if (!hit || hit.disabled) { return; }
+      addRow(hit.dataset.pk, hit.dataset.name, hit.dataset.baths);
+      results.innerHTML = "";
+      search.value = "";
+      search.focus();
+    });
+
+    picked.addEventListener("input", function (e) {
+      if (e.target.classList.contains("qty")) { syncRow(e.target.closest("tr")); }
+    });
+    picked.addEventListener("click", function (e) {
+      if (e.target.classList.contains("drop")) {
+        e.target.closest("tr").remove();
+        refresh();
+      }
+    });
+
+    // Enter in the search box must not submit a half-built sheet.
+    search.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") { e.preventDefault(); }
+    });
+
+    Array.prototype.forEach.call(body.children, syncRow);
+    refresh();
+  })();
+</script>
 {% endblock %}

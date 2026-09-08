@@ -3048,7 +3048,20 @@ def product_search(request):
     """HTMX type-ahead: products matching the typed name or SKU."""
     q = (request.GET.get("q") or "").strip()
     upload_id = request.GET.get("upload_id")
-    for_labels = request.GET.get("mode") == "labels"
+    mode = request.GET.get("mode")
+    for_labels = mode == "labels"
+    # The sheet editor needs to know which sheet it is adding to, so a result
+    # can be a form that posts on its own. Nothing else about the search
+    # changes — a sheet narrows nothing, because what belongs on it is
+    # exactly the judgement the person typing is making.
+    for_sheet = mode == "sheet"
+    # And a fourth: picking baths for a sheet that does not exist yet. It
+    # cannot share `mode=sheet`, whose results post straight onto a run —
+    # there is no run to post to — and it cannot share `mode=labels`, which
+    # greys out anything with no SKU. A SKU is needed to print a sticker, not
+    # to dye a bath.
+    for_plan = mode == "plan"
+    run_pk = request.GET.get("run")
     # Passed straight through to the assign call's URL. The search itself is
     # unchanged by it — a walk narrows nothing, because the whole reason this
     # peg is being typed into is that the map doesn't know what hangs there.
@@ -3059,12 +3072,17 @@ def product_search(request):
     # Same search, two click behaviours: the upload page assigns the product
     # to an upload, the label page adds it to a list. Only the template
     # differs, so it's picked here rather than duplicating the query.
-    template = (
-        "scarves/partials/label_item_results.html" if for_labels
-        else "scarves/partials/product_search_results.html"
-    )
+    if for_plan:
+        template = "scarves/partials/bath_pick_results.html"
+    elif for_sheet:
+        template = "scarves/partials/sheet_item_results.html"
+    elif for_labels:
+        template = "scarves/partials/label_item_results.html"
+    else:
+        template = "scarves/partials/product_search_results.html"
     return render(request, template, {
         "products": products, "upload_id": upload_id, "stop_query": stop_query,
+        "run_pk": run_pk,
     })
 
 
@@ -3914,6 +3932,22 @@ def _crew_run_url(request, run):
     )
 
 
+def _baths_for(form):
+    """The baths a valid picker form is asking for, either way it was asked.
+
+    One function so the preview and the print cannot disagree about what a
+    sheet contains — the same reason `_recipe_history` serves both renderers
+    on the recipe page.
+    """
+    if form.cleaned_data["dataset"] == ProductionSheetForm.ITEMS:
+        return production.baths_from_picks(form.cleaned_data["items"])
+    return production.plan_baths(
+        form.cleaned_data["baths"],
+        category=form.cleaned_data.get("category"),
+        include_overshoot=form.cleaned_data["include_overshoot"],
+    )
+
+
 @page_meta(
     title="Production Sheet",
     description="Print a dye-room worksheet: the next N baths to run, most "
@@ -3934,11 +3968,7 @@ def production_sheet_index(request):
     if request.method == "POST":
         form = ProductionSheetForm(request.POST)
         if form.is_valid():
-            baths = production.plan_baths(
-                form.cleaned_data["baths"],
-                category=form.cleaned_data.get("category"),
-                include_overshoot=form.cleaned_data["include_overshoot"],
-            )
+            baths = _baths_for(form)
             if not baths:
                 messages.warning(request, "Nothing needs dyeing for those settings.")
                 return redirect(f"{reverse('production_sheet_index')}?{request.POST.urlencode()}")
@@ -3957,28 +3987,20 @@ def production_sheet_index(request):
                     )
                     for index, bath in enumerate(baths, start=1)
                 ])
-                # Printing a sixth retires the oldest rather than being
-                # refused. Nothing is lost: the run is a work aid, and the
-                # record of what actually happened is the inventory log.
-                retired = production.retire_superseded_runs()
+                # Nothing is retired here any more. Printing a sixth sheet
+                # used to close the oldest, which quietly decided that a
+                # session nobody had answered for never happened — and the
+                # baths on it stopped being asked for at the same moment,
+                # with nothing said. Old sheets now age out of the plan on
+                # their own and get named on the picker instead.
 
-            if retired:
-                messages.info(
-                    request,
-                    f"Closed {len(retired)} older sheet(s) that were never "
-                    f"reported: {', '.join(str(r.pk) for r in retired)}.",
-                )
             return redirect("production_run_detail", pk=run.pk)
     else:
         form = ProductionSheetForm(request.GET or None)
 
     baths = []
     if form.is_bound and form.is_valid():
-        baths = production.plan_baths(
-            form.cleaned_data["baths"],
-            category=form.cleaned_data.get("category"),
-            include_overshoot=form.cleaned_data["include_overshoot"],
-        )
+        baths = _baths_for(form)
 
     return render(request, "scarves/production_sheet_index.html", {
         "form": form,
@@ -3991,12 +4013,24 @@ def production_sheet_index(request):
         # different and much more alarming statement.
         "submitted": form.is_bound and form.is_valid(),
         "short_blanks": production.short_blanks(baths),
-        # Sheets printed and not reported. The whole design leans on paper
-        # coming back, so a sheet that never does has to be visible here
-        # rather than being remembered by whoever printed it.
+        # Re-rendered off raw data so a failed submit doesn't lose a list
+        # somebody hand-built — the expensive failure on this half of the page.
+        "picked": form.items_value,
+        "picked_dataset": form.picked_dataset,
+        # Two lists, because they ask for different things. Live sheets are a
+        # convenience — "what you might still be working from" — and are
+        # truncated, since a long one is just noise.
         "open_runs": (
-            ProductionRun.objects.filter(submitted_at__isnull=True)
-            .prefetch_related("rows")
+            production.counted_runs()
+            .prefetch_related("rows")[:production.RUNS_LISTED]
+        ),
+        # Overdue sheets are the actionable list and are never truncated.
+        # These have stopped claiming their baths, so the colorways on them
+        # are being asked for again — which is fine if the paper is lost and
+        # wrong if the session is still going. Either way somebody has to
+        # say which, and the only way that happens is if the page says so.
+        "overdue_runs": (
+            production.overdue_runs().prefetch_related("rows")
         ),
     })
 
@@ -4026,12 +4060,136 @@ def production_run_detail(request, pk):
         pk=pk,
     )
 
+    # The add box is a plain GET form, so with the script blocked `q` lands
+    # in the URL and the results render inline from the very partial the
+    # fragment endpoint returns. Two copies of that markup would drift, and
+    # the way it would show is the swapped-in version posting somewhere the
+    # inline one doesn't.
+    q = (request.GET.get("q") or "").strip()
     return render(request, "scarves/production_run_detail.html", {
         "run": run,
         "crew_url": _crew_run_url(request, run),
         "plan": production.dye_plan_for_run(run),
         "bath_count": run.rows.count(),
+        "q": q,
+        "search_results": search_products(q) if q else None,
     })
+
+
+@require_POST
+@login_required
+def production_run_add_row(request, pk):
+    """Put another bath on a sheet.
+
+    The planner picks what it can see — a shortage against par — and there
+    are reasons to dye something it cannot: an order taken at the stall, a
+    colour somebody wants to try, a bath being run anyway that has room
+    beside it. A plan nobody can edit gets worked around on paper, and then
+    the paper and the app disagree about what happened.
+
+    Appended rather than slotted in, because `order` is the position on a
+    printed sheet and renumbering the rest would make an existing printout
+    disagree with the page about which row is which.
+    """
+    run = get_object_or_404(ProductionRun, pk=pk)
+    product = get_object_or_404(
+        FinishedProduct, pk=request.POST.get("product"), is_active=True
+    )
+
+    last = run.rows.order_by("-order").first()
+    row = ProductionRunRow.objects.create(
+        run=run,
+        finished_product=product,
+        order=(last.order + 1) if last else 1,
+        # A bath is a fixed size, so this is the only honest quantity — the
+        # same number the planner would have frozen onto the row.
+        quantity=product.bath_size,
+    )
+    messages.success(
+        request,
+        f"Added {row.quantity} × {product.name} to run {run.pk}. "
+        f"Reprint the sheet, or write it on the bottom.",
+    )
+    return redirect("production_run_detail", pk=run.pk)
+
+
+@require_POST
+@login_required
+def production_run_strike_row(request, pk, row_id):
+    """Take one bath off a sheet — it isn't going to happen.
+
+    Cancelling rather than deleting, for the reason the whole model changed:
+    the run is a record now. A row that was on the paper and then called off
+    is a thing that happened to the plan, and deleting it would leave a sheet
+    in somebody's hand with a line on it the app has never heard of.
+    """
+    run = get_object_or_404(ProductionRun, pk=pk)
+    row = get_object_or_404(run.rows, pk=row_id)
+
+    if production.cancel_row(row):
+        messages.success(
+            request,
+            f"Took {row.quantity} × {row.finished_product.name} off run "
+            f"{run.pk}. Nothing moved, and it goes back on the next sheet.",
+        )
+    else:
+        # Already accepted, so stock has moved and this is an adjustment with
+        # a reason attached rather than an edit to a plan.
+        messages.warning(
+            request,
+            f"That bath is already in stock — correcting it is an inventory "
+            f"adjustment, not an edit to the sheet.",
+        )
+    return redirect("production_run_detail", pk=run.pk)
+
+
+@require_POST
+@login_required
+def production_run_cancel_remaining(request, pk):
+    """Call off every bath on this sheet that nobody has answered for.
+
+    Retiring a sheet *is* this — there is no run-level retired flag, so
+    "closed" always means "no row is still pending" and cannot disagree with
+    the rows underneath it.
+
+    **There is no accept-all, and there is not going to be one.** The two
+    directions look symmetrical and are not:
+
+    - Cancelling moves nothing into inventory. It gives up a claim, so the
+      colorways come straight back onto the next sheet and the worst case is
+      that somebody is asked about them again.
+    - Accepting puts stock on the books. A sheet accepted wholesale asserts
+      that twenty baths came out at full yield, which is a claim about twenty
+      physical piles of scarves that nobody looked at — and every one of them
+      is then wrong on the pegs, at the close, and in Square.
+
+    So accepting has to cost a mark per row. That is the same bargain the
+    restock board makes by refusing a "check all" button: the cost *is* the
+    evidence, and it is precisely the convenience somebody reasonable will
+    ask for after the third long session. The answer is no, and this comment
+    is here so the reasoning does not have to be reconstructed.
+    """
+    run = get_object_or_404(ProductionRun, pk=pk)
+
+    cancelled = 0
+    with transaction.atomic():
+        # Read the rows fresh inside the transaction: `cancel_row` refuses a
+        # row that has already moved stock, and it can only see that on an
+        # object that has not gone stale.
+        for row in run.rows.select_for_update():
+            if production.cancel_row(row):
+                cancelled += 1
+
+    if cancelled:
+        messages.success(
+            request,
+            f"Called off {cancelled} bath{'' if cancelled == 1 else 's'} on "
+            f"run {run.pk}. Nothing moved, and those colorways go back on "
+            f"the next sheet.",
+        )
+    else:
+        messages.info(request, f"Nothing left to call off on run {run.pk}.")
+    return redirect("production_run_detail", pk=run.pk)
 
 
 @page_meta(
@@ -4066,10 +4224,11 @@ def production_run_index(request):
     newest first, which is almost always the one in your hand.
     """
     return render(request, "scarves/production_run_index.html", {
-        "runs": (
-            ProductionRun.objects.filter(submitted_at__isnull=True)
-            .prefetch_related("rows")[:20]
-        ),
+        # Everything with a bath still to settle, overdue included: a sheet
+        # the office has stopped counting on is exactly the one somebody is
+        # standing there holding, and leaving it off this list would mean the
+        # session that finally came back had nowhere to report to.
+        "runs": production.open_runs().prefetch_related("rows")[:20],
     })
 
 
@@ -4089,7 +4248,7 @@ def _photo_reading(request, run):
     }
     prefilled = {
         row.pk for row in run.rows.all()
-        if row.pk in wanted and not row.is_applied
+        if row.pk in wanted and not row.is_accepted
     }
 
     def number(name):
@@ -4101,6 +4260,9 @@ def _photo_reading(request, run):
         "filled": number("filled"),
         "unsure": number("unsure"),
         "strays": number("strays"),
+        # Every row on the sheet, because the sheet prints every row. It
+        # renders what the run asked for and reads no state back, so this is
+        # what a photograph of it could have contained.
         "total": run.rows.count(),
     }, prefilled
 
@@ -4175,7 +4337,7 @@ def _hand_off_photo(request, held):
     codes = {production.row_code(row): row for row in run.rows.all()}
     ticked = [
         row.pk for code, row in codes.items()
-        if code in filled and not row.is_applied
+        if code in filled and not row.is_accepted
     ]
 
     # The reading rides in the query string rather than the session. It
@@ -4229,15 +4391,26 @@ def production_run(request, token):
 
     if request.method == "POST":
         ticked = set(request.POST.getlist("done"))
-        applied = 0
+        applied = units = lost = fancied = 0
         with transaction.atomic():
             for row in run.rows.all():
-                if str(row.pk) not in ticked or row.is_applied:
+                if str(row.pk) not in ticked or row.is_accepted:
                     continue
-                row.done_at = timezone.now()
-                row.save(update_fields=["done_at"])
-                production.apply_row(row)
+                # The tick is the claim and the number is its size. Blank or
+                # unreadable means the full bath, which is what a tick on its
+                # own has always meant — so a phone that never gets as far as
+                # the number box still reports exactly what it used to.
+                typed = (request.POST.get(f"yielded-{row.pk}") or "").strip()
+                yielded = int(typed) if typed.isdigit() else None
+                # Only offered where the blank has a fancy counterpart, so an
+                # absent value is the overwhelmingly common answer of none.
+                typed_fancy = (request.POST.get(f"fancy-{row.pk}") or "").strip()
+                fancy_units = int(typed_fancy) if typed_fancy.isdigit() else 0
+                production.apply_row(row, yielded=yielded, fancy=fancy_units)
                 applied += 1
+                units += row.yielded
+                fancied += row.fancy_yield
+                lost += row.loss
 
             if run.submitted_at is None:
                 run.submitted_at = timezone.now()
@@ -4246,7 +4419,9 @@ def production_run(request, token):
                 run.submitted_by = employee
             run.save(update_fields=["submitted_at", "submitted_by"])
 
-        request.session["production_run_applied"] = applied
+        request.session["production_run_applied"] = {
+            "baths": applied, "units": units, "lost": lost, "fancy": fancied,
+        }
         request.session.pop("production_photo", None)
         return redirect("production_run", token=run.token)
 

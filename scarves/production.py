@@ -37,28 +37,31 @@ stops meaning anything definite.
 """
 
 from dataclasses import dataclass
+from datetime import timedelta
 from io import BytesIO
 from math import ceil
 
-from django.db.models import F, Value
+from django.db.models import Count, F, Q, Sum, Value
 from django.db.models.functions import Greatest
 from django.utils import timezone
 
 from .models import FinishedProduct
 
-#: How many sheets stay outstanding. Printing a sixth retires the oldest.
+#: How many live sheets the picker lists before it stops.
 #:
-#: Five out at once already means the reporting loop has stopped working, and
-#: the two ways out of that — never reconciling, or abandoning the lot and
-#: starting over — are both bad. But *blocking* the sixth print is the wrong
-#: medicine: it deadlocks exactly when the paper has gone missing, which is
-#: the same moment a sheet gets abandoned in the first place.
+#: This used to be a cap: printing a sixth sheet closed the oldest one
+#: automatically, on the reasoning that five sheets out at once already means
+#: the reporting loop has stopped working. The reasoning was right and the
+#: remedy was the app guessing. Closing a sheet nobody had answered for
+#: silently decided that its session never happened — and a sheet with four
+#: baths still drying looks exactly like a sheet somebody abandoned.
 #:
-#: Keeping the newest five never deadlocks. A sheet that six print-runs have
-#: overtaken is dead in practice, and the cost of retiring it is nil because
-#: the sheet is a PDF rather than a web view — if it turns out to matter, the
-#: run reprints in one click.
-MAX_OPEN_RUNS = 5
+#: What replaced it is `OVERDUE_AFTER`, which never destroys anything: an old
+#: sheet stops *claiming* its baths, gets named on the picker, and waits for
+#: a person to accept what came out or cancel what didn't. So this number is
+#: now only how long a list gets before it is truncated. Overdue sheets are
+#: never truncated — they are the ones that need looking at.
+RUNS_LISTED = 5
 
 #: Page furniture, in points (72 to the inch). Plain paper, so unlike the
 #: label stock none of this has to line up with anything physical.
@@ -93,15 +96,62 @@ BOX_BASELINE_OFFSET = -4
 BARCODE_BASELINE_OFFSET = 2
 
 #: `(text, bold)` per line. Each page says what to do with *that* page.
+#:
+#: **The box means "this bath has been accepted into inventory"**, which is
+#: not the same claim as "this bath happened". Dyeing is a one-to-three day
+#: process — dye, dry, tag, bag — and the app used to model it as one atomic
+#: event, so for those days it was wrong in a way the close and the restock
+#: walk both read. Marking at the pot puts stock on the books that is still
+#: wet on a line and cannot go on a peg.
+#:
+#: So the box is filled in at the *end* of that process, and a blank box is a
+#: complete and honest statement rather than a lost one: 5 of 20 is a sheet
+#: that is not finished yet, not a sheet that lost fifteen baths. That is
+#: what lets the count be corrected later without anything being reversed,
+#: and it is why the same box can carry a bill for the work one day.
 BATH_INSTRUCTIONS = (
-    ("Fill in the box for every bath you finish. Leave the rest blank.", False),
-    ("Scan the code when you're done, then tap them or photograph this page.", True),
+    ("Fill in a box when that bath is bagged and ready for the booth.", True),
+    ("Not when it comes out of the pot — the box means it is counted in stock.", False),
+    ("Scan the code, then tap the boxes or photograph this page.", True),
     ("Include the code above in a photo so it can check which sheet.", False),
 )
 DYE_INSTRUCTIONS = (
     ("Collect these before you start — the baths are on the next page.", False),
     ("Fetch what's listed even if the count looks short; counts drift.", False),
 )
+
+#: The work sheet's own instructions. It is the sheet that lives in the dye
+#: room for the two or three days the session runs, and it reports nothing.
+#:
+#: It says the sheet is optional out loud. It exists because a column of
+#: boxes is a good way to hold twenty baths at different points across three
+#: days — not because anything needs it back.
+WORK_INSTRUCTIONS = (
+    ("Your working copy — yours to mark up however you like.", True),
+    ("Label the columns at the top if you want them named.", False),
+    ("Nothing here reports anything. The sheet to send back is the last one.", False),
+)
+
+#: How many stage boxes each bath gets on the working copy.
+#:
+#: **A count, not a list of names.** The obvious version of this printed
+#: DYED / DRIED / TAGGED / BAGGED across the top, and that is the app telling
+#: somebody how to do a job it does not do — the stages are hers, they vary
+#: by what is in the pot, and a printed name is an instruction whether or not
+#: it was meant as one.
+#:
+#: So the boxes are blank and there is a ruled line above each column for her
+#: to write her own heading, once per page. Nothing in the app stores what
+#: she writes, reads it back, or knows how many stages a bath "should" have.
+#: The one transition that matters to the count has its own box on the
+#: reporting sheet.
+WORK_BOXES = 4
+
+#: The work sheet's boxes. Smaller than the reporting sheet's tick box
+#: because nothing photographs them — they are read by the person who made
+#: the marks, standing over them.
+STAGE_BOX = 15
+STAGE_GAP = 9
 
 
 @dataclass
@@ -166,7 +216,60 @@ def candidates(category=None, include_overshoot=False):
             )
         )
 
-    return sorted(qs, key=_urgency)
+    # Everything above is a prefilter, and it is deliberately loose: baths
+    # already in flight only ever make a product *less* needy, so the SQL
+    # result is a superset of the answer and the Python pass below narrows
+    # it. Doing it here rather than in a Subquery keeps one copy of the
+    # arithmetic, which the sort and `plan_baths` both read.
+    claimed = in_flight()
+    wanted = []
+    for product in qs:
+        product.in_flight = claimed.get(product.pk, 0)
+        product.net_shortage = max(
+            product.par - product.number_on_hand - product.in_flight, 0
+        )
+        if not product.net_shortage:
+            continue
+        if not include_overshoot:
+            expected = product.number_on_hand + product.in_flight
+            if product.par < expected + product.bath_size:
+                continue
+        wanted.append(product)
+
+    return sorted(wanted, key=_urgency)
+
+
+def in_flight():
+    """`{finished_product_id: units}` already asked for on a live sheet.
+
+    **Without this a second sheet re-asks for the first sheet's baths**, which
+    is the bug this whole area exists to fix. Dyeing takes one to three days,
+    so printing a sheet on Saturday and another on Monday used to put the same
+    colorway on both — the stock has not arrived yet, so it still reads as
+    short — and the session dyes it twice.
+
+    Only `counted_runs` are subtracted: open, and recent enough that the
+    baths are still plausibly happening. A sheet that has gone overdue
+    releases its claim so the colorway starts being asked for again, which is
+    the right answer for paper that has been lost, and is why going overdue
+    has to be said out loud rather than happening quietly.
+
+    Pending rows only. An accepted row has already landed in
+    `number_on_hand`, so counting it here would subtract it twice, and a
+    cancelled row is a bath that is never coming.
+    """
+    from .models import ProductionRunRow
+
+    rows = (
+        ProductionRunRow.objects.filter(
+            applied_log__isnull=True,
+            cancelled_at__isnull=True,
+            run__in=counted_runs().values("pk"),
+        )
+        .values("finished_product")
+        .annotate(units=Sum("quantity"))
+    )
+    return {row["finished_product"]: row["units"] or 0 for row in rows}
 
 
 def _urgency(product):
@@ -174,11 +277,18 @@ def _urgency(product):
 
     Out of stock leads because it is the only state a customer can see: a
     colorway at zero is missing from the table, where one at half par is just
-    a shorter stack.
+    a shorter stack. That test stays on the **physical** shelf rather than on
+    what is in flight — a bath two days from being bagged is not something a
+    customer can buy today, and this is the ordering of a list somebody works
+    down now.
+
+    The size of the shortfall is the other way round, because that is a
+    question about what still has to be made rather than about what is on the
+    table.
     """
     return (
         product.number_on_hand > 0,
-        -product.shortage,
+        -product.net_shortage,
         product.name,
     )
 
@@ -196,7 +306,10 @@ def plan_baths(limit, category=None, include_overshoot=False):
     """
     by_recipe = {}
     for product in candidates(category, include_overshoot):
-        needed = ceil(product.shortage / product.bath_size)
+        # `net_shortage`, not `shortage`: what is already out being dyed has
+        # been taken off, so a sheet asks for the baths still missing rather
+        # than reprinting the ones on last week's paper.
+        needed = ceil(product.net_shortage / product.bath_size)
         for _ in range(needed):
             by_recipe.setdefault(product.recipe_id, []).append(
                 Bath(product=product, quantity=product.bath_size)
@@ -208,6 +321,34 @@ def plan_baths(limit, category=None, include_overshoot=False):
         if len(baths) >= limit:
             break
     return baths[:limit]
+
+
+def baths_from_picks(picks):
+    """`[(product, how_many_baths), ...]` -> the flat list of baths.
+
+    The hand-picked counterpart to `plan_baths`, and it deliberately answers a
+    different question. `plan_baths` derives what is *needed*; this takes what
+    somebody decided. So there is no par test, no shortage arithmetic and no
+    in-flight subtraction — a colorway already on another sheet is allowed
+    here, because asking for it twice may be exactly what was meant.
+
+    Grouped by recipe for the one reason that is physical rather than a
+    judgement: one mix and one pot serve several loads, so baths of a
+    colorway belong together on the paper however they were chosen. Order
+    between recipes is the order they were picked in, which is the only
+    ordering anybody could expect from a list they built themselves.
+    """
+    by_recipe = {}
+    for product, count in picks:
+        by_recipe.setdefault(product.recipe_id, []).extend(
+            Bath(product=product, quantity=product.bath_size)
+            for _ in range(count)
+        )
+
+    baths = []
+    for recipe_baths in by_recipe.values():
+        baths.extend(recipe_baths)
+    return baths
 
 
 def blank_demand(rows):
@@ -341,41 +482,151 @@ def dye_plan_for_run(run):
     return dye_plan([row.finished_product.recipe for row in run.rows.all()])
 
 
-def retire_superseded_runs(keep=MAX_OPEN_RUNS):
-    """Close outstanding sheets older than the newest `keep`. Returns them.
+# ---------------------------------------------------------------------------
+# What state a sheet is in
+# ---------------------------------------------------------------------------
+#
+# Four questions, not one open/closed flag, and all four answered off the
+# rows in this one place. A sheet used to be "closed" the moment any row came
+# back, which reads a session as finished on its first reply — and since
+# dyeing takes one to three days, most of the sheet is still wet at that
+# point. Splitting the questions is what lets the planner subtract baths that
+# are genuinely in flight without also subtracting baths on paper nobody has
+# seen for a fortnight.
 
-    Closing, not deleting: the run and its rows stay readable, and the note
-    says why it went. What it must not do is apply anything — a sheet nobody
-    reported describes a session that didn't happen.
+
+#: How long a sheet's baths keep counting as in flight.
+#:
+#: Dyeing runs one to three days, so ten is generous on purpose: the bound is
+#: not a guess at how long the work takes, it is the point past which an
+#: unanswered sheet is better explained by lost paper than by a slow session.
+#:
+#: What makes the number safe is that crossing it is **visible**. An overdue
+#: sheet stops claiming its baths, so the colorways on it start being asked
+#: for again — and if that happened quietly, a sheet that really was in
+#: progress would get re-dyed behind somebody's back. So the picker names
+#: overdue sheets and asks for one of the two answers that exist: accept what
+#: came out, or cancel what didn't. No escalation and no count of how often
+#: it happens — the same bargain `_drained_at` makes on the restock board.
+OVERDUE_AFTER = timedelta(days=10)
+
+
+def with_row_states(queryset=None):
+    """Runs, annotated with the row counts every state question reads.
+
+    One annotation pass rather than a property per question, because these
+    are asked of lists — the picker shows several groups at once, and a
+    per-run property there is a query per sheet per group.
     """
     from .models import ProductionRun
 
-    stale = list(
-        ProductionRun.objects
-        .filter(submitted_at__isnull=True)
-        .order_by("-created_at", "-pk")[keep:]
+    if queryset is None:
+        queryset = ProductionRun.objects.all()
+    return queryset.annotate(
+        pending_rows=Count(
+            "rows",
+            filter=Q(rows__applied_log__isnull=True, rows__cancelled_at__isnull=True),
+        ),
+        accepted_rows=Count("rows", filter=Q(rows__applied_log__isnull=False)),
     )
-    for run in stale:
-        run.submitted_at = timezone.now()
-        run.note = f"Closed automatically — {keep} newer sheets were printed after it."
-        run.save(update_fields=["submitted_at", "note"])
-    return stale
 
 
-def apply_row(row):
-    """Move the stock one finished bath represents, once.
+def open_runs(queryset=None):
+    """Sheets with at least one bath still to settle."""
+    return with_row_states(queryset).filter(pending_rows__gt=0)
 
-    Returns the `InventoryLog` written, or the existing one if this row has
-    already been applied. **Applying twice is the failure this guards**: the
-    return URL is a piece of paper that can be scanned again, the submit
-    button can be double-tapped, and a crew member who remembers one more
-    bath will re-open the same page and submit again. All three are normal,
-    and all three used to be how a bath gets counted into stock twice — the
-    same shape as the Square webhook and redelivered orders.
 
-    Un-ticking is deliberately not the inverse of this. Once stock has moved
-    the correction is an inventory adjustment with a reason attached, not a
-    checkbox quietly going out again on a page with no login.
+def closed_runs(queryset=None):
+    """Sheets where every bath was either accepted or cancelled.
+
+    There is no separate retired flag behind this. Retiring a sheet *is*
+    cancelling what is left on it, so "closed" has one meaning and cannot
+    disagree with the rows it is derived from.
+    """
+    return with_row_states(queryset).filter(pending_rows=0)
+
+
+def unreported_runs(queryset=None):
+    """Sheets nothing has ever been accepted from.
+
+    Deliberately not a subset of `open_runs`: a sheet whose every row was
+    cancelled also had nothing accepted, and that is a true and useful thing
+    to be able to list. The question is "did any of this reach the shelf",
+    which is different from "is any of it outstanding".
+    """
+    return with_row_states(queryset).filter(accepted_rows=0)
+
+
+def overdue_runs(queryset=None):
+    """Open sheets old enough that their baths have stopped being expected.
+
+    This is the list that has to be looked at, because these are exactly the
+    sheets whose colorways the planner has started asking for again.
+    """
+    return open_runs(queryset).filter(
+        created_at__lt=timezone.now() - OVERDUE_AFTER
+    )
+
+
+def counted_runs(queryset=None):
+    """Open, recent sheets — the ones whose baths the planner subtracts.
+
+    The only one of the four that changes what the app does. Everything else
+    here is a list somebody reads; this one decides whether a colorway gets
+    asked for again, which is why it has an age bound at all.
+    """
+    return open_runs(queryset).filter(
+        created_at__gte=timezone.now() - OVERDUE_AFTER
+    )
+
+
+def apply_row(row, yielded=None, fancy=0):
+    """Accept one bath into inventory, once. Returns the `InventoryLog`.
+
+    **Applying twice is the failure this guards.** The return URL is a piece
+    of paper that can be scanned again, the submit button can be
+    double-tapped, and somebody who remembers one more bath will re-open the
+    page and submit again. All three are normal, and all three used to be how
+    a bath got counted into stock twice — the same shape as the Square
+    webhook and redelivered orders.
+
+    **`yielded` is what actually came out, and the raw side does not use it.**
+    A bath consumes its blanks whatever happens in the pot: dye four scarves,
+    ruin one, and there are still four blanks gone off the shelf. So raw goes
+    down by the full `quantity` and finished goes up by `yielded`, and the
+    difference is a loss rather than a discrepancy. `None` means the full
+    bath, which is what a plain tick claims.
+
+    **The log is written even at a yield of zero**, so `applied_log` stays the
+    single answer to "has this row moved anything". A short-circuit that
+    skipped the write would need a second mechanism to stop a total loss
+    being reported twice, and two guards is how one of them goes stale.
+    Nothing downstream minds: `labels.produced_since` already filters on
+    `quantity__gt=0`, so a zero row asks for no stickers.
+
+    There is deliberately **no `FAILED_BATH` log type**. A total loss is the
+    same event as a partial loss at the end of its range, and giving it its
+    own type would record 5→0 and 5→3 in two different shapes — so any
+    question about scrap would have to union them, and would get the answer
+    wrong the first time somebody forgot. One shape: `PRODUCTION` carrying
+    what entered inventory.
+
+    **`fancy` is a subset of `yielded`, never an addition.** Five came out of
+    a bath of five and one of them got line work, so `yielded` is 5 and
+    `fancy` is 1 — the plain product gets 4 and the fancy one gets 1. Keeping
+    it a subset is what leaves `loss` meaning what it says: the bath is short
+    only if fewer came out than were asked for, and how they were finished is
+    a different question from whether they survived.
+
+    This is the second route to a fancy veil and the better-evidenced one.
+    `scarves/fancy.py` records the other — a plain scarf already in stock that
+    had line work added later — which has to be inferred after the fact and
+    leaves the plain side overstated until somebody notices. Here the scarf is
+    routed before it was ever counted as plain, by the person who made it.
+    Anything asking about fancy supply has to read both.
+
+    Un-ticking is still not the inverse of this. Once stock has moved the
+    correction is an inventory adjustment with a reason attached.
     """
     from .models import InventoryLog
 
@@ -384,24 +635,101 @@ def apply_row(row):
 
     product = row.finished_product
     raw = product.raw_product
+    made = row.quantity if yielded is None else max(int(yielded), 0)
+    # The paper said how big the bath was, and a yield above that is somebody
+    # answering a different question. Clamped rather than refused: a number
+    # too large is a typo at a sink, and losing the whole report to it would
+    # cost far more than the unit it trims.
+    made = min(made, row.quantity)
 
+    # Fancy can only be some of what came out, and only where there is a
+    # counterpart to be. Clamped for the same reason the yield is.
+    target = row.fancy_target
+    fancied = 0 if target is None else min(max(int(fancy or 0), 0), made)
+    plain = made - fancied
+
+    # The full bath, never the yield. The blanks left the shelf regardless of
+    # what came back out of the pot — and a fancy veil is a plain scarf with
+    # line work on it, so routing one changes nothing on the raw side.
     raw.number_on_hand = max(raw.number_on_hand - row.quantity, 0)
     raw.save(update_fields=["number_on_hand"])
 
-    product.number_on_hand += row.quantity
+    product.number_on_hand += plain
     product.save(update_fields=["number_on_hand"])
 
+    lost = row.quantity - made
+    notes = f"Dye bath accepted from production sheet run {row.run_id}."
+    if lost:
+        notes += (
+            f" {lost} of {row.quantity} did not make it —"
+            f" the blanks were used either way."
+        )
+    if fancied:
+        notes += (
+            f" {fancied} of {made} finished as {target.raw_product.name}."
+        )
+
+    # The plain row's log, written even at zero — it is what `applied_log`
+    # points at, and so what stops the bath being counted twice. A bath whose
+    # whole output went out fancy still writes it.
     log = InventoryLog.objects.create(
         finished_product=product,
         raw_product=raw,
         log_type=InventoryLog.PRODUCTION,
         source=InventoryLog.SOURCE_PRODUCTION_SHEET,
-        quantity=row.quantity,
-        notes=f"Dye bath reported from production sheet run {row.run_id}.",
+        quantity=plain,
+        notes=notes,
     )
+    if fancied:
+        # A second product, so a second row — every stock movement in this app
+        # is per product, the same shape the conversion page writes. It is
+        # PRODUCTION rather than a conversion because nothing was converted:
+        # this scarf was never plain.
+        target.number_on_hand += fancied
+        target.save(update_fields=["number_on_hand"])
+        InventoryLog.objects.create(
+            finished_product=target,
+            raw_product=raw,
+            log_type=InventoryLog.PRODUCTION,
+            source=InventoryLog.SOURCE_PRODUCTION_SHEET,
+            quantity=fancied,
+            notes=notes,
+        )
+
+    row.fancy_yield = fancied
+    row.yielded = made
+    row.accepted_at = timezone.now()
+    # Accepting says the bath ran and here is what came out of it. Cancelling
+    # says it never ran. If both have been claimed the physical one wins,
+    # because somebody is standing there holding the scarves — the same rule
+    # that lets a decoded barcode beat the batch page's blank picker.
+    row.cancelled_at = None
     row.applied_log = log
-    row.save(update_fields=["applied_log"])
+    row.save(update_fields=[
+        "yielded", "fancy_yield", "accepted_at", "cancelled_at", "applied_log",
+    ])
     return log
+
+
+def cancel_row(row):
+    """Call a bath off. Nothing moves, and the colorway is asked for again.
+
+    **Cancelled and binned are different, and both are needed.** Cancelled
+    means the bath never ran: no blanks were consumed, because nothing was
+    ever decremented, and the claim this row had on the planner is released
+    so the colorway comes back on the next sheet. A bath that ran and lost
+    the whole lot is the other thing entirely — the blanks are gone — and it
+    goes through `apply_row` at a yield of zero.
+
+    A row that has already moved stock is left alone. Taking that back is an
+    inventory adjustment with a reason attached, which is the same refusal
+    the crew's tick boxes make.
+    """
+    if row.applied_log_id is not None or row.cancelled_at is not None:
+        return False
+    row.cancelled_at = timezone.now()
+    row.save(update_fields=["cancelled_at"])
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -478,11 +806,31 @@ def bars_width(value):
 
 
 def render_sheet(run, return_url) -> bytes:
-    """The sheet, as PDF bytes.
+    """The sheet, as PDF bytes: collect, then work, then report.
 
-    Every page carries the QR and the run number, not just the first. Sheets
-    get split, stapled, and left on benches, and a page that can't say which
-    run it belongs to is a page whose ticks can't be reported.
+    **Three documents in one print, in the order the job happens.** The
+    collection page is a walk to the shelf; the work sheet lives in the dye
+    room for the two or three days the session runs; the reporting sheet is
+    what comes back at the end of it.
+
+    Splitting them is what the one-to-three-day process needs. A single sheet
+    had to be both the thing marked up mid-session and the thing photographed
+    at the end, and those want opposite properties: the first gets wet, gets
+    scribbled on and is only read by the person holding it, while the second
+    has to survive a phone camera and mean exactly one thing per mark.
+
+    **The work sheet carries no barcodes and no QR, and that absence is the
+    feature.** It is the only thing stopping the wrong sheet being
+    photographed — a marked-up working copy read as a report would tick baths
+    that are still on a drying line. With nothing on it to decode, a photo of
+    it cannot name a run, so the upload page asks for the code instead of
+    quietly filing a session that hasn't finished.
+
+    **Nothing here reads the run's state.** Every row prints, accepted or
+    cancelled or neither, because the sheet is the work order and not a
+    report on itself. Information flows paper → app; the moment a PDF starts
+    hiding rows that have come back, a reprint stops being the same document
+    as the print it replaces.
     """
     from reportlab.lib.pagesizes import letter
     from reportlab.pdfgen import canvas
@@ -492,6 +840,13 @@ def render_sheet(run, return_url) -> bytes:
     pdf = canvas.Canvas(buf, pagesize=letter)
     pdf.setTitle(f"Production sheet — run {run.pk}")
 
+    # **Every row, whatever state it is in.** The sheet renders what the run
+    # asked for and reads nothing back — a reprint mid-session is the same
+    # document as the first print, not a rendering of what has happened
+    # since. Information flows paper → app, and a PDF that started hiding
+    # rows that had come back would flow it the other way: two sheets for one
+    # run that disagree about how many baths are on it, where the one that
+    # disagrees is the one already in somebody's hand.
     rows = list(
         run.rows
         .select_related("finished_product__recipe", "finished_product__raw_product")
@@ -505,22 +860,38 @@ def render_sheet(run, return_url) -> bytes:
     # a block above the rows so a long list can't squeeze them, and so it can
     # be carried to the shelf on its own.
     _draw_collection_page(pdf, run, return_url, rows, page_w, page_h)
-
-    for start in range(0, max(len(rows), 1), per_page):
-        page_rows = rows[start:start + per_page]
-        _draw_header(pdf, run, return_url, page_w, page_h,
-                     page_no=start // per_page + 1,
-                     page_count=max(ceil(len(rows) / per_page), 1),
-                     instructions=BATH_INSTRUCTIONS)
-        y = page_h - PAGE_MARGIN - HEADER_HEIGHT
-        for index, row in enumerate(page_rows):
-            _draw_row(pdf, row, start + index + 1, y, page_w)
-            y -= ROW_HEIGHT
-        pdf.showPage()
+    _draw_pages(pdf, run, return_url, rows, page_w, page_h, per_page,
+                instructions=WORK_INSTRUCTIONS, draw=_draw_work_row, qr=False,
+                headings=True)
+    _draw_pages(pdf, run, return_url, rows, page_w, page_h, per_page,
+                instructions=BATH_INSTRUCTIONS, draw=_draw_row, qr=True)
 
     pdf.save()
     buf.seek(0)
     return buf.read()
+
+
+def _draw_pages(pdf, run, return_url, rows, page_w, page_h, per_page,
+                instructions, draw, qr, headings=False):
+    """One list of baths, paginated, with `draw` doing each row.
+
+    The work sheet and the reporting sheet are the same rows in the same
+    order — that is what makes transcribing between them recognition rather
+    than reading — so only the row itself and the header differ.
+    """
+    pages = max(ceil(len(rows) / per_page), 1)
+    for start in range(0, max(len(rows), 1), per_page):
+        _draw_header(pdf, run, return_url, page_w, page_h,
+                     page_no=start // per_page + 1,
+                     page_count=pages,
+                     instructions=instructions, qr=qr)
+        y = page_h - PAGE_MARGIN - HEADER_HEIGHT
+        if headings:
+            _draw_stage_headings(pdf, page_w, y + 6)
+        for index, row in enumerate(rows[start:start + per_page]):
+            draw(pdf, row, start + index + 1, y, page_w)
+            y -= ROW_HEIGHT
+        pdf.showPage()
 
 
 def _draw_collection_page(pdf, run, return_url, rows, page_w, page_h):
@@ -634,9 +1005,17 @@ def _draw_collection_page(pdf, run, return_url, rows, page_w, page_h):
 
 
 def _draw_header(pdf, run, return_url, page_w, page_h, page_no, page_count,
-                 instructions=()):
+                 instructions=(), qr=True):
+    """The block every page carries, with or without the code.
+
+    `qr=False` is the work sheet, and it is deliberate rather than tidy: the
+    working copy must carry nothing a camera can read, so a photo of it can't
+    be mistaken for a report of a session that is still drying. It still says
+    the run number and code in plain text, because the two sheets have to be
+    matchable by a person holding both.
+    """
     from reportlab.graphics import renderPDF
-    from reportlab.graphics.barcode import qr
+    from reportlab.graphics.barcode import qr as qr_module
     from reportlab.graphics.shapes import Drawing
 
     top = page_h - PAGE_MARGIN
@@ -661,10 +1040,21 @@ def _draw_header(pdf, run, return_url, page_w, page_h, page_no, page_count,
         pdf.drawString(PAGE_MARGIN, y, text)
         y -= 14
 
+    if not qr:
+        # The working copy. Its identity is text only — anything scannable
+        # here is a way for the wrong sheet to be photographed.
+        pdf.setFont("Helvetica-Bold", 12)
+        pdf.drawRightString(page_w - PAGE_MARGIN, top - 14,
+                            f"WORKING COPY — run {run.pk}")
+        pdf.setFont("Helvetica", 8)
+        pdf.drawRightString(page_w - PAGE_MARGIN, top - 26,
+                            f"code {run.token} · do not photograph this page")
+        return
+
     # The URL in plain text under the code, because the QR is the convenience
     # and the paper is the record. A cracked camera or a dead phone shouldn't
     # be the reason a session goes unreported.
-    widget = qr.QrCodeWidget(return_url, barLevel="M")
+    widget = qr_module.QrCodeWidget(return_url, barLevel="M")
     bounds = widget.getBounds()
     drawing = Drawing(QR_SIZE, QR_SIZE, transform=[
         QR_SIZE / (bounds[2] - bounds[0]), 0, 0,
@@ -688,7 +1078,64 @@ def _draw_header(pdf, run, return_url, page_w, page_h, page_no, page_count,
     pdf.drawRightString(page_w - PAGE_MARGIN, top - QR_SIZE - 24, return_url)
 
 
+def _stage_columns(page_w):
+    """Left edge of each stage box, right-aligned off the margin.
+
+    Shared by the row and the heading rule so the two cannot drift apart —
+    a heading over the wrong column is worse than no heading.
+    """
+    width = WORK_BOXES * STAGE_BOX + (WORK_BOXES - 1) * STAGE_GAP
+    start = page_w - PAGE_MARGIN - width
+    return [start + i * (STAGE_BOX + STAGE_GAP) for i in range(WORK_BOXES)]
+
+
+def _draw_stage_headings(pdf, page_w, y):
+    """A ruled line over each column, for her to name it herself.
+
+    Blank on purpose. Printing DYED / DRIED / TAGGED / BAGGED here would be
+    the app telling somebody how to do a job it doesn't do — the stages vary
+    with what is in the pot, and a printed name is an instruction whether or
+    not it was meant as one. A line is an invitation.
+
+    Once per page rather than once per sheet, because pages get separated.
+    """
+    pdf.setLineWidth(0.6)
+    for x in _stage_columns(page_w):
+        pdf.line(x - 2, y, x + STAGE_BOX + 2, y)
+    pdf.setLineWidth(1)
+
+
+def _draw_work_row(pdf, row, number, y, page_w):
+    """One bath on the working copy: what to make, and blank boxes.
+
+    No barcode and no tick box — nothing here is read by anything. What the
+    sheet is *for* is holding twenty baths at different points across three
+    days, which is a thing paper does well and a phone by a sink does not.
+    """
+    product = row.finished_product
+    baseline = y - ROW_HEIGHT + 12
+
+    pdf.setFont("Helvetica", 8)
+    pdf.drawString(PAGE_MARGIN, baseline + 14, f"#{number}")
+
+    text_x = PAGE_MARGIN + 24
+    pdf.setFont("Helvetica-Bold", 11)
+    pdf.drawString(text_x, baseline + 14, f"{row.quantity} × {product.recipe.name}")
+    pdf.setFont("Helvetica", 9)
+    pdf.drawString(text_x, baseline + 2, product.raw_product.name)
+
+    pdf.setLineWidth(1)
+    for x in _stage_columns(page_w):
+        pdf.rect(x, baseline + 2, STAGE_BOX, STAGE_BOX)
+
+
 def _draw_row(pdf, row, number, y, page_w):
+    """One bath on the reporting sheet: box, barcode, and what came out.
+
+    The box and the barcode are at exactly the offsets `sheetscan` reads back
+    along — `box_geometry` derives them from these same constants, so there
+    is no second copy of the layout to drift.
+    """
     product = row.finished_product
     baseline = y - ROW_HEIGHT + 12
 
@@ -719,9 +1166,16 @@ def _draw_row(pdf, row, number, y, page_w):
         f"{product.number_on_hand} on hand, par {product.par}",
     )
 
+    # A ruled space to write the number that actually came out, against what
+    # the bath was asked for. The tick alone still means the full bath, which
+    # is what the photo path reads — this is for the session that produced
+    # three of four, where the box says "accepted" and the line says how many.
+    rule_w = 34
+    rule_x = page_w - PAGE_MARGIN - rule_w
+    pdf.setLineWidth(0.8)
+    pdf.line(rule_x, baseline + 1, rule_x + rule_w, baseline + 1)
+    pdf.setFont("Helvetica", 7)
+    pdf.drawCentredString(rule_x + rule_w / 2, baseline - 8,
+                          f"OF {row.quantity}")
     pdf.setFont("Helvetica", 8)
-    pdf.drawRightString(page_w - PAGE_MARGIN, baseline + 2, f"#{number}")
-
-    pdf.setStrokeGray(0.8)
-    pdf.line(PAGE_MARGIN, baseline - 12, page_w - PAGE_MARGIN, baseline - 12)
-    pdf.setStrokeGray(0)
+    pdf.drawRightString(rule_x - 10, baseline + 2, f"#{number}")

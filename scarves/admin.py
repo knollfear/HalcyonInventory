@@ -493,10 +493,20 @@ class RawProductAdmin(admin.ModelAdmin):
         "display_slots_default",
         "is_active",
         "catalog_group",
+        # Set on the *plain* blank, pointing at its fancy version. In the list
+        # because the useful question is "which blanks can route to fancy at
+        # production" — one at a time in a change form makes a one-to-one
+        # mapping across a handful of veils into a hunt.
+        "fancy_counterpart",
         "square_item_id",
     )
-    list_editable = ("par_level", "finished_par_default", "display_slots_default")
-    list_filter = ("category", "is_active", "catalog_group")
+    list_editable = (
+        "par_level", "finished_par_default", "display_slots_default",
+        "fancy_counterpart",
+    )
+    list_filter = (
+        "category", "is_active", "catalog_group", "made_in_a_dye_bath",
+    )
     search_fields = ("name", "category__name", "sku")
     ordering = ("category__name", "name")
     actions = [
@@ -576,7 +586,10 @@ class ProductionRunRowInline(admin.TabularInline):
     model = ProductionRunRow
     extra = 0
     can_delete = False
-    fields = ("order", "finished_product", "quantity", "done_at", "applied_log")
+    fields = (
+        "order", "finished_product", "quantity", "yielded", "fancy_yield",
+        "accepted_at", "cancelled_at", "applied_log",
+    )
     readonly_fields = fields
     ordering = ("order",)
 
@@ -586,32 +599,54 @@ class ProductionRunRowInline(admin.TabularInline):
 
 @admin.register(ProductionRun)
 class ProductionRunAdmin(admin.ModelAdmin):
-    """Printed sheets, mostly so the useless ones can be deleted.
+    """Printed sheets, read-only, because a run is now a record.
 
-    A run is scaffolding rather than a record — the inventory log is what
-    closes the loop — so throwing one away is cheap and normal. Two things
-    are worth knowing before you do:
+    It used to be scaffolding — the paper was a work aid, the `InventoryLog`
+    was the only thing that survived it, and deleting a useless run was cheap
+    and normal. That was right while a dye bath was modelled as one atomic
+    event.
 
-    **Deleting a run does not un-move stock.** Its rows cascade away, but the
-    `InventoryLog` rows they created are separate objects and stay, which is
-    right: those baths really were dyed. What goes is the trail from the
-    sheet to the movement. `Reported` is in the list for exactly that reason
-    — a run showing 0 reported has moved nothing and is free to delete.
+    It stopped being right once the sheet had to carry a session that takes
+    one to three days. The plan gets edited, baths get called off, and a lot
+    occasionally comes out of the pot ruined — and **none of those are
+    answerable from the ledger**, because the ledger only ever records what
+    *entered* inventory. A bath that was cancelled and a bath that was never
+    printed leave the same trace there, which is none. The rows are the only
+    account of what the session was asked to do and what it found.
+
+    So nothing here deletes and nothing here is typed over, the same bargain
+    `CloseRun` makes for the same reason. Two things follow that are worth
+    knowing before wanting the old behaviour back:
 
     **The token is write-once.** It is printed on paper and encoded in that
-    sheet's QR code, and this app can rewrite neither, so editing it here
-    would silently orphan every copy of the sheet — the same reasoning that
-    makes a SKU write-once.
+    sheet's QR code, and this app can rewrite neither — the same reasoning
+    that makes a SKU write-once.
+
+    **Retiring a sheet is cancelling what is left on it**, on the run's own
+    page, not deleting it here. That is also why there is no run-level
+    "closed" flag to edit: closed means "no row is still pending" and is
+    derived, so it cannot disagree with the rows underneath it.
     """
     list_display = (
-        "pk", "token", "created_at", "bath_count", "reported", "submitted_at",
-        "submitted_by",
+        "pk", "token", "created_at", "bath_count", "reported", "state",
+        "submitted_at", "submitted_by",
     )
     list_filter = (("submitted_at", admin.EmptyFieldListFilter), "category")
     search_fields = ("token", "note")
     ordering = ("-created_at",)
-    readonly_fields = ("token", "created_at")
+    readonly_fields = (
+        "token", "created_at", "submitted_at", "submitted_by", "category",
+        "included_overshoot", "note",
+    )
     inlines = [ProductionRunRowInline]
+
+    def has_add_permission(self, request):
+        # A run exists because somebody printed a sheet. One typed in here
+        # would have a token on no paper and rows nobody was asked to dye.
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
     def get_queryset(self, request):
         return super().get_queryset(request).prefetch_related("rows")
@@ -619,6 +654,22 @@ class ProductionRunAdmin(admin.ModelAdmin):
     @admin.display(description="Baths")
     def bath_count(self, obj):
         return obj.rows.count()
+
+    @admin.display(description="State")
+    def state(self, obj):
+        """The four questions, as one word.
+
+        Overdue is the one worth seeing in a list: those sheets have stopped
+        claiming their baths, so the colorways on them are being asked for
+        again somewhere else.
+        """
+        if obj.is_closed:
+            return "finished"
+        if obj.is_overdue:
+            return "overdue"
+        if obj.is_unreported:
+            return "out"
+        return "part done"
 
     @admin.display(description="Reported")
     def reported(self, obj):

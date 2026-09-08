@@ -28,8 +28,16 @@ a page that already extends base_internal.
     >
       {% csrf_token %}
       <input type="hidden" name="next" value="{{ request.get_full_path }}">
+      {% comment %}
+      "Bagged", not "Dye bath": this button puts the units straight into
+      stock, so it means the bath has been accepted into inventory — dyed,
+      dried, tagged and ready for the booth — not that it went into the pot.
+      Dyeing takes one to three days, and a button pressed at the pot leaves
+      the count wrong for all of them. Same wording as the sheet's tick box,
+      which is the other place this claim gets made.
+      {% endcomment %}
       <button type="submit" class="btn-quiet">
-        Dye bath (+{{ fp.raw_product.number_per_dye_bath }})
+        Bagged a bath (+{{ fp.raw_product.number_per_dye_bath }})
       </button>
     </form>
   </td>

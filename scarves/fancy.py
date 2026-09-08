@@ -5,6 +5,13 @@ one object changes what it is; in the catalogue one product goes down and
 another goes up. Nothing about that is derivable — no dye bath happens, no
 sale happens, and the two products share only a recipe.
 
+**There are two routes to a fancy veil, and this module is one of them.**
+A bath's output can be finished as fancy at production time — see
+`counterpart_for` and `production.apply_row` — which records it as it is made.
+This page is the other route: a plain scarf that was already in stock and had
+line work added afterwards. Any question about fancy supply has to read both,
+`ProductionRunRow.fancy_yield` and the conversion rows here.
+
 **This is the part worth systematising.** Roughly a hundred conversions went
 unrecorded, which left the plain colorways overstated and the fancy ones
 invisible, and nobody could say which. The rest of the app treats that as
@@ -72,6 +79,34 @@ def convertible():
         )
         .select_related("raw_product", "recipe")
         .order_by("recipe__name", "raw_product__name")
+    )
+
+
+def counterpart_for(product):
+    """The one fancy product `product` can be finished as, or `None`.
+
+    **One to one**, off `RawProduct.fancy_counterpart`: a half circle veil
+    becomes a fancy half circle veil and nothing else. That is what lets
+    production route a bath's output without asking anybody which blank —
+    there is only one answer, so there is no question.
+
+    Distinct from `target_for` below, which takes a blank because the
+    conversion page lets somebody choose one. Both exist on purpose: the
+    conversion page is retrospective and the person doing it is holding the
+    scarf, while this runs at the moment a bath is accepted and has to be
+    unambiguous with nobody to ask.
+    """
+    if product.recipe_id is None:
+        return None
+    blank = product.raw_product.fancy_counterpart
+    if blank is None:
+        return None
+    return (
+        FinishedProduct.objects.filter(
+            is_active=True, raw_product=blank, recipe_id=product.recipe_id
+        )
+        .select_related("raw_product", "recipe")
+        .first()
     )
 
 

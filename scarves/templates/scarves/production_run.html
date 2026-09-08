@@ -9,7 +9,7 @@ signal — the same reasoning as the booth form.
 {% endcomment %}
 
 {% block title %}Run {{ run.pk }}{% endblock %}
-{% block heading %}Run {{ run.pk }} — what got done?{% endblock %}
+{% block heading %}Run {{ run.pk }} — what's ready?{% endblock %}
 
 {% block style %}
   {{ block.super }}
@@ -29,6 +29,27 @@ signal — the same reasoning as the booth form.
   .row.recorded .tag {
       font-size: 12px; font-weight: 700; color: #2f6b34;
       text-transform: uppercase; letter-spacing: .04em;
+  }
+  /* Called off reads as neither done nor waiting: greyed, not green, and
+     not red either — nothing went wrong, the bath simply isn't happening. */
+  .row.cancelled { background: #f4f5f7; border-color: #d3d7dd; cursor: default; }
+  .row.cancelled .what, .row.cancelled .detail { color: #7a8290; }
+  .row.cancelled .tag {
+      font-size: 12px; font-weight: 700; color: #6b7280;
+      text-transform: uppercase; letter-spacing: .04em;
+  }
+
+  .yield { display: flex; align-items: center; gap: 7px; margin-top: 8px;
+           font-size: 13px; color: #667; }
+  /* Wide enough for two digits and tall enough to hit with a thumb. 16px
+     font because anything smaller makes iOS zoom the page on focus, which
+     on this form scrolls the row you were answering off the screen. */
+  /* Indented under the count it is a subset of, so "of those" reads as
+     belonging to the number above rather than as a second total. */
+  .yield.fancy { margin-left: 14px; }
+  .yield input {
+      width: 62px; height: auto; padding: 8px; font: inherit; font-size: 16px;
+      text-align: center; border: 1px solid #c8cfd8; border-radius: 8px;
   }
 
   .codeform { display: flex; gap: 8px; margin-top: 10px; }
@@ -52,9 +73,20 @@ signal — the same reasoning as the booth form.
 
   {% if just_applied is not None %}
     <div class="panel">
-      {% if just_applied %}
-        <strong>Thanks — {{ just_applied }} bath{{ just_applied|pluralize }} recorded.</strong>
-        Stock has been updated.
+      {% if just_applied.baths %}
+        <strong>Thanks — {{ just_applied.baths }} bath{{ just_applied.baths|pluralize }} in,
+        {{ just_applied.units }} item{{ just_applied.units|pluralize }} added.</strong>
+        {% if just_applied.fancy %}
+          {{ just_applied.fancy }} of them went out fancy.
+        {% endif %}
+        {% if just_applied.lost %}
+          {% comment %}
+          Said back rather than swallowed. The blanks were used either way, so
+          a short bath is a real number somebody may want to query, and the
+          only place it is written down is this row.
+          {% endcomment %}
+          {{ just_applied.lost }} didn't make it — those blanks were used up.
+        {% endif %}
       {% else %}
         <strong>Nothing new to record.</strong>
         Everything you ticked was already in.
@@ -117,21 +149,50 @@ signal — the same reasoning as the booth form.
     {% csrf_token %}
 
     {% for row in run.rows.all %}
-      {% if row.is_applied %}
+      {% if row.is_accepted %}
         {% comment %}
-        Already recorded, and shown rather than hidden — a row that vanished
-        would read as "I never ticked that". Not un-tickable: once stock has
-        moved, taking it back is an inventory adjustment with a reason on it,
-        not a checkbox on a page with no login.
+        Already in, and shown rather than hidden — a row that vanished would
+        read as "I never ticked that". Not un-tickable: once stock has moved,
+        taking it back is an inventory adjustment with a reason on it, not a
+        checkbox on a page with no login.
         {% endcomment %}
         <div class="row recorded">
           <div>
+            <div class="what">{{ row.yielded }} × {{ row.finished_product.recipe.name }}</div>
+            <div class="detail">
+              {{ row.finished_product.raw_product.name }}
+              {% if row.fancy_yield %} · {{ row.fancy_yield }} fancy{% endif %}
+              {% if row.loss %} · {{ row.loss }} of {{ row.quantity }} didn't make it{% endif %}
+            </div>
+            <div class="tag">In stock</div>
+          </div>
+        </div>
+      {% elif row.is_cancelled %}
+        {% comment %}
+        Called off — the bath never ran, so nothing was used and the colorway
+        goes back on the next sheet. Shown for the same reason: a row that
+        disappeared would look like one that was never on the paper.
+        {% endcomment %}
+        <div class="row cancelled">
+          <div>
             <div class="what">{{ row.quantity }} × {{ row.finished_product.recipe.name }}</div>
             <div class="detail">{{ row.finished_product.raw_product.name }}</div>
-            <div class="tag">Already recorded</div>
+            <div class="tag">Called off</div>
           </div>
         </div>
       {% else %}
+        {% comment %}
+        Tick, and say how many came out. The number is pre-filled with what
+        the paper asked for, because that is the answer nearly every time —
+        it is there to be corrected, not to be entered. A tick with the box
+        left alone means the full bath, which is exactly what a tick used to
+        mean on its own, so nothing is lost if a thumb never reaches it.
+
+        The number rides *inside* the label so tapping anywhere else on the
+        row still toggles the box, and `onclick:event.stopPropagation()` is
+        deliberately absent — a number input swallows the label's click on
+        its own, and a script here would be a script this page has to load.
+        {% endcomment %}
         <label class="row">
           <input type="checkbox" name="done" value="{{ row.pk }}"
                  {% if row.pk in prefilled %}checked{% endif %}>
@@ -141,17 +202,46 @@ signal — the same reasoning as the booth form.
               {{ row.finished_product.raw_product.name }} ·
               #{{ row.order }} on the sheet
             </div>
+            <div class="yield">
+              <span>came out</span>
+              <input type="number" name="yielded-{{ row.pk }}"
+                     value="{{ row.quantity }}" min="0" max="{{ row.quantity }}"
+                     inputmode="numeric">
+              <span>of {{ row.quantity }}</span>
+            </div>
+            {% if row.fancy_target %}
+              {% comment %}
+              Only where this blank has a fancy counterpart, which is a few
+              silk veils and nothing else — no yarn row ever shows this,
+              without anything having to know what yarn is.
+
+              Defaults to zero because that is the answer nearly every time,
+              and it is a subset of what came out rather than an addition: a
+              bath of five that came out five with one fancy is "5 of 5" and
+              "1 fancy". Recording it here means the fancy veil is never
+              counted as plain, so there is no overcount for somebody to
+              notice weeks later on a peg.
+              {% endcomment %}
+              <div class="yield fancy">
+                <span>of those,</span>
+                <input type="number" name="fancy-{{ row.pk }}"
+                       value="0" min="0" max="{{ row.quantity }}"
+                       inputmode="numeric">
+                <span>finished as {{ row.fancy_target.raw_product.name }}</span>
+              </div>
+            {% endif %}
           </div>
         </label>
       {% endif %}
     {% endfor %}
 
-    <button class="btn" type="submit">Record these</button>
+    <button class="btn" type="submit">These are ready</button>
   </form>
 
   <p class="muted" style="margin-top:18px">
-    Only tick the baths you actually finished. You can come back to this page
-    and add more later — the ones already recorded stay put.
+    Only tick a bath once it is bagged and ready for the booth — the tick is
+    what puts it into stock, so a bath still drying isn't one yet. You can
+    come back to this page and add more later; what's already in stays put.
   </p>
 
 {% endblock %}

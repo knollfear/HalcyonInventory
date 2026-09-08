@@ -454,11 +454,14 @@ Two deliberate exceptions:
   there is nothing to preserve — a row typed in by mistake shouldn't need
   retiring.
 
-The same reasoning explains what happens when a `ProductionRun` is deleted:
-its rows cascade away, but the `InventoryLog` rows they created are separate
-objects and stay. Those baths were really dyed. What goes is the trail from
-the sheet to the movement — which is fine, because the run was scaffolding
-and the log is the record.
+**A `ProductionRun` no longer deletes at all**, and the paragraph that used to
+sit here explained why deleting one was cheap: the rows cascaded, the
+`InventoryLog` rows stayed, and all that was lost was the trail from the sheet
+to the movement. That held while a run was scaffolding. It stopped holding
+when the run became the only account of what a session was *asked* to do —
+the ledger records what entered inventory, so a cancelled bath and a bath
+nobody printed leave the same trace there, which is none. Retiring a sheet is
+cancelling what is left on it; see the production-sheet section.
 
 ## Raw inventory: one save, because what goes in is a bill
 
@@ -617,28 +620,75 @@ has gloves, water and a sink in it, which makes a phone the wrong thing to be
 holding — so the sheet is the work order, a pencil is the input device, and
 the phone is picked up once, afterwards, with dry hands.
 
-**A `ProductionRun` is not a source of truth.** It is scaffolding for a
-physical job. What closes the loop is the `InventoryLog` rows and the stock
-they moved; the run is only how the paper and the phone found each other.
-Treating it as a record to be preserved, audited, or worked off as a queue is
-the mistake — that road leads to retention rules, reconciliation screens and a
-backlog nobody reads, none of which the job needs.
+**Dyeing takes one to three days, and the app used to model it as a moment.**
+A bath is dyed, dried, tagged and bagged, and only the last of those is a
+scarf that can hang on a peg. Off season the difference costs nothing; in
+season it is one to three days in which the app is wrong in a way the close
+and the restock walk both read — and, worse, a second sheet printed inside
+that window asks for the same baths again, because the stock has not arrived
+and the colorway still reads as short. That is what the machinery below is
+for. **The fix is deliberately not a WIP state machine**: the paper already
+carries the three days perfectly well, and four reports where the job needs
+none is how a flow stops being used.
+
+**The tick box means "this amount has been accepted into inventory"** — not
+"this bath happened". It is filled in when the bath is bagged and ready for
+the booth. That makes a blank box a complete and honest statement rather than
+a lost one: 5 of 20 is a sheet that isn't finished, not a sheet that mislaid
+fifteen baths. Same wording on the production-needed page's button, which
+makes the same claim from the other direction.
+
+**A `ProductionRun` is a record.** It used to be scaffolding — the paper was a
+work aid, the `InventoryLog` was the only thing that survived it, and
+deleting a useless one was cheap and normal. That paragraph was right for its
+time and this one replaces it. Once a sheet has to carry a session that runs
+three days, the plan gets edited, baths get called off, and a lot
+occasionally comes out of the pot ruined — and **none of that is answerable
+from the ledger**, because the ledger only ever says what *entered*
+inventory. A cancelled bath and a bath nobody ever printed leave the same
+trace there, which is none. So the rows are kept, `ProductionRunAdmin` is
+read-only, and nothing deletes — the same bargain `CloseRun` makes.
+
+This is also the surface a bill will eventually hang off, which is the other
+reason the rows have to mean something on their own. **Don't build that on
+`submitted_by`**: it is filled from the remembered-PIN cookie as a record of
+who replied, and it is not a claim about who did the work.
 
 **The row is a bath, not a scarf.** A bath is one blank plus one recipe
 yielding `number_per_dye_bath` units of a single SKU, so production is not a
-column of counts to be entered — it is a handful of yes/no answers. "We only
-got through 10 of the 20" is ten ticked boxes, nobody adds anything up, and
-the form on the phone is the same rows in the same order, which makes
-reporting recognition rather than transcription.
+column of counts to be entered — it is a handful of answers in the same order
+as the paper, which makes reporting recognition rather than transcription.
 
-**One QR for the sheet, not one per row.** Twenty codes would be twenty scans
-to record what is one session's work. The token in that URL is what
-authorises the return — the same bargain as the other `secret/` pages, scoped
-to a single sheet instead of standing open forever, and it means the crew
-report production without accounts. No PIN: you reached the page by scanning
-something you are holding, so a PIN would be friction with nothing behind it.
-`ProductionRun.submitted_by` is filled from the remembered-PIN cookie when the
-phone knows a name, purely as a record.
+**A row ends as pending, accepted at n ≥ 0, or cancelled**, and `closed`
+derives from "nothing pending". There is no run-level retired flag, because
+retiring a sheet *is* cancelling its remainder — so closed has one meaning
+and cannot disagree with its own rows.
+
+**Cancelled and binned are different, and both are needed.** Cancelled means
+the bath never ran: nothing was decremented, so no blanks were consumed, and
+the claim on the planner is released so the colorway comes back on the next
+sheet. Checked with an actual of 0 means the bath ran and the lot was binned,
+so the blanks really are gone. Same code path, `yielded` at 0.
+
+**Yield asks one number: how many came out.** The bath consumes its blanks in
+full whatever happened in the pot — dye four, ruin one, four blanks are still
+gone — so `apply_row` takes `quantity` off raw and puts `yielded` onto
+finished, and the difference is a loss rather than a discrepancy. Raw is
+allowed to heal at the next booth count; only raw speeds a reorder, while
+finished reaches the peg, the close and Square.
+
+**Always write the `InventoryLog`, even at a yield of zero.** That keeps
+`applied_log` the single answer to "has this row moved anything", and two
+guards is how one of them goes stale. Nothing downstream minds:
+`labels.produced_since` already filters `quantity__gt=0`. There is
+deliberately **no `FAILED_BATH` log type** — a total loss is a partial loss at
+the end of its range, and a separate type would record 5→0 and 5→3 in
+different shapes, so any scrap question would have to union two of them.
+
+**The ledger says what entered inventory; the row says what the session
+found.** Raw movements have never been ledgered here, so scrap is answered
+from `ProductionRunRow`, not from `InventoryLog` — the same split the close
+makes when `closing.tally()` reads `CloseRunRow`.
 
 **`ProductionRunRow.applied_log` is what stops a bath counting twice.** The
 return URL is printed on paper that can be re-scanned, the button can be
@@ -649,13 +699,148 @@ redelivered orders, same fix. Un-ticking is deliberately **not** the inverse:
 once stock has moved, taking it back is an inventory adjustment with a reason
 attached, not a checkbox on a page with no login.
 
+**One QR for the sheet, not one per row.** Twenty codes would be twenty scans
+to record what is one session's work. The token in that URL is what
+authorises the return — the same bargain as the other `secret/` pages, scoped
+to a single sheet instead of standing open forever, and it means the crew
+report production without accounts. No PIN: you reached the page by scanning
+something you are holding, so a PIN would be friction with nothing behind it.
+**The QR on the paper is the permanent door**, which is what makes every list
+of sheets in the app pure UI — losing one from a list costs nothing.
+
 `quantity` is frozen when the sheet prints rather than read back off the raw
 product. The paper says `x4` and the paper is what somebody worked from; if
 the bath size is edited next week, that row still has to mean what it said.
 
+### Four states, and only one of them changes behaviour
+
+`production.py` derives all four in one place, off the rows rather than off
+`submitted_at` — which survives as a record of the first reply and decides
+nothing:
+
+| Filter        | Means                                          |
+|---------------|------------------------------------------------|
+| `closed`      | nothing pending: every row accepted or cancelled |
+| `unreported`  | nothing accepted at all                        |
+| `overdue`     | open past `OVERDUE_AFTER` (10 days)            |
+| `counted`     | open and not overdue                           |
+
+**`counted` is the one that does anything**: those sheets' pending baths are
+subtracted in `candidates()`, so a second sheet doesn't re-ask for the first
+one's work. Everything else is a list somebody reads.
+
+**Overdue must be visible, not silent.** The age bound stops a lost sheet's
+unaccepted rows suppressing colorways forever — but the moment a sheet stops
+claiming its baths is the moment those colorways start being asked for again,
+and if that happened quietly a session genuinely still in progress would get
+re-dyed behind somebody's back. So the picker names overdue sheets and never
+truncates them. "Why are these open after ten days" is the question; accept or
+retire are the two answers. No escalation and no count of how often it
+happens — the same bargain `_drained_at` makes on the restock board.
+
+**Automatic retirement is gone.** Printing a sixth sheet used to close the
+oldest (`retire_superseded_runs`, newest-five). The reasoning was right — five
+sheets out at once means the reporting loop has already failed — and the
+remedy was the app guessing: closing an unanswered sheet silently decided its
+session never happened, and a sheet with four baths still drying looks exactly
+like a sheet somebody abandoned. `MAX_OPEN_RUNS` survives as `RUNS_LISTED`, a
+display limit on the picker's convenience list and nothing more.
+
+**Cancel-all yes, accept-all never.** Direction decides which bulk actions are
+allowed. Cancelling moves nothing into inventory and hands a claim back, so
+the worst case is being asked about those colorways again. Accepting puts
+stock on the books for piles nobody looked at, and every one it gets wrong is
+then wrong on the pegs, at the close and in Square. So accepting costs a mark
+per row — the same rule as the restock board's missing "check all", where the
+cost *is* the evidence. Somebody reasonable will ask for accept-all after a
+long session; the reasoning is in `production_run_cancel_remaining` so it
+doesn't have to be reconstructed.
+
+### The sheet is editable, and prints as two documents
+
+The planner only sees shortages against par, and there are real reasons to dye
+something that isn't one — an order taken at the stall, room left in a pot
+already being heated. A plan nobody can edit gets worked around on paper, and
+then the paper and the app disagree about what the session was. So the run
+page has a type-ahead to add a bath and a `strike` beside each pending row.
+Adding **appends**, because `order` is the position on a printed sheet and
+renumbering would make an existing printout disagree about which row is
+which; striking **cancels rather than deletes**, because a line on a printed
+sheet the app has never heard of is worse than a line it can explain.
+
+The type-ahead is the same `product_search` endpoint the uploader and the
+label picker use, on a third `?mode=` template swap. Submit-only and never a
+type-ahead per keystroke, and with the script blocked `q` lands in the URL and
+the page renders the very partial the fragment returns — the same call the
+close's tag search makes, for the same reason.
+
+**One print, three documents, in the order the job happens:**
+
+1. **Collection page** — the blanks, then the dyes. One walk to the shelf.
+2. **Work sheet** — `WORK_BOXES` (4) blank boxes per bath, with a ruled line
+   over each column. This lives in the dye room for the whole session.
+3. **Reporting sheet** — name, expected, a ruled space for the actual, and
+   the tick box. This is the one that comes back.
+
+**The work sheet carries no barcodes and no QR, and that absence is the
+feature.** It is the only thing stopping the wrong sheet being photographed —
+a marked-up working copy read as a report would tick baths still on a drying
+line. With nothing on it to decode, a photo of it cannot name a run. It says
+the run number and code in plain text so a person can match the two halves,
+and says "do not photograph this page" out loud.
+
+**The stage boxes carry no printed names, and that is the decision.** The
+obvious version prints DYED / DRIED / TAGGED / BAGGED across the top, and
+that is the app telling somebody how to do a job it does not do — the stages
+are hers, they vary with what is in the pot, and a printed name is an
+instruction whether or not it was meant as one. There is a ruled line over
+each column instead, which is an invitation. Nothing stores what she writes,
+reads it back, or knows how many stages a bath "should" have; the one
+transition the app cares about has its own box on the reporting sheet. **The
+work sheet is optional and says so** — it exists because a column of boxes
+holds twenty baths at different points across three days, not because
+anything needs it back.
+
+**Nothing in the PDF reads the run's state.** Every row prints, accepted or
+cancelled or neither. A reprint mid-session is the same document as the first
+print, not a rendering of what has happened since — **information flows paper
+→ app**, and the moment a PDF starts hiding rows that have come back, two
+sheets for one run disagree about how many baths are on it, with the one that
+disagrees being the one already in somebody's hand. Striking a row edits what
+the app will ask for *next*; it does not edit the paper already printed.
+
 ### What lands on the sheet
 
-Default is `FinishedProduct.behind_a_bath` — products where a whole bath still
+**Two datasets, because par is not the only reason to dye.** The default asks
+the shortage question; the other is a list somebody picked — an order taken at
+the stall, a colour worth trying, room beside a pot already being heated.
+Neither of those is a shortage, and a planner that can only answer "what is
+below par" cannot express any of them. It is also **the only way to plan a
+session when nothing is short**, which is exactly when there is time for one:
+the picker used to refuse to create a run at all in that case.
+
+The picked count is **baths, not scarves** — two baths of a blank yielding
+four print as `4 ×` twice, because a row is a bath and a bath is what somebody
+physically does. The list is `items=<pk>:<baths>` in the query string, so a
+hand-built sheet is a link somebody can send, and it is re-rendered off raw
+data after a failed submit rather than out of `cleaned_data`: losing a
+hand-built list because an unrelated field was wrong is the expensive failure
+on that half of the page.
+
+**Nothing about a pick is filtered on par, and none of it is subtracted for
+what is already in flight.** `plan_baths` derives what is needed and so must
+not double-ask; a pick is somebody deciding, and asking for a colorway a live
+sheet already covers may be exactly what was meant. What *is* refused is a
+product that cannot be dyed at all — an undyed passthrough or a fancy veil —
+and the search shows those greyed out with the reason rather than hiding them,
+the same call the label picker makes about a missing SKU.
+
+The type-ahead is a fourth `?mode=` on `product_search` (`plan`). It can't
+share `mode=sheet`, whose results post straight onto an existing run, and it
+can't share `mode=labels`, which greys out anything without a SKU — a SKU
+prints a sticker, it doesn't dye a bath.
+
+For the shortage dataset, the default is `FinishedProduct.behind_a_bath` — products where a whole bath still
 lands at or under par, which is where a session's work is fully used. The
 checkbox widens it to everything below par, including the ones a bath takes
 *past* par. That second group isn't sloppiness: a bath is a fixed size, so
@@ -673,23 +858,25 @@ The picker **says when there aren't enough blanks** for what it's about to
 ask for, and prints anyway. The order may already be placed, and refusing
 would be the app arguing with someone who can see the shelf.
 
-**A sheet leaves the outstanding list as soon as one row is reported.** One
-tick means somebody is working from it and the loop is closing; after that the
-QR code is how you get back to it, which is as findable as it needs to be.
-Adding the rest later still works.
+**In-flight baths are subtracted.** `candidates()` takes off what the
+`counted` sheets have already asked for, which is the whole reason the four
+states exist — without it a sheet printed on Saturday and another on Monday
+both ask for the same colorway, because the stock has not arrived yet and it
+still reads as short. Pending rows only: an accepted one is already in
+`number_on_hand`, and counting it here would subtract the same bath twice.
 
-**Only the newest `MAX_OPEN_RUNS` (5) stay outstanding — printing a sixth
-retires the oldest.** Five out at once already means the reporting loop has
-stopped working, and the two ways out of that (never reconciling, or
-abandoning the lot and starting over) are both bad. But *blocking* the sixth
-print is the wrong medicine: it deadlocks exactly when the paper has gone
-missing, which is the same moment a sheet gets abandoned in the first place.
-Keeping the newest five never deadlocks.
+**A sheet stays on the working list until every bath on it is settled.** It
+used to drop off on the first tick, on the reasoning that one tick means
+somebody is working from it. That reads one answered bath as a finished
+session, which for a three-day process is most of a sheet's life — and the
+crew's fallback list is exactly where somebody holding a part-worked sheet
+goes when the QR won't scan.
 
-Retiring costs nothing precisely because a run isn't a record — it is closed
-with a note rather than deleted, it applies no stock, and if it turns out to
-matter the PDF reprints in one click. The list on the picker is a convenience,
-"sheets you might still be working from", not a queue to be worked off.
+The picker's list of live sheets is a convenience, "sheets you might still be
+working from", not a queue to be worked off — the QR on the paper is the
+permanent door, so losing one from a list costs nothing. It is truncated at
+`RUNS_LISTED`. The overdue list beside it is the opposite and is never
+truncated: those sheets are asking for something.
 
 ### The collection page: blanks, then dyes
 
@@ -1011,6 +1198,53 @@ about them — which works precisely because `expected_products()` gates on
 So the supply stays unplannable and the **demand becomes answerable**: sales
 land in `InventoryLog` like everything else, and at the end of a season "what
 did fancy sell" is a query.
+
+### Fancy at production: routed before it was ever plain
+
+**A bath's output can be finished as fancy at the moment it is made.** The
+crew's reporting page offers a second number on any row whose blank has a
+fancy counterpart: five came out of a bath of five, and one of them went out
+fancy. The plain product gets four, the fancy one gets one, and the fancy
+veil is never counted as plain at all.
+
+This is the better-evidenced of the two routes, and nearly free. The
+conversion page below is retrospective — it has to be noticed, and until it
+is, the plain side is overstated. Here the person who made the bath says so
+while holding it.
+
+**`RawProduct.fancy_counterpart` is one to one**, set on the plain blank: a
+half circle veil becomes a fancy half circle veil and nothing else, because a
+veil cannot become a fancy shawl. That is what lets production route without
+asking which blank — there is only one answer, so there is no question, which
+is the difference from `fancy.target_for` on the conversion page.
+
+**It is silk-only with nothing checking for silk.** No yarn blank has a
+counterpart, so no yarn row ever shows the box. A category test would work
+today and break the day a fancy shawl exists — the same argument that put
+`made_in_a_dye_bath` on the blank instead of forking the category.
+
+**`fancy_yield` is a subset of `yielded`, never an addition.** That keeps
+`loss` meaning what it says: a bath is short only if fewer came out than were
+asked for, and how they were finished is a different question from whether
+they survived. The fancy units are logged as `PRODUCTION`, not as a
+conversion, because nothing was converted — that scarf was never plain. The
+plain log is still written even at zero, since `applied_log` is what stops a
+bath being counted twice.
+
+**Raw is untouched by the split.** A fancy veil is a plain scarf with line
+work, so a bath of five eats five plain blanks whichever way they leave.
+
+**Fancy supply now has two sources and a query must read both** —
+`ProductionRunRow.fancy_yield` and the conversion rows. The sentence below
+that the conversion rows *are* the fancy production history was true when
+they were the only route; it isn't any more, and a report reading only
+`SOURCE_FANCY_CONVERSION` goes silently short.
+
+The paper does not carry this yet. `sheetscan` reads one tick box per row and
+cannot read a number, so fancy is typed on the phone — consistent with the
+photo prefilling ticks and never accepting. Whether the reporting sheet grows
+a fancy write-in column is open, and depends on the separate question of
+whether the scan path earns its keep now that a row carries more than a bit.
 
 ### And the supply turns out to be answerable too — retroactively
 
@@ -1570,10 +1804,12 @@ that was caught by working the page in three passes across one evening, which
 is how it actually gets used. `close_history` still prefetches, correctly —
 it reads past runs and mutates nothing.
 
-**Unlike a `ProductionRun`, this is a record.** A production run is
-scaffolding: the `InventoryLog` is what survives it. Here the count of things
+**This is a record**, and so, now, is a `ProductionRun` — the comparison that
+used to sit here had the close as the exception. Here the count of things
 found wrong *is* the deliverable, which is why the rows are kept, why the
-admin is read-only, and why nothing deletes.
+admin is read-only, and why nothing deletes. The production sheet arrived at
+the same place by a different route: what a session was asked to do, and what
+it found, are answerable from nowhere else.
 
 ### It never reaches Square
 

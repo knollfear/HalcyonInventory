@@ -18,6 +18,36 @@ and the link to hand over if the QR won't scan.
   table.rows th { font-size: 11px; text-transform: uppercase; color: #667; }
   table.rows td.num { text-align: right; font-variant-numeric: tabular-nums; }
   tr.done td { background: #f2f8f2; }
+  /* Called off is greyed, not struck through: nothing went wrong, the bath
+     simply isn't happening, and a strike reads as a mistake being undone. */
+  tr.off td { background: #f4f5f7; color: #7a8290; }
+  .loss { color: #8a2f2a; font-size: .85em; }
+  .fancy { color: #5b3a8a; font-size: .85em; }
+
+  td.strike { width: 1%; white-space: nowrap; }
+  td.strike form { display: inline; }
+  .linkish {
+      border: 0; background: none; padding: 0; font: inherit; font-size: 12px;
+      color: #8a2f2a; cursor: pointer; text-decoration: underline;
+  }
+
+  .addbath { margin-top: 26px; }
+  .addbath h2 { font-size: 15px; margin: 0 0 8px; }
+  .findbox { display: flex; gap: 8px; margin-bottom: 10px; }
+  .findbox input {
+      flex: 1; min-width: 0; font: inherit; padding: 7px 9px;
+      border: 1px solid #cfd6de; border-radius: 6px; background: #fff;
+  }
+  #found form.addrow { margin: 0; }
+  #found .result {
+      display: flex; gap: 10px; align-items: center; width: 100%;
+      text-align: left; font: inherit; font-size: 13px; padding: 7px 9px;
+      border: 0; border-bottom: 1px solid #eef1f4; background: none;
+      cursor: pointer;
+  }
+  #found .result:hover { background: #f4f7fb; }
+  #found .result .who { flex: 1; }
+  #found .result .qty { color: #2f6b34; font-weight: 600; }
   .crewlink {
       font-family: ui-monospace, Menlo, monospace; font-size: 12px;
       word-break: break-all;
@@ -49,6 +79,15 @@ and the link to hand over if the QR won't scan.
   .dyeplan .gap p { margin: 8px 0 0; }
 {% endblock %}
 
+{% block head %}
+  {% comment %}
+  Only for the add box's search. Everything else on this page is ordinary
+  forms, so a blocked script costs the swap and nothing else — the search
+  falls back to a GET that renders the same partial inline.
+  {% endcomment %}
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+{% endblock %}
+
 {% block content %}
 
   <p>
@@ -57,15 +96,48 @@ and the link to hand over if the QR won't scan.
     {% if run.included_overshoot %}Included products a bath takes past par.{% endif %}
   </p>
 
-  {% if run.is_open %}
+  {% comment %}
+  Three states, not two. A sheet with some baths in and some still waiting is
+  the ordinary case for a process that runs one to three days, and the old
+  page had nowhere to say it — one tick flipped "still out" to "reported",
+  which read as a finished session on its first reply.
+  {% endcomment %}
+  {% if run.is_closed %}
+    <div class="panel">
+      <strong>Finished — {{ run.accepted_count }} of {{ run.rows.count }}
+      bath{{ run.rows.count|pluralize }} accepted{% if run.cancelled_count %},
+      {{ run.cancelled_count }} called off{% endif %}.</strong>
+      {% if run.submitted_at %}
+        Last reported {{ run.submitted_at|date:"d M Y, H:i" }}{% if run.submitted_by %}
+        by {{ run.submitted_by.name }}{% endif %}.
+      {% endif %}
+    </div>
+  {% elif run.is_overdue %}
+    {% comment %}
+    The one state that has to be said out loud. An overdue sheet has stopped
+    claiming its baths, so the planner is asking for those colorways again —
+    and if that happened silently, a session genuinely still in progress
+    would get re-dyed behind somebody's back. Two answers, both below:
+    accept what came out, or call off what didn't.
+    {% endcomment %}
     <div class="panel warn">
-      <strong>Still out.</strong> Nothing has been reported against this sheet,
-      so none of it has moved inventory.
+      <strong>Open since {{ run.created_at|date:"d M Y" }} —
+      {{ run.pending_count }} bath{{ run.pending_count|pluralize }} still
+      unanswered.</strong>
+      These have stopped counting towards what's on order, so these colorways
+      are being asked for again on new sheets. Accept what came out of them,
+      or call off what isn't going to happen.
+    </div>
+  {% elif run.is_unreported %}
+    <div class="panel warn">
+      <strong>Still out.</strong> Nothing has been accepted from this sheet
+      yet, so none of it has moved inventory.
     </div>
   {% else %}
     <div class="panel">
-      <strong>{{ run.done_count }} of {{ run.rows.count }} reported done</strong>
-      on {{ run.submitted_at|date:"d M Y, H:i" }}{% if run.submitted_by %}
+      <strong>{{ run.accepted_count }} of {{ run.rows.count }} baths in,
+      {{ run.pending_count }} still to come.</strong>
+      Last reported {{ run.submitted_at|date:"d M Y, H:i" }}{% if run.submitted_by %}
       by {{ run.submitted_by.name }}{% endif %}.
     </div>
   {% endif %}
@@ -73,6 +145,29 @@ and the link to hand over if the QR won't scan.
   <p>
     <a class="btn" href="{% url 'production_sheet_pdf' run.pk %}">Print the sheet</a>
   </p>
+
+  {% if run.is_open %}
+    {% comment %}
+    Cancel-all, and deliberately no accept-all beside it. Cancelling moves
+    nothing into inventory — it gives a claim back, so those colorways return
+    to the next sheet and the worst case is being asked again. Accepting puts
+    stock on the books for piles nobody looked at, and every one it gets
+    wrong is then wrong on the pegs, at the close and in Square. So accepting
+    costs a mark per row, the same way the restock board has no "check all".
+
+    An ordinary POST with a confirm on it: this is a desk page and the action
+    is cheap to undo by printing again, but it is still a decision.
+    {% endcomment %}
+    <form method="post"
+          action="{% url 'production_run_cancel_remaining' run.pk %}"
+          onsubmit="return confirm('Call off the {{ run.pending_count }} bath{{ run.pending_count|pluralize }} nobody has answered for? Nothing moves, and these colorways go back on the next sheet.')">
+      {% csrf_token %}
+      <button class="btn-quiet" type="submit">
+        Call off the {{ run.pending_count }} unanswered
+        bath{{ run.pending_count|pluralize }}
+      </button>
+    </form>
+  {% endif %}
 
 
   <p class="muted">
@@ -86,27 +181,86 @@ and the link to hand over if the QR won't scan.
     <thead>
       <tr>
         <th>#</th><th>Colorway</th><th>Blank</th><th>SKU</th>
-        <th class="num">Yields</th><th>Reported</th>
+        <th class="num">Asked for</th><th class="num">Came out</th><th>State</th>
       </tr>
     </thead>
     <tbody>
       {% for row in run.rows.all %}
-        <tr {% if row.done_at %}class="done"{% endif %}>
+        <tr {% if row.is_accepted %}class="done"{% elif row.is_cancelled %}class="off"{% endif %}>
           <td>{{ row.order }}</td>
           <td>{{ row.finished_product.recipe.name }}</td>
           <td>{{ row.finished_product.raw_product.name }}</td>
           <td>{{ row.finished_product.sku|default:"—" }}</td>
           <td class="num">{{ row.quantity }}</td>
+          {% comment %}
+          "Came out" is blank rather than zero for a bath nobody has answered
+          for. Zero is a real answer here — the bath ran and the lot was
+          binned — so printing it for an unanswered row would file a loss
+          against a session that may not have started.
+          {% endcomment %}
+          <td class="num">{% if row.is_accepted %}{{ row.yielded }}{% else %}—{% endif %}</td>
           <td>
-            {% if row.done_at %}
-              done {{ row.done_at|date:"d M, H:i" }}
+            {% if row.is_accepted %}
+              accepted {{ row.accepted_at|date:"d M, H:i" }}
+              {% if row.fancy_yield %}<br><span class="fancy">{{ row.fancy_yield }} fancy</span>{% endif %}
+              {% if row.loss %}<br><span class="loss">{{ row.loss }} lost</span>{% endif %}
+            {% elif row.is_cancelled %}
+              called off {{ row.cancelled_at|date:"d M, H:i" }}
             {% else %}
-              —
+              waiting
+            {% endif %}
+          </td>
+          <td class="strike">
+            {% if row.is_pending %}
+              {% comment %}
+              Striking a row cancels it rather than deleting it. The run is a
+              record now, so a bath that was on the paper and then called off
+              is a thing that happened to the plan — deleting it would leave
+              a line on a printed sheet the app has never heard of.
+              {% endcomment %}
+              <form method="post"
+                    action="{% url 'production_run_strike_row' run.pk row.pk %}">
+                {% csrf_token %}
+                <button type="submit" class="linkish" title="Take this bath off the sheet">strike</button>
+              </form>
             {% endif %}
           </td>
         </tr>
       {% endfor %}
     </tbody>
   </table>
+
+  {% comment %}
+  Adding a bath the planner couldn't see. It only knows about shortages
+  against par, and there are real reasons to dye something that isn't one —
+  an order taken at the stall, a colour somebody wants to try, room left in a
+  pot that is being heated anyway. A plan that can't be edited gets worked
+  around on paper instead, and then the paper and the app disagree.
+
+  A plain GET form with htmx layered on: with the script blocked `q` lands in
+  the URL and the results render inline from the same partial the fragment
+  returns. Submit-only, never a type-ahead that fires per keystroke — the
+  same call the close's tag search makes.
+  {% endcomment %}
+  <div class="addbath">
+    <h2>Add a bath</h2>
+    <form method="get" class="findbox"
+          hx-get="{% url 'product_search' %}?mode=sheet&run={{ run.pk }}"
+          hx-target="#found"
+          hx-swap="innerHTML">
+      <input type="search" name="q" value="{{ q }}"
+             placeholder="Colorway or SKU" autocomplete="off">
+      <button class="btn-quiet" type="submit">Find</button>
+    </form>
+    <div id="found">
+      {% if search_results is not None %}
+        {% include "scarves/partials/sheet_item_results.html" with products=search_results run_pk=run.pk %}
+      {% endif %}
+    </div>
+    <p class="muted">
+      Adding a bath doesn't change the sheet already printed — reprint it, or
+      write the row on the bottom.
+    </p>
+  </div>
 
 {% endblock %}

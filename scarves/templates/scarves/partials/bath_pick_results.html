@@ -1,0 +1,42 @@
+{% comment %}
+Type-ahead results for picking baths onto a sheet that doesn't exist yet, and
+the fourth click behaviour on the one `product_search` endpoint.
+
+Not `mode=sheet`: those results post straight onto a run, and here there is no
+run to post to — the list is built in the browser and the whole form creates
+the run in one go. Not `mode=labels` either, which greys out anything without
+a SKU: a SKU is what prints a sticker, not what dyes a bath, so refusing one
+here would be the sheet enforcing the label run's rule.
+
+Data attributes are what the page's add-handler reads, so a result carries
+everything a row needs without a second round trip — same as the label picker.
+{% endcomment %}
+{% for p in products %}
+  {% if p.recipe_id and p.raw_product.made_in_a_dye_bath %}
+    <button type="button"
+            class="result"
+            data-pk="{{ p.id }}"
+            data-name="{{ p.name }}"
+            data-baths="{{ p.bath_size }}">
+      <span class="who">{{ p.name }}</span>
+      <span class="muted">{{ p.bath_size }} per bath</span>
+    </button>
+  {% else %}
+    {% comment %}
+    Shown disabled rather than filtered out, the same call the label picker
+    makes about a missing SKU: dropping it silently means somebody searches,
+    doesn't see it, and never learns why. An undyed passthrough is ordered and
+    a fancy veil is line work added to a scarf that already exists — neither
+    is answerable by heating a pot.
+    {% endcomment %}
+    <button type="button" class="result" disabled
+            title="This isn't made in a dye bath.">
+      <span class="who">{{ p.name }}</span>
+      <span class="muted">
+        {% if not p.recipe_id %}undyed — ordered, not dyed{% else %}not made in a dye bath{% endif %}
+      </span>
+    </button>
+  {% endif %}
+{% empty %}
+  <div class="muted">No matching colorways.</div>
+{% endfor %}

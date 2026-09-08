@@ -296,7 +296,7 @@ def rows_to_tick(run, scan):
     return [
         row.pk
         for row in run.rows.all()
-        if not row.is_applied and production.row_code(row) in filled
+        if not row.is_accepted and production.row_code(row) in filled
     ]
 
 

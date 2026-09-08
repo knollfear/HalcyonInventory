@@ -182,6 +182,27 @@ urlpatterns = [
         name="production_sheet_pdf",
     ),
     path(
+        # POST only, and so carries no `@page_meta` and never reaches the
+        # site map. There is deliberately no accept-all beside it — see the
+        # view for why the two directions are not symmetrical.
+        "private/production-sheet/<int:pk>/cancel-remaining/",
+        views.production_run_cancel_remaining,
+        name="production_run_cancel_remaining",
+    ),
+    # Editing the plan: add a bath the shortage query couldn't see, or take
+    # one off that isn't going to happen. Both POST-only actions, so neither
+    # carries `@page_meta` and the picker convention doesn't apply to them.
+    path(
+        "private/production-sheet/<int:pk>/add-row/",
+        views.production_run_add_row,
+        name="production_run_add_row",
+    ),
+    path(
+        "private/production-sheet/<int:pk>/strike/<int:row_id>/",
+        views.production_run_strike_row,
+        name="production_run_strike_row",
+    ),
+    path(
         "secret/production/",
         views.production_run_index,
         name="production_run_index",

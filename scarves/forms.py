@@ -453,25 +453,108 @@ class HoursForm(forms.Form):
         return cleaned
 
 
+class PickedBathsField(forms.Field):
+    """Hand-picked baths, parsed from repeated `items=<pk>:<baths>`.
+
+    Same wire format as the label page's picked items, and `parse_label_items`
+    reads both — the shape is "a product and a count", and having two parsers
+    for one shape is how they drift.
+
+    What the count *means* differs, and that is the thing to hold onto: on the
+    label page it is stickers, here it is **baths**. Two baths of a colorway
+    whose blank yields four is eight scarves, and the sheet says `4 ×` twice
+    rather than `8 ×` once, because a row is a bath and a bath is what
+    somebody physically does.
+    """
+
+    widget = forms.MultipleHiddenInput
+
+    #: Per colorway. A session is planned in baths, and twenty of one colour
+    #: is already an unusual day — this is a typo guard, not a policy.
+    MAX_PER_ITEM = 20
+
+    def clean(self, value):
+        from .models import FinishedProduct
+
+        if not value:
+            return []
+
+        wanted = parse_label_items(value)
+        if not wanted:
+            raise forms.ValidationError("Couldn't read the picked baths.")
+        if any(not 1 <= n <= self.MAX_PER_ITEM for n in wanted.values()):
+            raise forms.ValidationError(
+                f"Baths per colorway run from 1 to {self.MAX_PER_ITEM}."
+            )
+
+        found = {
+            p.pk: p
+            for p in FinishedProduct.objects.filter(pk__in=wanted, is_active=True)
+            .select_related("raw_product", "recipe")
+        }
+        if set(wanted) - set(found):
+            raise forms.ValidationError(
+                "Some picked colorways are no longer active. Remove them and "
+                "re-add."
+            )
+        # A passthrough has no recipe and a fancy veil isn't made in a bath.
+        # Caught here rather than filtered out of the search, so the answer is
+        # "that isn't dyed" rather than the product silently not existing.
+        undyeable = [
+            p.name for p in found.values()
+            if p.recipe_id is None or not p.raw_product.made_in_a_dye_bath
+        ]
+        if undyeable:
+            raise forms.ValidationError(
+                f"{', '.join(sorted(undyeable))} isn't made in a dye bath, so "
+                f"it can't go on a production sheet."
+            )
+        return [(found[pk], n) for pk, n in wanted.items()]
+
+
 class ProductionSheetForm(forms.Form):
     """What to put on a printed production sheet.
 
-    Three questions, because a dyeing session is planned in about that much
-    detail: how many baths are you good for, which table are you dyeing for,
-    and do you want the ones a bath would take past par.
+    **Two datasets.** The default asks the shortage question — how many baths
+    are you good for, which table, and do you want the ones a bath takes past
+    par. The other is a list somebody picked.
+
+    The picked one exists because par is not the only reason to dye. An order
+    taken at the stall, a colour somebody wants to try, a pot being heated
+    anyway with room beside it — none of those are shortages, and a planner
+    that can only answer "what is below par" cannot express any of them. It
+    is also the only way to plan a session at all when nothing is short,
+    which is exactly when there is time for one.
     """
 
     #: A day's dyeing, generously. High enough that nobody hits it planning a
     #: real session, low enough that a typo can't produce a hundred-page PDF.
     MAX_BATHS = 60
 
+    SHORTAGE = "shortage"
+    ITEMS = "items"
+    DATASET_CHOICES = [
+        (SHORTAGE, "What's below par"),
+        (ITEMS, "Colorways I pick"),
+    ]
+
+    dataset = forms.ChoiceField(
+        choices=DATASET_CHOICES,
+        initial=SHORTAGE,
+        # Absent means the shortage question, which is what every link and
+        # bookmark made before this field existed is asking.
+        required=False,
+        label="What goes on the sheet",
+    )
     baths = forms.IntegerField(
         min_value=1,
         max_value=MAX_BATHS,
         initial=20,
+        required=False,
         label="How many baths?",
         help_text="One row per dye bath, most urgent first.",
     )
+    items = PickedBathsField(required=False)
     category = forms.ModelChoiceField(
         queryset=RawProductCategory.objects.none(),   # set in __init__
         required=False,
@@ -495,6 +578,53 @@ class ProductionSheetForm(forms.Form):
         # Per-instance, so a category added this morning is selectable
         # without a redeploy — same reasoning as the employee pickers.
         self.fields["category"].queryset = RawProductCategory.objects.order_by("name")
+
+    @property
+    def picked_dataset(self) -> bool:
+        return (self.data.get("dataset") or self.SHORTAGE) == self.ITEMS
+
+    @property
+    def items_value(self):
+        """The picked list, for re-rendering the table after a failed submit.
+
+        Parsed leniently off raw data rather than read from `cleaned_data`,
+        because the whole point is to survive the submit that *didn't* clean —
+        losing somebody's hand-built list because an unrelated field was wrong
+        is the expensive failure here.
+        """
+        from .models import FinishedProduct
+
+        wanted = parse_label_items(self.data.getlist("items")) if self.data else {}
+        if not wanted:
+            return []
+        found = {
+            p.pk: p
+            for p in FinishedProduct.objects.filter(pk__in=wanted)
+            .select_related("raw_product", "recipe")
+        }
+        return [(found[pk], n) for pk, n in wanted.items() if pk in found]
+
+    def clean(self):
+        cleaned = super().clean()
+        dataset = cleaned.get("dataset") or self.SHORTAGE
+
+        if dataset == self.SHORTAGE and not cleaned.get("baths"):
+            self.add_error("baths", "Say how many baths you are good for.")
+        if dataset == self.ITEMS:
+            picked = cleaned.get("items")
+            if not picked:
+                self.add_error(
+                    "items", "Search for a colorway and add it before printing."
+                )
+            elif sum(n for _, n in picked) > self.MAX_BATHS:
+                self.add_error(
+                    "items",
+                    f"That is more than {self.MAX_BATHS} baths. A sheet is one "
+                    f"session's work.",
+                )
+
+        cleaned["dataset"] = dataset
+        return cleaned
 
 
 def parse_label_items(raw_values):
