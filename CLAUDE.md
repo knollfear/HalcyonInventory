@@ -1538,6 +1538,57 @@ which is not something anybody falsifies at a glance. The bag figure is read
 straight off the bag as the work finishes, so a tap confirms both halves of
 the app's belief rather than only the visible one.
 
+**The badge is the work, and for a long time it was a sales counter.** It read
+`+11` on Avocado — a hook holding two, nothing in the bag — because it printed
+every sale since somebody last tapped that peg, which was ten days and two
+weekends earlier and included a bath of five that went out and sold again in
+between. Sales are a fact about the peg; they are not an instruction, and a
+tile that says `+11` over `0/2` is asking for something nobody can carry.
+
+`restock.refill_plan` is the number instead, and its three bounds are three
+ways the old badge lied:
+
+- **The peg.** `fill` caps it. A two-skein hook cannot need eleven.
+- **The bag.** Bounded explicitly rather than left to fall out of the
+  arithmetic. `fill` derives from `number_on_hand`, so the two normally agree
+  — and they come apart exactly when the app believes more is hanging up than
+  it believes it owns, which is what a close or a bulk adjustment writing the
+  total down with no sale to explain it produces. Then the pegs' want outruns
+  what is behind them and somebody is sent to a bag that cannot answer.
+- **The colorway.** Sales drain *once* across a colorway's pegs, not off each
+  of them. Pastel Rainbow hangs on two pegs and sold two: the old badge said
+  `+2` on both and asked for four back.
+
+Across the two live boards that took the total ask from 164 skeins to 69.
+
+A sale is attributed to the first peg, in the order `_allocate` fills them,
+that was already stocked when it happened — a sale before a peg's last walk
+cannot have come off it, because that walk filled it afterwards. Which of two
+pegs gets the badge is arbitrary; the total is not, and the total is what
+somebody carries from the bag. A peg nobody has walked has no baseline, is
+assumed to be as the app allocated it, and asks for nothing — a quiet tile
+still means "checked, nothing to do" rather than "no idea".
+
+The sparse-walk half of this heals on its own as walks get regular, because
+the window is the gap between taps. The three bounds do not: they were wrong
+at any walk frequency.
+
+**Work wins the tile colour, and won't-fill is not the same question.** The
+class used to be `{% if short %}…{% elif needs_refill %}`, so `short`
+(`fill < capacity`) took the tile outright — and a peg with nothing on it and
+one skein in the bag came out amber, under a caption reading "nothing you do
+at the board fixes it". It is a job: put the one out and move on. The two
+facts are independent and only one of them is an instruction, so **blue means
+there is something to carry from the bag** and amber means there is not and
+the peg still won't be full. Nothing is lost by the flip, because the tile's
+own `1/2` already says where the work leaves you.
+
+Blue is a transient state and that is the check on it: put the skein out, tap
+the tile, and the frozen `expected` makes the next build read 1 on the peg
+and 0 in the bag — `put_out` falls to zero and the peg settles back to amber.
+A tile that stayed blue after the job would send somebody to an empty bag on
+the next pass, which is this same bug wearing the opposite coat.
+
 **The finding that actually happens is "it says the bag has some, and the bag
 is empty."** Nobody counts a bag of twelve reliably and nothing asks them to.
 An empty bag is different in kind: noticed without counting, constant, and

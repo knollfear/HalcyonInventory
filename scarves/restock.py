@@ -53,6 +53,15 @@ one somebody can falsify by looking at the peg. `last_walked` gives the
 baseline per position, together with what actually went onto that peg;
 `sale_log` reads the ledger forward from it.
 
+**But sales are not the work, and the badge printed them for a long time.**
+It read `+11` on a hook holding two with nothing in the bag — eleven being
+every sale since the peg was last tapped ten days earlier, which spanned two
+weekends and a bath of five that went out and sold again in between. What
+goes back on a peg is what the peg holds, less what is on it, and never more
+than the bag has. `refill_plan` is that number and the three bounds are
+written up there; the raw sales count survives on the cell because
+`_drained_at` reads it, but nothing shows it to anybody.
+
 **A peg that needs skeins and a peg that can't be filled are different
 signals, and the board keeps them apart.** The first is *work*: go to the bag,
 put two back. The second is not work at all — nothing done at the board fixes
@@ -149,8 +158,18 @@ from .models import (
 )
 
 
-def expected_fill(position) -> int:
-    """How many of this colorway the app thinks can go on this peg.
+def homes_for(product):
+    """A colorway's pegs on live boards, in the order a person walks them."""
+    return [
+        p
+        for p in product.display_positions.select_related("fixture")
+        .order_by("fixture__name", "row", "column")
+        if p.is_home and p.fixture.is_active
+    ]
+
+
+def _allocate(product, homes):
+    """`{position_id: fill}` — the stock spread across the pegs, greedily.
 
     Greedy in position order rather than spread evenly, because that is what
     a person does: fill the first peg, then the next, and stop when the bag
@@ -158,25 +177,93 @@ def expected_fill(position) -> int:
     colorway instead of a gap on the last one, which is not how a board looks
     and not how anybody restocks.
     """
+    remaining = product.number_on_hand
+    fills = {}
+    for home in homes:
+        take = min(remaining, home.fixture.capacity_per_position)
+        fills[home.pk] = take
+        remaining -= take
+    return fills
+
+
+def expected_fill(position) -> int:
+    """How many of this colorway should be on this peg when the job is done.
+
+    This is what a `RestockCheck` freezes, so it keeps meaning "how many were
+    hanging here at the end of that walk" — which is what `refill_plan` reads
+    back as the baseline.
+    """
     product = position.finished_product
     if product is None or not position.is_home:
         return 0
 
-    capacity = position.fixture.capacity_per_position
-    homes = [
-        p
-        for p in product.display_positions.select_related("fixture")
-        .order_by("fixture__name", "row", "column")
-        if p.is_home and p.fixture.is_active
-    ]
+    fills = _allocate(product, homes_for(product))
+    return fills.get(
+        position.pk, min(product.number_on_hand, position.fixture.capacity_per_position)
+    )
 
-    remaining = product.number_on_hand
+
+def refill_plan(product, walked, sales):
+    """`{position_id: (fill, on_peg, put_out)}` — the work at each of a colorway's pegs.
+
+    **`put_out` is work, and it used to be a sales counter.** The tile's badge
+    read "+11" on a peg holding two, off a colorway with none in the bag: that
+    number was every sale since somebody last tapped the peg, which with walks
+    ten days apart spans two weekends and a dye bath that went out and sold
+    again in between. Sales are not work. What goes back on the peg is what
+    the peg can hold, less what is on it, and never more than the bag has.
+
+    Three bounds, and each one was a way the old badge lied:
+
+    - **The peg.** `fill` caps it, so a hook holding two can never ask for
+      eleven.
+    - **The bag.** Bounded explicitly rather than left to the arithmetic:
+      `fill` is derived from `number_on_hand`, so the two normally agree, and
+      they come apart exactly when the app believes more is hanging up than it
+      believes it owns — a close or a bulk adjustment writing the total down
+      without a sale to explain it. Then the sum of the pegs' wants exceeds
+      what is behind them, and somebody is sent to a bag that cannot answer.
+    - **The colorway.** Sales are drained *once* across the pegs instead of
+      subtracted from each. Pastel Rainbow hangs on two pegs of the veil rack
+      and sold two: the old badge said "+2" on both and asked for four back.
+
+    A sale is attributed to the first peg, in the same order `_allocate`
+    fills them, that was already stocked when it happened — a sale before a
+    peg's last walk cannot have come off it, because that walk filled it
+    afterwards. Which peg of two gets the badge is arbitrary; the total is
+    not, and the total is the thing somebody carries from the bag.
+
+    A peg nobody has walked has no baseline, so it is assumed to be as the
+    app allocated it and asks for nothing. That keeps a quiet tile meaning
+    "checked, nothing to do" rather than "no idea", which is the distinction
+    the whole board rests on.
+    """
+    homes = homes_for(product)
+    fills = _allocate(product, homes)
+
+    on_peg = {}
     for home in homes:
-        take = min(remaining, home.fixture.capacity_per_position)
-        if home.pk == position.pk:
-            return take
-        remaining -= take
-    return min(product.number_on_hand, capacity)
+        baseline = walked.get(home.pk)
+        on_peg[home.pk] = fills[home.pk] if baseline is None else baseline[1]
+
+    for when, units in sales:
+        for home in homes:
+            if units <= 0:
+                break
+            baseline = walked.get(home.pk)
+            if baseline is None or when < baseline[0] or on_peg[home.pk] <= 0:
+                continue
+            take = min(units, on_peg[home.pk])
+            on_peg[home.pk] -= take
+            units -= take
+
+    bag = max(0, product.number_on_hand - sum(on_peg.values()))
+    plan = {}
+    for home in homes:
+        take = min(max(0, fills[home.pk] - on_peg[home.pk]), bag)
+        bag -= take
+        plan[home.pk] = (fills[home.pk], on_peg[home.pk], take)
+    return plan
 
 
 def last_walked(fixture, within_days=30):
@@ -300,6 +387,10 @@ def board(fixture, photos=False):
         min(cutoffs) if cutoffs else None,
     )
 
+    # One plan per colorway, not per peg: the drain has to see all of a
+    # colorway's pegs at once or it subtracts the same sales twice.
+    plans = {}
+
     rows = []
     for grid_row in fixture.grid():
         cells = []
@@ -314,7 +405,12 @@ def board(fixture, photos=False):
             if product is None:
                 cells.append({"position": position, "kind": "empty"})
                 continue
-            fill = expected_fill(position)
+            product_sales = sales.get(product.pk, [])
+            if product.pk not in plans:
+                plans[product.pk] = refill_plan(product, walked, product_sales)
+            fill, on_peg, put_out = plans[product.pk].get(
+                position.pk, (expected_fill(position), 0, 0)
+            )
             # Not "the display has a hole", which is a merchandising reading
             # nothing acts on — this is "there is nothing you can do at the
             # board about this one", which is why it is styled apart from a
@@ -322,7 +418,6 @@ def board(fixture, photos=False):
             short = fill < position.fixture.capacity_per_position
 
             baseline = walked.get(position.pk)
-            product_sales = sales.get(product.pk, [])
             sold = bare_since = None
             if baseline is not None:
                 cutoff, went_out = baseline
@@ -351,17 +446,35 @@ def board(fixture, photos=False):
                 # straight off the bag at the moment the job is finished,
                 # which is what makes the tap worth anything.
                 "backstock": product.backstock,
-                # Sold off this peg since somebody last filled it, so this is
-                # how many to put back. `None` means nobody has ever walked
-                # this peg, which is a different thing from "nothing sold" and
-                # must not read as a quiet tile.
+                # **How many to put back on this peg** — bounded by the peg,
+                # by the bag and by the colorway, which the raw sales count
+                # below is bounded by none of. See `refill_plan`.
+                "put_out": put_out,
+                # What the app reckons is hanging there now, so the two halves
+                # of the claim ("put out 2, bag should have 6 left") are both
+                # derived from one belief rather than from two.
+                "on_peg": on_peg,
+                # Sold off this peg since somebody last filled it. Kept
+                # because it is what `_drained_at` reads and because it is a
+                # real fact about the peg — but it is **not** the work, and it
+                # is deliberately no longer what the badge prints. `None`
+                # means nobody has ever walked this peg, which is a different
+                # thing from "nothing sold" and must not read as a quiet tile.
                 "sold": sold,
                 # **Two different signals, deliberately kept apart.** A peg
                 # that needs skeins and has them behind it is *work* — go to
                 # the bag and refill. A peg that can't be filled is not work
                 # at all; nothing you do at the board fixes it. Collapsing
                 # them would put jobs and non-jobs in the same colour.
-                "needs_refill": bool(sold) and not short,
+                #
+                # This used to carry `and not short`, which collapsed them the
+                # other way: a peg with nothing on it and one in the bag is
+                # *both* — put the one out, and it still won't be full. Under
+                # the old badge that was invisible, because a short peg was
+                # never work. Now that `put_out` is bounded by the bag, work
+                # and won't-fill are independent, and the work is what the
+                # colour is for. The peg's `1/2` already says it won't fill.
+                "needs_refill": bool(put_out),
                 # When this peg is reckoned to have run bare with stock still
                 # behind it. The one thing here worth noticing — but the
                 # board prints only *that* it is bare. The elapsed time is

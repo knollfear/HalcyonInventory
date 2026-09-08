@@ -288,11 +288,13 @@ interrupted, and an unticked peg means "not walked yet", never "empty".
     and saying so is the point of the restock.
   </p>
   <p class="lead">
-    A <strong>blue peg with +2 on it</strong> sold two since it was last
-    filled, so two go back on it — that's the work. <strong>Amber</strong>
-    means the app doesn't think you have enough to fill it, which isn't work:
-    nothing you do at the board fixes it. Worth a very quick look either way —
-    if it fills, say so.
+    A <strong>blue peg with +2 on it</strong> wants two out of the bag —
+    that's the work, and it's never more than the bag has. <strong>Amber</strong>
+    means there is nothing to put out and the peg still won't be full, which
+    isn't work: nothing you do at the board fixes it. A peg can want one and
+    still not fill — it's blue, because there's a skein to put out, and the
+    <strong>1/2</strong> on it says where that leaves you. Worth a very quick
+    look either way — if it fills, say so.
   </p>
   {% comment %}
   There was a paragraph here explaining the red “empty” badge. It went
@@ -331,14 +333,17 @@ interrupted, and an unticked peg means "not walked yet", never "empty".
           <div class="brow">
             {% for cell in row %}
               {% if cell.kind == "home" %}
-                <div class="cell{% if cell.short %} short{% elif cell.needs_refill %} needs{% endif %}">
+                <div class="cell{% if cell.needs_refill %} needs{% elif cell.short %} short{% endif %}">
                   <label class="tile">
                     <input type="checkbox" name="done_{{ cell.position.pk }}" value="1">
                     {% comment %}
-                    Straight off the ledger: this many sold since somebody
-                    last filled this peg, so this many go back on it. Only
-                    drawn when there is something to say — a badge on every
-                    tile is a badge nobody reads.
+                    **How many to put out**, not how many sold. Those came
+                    apart badly: with walks ten days apart the sales count
+                    spanned two weekends and a dye bath, and a peg holding two
+                    with an empty bag was asking for eleven. `refill_plan`
+                    bounds it by the peg, the bag and the colorway. Only drawn
+                    when there is something to say — a badge on every tile is
+                    a badge nobody reads.
                     {% endcomment %}
                     {% comment %}
                     The *state*, not the stopwatch. How long it has been like
@@ -348,8 +353,8 @@ interrupted, and an unticked peg means "not walked yet", never "empty".
                     {% endcomment %}
                     {% if cell.bare_since %}
                       <span class="badge bare">empty{% if bare_age %} {{ cell.bare_since|timesince }}{% endif %}</span>
-                    {% elif cell.sold %}
-                      <span class="badge">+{{ cell.sold }}</span>
+                    {% elif cell.put_out %}
+                      <span class="badge">+{{ cell.put_out }}</span>
                     {% endif %}
                     {% if photos and cell.image %}
                       <img src="{{ cell.image }}" alt="{{ cell.product.name }}">

@@ -14781,6 +14781,98 @@ class RestockPageTests(TestCase):
         self.assertIn("+2", html)
         self.assertIn('class="cell needs"', html)
 
+    def test_the_badge_is_bounded_by_the_peg(self):
+        """**The reported bug.** Avocado sat on a two-skein hook with nothing
+        in the bag and asked for eleven — every sale since the peg was last
+        tapped ten days earlier, spanning two weekends and a bath that went
+        out and sold again in between.
+
+        A hook holding two can never need eleven. Sales are a fact about the
+        peg; they are not the work, and the badge is the work.
+        """
+        product = make_close_product("Avocado", on_hand=0, slots=2)
+        position = hang(self.fixture, product, 3, 1)
+
+        walk = restock.open_pass(self.fixture, employee=self.employee)
+        restock.record(walk, position)
+        product.number_on_hand = 0
+        product.save()
+        for units in (2, 1, 1, 3, 1, 1, 1, 1):
+            InventoryLog.objects.create(
+                finished_product=product,
+                raw_product=product.raw_product,
+                log_type=InventoryLog.SALE,
+                source=InventoryLog.SOURCE_SQUARE_WEBHOOK,
+                quantity=-units,
+            )
+
+        cell = self._cell_for(position)
+        self.assertEqual(cell["sold"], 11)
+        self.assertEqual(cell["put_out"], 0)
+        self.assertFalse(cell["needs_refill"])
+
+        html = self.client.get(
+            reverse("restock_board", args=[self.fixture.pk])
+        ).content.decode()
+        self.assertNotIn("+11", html)
+
+    def test_the_badge_is_bounded_by_the_bag(self):
+        """**We can't put out two if the bag has one.**
+
+        `fill` is derived from `number_on_hand`, so the peg bound and the bag
+        bound normally agree. They come apart when the app believes more is
+        hanging up than it believes it owns — a close or a bulk adjustment
+        writing the total down with no sale to explain it. Then the pegs' want
+        outruns what is behind them and somebody is sent to a bag that cannot
+        answer.
+        """
+        product = make_close_product("Written Down", on_hand=4, slots=2)
+        position = hang(self.fixture, product, 3, 1)
+
+        walk = restock.open_pass(self.fixture, employee=self.employee)
+        restock.record(walk, position)
+        self.assertEqual(walk.checks.get(position=position).expected, 2)
+
+        # Counted at the close: one on the peg, one in the bag, and no sale
+        # anywhere to say where the other two went.
+        product.number_on_hand = 2
+        product.save()
+        InventoryLog.objects.create(
+            finished_product=product,
+            raw_product=product.raw_product,
+            log_type=InventoryLog.SALE,
+            source=InventoryLog.SOURCE_SQUARE_WEBHOOK,
+            quantity=-1,
+        )
+
+        cell = self._cell_for(position)
+        self.assertEqual(cell["on_peg"], 1)
+        self.assertEqual(cell["put_out"], 1)
+
+    def test_a_colorway_on_two_pegs_drains_its_sales_once(self):
+        """Pastel Rainbow hangs on two pegs of the veil rack and sold two.
+        The badge is per peg and the sales are per product, so subtracting
+        the colorway's whole count from each peg asked for four back off two
+        sales — and the same again on every other multi-peg colorway."""
+        product = make_close_product("Pastel Rainbow", on_hand=4, slots=4)
+        first = hang(self.fixture, product, 3, 1)
+        second = hang(self.fixture, product, 3, 2)
+
+        walk = restock.open_pass(self.fixture, employee=self.employee)
+        restock.record(walk, first)
+        restock.record(walk, second)
+        InventoryLog.objects.create(
+            finished_product=product,
+            raw_product=product.raw_product,
+            log_type=InventoryLog.SALE,
+            source=InventoryLog.SOURCE_SQUARE_WEBHOOK,
+            quantity=-2,
+        )
+
+        cells = [self._cell_for(first), self._cell_for(second)]
+        self.assertEqual([c["sold"] for c in cells], [2, 2])
+        self.assertEqual(sum(c["put_out"] for c in cells), 2)
+
     def test_a_sale_before_the_last_walk_is_already_accounted_for(self):
         """The peg was filled *after* it sold, so there is nothing to put
         back. A prediction that counted it would send somebody to the bag for
@@ -14814,8 +14906,13 @@ class RestockPageTests(TestCase):
 
     def test_needing_skeins_and_being_unfillable_are_different_signals(self):
         """One is work — go to the bag. The other is somebody else's decision
-        about what gets dyed, and nothing at the board fixes it."""
-        unfillable = make_close_product("Nothing Left", on_hand=1, slots=2)
+        about what gets dyed, and nothing at the board fixes it.
+
+        Unfillable means the bag is empty, not that the peg won't end up
+        full. Those two used to be the same test because a short peg could
+        never be work; see the next one.
+        """
+        unfillable = make_close_product("Nothing Left", on_hand=0, slots=2)
         position = hang(self.fixture, unfillable, 3, 3)
 
         walk = restock.open_pass(self.fixture, employee=self.employee)
@@ -14832,7 +14929,56 @@ class RestockPageTests(TestCase):
         self.assertTrue(cell["short"])
         self.assertEqual(cell["sold"], 1)
         # Sold, but there is nothing to put back — so not styled as work.
+        self.assertFalse(cell["put_out"])
         self.assertFalse(cell["needs_refill"])
+
+    def test_a_peg_can_be_work_and_still_not_fill(self):
+        """**Nothing on the peg, one in the bag: put it out and move on.**
+
+        That is a job, and the board used to call it a non-job — `short` won
+        the tile colour outright, so a peg with a skein waiting for it came
+        out amber under a caption saying nothing you do here fixes it. Work
+        and won't-fill are independent facts and only one of them is an
+        instruction; the tile's `1/2` carries the other.
+        """
+        product = make_close_product("Ochre", on_hand=1, slots=2)
+        position = hang(self.fixture, product, 3, 4)
+
+        walk = restock.open_pass(self.fixture, employee=self.employee)
+        restock.record(walk, position)
+        InventoryLog.objects.create(
+            finished_product=product,
+            raw_product=product.raw_product,
+            log_type=InventoryLog.SALE,
+            source=InventoryLog.SOURCE_SQUARE_WEBHOOK,
+            quantity=-1,
+        )
+
+        cell = self._cell_for(position)
+        self.assertTrue(cell["short"])
+        self.assertEqual(cell["on_peg"], 0)
+        self.assertEqual(cell["put_out"], 1)
+        self.assertTrue(cell["needs_refill"])
+
+        html = self.client.get(
+            reverse("restock_board", args=[self.fixture.pk])
+        ).content.decode()
+        self.assertIn('class="cell needs"', html)
+
+        # And it stops asking the moment the job is done. Put the skein out,
+        # tap the tile: nothing is in the bag, one is on the peg, and the peg
+        # goes back to amber — still won't fill, but there is no longer
+        # anything to carry. A tile that stayed blue would send somebody to an
+        # empty bag on the next pass, which is the failure this whole change
+        # is about, wearing the opposite coat.
+        second = restock.open_pass(self.fixture, employee=self.employee)
+        restock.record(second, position)
+
+        cell = self._cell_for(position)
+        self.assertEqual(cell["on_peg"], 1)
+        self.assertEqual(cell["put_out"], 0)
+        self.assertFalse(cell["needs_refill"])
+        self.assertTrue(cell["short"])
 
     def _drain(self, name="Ran Dry", row=3, column=1):
         """A peg the app reckons has run bare with stock still behind it.
