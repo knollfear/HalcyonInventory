@@ -463,6 +463,40 @@ the ledger records what entered inventory, so a cancelled bath and a bath
 nobody printed leave the same trace there, which is none. Retiring a sheet is
 cancelling what is left on it; see the production-sheet section.
 
+## `private/production-needed/`: ranked on sales, because par is the broken number
+
+The list of what is below par, grouped by colorway, with a button that books
+a bath straight into stock. **It is ordered by units sold this season, most
+first**, and that default is a statement about par rather than about sorting.
+
+Par was never dialled in — it reads as a uniform remnant across the
+catalogue, not as forty-odd decisions about demand — so ordering this page by
+shortage ranks it on a number nobody chose: a colorway that sold three all
+season comes out above one that sold forty, purely for crossing an arbitrary
+line first. **Sales are measured.** Until par means something, they are the
+better claim on a dye pot.
+
+Getting par right is the actual project (see *Display capacity is not demand*
+for what par is *for*, and `private/slow-sellers/` for the evidence being
+gathered). This ordering is what makes the list usable in the meantime, not a
+replacement for that work.
+
+**Furthest below par first is one click away, and neither ordering filters.**
+Every colorway is listed either way, so the choice changes what gets read
+first and never what exists — a page that hid the quiet ones would be making
+the retirement decision on its own.
+
+The figure is `slowsellers.sold_by_recipe`, the same function
+`private/slow-sellers/` reports from, **pooled across every blank a colorway
+is dyed on** because that is the unit a bath is planned in. One answer to
+"what sold": two would let the page that ranks on it disagree with the page
+that reports it. It prints beside each colorway so the ranking can be checked
+by looking rather than trusted.
+
+A colorway that sold nothing is ranked last, never hidden. It may simply be
+new — 2026 is year one for colorway data — and this page is not where that
+gets decided.
+
 ## Raw inventory: one save, because what goes in is a bill
 
 `private/raw-inventory/<category>/` is the reorder workflow — **you order

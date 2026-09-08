@@ -278,7 +278,13 @@ def production_needed_view(request):
     for fp in base_qs.order_by("recipe__name", "number_on_hand", "-shortage_value", "name"):
         by_recipe.setdefault(fp.recipe_id, []).append(fp)
 
-    # Build a list of recipe groups in the sorted order from recipe_stats
+    # What each colorway has actually sold this season, pooled across its
+    # blanks — the same figure `private/slow-sellers/` reports, from the same
+    # function, because two answers to "what sold" is how the page that orders
+    # by it comes to disagree with the page that reports it.
+    rng = slowsellers.season_range({})
+    sold = slowsellers.sold_by_recipe(rng)
+
     groups = []
     for row in recipe_stats:
         rid = row["recipe_id"]
@@ -291,16 +297,34 @@ def production_needed_view(request):
                 "recipe_name": row["recipe__name"],
                 "has_behind": bool(row["has_behind"]),
                 "total_shortage": row["total_shortage"] or 0,
+                "units_sold": sold.get(rid, 0),
                 "items": fps,
                 "recipe_obj": fps[0].recipe,  # already select_related
             }
         )
+
+    # **Sold, most first, is the default — because par is the number that is
+    # wrong.** Par was never dialled in and reads as a uniform remnant, so
+    # ordering by shortage ranks this list on a number nobody chose: a
+    # colorway that sold three all season outranks one that sold forty, purely
+    # because it crossed an arbitrary line first. Sales are measured. Until
+    # par means something, they are the better claim on a dye pot.
+    #
+    # The old ordering stays one click away, and neither is a filter — every
+    # group is listed either way, so the sort changes what is read first and
+    # never what exists.
+    sort = "shortage" if request.GET.get("sort") == "shortage" else "sold"
+    if sort == "sold":
+        groups.sort(key=lambda g: (-g["units_sold"], -g["total_shortage"],
+                                   g["recipe_name"]))
 
     categories = RawProductCategory.objects.all().order_by("name")
     context = {
         "groups": groups,
         "categories": categories,
         "selected_category_id": int(category_id) if category_id else None,
+        "sort": sort,
+        "range": rng,
     }
     return render(request, "scarves/production_needed.html", context)
 

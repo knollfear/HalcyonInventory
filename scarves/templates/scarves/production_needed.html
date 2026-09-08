@@ -24,6 +24,21 @@
      rounding a fixed bath size causes anyway. */
   tr.behind { background: #fdf2f1; }
   td.actions { white-space: nowrap; margin: 0; display: table-cell; }
+
+  .pills { display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+           margin: 12px 0 4px; }
+  .pill { font-size: 13px; text-decoration: none; padding: 5px 12px;
+          border: 1px solid #cfd6de; border-radius: 999px; color: var(--ink);
+          background: #fff; }
+  .pill.on { border-color: var(--accent); background: #eef2f7;
+             color: var(--accent); font-weight: 600; }
+  .pill-note { font-size: 12px; color: #8b929b; }
+  .soldcount { font-size: 12px; color: #2e7d52; font-weight: 600;
+               background: #f1f8f3; border: 1px solid #bcd8c6;
+               border-radius: 999px; padding: 2px 9px; }
+  /* Sold nothing all season reads as a fact, not an alarm — it may simply be
+     new, and this page is not where that gets decided. */
+  .soldcount.none { color: #6b7280; background: #f4f5f7; border-color: #d3d7dd; }
 {% endblock %}
 
 {% block head %}
@@ -41,7 +56,30 @@
         </option>
       {% endfor %}
     </select>
+    <input type="hidden" name="sort" value="{{ sort }}">
   </form>
+
+  {% comment %}
+  Sold-first is the default because par is the number that is wrong. Par was
+  never dialled in and reads as a uniform remnant, so ordering by shortage
+  ranks this list on a figure nobody chose — a colorway that sold three all
+  season outranking one that sold forty, purely for crossing an arbitrary
+  line first. Sales are measured.
+
+  Neither pill filters. Every group is listed either way, so the choice
+  changes what gets read first and never what exists.
+  {% endcomment %}
+  <div class="pills">
+    <a class="pill {% if sort == 'sold' %}on{% endif %}"
+       href="?{% if selected_category_id %}category={{ selected_category_id }}&{% endif %}sort=sold">
+      Best sellers first
+    </a>
+    <a class="pill {% if sort == 'shortage' %}on{% endif %}"
+       href="?{% if selected_category_id %}category={{ selected_category_id }}&{% endif %}sort=shortage">
+      Furthest below par first
+    </a>
+    <span class="pill-note">sales over {{ range.label|lower }}</span>
+  </div>
 
   {% if groups %}
     {% for g in groups %}
@@ -49,6 +87,13 @@
         <div class="recipe-head">
           <span class="recipe-name">
             <a href="{% url 'recipe_detail' g.recipe_id %}">{{ g.recipe_name }}</a>
+          </span>
+          {% comment %}
+          The figure the default order is built on, printed beside the name so
+          the ranking can be checked by looking rather than trusted.
+          {% endcomment %}
+          <span class="soldcount {% if not g.units_sold %}none{% endif %}">
+            sold {{ g.units_sold }}
           </span>
           {% if g.has_behind %}
             <span class="warn">⚠ A full dye bath still lands at or under par</span>

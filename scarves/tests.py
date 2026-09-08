@@ -41,7 +41,8 @@ from django.urls import NoReverseMatch, reverse
 
 from . import (
     closing, colorbands, crew, fancy, photowalk, production, restock,
-    sales, seasonreport, seasons, sheetscan, skus, timesheets, weather,
+    sales, seasonreport, seasons, sheetscan, skus, slowsellers, timesheets,
+    weather,
 )
 from .colorutils import (
     delta_e,
@@ -10186,6 +10187,102 @@ class ReportsAreTheirOwnCategoryTests(TestCase):
                     forbidden, source,
                     f"{module.__name__} should not write: {forbidden}",
                 )
+
+
+class ProductionNeededRanksOnSalesTests(TestCase):
+    """What sells outranks what merely crossed par.
+
+    Par was never dialled in and reads as a uniform remnant, so ordering this
+    list by shortage ranks it on a number nobody chose — a colorway that sold
+    three all season above one that sold forty, purely for crossing an
+    arbitrary line first. Sales are measured, so until par means something
+    they are the better claim on a dye pot.
+    """
+
+    def setUp(self):
+        self.client.force_login(User.objects.create_user("staff", password="pw"))
+        self.url = reverse("production_needed")
+        # Sells well, only just short.
+        self.mover = make_bathable(
+            make_recipe("Ember"), "Heavenly", on_hand=7, par=8, bath=4
+        )
+        # Sells nothing, miles short — the one the old order put first.
+        self.dud = make_bathable(
+            make_recipe("Wasteland"), "Homespun", on_hand=0, par=8, bath=4
+        )
+
+    def _sell(self, product, units):
+        sale = Sale.objects.create(
+            order_id=f"o{product.pk}", sold_at=timezone.now(),
+            source=Sale.SOURCE_SQUARE_API,
+        )
+        SaleLine.objects.create(
+            sale=sale, line_key=f"k{product.pk}", sold_at=timezone.now(),
+            item_name=product.raw_product.name, price_point=product.recipe.name,
+            quantity=units, finished_product=product,
+            raw_product=product.raw_product, source=Sale.SOURCE_SQUARE_API,
+        )
+
+    def _order(self, **params):
+        groups = self.client.get(self.url, params).context["groups"]
+        return [g["recipe_name"] for g in groups]
+
+    def test_the_seller_leads_by_default(self):
+        self._sell(self.mover, 40)
+
+        self.assertEqual(self._order()[0], "Ember")
+
+    def test_the_old_ordering_is_still_one_click_away(self):
+        self._sell(self.mover, 40)
+
+        self.assertEqual(self._order(sort="shortage")[0], "Wasteland")
+
+    def test_neither_ordering_drops_anything(self):
+        """A sort changes what is read first, never what exists."""
+        self._sell(self.mover, 40)
+
+        self.assertEqual(set(self._order()), set(self._order(sort="shortage")))
+
+    def test_the_count_is_pooled_across_blanks(self):
+        """A recipe is dyed as a colorway, so it is ranked as one."""
+        other = make_bathable(
+            self.mover.recipe, "Artisan", on_hand=1, par=8, bath=4
+        )
+        self._sell(self.mover, 10)
+        self._sell(other, 15)
+
+        groups = {g["recipe_name"]: g for g in
+                  self.client.get(self.url).context["groups"]}
+
+        self.assertEqual(groups["Ember"]["units_sold"], 25)
+
+    def test_the_number_is_shown_so_the_ranking_can_be_checked(self):
+        self._sell(self.mover, 40)
+
+        response = self.client.get(self.url)
+
+        self.assertContains(response, "sold 40")
+
+    def test_it_reads_the_same_figure_the_slow_sellers_page_reports(self):
+        """One answer to 'what sold' — two would let the page that orders by
+        it disagree with the page that reports it."""
+        self._sell(self.mover, 12)
+        rng = slowsellers.season_range({})
+
+        groups = {g["recipe_name"]: g for g in
+                  self.client.get(self.url).context["groups"]}
+
+        self.assertEqual(
+            groups["Ember"]["units_sold"],
+            slowsellers.sold_by_recipe(rng)[self.mover.recipe_id],
+        )
+
+    def test_a_colorway_that_sold_nothing_is_still_listed(self):
+        """Ranked last, not hidden — it may simply be new, and this page is
+        not where that gets decided."""
+        self._sell(self.mover, 40)
+
+        self.assertIn("Wasteland", self._order())
 
 
 class SlowSellersTests(TestCase):

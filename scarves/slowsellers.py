@@ -166,6 +166,26 @@ def sold_units(rng):
     }
 
 
+def sold_by_recipe(rng):
+    """`{recipe_id: units}` pooled across every blank a colorway is dyed on.
+
+    The unit a dye bath is planned in, so it is also the unit a production
+    list should be ordered by. Shared with `production_needed_view` rather
+    than recomputed there — two answers to "what sold" is how a page that
+    orders by it disagrees with the page that reports it.
+    """
+    counted = (
+        _lines(rng)
+        .filter(finished_product__recipe__isnull=False)
+        .values("finished_product__recipe")
+        .annotate(q=Sum("quantity"))
+        .order_by()
+    )
+    return {
+        row["finished_product__recipe"]: int(row["q"] or 0) for row in counted
+    }
+
+
 def rows(rng, max_units=1, category=None):
     """Colorways that sold `max_units` or fewer, quietest first.
 
