@@ -15009,14 +15009,41 @@ class RestockPageTests(TestCase):
         the walker's name beside it, and it mostly measures how long since
         anybody came round with the phone rather than yarn sitting unsold.
         """
-        position = self._drain()
-        self.assertIsNotNone(self._cell_for(position)["bare_since"])
+        cell = self._cell_for(self._drain())
+        self.assertIsNotNone(cell["bare_since"])
+        self.assertEqual(cell["put_out"], 2)
 
         html = self.client.get(
             reverse("restock_board", args=[self.fixture.pk])
         ).content.decode()
-        self.assertIn("empty</span>", html)
-        self.assertNotRegex(html, r"empty\s+\d")
+        # **The count wins the badge and bare is the colour.** "empty" used
+        # to replace the number, which left the tile reading `empty` over
+        # `2/2` and dropped the one figure somebody carries to the bag.
+        self.assertIn('class="badge bare">+2</span>', html)
+        self.assertNotRegex(html, r"\+2\s*·\s*\d")
+
+    def test_a_bare_peg_still_says_how_many_to_carry(self):
+        """`empty` over `2/2` is a contradiction to read — the fraction is
+        what the peg holds when the job is done, not what is on it now — and
+        it cost the walker the only number they act on.
+
+        Red also stopped being an alarm when the badge became the work:
+        `_drained_at` fires whenever sales since the last walk reach what went
+        out, which with walks ten days apart is just "this colorway sold
+        through". It was on 18 of the 39 pegs of the Artisan wall at once. So
+        it is a hint about which peg to do first, carried as a colour.
+        """
+        cell = self._cell_for(self._drain())
+        html = self.client.get(
+            reverse("restock_board", args=[self.fixture.pk])
+        ).content.decode()
+
+        self.assertIsNotNone(cell["bare_since"])
+        # Not `assertNotIn("empty")`: the word is also an unassigned peg's
+        # class and is in the lead. The claim is about the badge.
+        self.assertNotIn('class="badge bare">empty', html)
+        self.assertIn('class="badge bare">+2</span>', html)
+        self.assertTrue(cell["needs_refill"])
 
     def test_typing_bare_1_calls_the_elapsed_time_forth(self):
         """Kept for curiosity and demonstration, reachable only by typing."""
@@ -15025,7 +15052,7 @@ class RestockPageTests(TestCase):
         html = self.client.get(
             reverse("restock_board", args=[self.fixture.pk]) + "?bare=1"
         ).content.decode()
-        self.assertRegex(html, r"empty\s+\d+\s*(minute|hour|day|week)")
+        self.assertRegex(html, r"\+2\s*·\s*\d+\s*(minute|hour|day|week)")
 
     def test_the_elapsed_time_does_not_follow_you_around(self):
         """**The inversion that keeps it away from the crew.**

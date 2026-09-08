@@ -346,15 +346,35 @@ interrupted, and an unticked peg means "not walked yet", never "empty".
                     a badge nobody reads.
                     {% endcomment %}
                     {% comment %}
+                    **The count wins the badge; bare is the colour.** "empty"
+                    used to replace the number outright, which was right when
+                    it was competing with a sales figure and wrong the moment
+                    the badge became the work: it left the tile saying `empty`
+                    over `2/2` — a contradiction to read, since `2/2` is what
+                    the peg holds when the job is done, not what is on it now
+                    — and dropped the one number somebody carries to the bag.
+
+                    Red also stopped being an alarm. `_drained_at` fires when
+                    sales since the last walk reach what went out on it, and
+                    with walks ten days apart that is just "this colorway sold
+                    through": 18 of 39 pegs on the Artisan wall at once. So it
+                    is a hint about which to do first, not a warning, and it
+                    costs nothing to carry as the badge's colour.
+
+                    "empty" survives for the peg that is bare with nothing to
+                    put on it — rare, since `bare_since` is only computed when
+                    the peg can be filled at all, but reachable when an
+                    earlier peg of the same colorway has taken the bag.
+
                     The *state*, not the stopwatch. How long it has been like
                     this only prints when `?bare=1` asks, because an elapsed
                     time here reads as a measurement of whoever is walking and
                     mostly measures the gap since the last walk anyway.
                     {% endcomment %}
-                    {% if cell.bare_since %}
+                    {% if cell.put_out %}
+                      <span class="badge{% if cell.bare_since %} bare{% endif %}">+{{ cell.put_out }}{% if bare_age and cell.bare_since %} · {{ cell.bare_since|timesince }}{% endif %}</span>
+                    {% elif cell.bare_since %}
                       <span class="badge bare">empty{% if bare_age %} {{ cell.bare_since|timesince }}{% endif %}</span>
-                    {% elif cell.put_out %}
-                      <span class="badge">+{{ cell.put_out }}</span>
                     {% endif %}
                     {% if photos and cell.image %}
                       <img src="{{ cell.image }}" alt="{{ cell.product.name }}">

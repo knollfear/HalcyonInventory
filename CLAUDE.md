@@ -1589,6 +1589,22 @@ and 0 in the bag — `put_out` falls to zero and the peg settles back to amber.
 A tile that stayed blue after the job would send somebody to an empty bag on
 the next pass, which is this same bug wearing the opposite coat.
 
+**The count wins the badge, and `bare` is its colour.** `empty` used to
+replace the number outright. That was right while it competed with a sales
+figure and wrong the moment the badge became the work: the tile read `empty`
+over `2/2` — which is a contradiction to read, since the fraction is what the
+peg holds when the job is *done* rather than what is on it now — and it
+dropped the one number somebody carries to the bag.
+
+Red also stopped being an alarm. `_drained_at` fires when sales since the
+last walk reach what went out on the peg, and with walks ten days apart that
+is just "this colorway sold through": **18 of the 39 pegs on the Artisan wall
+at once**, every one with two waiting in the bag. So it is a hint about which
+peg to do first, not a warning, and carrying it as the badge's colour costs
+nothing. `empty` survives only for a peg that is bare with nothing to put on
+it — rare, since `bare_since` is computed only when the peg can be filled at
+all, but reachable when an earlier peg of the same colorway has taken the bag.
+
 **The finding that actually happens is "it says the bag has some, and the bag
 is empty."** Nobody counts a bag of twelve reliably and nothing asks them to.
 An empty bag is different in kind: noticed without counting, constant, and
