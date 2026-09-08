@@ -874,6 +874,15 @@ avoid repeating. The second is what keeps one renderer, so a swapped view
 cannot disagree with a refreshed one, the same call `production_needed.html`
 and `recipe_showcase.html` make about their rows.
 
+**Print submits the list form itself** (`formmethod="post"` on a button that
+belongs to it), so whatever is in the count boxes right now is what gets
+printed. It used to be a second form carrying the server's copy, which meant
+a count typed but not yet synced never reached it — and an "Update the list"
+button existed purely to close that gap, doing nothing at all whenever htmx
+was working. The form stays a GET so Enter in a count box, and the add
+button's no-script fallback (`formmethod="get"`), are harmless refreshes
+rather than a sheet nobody asked for.
+
 **Nothing here runs JavaScript of ours.** Every control is an ordinary
 element with an htmx attribute on it and a working fallback underneath: the
 ✕ is a link with an `href`, the count box sits in a GET form with an "Update

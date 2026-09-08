@@ -10062,6 +10062,81 @@ class FancyAtProductionTests(TestCase):
         self.assertEqual(self.product.number_on_hand, 5)
 
 
+class PrintSubmitsTheListItselfTests(TestCase):
+    """One form. Print posts the same inputs the counts are typed into.
+
+    There used to be two — a GET list and a separate POST carrying the
+    server's copy of it — so a count typed into a box but not yet synced
+    never reached Print. An "Update the list" button existed purely to close
+    that gap, and with htmx it was never used, because changing a count
+    already refreshed.
+    """
+
+    def setUp(self):
+        self.client.force_login(User.objects.create_user("staff", password="pw"))
+        self.product = make_bathable(
+            make_recipe("Stormy Sea"), "Stormy Silk", on_hand=0, par=40, bath=4
+        )
+        self.url = reverse("production_sheet_index")
+
+    def test_an_unsynced_count_still_reaches_the_print(self):
+        """The gap the button existed to cover, now closed by the form."""
+        self.client.post(self.url, {
+            "items": [f"{self.product.pk}:2"],
+            f"qty-{self.product.pk}": "5",
+        })
+
+        self.assertEqual(ProductionRun.objects.get().rows.count(), 5)
+
+    def test_the_update_button_is_gone(self):
+        response = self.client.get(self.url, {"items": [f"{self.product.pk}:2"]})
+
+        self.assertNotContains(response, "Update the list")
+
+    def test_print_belongs_to_the_list_form(self):
+        response = self.client.get(self.url, {"items": [f"{self.product.pk}:2"]})
+
+        self.assertContains(response, 'form="sheet-list" formmethod="post"')
+
+    def test_the_sheet_carries_exactly_one_copy_of_the_list(self):
+        """The print form used to hold a second copy, and two copies are two
+        things to fall out of step.
+
+        Checked on the fragment rather than the page: the search form keeps
+        its own hidden copy on purpose, so a "Find" with the script blocked
+        doesn't lose the list. That one is never read on the htmx path, which
+        includes `#sheet-list` instead.
+        """
+        response = self.client.get(
+            self.url, {"items": [f"{self.product.pk}:2"]}, HTTP_HX_REQUEST="true"
+        )
+
+        self.assertEqual(
+            response.content.decode().count(f'value="{self.product.pk}:2"'), 1
+        )
+
+    def test_the_list_form_stays_a_get(self):
+        """Enter in a count box, and the add button's no-script fallback,
+        must refresh rather than print a sheet nobody asked for."""
+        response = self.client.get(self.url, {"items": [f"{self.product.pk}:2"]})
+
+        self.assertContains(response, '<form method="get" id="sheet-list">')
+
+    def test_adding_by_name_never_prints(self):
+        self.client.get(self.url, {
+            "items": [f"{self.product.pk}:2"], "add": str(self.product.pk),
+        })
+
+        self.assertEqual(ProductionRun.objects.count(), 0)
+
+    def test_the_csrf_token_stays_out_of_the_swap(self):
+        """It rides in the list form so Print can post it, but a swap and the
+        URL it pushes have no business carrying a session token."""
+        response = self.client.get(self.url, {"items": [f"{self.product.pk}:2"]})
+
+        self.assertContains(response, 'hx-params="not csrfmiddlewaretoken"')
+
+
 class AnHtmxEditSendsAFragmentTests(TestCase):
     """A swap is a few lines of HTML, not a page the browser throws away.
 

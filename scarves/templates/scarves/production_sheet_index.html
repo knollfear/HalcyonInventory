@@ -228,6 +228,12 @@ the preview is deliberately a GET and the print button is the only POST.
       the fragment returns. Carries the current list along as hidden inputs so
       searching never loses it.
       {% endcomment %}
+      {% comment %}
+      Carries its own hidden copy of the list so a "Find" with the script
+      blocked doesn't lose it. Deliberately never read on the htmx path — the
+      swap includes `#sheet-list`, which is the live one — so this copy going
+      stale after a swap costs nothing.
+      {% endcomment %}
       <form method="get" class="findbox"
             hx-get="{% url 'product_search' %}"
             hx-vals='{"mode": "plan"}'

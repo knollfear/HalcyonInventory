@@ -22,11 +22,13 @@ dye a bath.
 {% endcomment %}
 {% for p in products %}
   {% if p.recipe_id and p.raw_product.made_in_a_dye_bath %}
-    <button type="submit" form="sheet-list" name="add" value="{{ p.id }}"
+    <button type="submit" form="sheet-list" formmethod="get"
+            name="add" value="{{ p.id }}"
             class="result"
             hx-get="{% url 'production_sheet_index' %}"
             hx-vals='{"add": "{{ p.id }}"}'
             hx-include="#sheet-list"
+            hx-params="not csrfmiddlewaretoken"
             hx-target="#sheet"
             hx-swap="outerHTML"
             hx-push-url="true">

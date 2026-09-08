@@ -21,7 +21,20 @@ sends somebody to the shelf for the wrong things.
     by submitting it (`form="sheet-list"`) — a form that only exists once
     there is something in it could never take the first row.
     {% endcomment %}
+    {% comment %}
+    One form, and Print submits it. It used to be two — a GET list and a
+    separate POST carrying the server's copy — which meant a count typed into
+    a box but not yet synced never reached Print, and that gap is the only
+    thing the old "Update the list" button was for. `formmethod="post"` on the
+    Print button closes it: the same inputs that hold the list are the ones
+    that get printed.
+
+    The form itself stays GET so that Enter in a count box, and the add
+    button's no-script fallback, are both harmless refreshes rather than a
+    sheet nobody meant to print.
+    {% endcomment %}
     <form method="get" id="sheet-list">
+      {% csrf_token %}
       {% if rows %}
       <hr>
       <table class="rows">
@@ -51,6 +64,7 @@ sends somebody to the shelf for the wrong things.
                        value="{{ row.baths }}" min="0" max="20"
                        hx-get="{% url 'production_sheet_index' %}"
                        hx-include="#sheet-list"
+                       hx-params="not csrfmiddlewaretoken"
                        hx-trigger="change"
                        hx-target="#sheet"
                        hx-swap="outerHTML"
@@ -82,7 +96,6 @@ sends somebody to the shelf for the wrong things.
       already done it, so this is the button nobody presses — kept because the
       alternative is a number you can type and nothing that reads it.
       {% endcomment %}
-      <button class="btn-quiet" type="submit">Update the list</button>
       {% endif %}
     </form>
 
@@ -106,22 +119,20 @@ sends somebody to the shelf for the wrong things.
 
     {% include "scarves/partials/dye_plan.html" %}
 
-    <form method="post" style="margin-top:18px">
-      {% csrf_token %}
+    <p style="margin-top:18px">
       {% comment %}
-      The list as the server currently has it. Every edit is a round trip, so
-      this cannot disagree with what is on screen — which is the reason the
-      edits are round trips.
+      Belongs to the list form above and posts it, so whatever is in the count
+      boxes right now is what gets printed — there is no second copy of the
+      list to fall out of step with the first.
       {% endcomment %}
-      {% for row in rows %}
-        <input type="hidden" name="items" value="{{ row.product.pk }}:{{ row.baths }}">
-      {% endfor %}
-      <button class="btn" type="submit">Print this sheet</button>
-      <p class="muted">
-        Creates a run and a QR code the crew scan to report back. Nothing is
-        recorded against inventory until they do.
-      </p>
-    </form>
+      <button class="btn" type="submit" form="sheet-list" formmethod="post">
+        Print this sheet
+      </button>
+    </p>
+    <p class="muted">
+      Creates a run and a QR code the crew scan to report back. Nothing is
+      recorded against inventory until they do.
+    </p>
   {% elif asked %}
     <hr>
     <p>
