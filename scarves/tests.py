@@ -10285,6 +10285,185 @@ class ProductionNeededRanksOnSalesTests(TestCase):
         self.assertIn("Wasteland", self._order())
 
 
+class ClearColorwayAttributionTests(TestCase):
+    """Removing a colorway claim that was never true, without losing the sale.
+
+    A Square misconfiguration credited one colorway with sales belonging to
+    forty others. The line carries four true things — units, money, date,
+    blank — and one false one, so the repair removes the false one and keeps
+    the rest. Deleting would throw away all five, and would not put a single
+    unit back on a shelf.
+    """
+
+    def setUp(self):
+        self.blank = make_bathable(
+            make_recipe("Amethyst"), "Sash Belt", on_hand=0, par=8, bath=4
+        )
+        self.other = make_bathable(
+            make_recipe("Russet"), "Sash Belt", on_hand=14, par=8, bath=4
+        )
+        self.day = timezone.now()
+        self.line = self._line(self.blank, 55, "Amethyst")
+        self.flat = self._line(self.other, 26, "Regular Price", link=False)
+
+    def _line(self, product, units, colorway, link=True):
+        sale = Sale.objects.create(
+            order_id=f"o-{colorway}-{units}", sold_at=self.day,
+            source=Sale.SOURCE_SQUARE_API,
+        )
+        return SaleLine.objects.create(
+            sale=sale, line_key=f"k-{colorway}", sold_at=self.day,
+            item_name="Sash Belt", price_point=colorway, quantity=units,
+            gross_cents=183000, net_cents=183000,
+            finished_product=product if link else None,
+            raw_product=product.raw_product, source=Sale.SOURCE_SQUARE_API,
+        )
+
+    def _run(self, *args):
+        out = StringIO()
+        call_command("clear_colorway_attribution", "--blank", "Sash Belt",
+                     "--from", str(self.day.date()), "--to", str(self.day.date()),
+                     *args, stdout=out)
+        return out.getvalue()
+
+    def test_a_dry_run_writes_nothing(self):
+        out = self._run()
+
+        self.line.refresh_from_db()
+        self.assertEqual(self.line.price_point, "Amethyst")
+        self.assertIn("Dry run", out)
+
+    def test_it_reports_what_it_would_clear(self):
+        out = self._run()
+
+        self.assertIn("Amethyst", out)
+        self.assertIn("55", out)
+
+    def test_applying_removes_the_colorway_and_the_link(self):
+        self._run("--apply")
+
+        self.line.refresh_from_db()
+        self.assertEqual(self.line.price_point, "")
+        self.assertIsNone(self.line.finished_product)
+
+    def test_the_sale_itself_survives(self):
+        """Units, money, date and blank are all true and all stay."""
+        self._run("--apply")
+
+        self.line.refresh_from_db()
+        self.assertEqual(self.line.quantity, 55)
+        self.assertEqual(self.line.gross_cents, 183000)
+        self.assertEqual(self.line.raw_product, self.blank.raw_product)
+        self.assertEqual(self.line.item_name, "Sash Belt")
+
+    def test_what_square_claimed_is_recorded_not_erased(self):
+        """A repair that leaves no trace of what it repaired is the silent
+        kind."""
+        self._run("--apply")
+
+        self.line.refresh_from_db()
+        self.assertIn("Amethyst", self.line.notes)
+
+    def test_a_line_already_carrying_no_colorway_is_left_alone(self):
+        self._run("--apply")
+
+        self.flat.refresh_from_db()
+        self.assertEqual(self.flat.price_point, "Regular Price")
+        self.assertEqual(self.flat.notes, "")
+
+    def test_no_stock_movement_is_touched(self):
+        """Those decrements really happened. The count is wrong in a way only
+        a physical count can settle."""
+        InventoryLog.objects.create(
+            finished_product=self.blank, raw_product=self.blank.raw_product,
+            log_type=InventoryLog.SALE, source=InventoryLog.SOURCE_SQUARE_WEBHOOK,
+            quantity=-55, notes="sale",
+        )
+
+        self._run("--apply")
+
+        self.assertEqual(InventoryLog.objects.count(), 1)
+        self.blank.refresh_from_db()
+        self.assertEqual(self.blank.number_on_hand, 0)
+
+    def test_the_wrongly_credited_colorway_stops_being_credited(self):
+        rng = slowsellers.season_range({"range": "all", "from": "2000-01-01"})
+        before = slowsellers.sold_by_recipe(rng).get(self.blank.recipe_id, 0)
+
+        self._run("--apply")
+
+        after = slowsellers.sold_by_recipe(rng).get(self.blank.recipe_id, 0)
+        self.assertEqual(before, 55)
+        self.assertEqual(after, 0)
+
+    def test_the_units_still_count_as_that_blank(self):
+        """They are real sales of a real blank — only the colour is unknown."""
+        self._run("--apply")
+
+        rng = slowsellers.season_range({"range": "all", "from": "2000-01-01"})
+        named = dict(slowsellers.unattributed(rng))
+        self.assertEqual(named.get("Sash Belt"), 81)
+
+    def test_one_colorway_can_be_scoped_so_the_good_lines_survive(self):
+        """A partial misconfiguration still lets some lines through, and
+        those few are the only good colorway data of the weekend."""
+        good = self._line(self.other, 1, "Russet")
+
+        self._run("--colorway", "Amethyst", "--apply")
+
+        self.line.refresh_from_db()
+        good.refresh_from_db()
+        self.assertEqual(self.line.price_point, "")
+        self.assertEqual(good.price_point, "Russet")
+        self.assertIsNotNone(good.finished_product)
+
+    def test_without_the_scope_it_clears_every_colorway_on_the_blank(self):
+        """Stated so the wholesale behaviour is a choice rather than a
+        surprise — the dry run is where you find out which you want."""
+        good = self._line(self.other, 1, "Russet")
+
+        self._run("--apply")
+
+        good.refresh_from_db()
+        self.assertEqual(good.price_point, "")
+
+    def test_a_small_neutralize_is_refused(self):
+        """Below the floor it destroys more real colorway data than it
+        removes doubtful rows."""
+        SaleLine.objects.all().delete()
+        self._line(self.other, 6, "Russet")
+
+        with self.assertRaises(CommandError) as caught:
+            self._run("--apply")
+
+        self.assertIn("floor", str(caught.exception))
+
+    def test_the_floor_can_be_overridden_deliberately(self):
+        SaleLine.objects.all().delete()
+        line = self._line(self.other, 6, "Russet")
+
+        self._run("--floor", "1", "--apply")
+
+        line.refresh_from_db()
+        self.assertEqual(line.price_point, "")
+
+    def test_it_names_the_weekends_it_reaches(self):
+        """Running --year after the catalogue is fixed would sweep up the
+        weeks that came back correctly; this is where that shows."""
+        faire = Faire.objects.create(slug="labor-day-run", year=self.day.year)
+        FaireDay.objects.create(faire=faire, date=self.day.date(), weekend=2)
+
+        out = self._run()
+
+        self.assertIn("weekend", out)
+        self.assertIn("2", out)
+
+    def test_a_bad_window_is_refused_rather_than_guessed(self):
+        with self.assertRaises(CommandError):
+            call_command("clear_colorway_attribution", "--blank", "Sash Belt",
+                         "--from", "2026-08-29", stdout=StringIO())
+
+
 class SlowSellersTests(TestCase):
     """The bottom of the list, where a zero means two opposite things.
 
