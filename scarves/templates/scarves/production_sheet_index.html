@@ -205,6 +205,12 @@ the preview is deliberately a GET and the print button is the only POST.
         {{ form.category }}
         {{ form.category.errors }}
       </div>
+      <div class="field">
+        <label for="{{ form.order.id_for_label }}">{{ form.order.label }}</label>
+        {{ form.order }}
+        <div class="help">{{ form.order.help_text }}</div>
+        {{ form.order.errors }}
+      </div>
       <div class="field tick">
         {{ form.include_overshoot }}
         <div>

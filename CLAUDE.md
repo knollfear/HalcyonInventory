@@ -948,6 +948,20 @@ share `mode=sheet`, whose results post straight onto an existing run, and it
 can't share `mode=labels`, which greys out anything without a SKU — a SKU
 prints a sticker, it doesn't dye a bath.
 
+**The suggestion is ordered by sales, and so is `private/production-needed/`.**
+They have to agree: somebody reads that list, then asks the picker for the
+first twenty baths, and if the two sort differently they get twenty that are
+not the ones they were looking at — with nothing on either page to say so.
+`production.ORDER_SOLD` is the default on both and `ORDER_PAR` is the choice,
+for the reason par is not trusted: it was never dialled in, so ranking a dye
+session by shortage ranks it on a number nobody chose.
+
+**Sales are the primary key, not the only one.** `_urgency` is still the
+tie-break, so an empty shelf leads among colorways that sell alike — a
+customer cannot buy a zero — while a colour nobody buys no longer jumps the
+queue for being emptier. That combination is what the old ordering got
+backwards.
+
 For the shortage dataset, the default is `FinishedProduct.behind_a_bath` — products where a whole bath still
 lands at or under par, which is where a session's work is fully used. The
 checkbox widens it to everything below par, including the ones a bath takes

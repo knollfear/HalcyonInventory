@@ -170,7 +170,24 @@ class Bath:
         return self.product.raw_product.name
 
 
-def candidates(category=None, include_overshoot=False):
+#: How a sheet decides which shortages to put on the paper first.
+#:
+#: `sold` is the default, and it is the same call `private/production-needed/`
+#: makes: **par was never dialled in**, so ordering a dye session by shortage
+#: ranks it on a number nobody chose — a colorway that sold three all season
+#: ahead of one that sold forty, purely for crossing an arbitrary line first.
+#: Sales are measured.
+#:
+#: The two pages must agree by default, which is the other half of the reason.
+#: Somebody reads the list ordered one way and then asks the picker for "the
+#: first twenty" — and if the picker is sorting by something else, they get
+#: twenty baths that are not the ones they were looking at, with nothing on
+#: either page to say so.
+ORDER_SOLD = "sold"
+ORDER_PAR = "par"
+
+
+def candidates(category=None, include_overshoot=False, order=ORDER_SOLD):
     """Products worth putting on a sheet, most urgent first.
 
     The default is `FinishedProduct.behind_a_bath` — products where a whole
@@ -236,7 +253,20 @@ def candidates(category=None, include_overshoot=False):
                 continue
         wanted.append(product)
 
-    return sorted(wanted, key=_urgency)
+    if order == ORDER_PAR:
+        return sorted(wanted, key=_urgency)
+
+    # Sales first, urgency as the tie-break — so an empty shelf still leads
+    # among colorways that sell alike, and a colour nobody buys does not jump
+    # the queue for being emptier. Pooled by recipe, because that is the unit
+    # a bath is planned in and the unit the other page reports.
+    from . import slowsellers
+
+    sold = slowsellers.sold_by_recipe(slowsellers.season_range({}))
+    return sorted(
+        wanted,
+        key=lambda p: (-sold.get(p.recipe_id, 0),) + _urgency(p),
+    )
 
 
 def in_flight():
@@ -293,7 +323,7 @@ def _urgency(product):
     )
 
 
-def plan_baths(limit, category=None, include_overshoot=False):
+def plan_baths(limit, category=None, include_overshoot=False, order=ORDER_SOLD):
     """The next `limit` baths, grouped so consecutive rows share a dye pot.
 
     Baths of the same recipe sit together because that is how the work is
@@ -305,7 +335,7 @@ def plan_baths(limit, category=None, include_overshoot=False):
     was asked for a number of baths and it delivers exactly that number.
     """
     by_recipe = {}
-    for product in candidates(category, include_overshoot):
+    for product in candidates(category, include_overshoot, order):
         # `net_shortage`, not `shortage`: what is already out being dyed has
         # been taken off, so a sheet asks for the baths still missing rather
         # than reprinting the ones on last week's paper.

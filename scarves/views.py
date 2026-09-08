@@ -3974,6 +3974,7 @@ def sheet_list(form):
         form.cleaned_data["baths"],
         category=form.cleaned_data.get("category"),
         include_overshoot=form.cleaned_data["include_overshoot"],
+        order=form.cleaned_data.get("order") or production.ORDER_SOLD,
     )
     # Back to one row per colorway. `plan_baths` returns a bath at a time
     # because that is what the paper prints; the list is edited per colorway,

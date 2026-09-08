@@ -545,6 +545,21 @@ class ProductionSheetForm(forms.Form):
         help_text="Most urgent first — what a whole bath still leaves at or under par.",
     )
     items = PickedBathsField(required=False)
+    order = forms.ChoiceField(
+        choices=[
+            ("sold", "Best sellers first"),
+            ("par", "Furthest below par first"),
+        ],
+        initial="sold",
+        required=False,
+        label="Which shortages first?",
+        help_text=(
+            "Sales are measured; par was never dialled in, so ordering by "
+            "shortage ranks a session on a number nobody chose. This matches "
+            "what production-needed lists, so asking for the first N baths "
+            "gives the N you were just looking at."
+        ),
+    )
     category = forms.ModelChoiceField(
         queryset=RawProductCategory.objects.none(),   # set in __init__
         required=False,

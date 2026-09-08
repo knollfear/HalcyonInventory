@@ -10189,6 +10189,84 @@ class ReportsAreTheirOwnCategoryTests(TestCase):
                 )
 
 
+class TheSheetAndTheListAgreeTests(TestCase):
+    """The picker orders the same way the page you read it on does.
+
+    Somebody reads production-needed, then asks the picker for the first N
+    baths. If the two sort differently they get N baths that are not the ones
+    they were looking at, and nothing on either page says so.
+    """
+
+    def setUp(self):
+        self.client.force_login(User.objects.create_user("staff", password="pw"))
+        # Sells well, only slightly short.
+        self.mover = make_bathable(
+            make_recipe("Ember"), "Heavenly", on_hand=4, par=12, bath=4
+        )
+        # Sells nothing, completely out — what par ranks first.
+        self.dud = make_bathable(
+            make_recipe("Wasteland"), "Homespun", on_hand=0, par=12, bath=4
+        )
+        self._sell(self.mover, 40)
+
+    def _sell(self, product, units):
+        sale = Sale.objects.create(
+            order_id=f"o{product.pk}", sold_at=timezone.now(),
+            source=Sale.SOURCE_SQUARE_API,
+        )
+        SaleLine.objects.create(
+            sale=sale, line_key=f"k{product.pk}", sold_at=timezone.now(),
+            item_name=product.raw_product.name, price_point=product.recipe.name,
+            quantity=units, finished_product=product,
+            raw_product=product.raw_product, source=Sale.SOURCE_SQUARE_API,
+        )
+
+    def test_the_sheet_leads_with_the_seller_by_default(self):
+        baths = production.plan_baths(10)
+
+        self.assertEqual(baths[0].recipe_name, "Ember")
+
+    def test_the_first_bath_matches_the_first_row_of_the_list(self):
+        """The actual defect this fixes: two pages, one question."""
+        listed = self.client.get(reverse("production_needed")).context["groups"]
+        baths = production.plan_baths(10)
+
+        self.assertEqual(baths[0].recipe_name, listed[0]["recipe_name"])
+
+    def test_par_ordering_is_still_available_and_differs(self):
+        baths = production.plan_baths(10, order=production.ORDER_PAR)
+
+        self.assertEqual(baths[0].recipe_name, "Wasteland")
+
+    def test_the_picker_passes_the_choice_through(self):
+        response = self.client.get(
+            reverse("production_sheet_index"), {"baths": "10", "order": "par"})
+
+        self.assertEqual(
+            response.context["baths"][0].recipe_name, "Wasteland")
+
+    def test_an_empty_shelf_still_leads_among_equal_sellers(self):
+        """Sales are the primary key, not the only one — a colorway a
+        customer cannot buy still leads its peers."""
+        empty = make_bathable(
+            make_recipe("Aegean"), "Artisan", on_hand=0, par=12, bath=4
+        )
+        stocked = make_bathable(
+            make_recipe("Rosy"), "Noble", on_hand=4, par=12, bath=4
+        )
+        self._sell(empty, 5)
+        self._sell(stocked, 5)
+
+        names = [b.recipe_name for b in production.plan_baths(20)]
+
+        self.assertLess(names.index("Aegean"), names.index("Rosy"))
+
+    def test_a_colour_nobody_buys_does_not_jump_the_queue_for_being_empty(self):
+        names = [b.recipe_name for b in production.plan_baths(20)]
+
+        self.assertLess(names.index("Ember"), names.index("Wasteland"))
+
+
 class ProductionNeededRanksOnSalesTests(TestCase):
     """What sells outranks what merely crossed par.
 
