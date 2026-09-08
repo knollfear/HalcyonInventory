@@ -2331,9 +2331,25 @@ it change how the numbers read:
   that season. Any total spanning that boundary is comparing two different
   businesses, which is what the category filter is for — and silk grew
   straight through it regardless (50,787 → 82,856 across 2021–2025).
-- **Nothing before 2025 has a Square variation id or a SKU on it.** Those
-  seasons match by item name only, so they are readable at the *blank* and not
-  at the colorway. Colorway-level history starts where the sync does.
+- **Colorway-level history starts in 2026, because before that the shop did
+  not sell by colorway at all.** Selling and tracking by colour is the whole
+  project; it is not something the older seasons did worse. Nothing before
+  2025 has a Square variation id or a SKU, so those seasons read at the
+  *blank* only. 2025 looks like an exception and is not: 2,348 of its 2,349
+  lines carry a variation id, but its yarn price points are undyed varieties
+  — `Baby Yak Cloud`, `Tibetan 3 ply`, `Egyptian Yak` — rather than colours,
+  so none of them matches a product today and **there is nothing to recover.**
+  Re-running the matcher over 2025 links zero lines; that has been measured,
+  so nobody needs to try it again.
+
+  The trap this sets is specific and expensive: a colorway query over 2025
+  returns **zero rather than an error**, so "it sold none last year" and "the
+  concept did not exist last year" produce the same output — and the first
+  reading retires a recipe. Compare colorways only from 2026 on; blank- and
+  category-level comparisons are sound throughout.
+
+  It follows that **no colorway has a baseline yet.** A slow one is judged
+  against other colorways in the same season, never against its own history.
 - **A projected weekend is not a counted one.** `Season.total` and
   `traded_days` deliberately exclude projections; an earlier version summed
   every weekend, which made the figure captioned "so far" equal the one
