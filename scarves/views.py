@@ -6296,7 +6296,7 @@ def close_undo(request, token, pk):
     title="Close History",
     description="What each Sunday close found: the products the app had "
                 "wrong, which way, and by how much.",
-    category="Inventory",
+    category="Reports",
 )
 @login_required
 def close_history(request):
@@ -6399,7 +6399,7 @@ def _seasons_href(base, **overrides):
     description="This season against the ones behind it, indexed on the "
                 "weekend of the run rather than the calendar date. Dollars or "
                 "units, cumulative, per weekend, or per trading day.",
-    category="Inventory",
+    category="Reports",
     note="?faire=&year=&mode=cum|weekend|day&metric=net|units&cat=",
 )
 @login_required
@@ -6575,7 +6575,7 @@ def _sales_href(base, **overrides):
     description="What sold over a date range, one row per finished product: "
                 "units, how many separate sales, and what's left against par. "
                 "Today, yesterday, or dates you pick.",
-    category="Inventory",
+    category="Reports",
     note="Sortable columns; ?range=today|yesterday|7|30|all or ?from=&to=",
 )
 @login_required

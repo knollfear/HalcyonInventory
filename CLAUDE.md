@@ -2057,6 +2057,19 @@ headings that mysteriously aren't links. An unreadable date contributes
 nothing and the heading states the range actually used, which is what stops
 the answer being mistaken for the question that was asked.
 
+## `Reports`: the pages that read and never write
+
+`Top Sellers`, `Slow Sellers`, `Season Pace` and `Close History` share a
+category because they are the same kind of page: they read, they render, and
+none of them writes a row. They used to sit under `Inventory` beside the
+pages that actually move stock — `Raw Inventory`, `Bulk Inventory Update`,
+`Sunday Close`, the restock board — which made one category mean two things
+and a site map worth less than the sum of its cards.
+
+The line is whether the page can change the numbers it shows you.
+`ReportsAreTheirOwnCategoryTests` pins the grouping and checks the modules
+behind them contain no writes at all.
+
 ## Slow sellers: a zero means two opposite things
 
 `private/slow-sellers/` is the other end of `private/sales/`, and a different

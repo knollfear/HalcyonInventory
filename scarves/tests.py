@@ -10138,6 +10138,56 @@ class PrintSubmitsTheListItselfTests(TestCase):
         self.assertContains(response, 'hx-params="not csrfmiddlewaretoken"')
 
 
+class ReportsAreTheirOwnCategoryTests(TestCase):
+    """The read-only pages sit together, and none of them writes.
+
+    `Reports` started as a category of one when Slow Sellers arrived, with
+    Top Sellers, Season Pace and Close History filed under `Inventory`
+    alongside the pages that actually move stock. Two names for one kind of
+    page is how a site map stops being readable.
+    """
+
+    REPORTS = ["Top Sellers", "Slow Sellers", "Season Pace", "Close History"]
+
+    def setUp(self):
+        self.client.force_login(User.objects.create_user("staff", password="pw"))
+
+    def _map(self):
+        return self.client.get(reverse("index")).content.decode()
+
+    def test_every_report_is_on_the_map(self):
+        body = self._map()
+
+        for title in self.REPORTS:
+            self.assertIn(title, body)
+
+    def test_they_share_one_category(self):
+        from scarves import views
+
+        cats = {
+            fn.page_meta["category"]
+            for name, fn in vars(views).items()
+            if callable(fn) and getattr(fn, "page_meta", None)
+            and fn.page_meta.get("title") in self.REPORTS
+        }
+
+        self.assertEqual(cats, {"Reports"})
+
+    def test_a_report_writes_nothing(self):
+        """What makes them one category: they read and produce a page, and
+        the operational pages they used to sit with move stock."""
+        import scarves.sales as sales
+        import scarves.slowsellers as slow
+
+        for module in (sales, slow):
+            source = pathlib.Path(module.__file__).read_text()
+            for forbidden in (".save(", ".create(", ".update(", ".delete("):
+                self.assertNotIn(
+                    forbidden, source,
+                    f"{module.__name__} should not write: {forbidden}",
+                )
+
+
 class SlowSellersTests(TestCase):
     """The bottom of the list, where a zero means two opposite things.
 
