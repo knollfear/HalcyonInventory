@@ -858,14 +858,35 @@ posts `qty-<pk>` and the form applies it as an override — membership and order
 stay with `items`, and only the count comes from the box. Editing to zero
 removes the row, because typing it away has to mean what the ✕ means.
 
-**Every edit is a round trip, and that is the point.** The bath total, the
-short-blank warning and the dye collection plan all read the list, and a
+**Every edit is a round trip, and the round trip is small.** The bath total,
+the short-blank warning and the dye collection plan all read the list, so a
 client-side edit would leave them describing it as it was a moment ago — a
-short dye list sends somebody to the shelf for the wrong things. htmx swaps
-the whole block using `hx-select` on this same page rather than a partial, so
-there is no second renderer to drift, and `hx-push-url` keeps the address the
-sendable one. Without the script it is an ordinary GET form with an "Update
-the list" button.
+short dye list sends somebody to the shelf for the wrong things. Changing a
+count, removing a row and adding a colorway all `hx-get` the page and swap
+`partials/sheet_plan.html` into `#sheet`.
+
+**The view returns that partial when `HX-Request` is set**, and the page
+`{% include %}`s the same one. Both halves of that matter. The first version
+used `hx-select="#sheet"` against the full page, which renders the whole
+shell — every CSS rule, both start panels — and throws all but the table
+away; that is a page load wearing a swap's clothes, and it is the thing to
+avoid repeating. The second is what keeps one renderer, so a swapped view
+cannot disagree with a refreshed one, the same call `production_needed.html`
+and `recipe_showcase.html` make about their rows.
+
+**Nothing here runs JavaScript of ours.** Every control is an ordinary
+element with an htmx attribute on it and a working fallback underneath: the
+✕ is a link with an `href`, the count box sits in a GET form with an "Update
+the list" button, and a search result is a `<button form="sheet-list"
+name="add">` that submits the list with one more parameter. htmx intercepts
+the click when it is there; the form posts when it isn't.
+
+That fallback pair is also what fixed a real bug worth remembering. The first
+picker built its list in the browser with a click handler, and a later rework
+deleted the table that handler wrote into — so clicking a result did nothing
+at all and the network panel stayed silent, because nothing was ever
+requested. A control that is a form submit cannot fail that way: either it
+navigates or it was never clicked.
 
 The count is **baths, not scarves** — two baths of a blank yielding four print
 as `4 ×` twice, because a row is a bath and a bath is what somebody physically

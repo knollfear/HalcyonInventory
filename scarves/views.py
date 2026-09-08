@@ -4030,7 +4030,23 @@ def production_sheet_index(request):
         rows = sheet_list(form)
     baths = production.baths_from_picks(rows)
 
-    return render(request, "scarves/production_sheet_index.html", {
+    # The search is a plain GET form with htmx layered on, so with the script
+    # blocked `q` lands in the URL and the results render inline from the very
+    # partial the fragment endpoint returns — the same call the run page and
+    # the close's tag search make.
+    q = (request.GET.get("q") or "").strip()
+
+    # An htmx edit gets the fragment and nothing else — a few hundred bytes
+    # of table rather than a whole page the browser would throw most of away.
+    # Same context either way, and the page includes the same partial, so
+    # there is one renderer and a swapped view cannot disagree with a
+    # refreshed one.
+    template = (
+        "scarves/partials/sheet_plan.html"
+        if request.headers.get("HX-Request") == "true"
+        else "scarves/production_sheet_index.html"
+    )
+    return render(request, template, {
         "form": form,
         "baths": baths,
         "plan": production.dye_plan_for_baths(baths),
@@ -4058,6 +4074,8 @@ def production_sheet_index(request):
             for product, n in rows
         ],
         "asked": form.is_bound and form.asked_anything,
+        "q": q,
+        "search_results": search_products(q) if q else None,
         # Two lists, because they ask for different things. Live sheets are a
         # convenience — "what you might still be working from" — and are
         # truncated, since a long one is just noise.

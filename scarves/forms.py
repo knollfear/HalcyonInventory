@@ -571,8 +571,17 @@ class ProductionSheetForm(forms.Form):
 
     @property
     def asked_anything(self) -> bool:
-        """Whether this form is a question at all, rather than a bare page."""
-        return bool(self.data.get("baths") or self.data.getlist("items"))
+        """Whether this form is a question at all, rather than a bare page.
+
+        `add` counts. Clicking a search result on an empty page is a question
+        — it is how the first row gets there — and leaving it out meant the
+        page came back with the row on it and no total and no print button.
+        """
+        return bool(
+            self.data.get("baths")
+            or self.data.getlist("items")
+            or self.data.get("add")
+        )
 
     def _edited(self, product, current):
         """The bath count for one row, after any inline edit.
@@ -591,17 +600,61 @@ class ProductionSheetForm(forms.Form):
             return current
         return min(int(typed), PickedBathsField.MAX_PER_ITEM)
 
+    def _added_product(self):
+        """The colorway an "add" button just asked for, or `None`.
+
+        A distinct parameter from `items` rather than another entry in it,
+        because the two would fight: the list posts `items=<pk>:<n>` *and* a
+        `qty-<pk>` box, so a second `items=<pk>:1` for something already on
+        the list would be summed and then immediately overwritten by the
+        box's older number. The add would look like it did nothing — which is
+        exactly how this arrived.
+        """
+        from .models import FinishedProduct
+
+        raw = (self.data.get("add") or "").strip()
+        if not raw.isdigit():
+            return None
+        return (
+            FinishedProduct.objects.filter(pk=int(raw), is_active=True)
+            .select_related("raw_product", "recipe")
+            .first()
+        )
+
     def clean(self):
+        """The list, in the order the three inputs have to be applied.
+
+        **Edits first, then the add.** They touch the same row when somebody
+        clicks a colorway already on the list, and doing it the other way
+        round lets the count box's older number overwrite the bump — which
+        reads on screen as the add having done nothing at all.
+        """
         cleaned = super().clean()
-        picked = cleaned.get("items")
-        if picked:
-            # Zero is how a row is removed by typing rather than by the ✕,
-            # and it must not become a bath of nothing.
-            picked = [
-                (product, self._edited(product, n)) for product, n in picked
-            ]
-            picked = [(product, n) for product, n in picked if n > 0]
-            cleaned["items"] = picked
+        picked = list(cleaned.get("items") or [])
+
+        # 1. the count boxes. Zero is how a row is removed by typing rather
+        #    than by the ✕, and it must not become a bath of nothing.
+        picked = [(product, self._edited(product, n)) for product, n in picked]
+        picked = [(product, n) for product, n in picked if n > 0]
+
+        # 2. the add. Bump if it is already there, append if it isn't, which
+        #    is what clicking the same colorway twice means. Order is kept so
+        #    a list doesn't reshuffle under somebody.
+        added = self._added_product()
+        if added is not None:
+            if added.recipe_id is None or not added.raw_product.made_in_a_dye_bath:
+                self.add_error(
+                    "items",
+                    f"{added.name} isn't made in a dye bath, so it can't go "
+                    f"on a production sheet.",
+                )
+            else:
+                for index, (product, n) in enumerate(picked):
+                    if product.pk == added.pk:
+                        picked[index] = (product, n + 1)
+                        break
+                else:
+                    picked.append((added, 1))
 
         if picked and sum(n for _, n in picked) > self.MAX_BATHS:
             self.add_error(
@@ -609,6 +662,8 @@ class ProductionSheetForm(forms.Form):
                 f"That is more than {self.MAX_BATHS} baths. A sheet is one "
                 f"session's work.",
             )
+
+        cleaned["items"] = picked
         return cleaned
 
 

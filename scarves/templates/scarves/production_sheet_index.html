@@ -222,14 +222,34 @@ the preview is deliberately a GET and the print button is the only POST.
 
     <div class="start">
       <h2>I know what to dye</h2>
-      <label for="bath-search">Find a colorway</label>
-      <input type="text" id="bath-search" name="q" autocomplete="off"
-             placeholder="Type a colorway or blank…"
-             hx-get="{% url 'product_search' %}"
-             hx-trigger="keyup changed delay:250ms"
-             hx-target="#bath-results"
-             hx-vals='{"mode": "plan"}'>
-      <div class="results" id="bath-results"></div>
+      {% comment %}
+      A plain GET form with htmx layered on: with the script blocked, Enter
+      puts `q` in the URL and the results render inline from the very partial
+      the fragment returns. Carries the current list along as hidden inputs so
+      searching never loses it.
+      {% endcomment %}
+      <form method="get" class="findbox"
+            hx-get="{% url 'product_search' %}"
+            hx-vals='{"mode": "plan"}'
+            hx-target="#bath-results"
+            hx-swap="innerHTML">
+        {% for row in rows %}
+          <input type="hidden" name="items" value="{{ row.product.pk }}:{{ row.baths }}">
+        {% endfor %}
+        <label for="bath-search">Find a colorway</label>
+        <input type="search" id="bath-search" name="q" value="{{ q }}"
+               autocomplete="off" placeholder="Type a colorway or blank…"
+               hx-get="{% url 'product_search' %}"
+               hx-trigger="keyup changed delay:250ms"
+               hx-target="#bath-results"
+               hx-vals='{"mode": "plan"}'>
+        <button class="btn-quiet" type="submit">Find</button>
+      </form>
+      <div class="results" id="bath-results">
+        {% if search_results is not None %}
+          {% include "scarves/partials/bath_pick_results.html" with products=search_results %}
+        {% endif %}
+      </div>
       <div class="help">
         Click a result to add it. Nothing here is filtered on par — this is
         the half that exists because par is not the only reason to dye.
@@ -245,228 +265,6 @@ the preview is deliberately a GET and the print button is the only POST.
   button cannot disagree with each other. A second partial would be a second
   renderer to drift.
   {% endcomment %}
-  <div id="sheet">
-  {% if submitted and rows %}
-    <hr>
-    <form method="get" id="sheet-list">
-      <table class="rows">
-        <thead>
-          <tr>
-            <th>Colorway</th><th>Blank</th>
-            <th class="num">Baths</th><th class="num">Makes</th>
-            <th class="num">On hand</th><th class="num">Par</th><th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for row in rows %}
-            <tr>
-              <td>{{ row.product.recipe.name }}</td>
-              <td>{{ row.product.raw_product.name }}</td>
-              <td class="num">
-                <input type="hidden" name="items"
-                       value="{{ row.product.pk }}:{{ row.baths }}">
-                {% comment %}
-                Every row is editable, however the list was seeded. Changing
-                a count re-renders the block on `change` — one round trip per
-                edit, which is what keeps the collection plan below honest;
-                a client-side edit would leave it describing the list as it
-                was a moment ago.
-                {% endcomment %}
-                <input type="number" name="qty-{{ row.product.pk }}" class="qty"
-                       value="{{ row.baths }}" min="0" max="20"
-                       hx-get="{% url 'production_sheet_index' %}"
-                       hx-include="#sheet-list"
-                       hx-trigger="change"
-                       hx-target="#sheet"
-                       hx-select="#sheet"
-                       hx-swap="outerHTML"
-                       hx-push-url="true">
-              </td>
-              <td class="num">{{ row.makes }}</td>
-              <td class="num">{{ row.product.number_on_hand }}</td>
-              <td class="num">{{ row.product.par }}</td>
-              <td class="num">
-                {% comment %}
-                A server-rendered link to the list without this row, so
-                removing one is an ordinary navigation that works with the
-                script blocked — and the address it lands on is the same
-                sendable URL everything else here uses.
-                {% endcomment %}
-                <a class="drop" title="Take this off the list"
-                   href="?{{ row.without }}"
-                   hx-get="?{{ row.without }}"
-                   hx-target="#sheet"
-                   hx-select="#sheet"
-                   hx-swap="outerHTML"
-                   hx-push-url="true">✕</a>
-              </td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-      {% comment %}
-      The no-script path for an edited count. With htmx the `change` above has
-      already done it, so this is the button nobody presses — kept because the
-      alternative is a number you can type and nothing that reads it.
-      {% endcomment %}
-      <button class="btn-quiet" type="submit">Update the list</button>
-    </form>
+  {% include "scarves/partials/sheet_plan.html" %}
 
-    <p class="headline">{{ baths|length }} bath{{ baths|length|pluralize }}</p>
-
-    {% if short_blanks %}
-      <div class="panel warn">
-        <strong>Not enough blanks for all of this.</strong>
-        {% comment %}
-        Said, not enforced. The order may already be placed, and refusing to
-        print would be the app arguing with someone who can see the shelf.
-        {% endcomment %}
-        <ul>
-          {% for raw, needed, on_hand in short_blanks %}
-            <li>{{ raw.name }} — needs {{ needed }}, {{ on_hand }} on hand</li>
-          {% endfor %}
-        </ul>
-      </div>
-    {% endif %}
-
-    {% include "scarves/partials/dye_plan.html" %}
-
-    <form method="post" style="margin-top:18px">
-      {% csrf_token %}
-      {% comment %}
-      The list as the server currently has it. Every edit is a round trip, so
-      this cannot disagree with what is on screen — which is the reason the
-      edits are round trips.
-      {% endcomment %}
-      {% for row in rows %}
-        <input type="hidden" name="items" value="{{ row.product.pk }}:{{ row.baths }}">
-      {% endfor %}
-      <button class="btn" type="submit">Print this sheet</button>
-      <p class="muted">
-        Creates a run and a QR code the crew scan to report back. Nothing is
-        recorded against inventory until they do.
-      </p>
-    </form>
-  {% elif asked %}
-    <hr>
-    <p>
-      Nothing is below par for those settings. To dye something anyway,
-      search for it under <strong>I know what to dye</strong> — par is not
-      the only reason to run a session.
-    </p>
-  {% endif %}
-  </div>
-
-{% endblock %}
-
-{% block scripts %}
-<script>
-  (function () {
-    // Only show the controls the chosen dataset actually reads. A bath count
-    // that changes nothing is worse than no bath count: it looks like it is
-    // planning and quietly isn't. Fields stay in the DOM and keep submitting;
-    // the view ignores what the dataset doesn't use.
-    var dataset = document.getElementById("{{ form.dataset.auto_id }}");
-    var conditional = document.querySelectorAll("#sheet-form .field[data-when]");
-    if (dataset) {
-      var sync = function () {
-        conditional.forEach(function (el) {
-          el.hidden = el.dataset.when.split(" ").indexOf(dataset.value) === -1;
-        });
-      };
-      dataset.addEventListener("change", sync);
-      sync();   // the form comes back server-rendered after a preview
-    }
-
-    // --- the hand-picked bath list ---------------------------------------
-    // Rows carry their own hidden `items=<pk>:<baths>` input, so the ordinary
-    // GET submit takes the list with it and a hand-built sheet stays a URL
-    // somebody can re-open or send. The server renders existing rows back
-    // after a preview; this only wires behaviour on top of them.
-    var picked = document.getElementById("picked-baths");
-    if (!picked) { return; }
-
-    var body = picked.querySelector("tbody");
-    var emptyNote = document.getElementById("picked-empty");
-    var search = document.getElementById("bath-search");
-    var results = document.getElementById("bath-results");
-
-    var refresh = function () {
-      var any = body.children.length > 0;
-      picked.hidden = !any;
-      emptyNote.hidden = any;
-    };
-
-    var syncRow = function (row) {
-      var qty = row.querySelector(".qty").value || "1";
-      var hidden = row.querySelector("input[name='items']");
-      if (!hidden) {
-        hidden = document.createElement("input");
-        hidden.type = "hidden";
-        hidden.name = "items";
-        row.appendChild(hidden);
-      }
-      hidden.value = row.dataset.pk + ":" + qty;
-      // What the baths actually make, worked out here rather than left for
-      // somebody to multiply. Baths are the unit of work and scarves are the
-      // unit everybody thinks in, and the sheet is planned in the first.
-      var size = parseInt(row.dataset.size || "1", 10);
-      row.querySelector(".makes").textContent =
-        (parseInt(qty, 10) || 0) * size;
-    };
-
-    var addRow = function (pk, name, size) {
-      var existing = body.querySelector('tr[data-pk="' + pk + '"]');
-      if (existing) {
-        // Adding something already on the list bumps its count rather than
-        // stacking a duplicate row — two rows for one colorway is a sum
-        // written confusingly.
-        var q = existing.querySelector(".qty");
-        q.value = Math.min(parseInt(q.value || "0", 10) + 1, 20);
-        syncRow(existing);
-        return;
-      }
-      var row = document.createElement("tr");
-      row.dataset.pk = pk;
-      row.dataset.size = size;
-      row.innerHTML =
-        "<td></td>" +
-        '<td class="num"><input type="number" class="qty" min="1" max="20" value="1"></td>' +
-        '<td class="num makes"></td>' +
-        '<td><button type="button" class="btn-quiet drop">Remove</button></td>';
-      row.children[0].textContent = name;
-      body.appendChild(row);
-      syncRow(row);
-      refresh();
-    };
-
-    // Delegated, so results swapped in by htmx are covered.
-    results.addEventListener("click", function (e) {
-      var hit = e.target.closest(".result");
-      if (!hit || hit.disabled) { return; }
-      addRow(hit.dataset.pk, hit.dataset.name, hit.dataset.baths);
-      results.innerHTML = "";
-      search.value = "";
-      search.focus();
-    });
-
-    picked.addEventListener("input", function (e) {
-      if (e.target.classList.contains("qty")) { syncRow(e.target.closest("tr")); }
-    });
-    picked.addEventListener("click", function (e) {
-      if (e.target.classList.contains("drop")) {
-        e.target.closest("tr").remove();
-        refresh();
-      }
-    });
-
-    // Enter in the search box must not submit a half-built sheet.
-    search.addEventListener("keydown", function (e) {
-      if (e.key === "Enter") { e.preventDefault(); }
-    });
-
-    Array.prototype.forEach.call(body.children, syncRow);
-    refresh();
-  })();
-</script>
 {% endblock %}

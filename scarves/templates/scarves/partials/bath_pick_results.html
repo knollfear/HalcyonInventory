@@ -1,23 +1,35 @@
 {% comment %}
-Type-ahead results for picking baths onto a sheet that doesn't exist yet, and
-the fourth click behaviour on the one `product_search` endpoint.
+Type-ahead results for picking baths onto a sheet, and the fourth click
+behaviour on the one `product_search` endpoint.
 
-Not `mode=sheet`: those results post straight onto a run, and here there is no
-run to post to — the list is built in the browser and the whole form creates
-the run in one go. Not `mode=labels` either, which greys out anything without
-a SKU: a SKU is what prints a sticker, not what dyes a bath, so refusing one
-here would be the sheet enforcing the label run's rule.
+**Adding is an htmx swap of the list, and a form submit when it isn't.** The
+`hx-get` sends the current list (`hx-include="#sheet-list"`) plus one `add`
+and swaps back the sheet fragment — a few hundred bytes, no page reload. The
+`form="sheet-list"` and `name="add"` underneath are what the same click does
+with the script blocked: submit the list form with one more parameter. One
+button, both paths, and no JavaScript of our own in either.
 
-Data attributes are what the page's add-handler reads, so a result carries
-everything a row needs without a second round trip — same as the label picker.
+The list is server-side state carried as hidden `items` inputs in that form,
+which is why the button needs to say nothing about what is already there.
+
+`add=<pk>` rather than another `items` entry, because the two would fight: a
+row posts `items=<pk>:<n>` *and* a `qty-<pk>` box, so a second `items` for
+something already listed gets summed and then overwritten by the box's older
+number — the add silently does nothing, which is how this arrived.
+
+No SKU filter here, unlike the label list: a SKU prints a sticker, it doesn't
+dye a bath.
 {% endcomment %}
 {% for p in products %}
   {% if p.recipe_id and p.raw_product.made_in_a_dye_bath %}
-    <button type="button"
+    <button type="submit" form="sheet-list" name="add" value="{{ p.id }}"
             class="result"
-            data-pk="{{ p.id }}"
-            data-name="{{ p.name }}"
-            data-baths="{{ p.bath_size }}">
+            hx-get="{% url 'production_sheet_index' %}"
+            hx-vals='{"add": "{{ p.id }}"}'
+            hx-include="#sheet-list"
+            hx-target="#sheet"
+            hx-swap="outerHTML"
+            hx-push-url="true">
       <span class="who">{{ p.name }}</span>
       <span class="muted">{{ p.bath_size }} per bath</span>
     </button>
@@ -37,6 +49,7 @@ everything a row needs without a second round trip — same as the label picker.
       </span>
     </button>
   {% endif %}
-{% empty %}
-  <div class="muted">No matching colorways.</div>
 {% endfor %}
+{% if not products %}
+  <div class="muted">No matching colorways.</div>
+{% endif %}

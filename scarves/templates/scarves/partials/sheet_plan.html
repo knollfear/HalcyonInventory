@@ -1,0 +1,133 @@
+{% comment %}
+The sheet as it currently stands: the editable list, what it adds up to, the
+short-blank warning, the collection plan and the print button.
+
+**This is the htmx swap target and the whole of what a swap sends.** Every
+edit — a count changed, a row removed, a colorway added — re-renders exactly
+this and nothing else, so a swap is a few hundred bytes of table rather than
+a page. The page `{% include %}`s the same partial, which is what stops the
+two from drifting into a swapped view that disagrees with a refreshed one;
+it is the call `production_needed.html` and `recipe_showcase.html` already
+make about their own rows.
+
+Everything below reads the one list, which is why an edit has to reach the
+server at all: the bath total, the short blanks and the dye plan would
+otherwise describe the list as it was a moment ago, and a short dye list
+sends somebody to the shelf for the wrong things.
+{% endcomment %}
+  <div id="sheet">
+    {% comment %}
+    Rendered even when the list is empty, because the search results add to it
+    by submitting it (`form="sheet-list"`) — a form that only exists once
+    there is something in it could never take the first row.
+    {% endcomment %}
+    <form method="get" id="sheet-list">
+      {% if rows %}
+      <hr>
+      <table class="rows">
+        <thead>
+          <tr>
+            <th>Colorway</th><th>Blank</th>
+            <th class="num">Baths</th><th class="num">Makes</th>
+            <th class="num">On hand</th><th class="num">Par</th><th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+            <tr>
+              <td>{{ row.product.recipe.name }}</td>
+              <td>{{ row.product.raw_product.name }}</td>
+              <td class="num">
+                <input type="hidden" name="items"
+                       value="{{ row.product.pk }}:{{ row.baths }}">
+                {% comment %}
+                Every row is editable, however the list was seeded. Changing
+                a count re-renders the block on `change` — one round trip per
+                edit, which is what keeps the collection plan below honest;
+                a client-side edit would leave it describing the list as it
+                was a moment ago.
+                {% endcomment %}
+                <input type="number" name="qty-{{ row.product.pk }}" class="qty"
+                       value="{{ row.baths }}" min="0" max="20"
+                       hx-get="{% url 'production_sheet_index' %}"
+                       hx-include="#sheet-list"
+                       hx-trigger="change"
+                       hx-target="#sheet"
+                       hx-swap="outerHTML"
+                       hx-push-url="true">
+              </td>
+              <td class="num">{{ row.makes }}</td>
+              <td class="num">{{ row.product.number_on_hand }}</td>
+              <td class="num">{{ row.product.par }}</td>
+              <td class="num">
+                {% comment %}
+                A server-rendered link to the list without this row, so
+                removing one is an ordinary navigation that works with the
+                script blocked — and the address it lands on is the same
+                sendable URL everything else here uses.
+                {% endcomment %}
+                <a class="drop" title="Take this off the list"
+                   href="?{{ row.without }}"
+                   hx-get="?{{ row.without }}"
+                   hx-target="#sheet"
+                   hx-swap="outerHTML"
+                   hx-push-url="true">✕</a>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% comment %}
+      The no-script path for an edited count. With htmx the `change` above has
+      already done it, so this is the button nobody presses — kept because the
+      alternative is a number you can type and nothing that reads it.
+      {% endcomment %}
+      <button class="btn-quiet" type="submit">Update the list</button>
+      {% endif %}
+    </form>
+
+  {% if submitted and rows %}
+    <p class="headline">{{ baths|length }} bath{{ baths|length|pluralize }}</p>
+
+    {% if short_blanks %}
+      <div class="panel warn">
+        <strong>Not enough blanks for all of this.</strong>
+        {% comment %}
+        Said, not enforced. The order may already be placed, and refusing to
+        print would be the app arguing with someone who can see the shelf.
+        {% endcomment %}
+        <ul>
+          {% for raw, needed, on_hand in short_blanks %}
+            <li>{{ raw.name }} — needs {{ needed }}, {{ on_hand }} on hand</li>
+          {% endfor %}
+        </ul>
+      </div>
+    {% endif %}
+
+    {% include "scarves/partials/dye_plan.html" %}
+
+    <form method="post" style="margin-top:18px">
+      {% csrf_token %}
+      {% comment %}
+      The list as the server currently has it. Every edit is a round trip, so
+      this cannot disagree with what is on screen — which is the reason the
+      edits are round trips.
+      {% endcomment %}
+      {% for row in rows %}
+        <input type="hidden" name="items" value="{{ row.product.pk }}:{{ row.baths }}">
+      {% endfor %}
+      <button class="btn" type="submit">Print this sheet</button>
+      <p class="muted">
+        Creates a run and a QR code the crew scan to report back. Nothing is
+        recorded against inventory until they do.
+      </p>
+    </form>
+  {% elif asked %}
+    <hr>
+    <p>
+      Nothing is below par for those settings. To dye something anyway,
+      search for it under <strong>I know what to dye</strong> — par is not
+      the only reason to run a session.
+    </p>
+  {% endif %}
+  </div>

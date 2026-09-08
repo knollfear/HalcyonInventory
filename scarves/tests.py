@@ -10062,6 +10062,199 @@ class FancyAtProductionTests(TestCase):
         self.assertEqual(self.product.number_on_hand, 5)
 
 
+class AnHtmxEditSendsAFragmentTests(TestCase):
+    """A swap is a few lines of HTML, not a page the browser throws away.
+
+    The first version used `hx-select` against the full page, which renders
+    everything — the site chrome, both start panels, the whole shell — and
+    discards all but the table. That is a page load wearing a swap's clothes.
+    The endpoint now returns the fragment itself.
+    """
+
+    def setUp(self):
+        self.client.force_login(User.objects.create_user("staff", password="pw"))
+        self.product = make_bathable(
+            make_recipe("Stormy Sea"), "Stormy Silk", on_hand=0, par=20, bath=4
+        )
+        self.url = reverse("production_sheet_index")
+        self.params = {"items": [f"{self.product.pk}:2"]}
+
+    def _get(self, **extra):
+        params = dict(self.params)
+        params.update(extra)
+        return (
+            self.client.get(self.url, params),
+            self.client.get(self.url, params, HTTP_HX_REQUEST="true"),
+        )
+
+    def test_the_fragment_is_much_smaller_than_the_page(self):
+        page, fragment = self._get()
+
+        self.assertLess(len(fragment.content), len(page.content) / 2)
+
+    def test_the_fragment_carries_no_page_shell(self):
+        _page, fragment = self._get()
+        body = fragment.content.decode()
+
+        self.assertNotIn("<!doctype", body.lower())
+        self.assertNotIn("Suggest dye baths to me", body)
+        self.assertNotIn("I know what to dye", body)
+
+    def test_the_fragment_is_the_swap_target(self):
+        """`hx-swap="outerHTML"` on `#sheet` needs the response to be that
+        element, not something to fish it out of."""
+        _page, fragment = self._get()
+
+        self.assertTrue(fragment.content.decode().lstrip().startswith('<div id="sheet"'))
+
+    def test_the_page_and_the_fragment_agree(self):
+        """One renderer: the page includes the same partial, so a swapped
+        view cannot disagree with a refreshed one.
+
+        Compared with the CSRF token blanked, since that is per-response and
+        is the only thing that legitimately differs between the two.
+        """
+        page, fragment = self._get()
+        strip = lambda body: re.sub(
+            r'name="csrfmiddlewaretoken" value="[^"]*"', "", body
+        )
+
+        self.assertIn(
+            strip(fragment.content.decode()).strip(),
+            strip(page.content.decode()),
+        )
+
+    def test_an_added_row_comes_back_in_the_fragment(self):
+        other = make_bathable(
+            make_recipe("Ember"), "Ember Silk", on_hand=40, par=8, bath=5
+        )
+
+        _page, fragment = self._get(add=str(other.pk))
+
+        self.assertContains(fragment, "Ember")
+        self.assertContains(fragment, "3 baths")
+
+    def test_the_page_still_answers_a_plain_request(self):
+        """The fallback is the whole point of the pair — with the script
+        blocked every one of these is an ordinary GET."""
+        page, _fragment = self._get()
+
+        self.assertContains(page, "Suggest dye baths to me")
+        self.assertContains(page, 'id="sheet-list"')
+
+
+class AddingAColorwayByNameTests(TestCase):
+    """Clicking a search result puts it on the list.
+
+    This broke once already and the way it broke is the thing to guard: the
+    click handler wrote into a client-side table that a later rework deleted,
+    so the button did nothing and the network panel stayed silent. Adding is
+    now an ordinary submit into the list form, which cannot go quiet — either
+    the page navigates or nothing was clicked.
+    """
+
+    def setUp(self):
+        self.client.force_login(User.objects.create_user("staff", password="pw"))
+        self.stormy = make_bathable(
+            make_recipe("Stormy Sea"), "Stormy Silk", on_hand=0, par=8, bath=4
+        )
+        self.ember = make_bathable(
+            make_recipe("Ember"), "Ember Silk", on_hand=40, par=8, bath=5
+        )
+        self.url = reverse("production_sheet_index")
+
+    def test_adding_to_an_empty_page(self):
+        """The form has to exist before there is a list, or the first row
+        can never be added."""
+        response = self.client.get(self.url, {"add": str(self.ember.pk)})
+
+        self.assertContains(response, "Ember")
+        self.assertContains(response, "1 bath")
+
+    def test_adding_to_a_list_that_already_has_rows(self):
+        response = self.client.get(self.url, {
+            "items": [f"{self.stormy.pk}:2"],
+            f"qty-{self.stormy.pk}": "2",
+            "add": str(self.ember.pk),
+        })
+
+        self.assertContains(response, "Stormy Sea")
+        self.assertContains(response, "Ember")
+        self.assertContains(response, "3 baths")
+
+    def test_adding_one_already_on_the_list_bumps_it(self):
+        """And this is the case the old wire format got wrong: a second
+        `items` entry was summed and then overwritten by the count box's
+        older number, so the add silently did nothing."""
+        response = self.client.get(self.url, {
+            "items": [f"{self.stormy.pk}:2"],
+            f"qty-{self.stormy.pk}": "2",
+            "add": str(self.stormy.pk),
+        })
+
+        self.assertContains(response, "3 baths")
+
+    def test_an_edit_and_an_add_in_one_submit_both_land(self):
+        response = self.client.get(self.url, {
+            "items": [f"{self.stormy.pk}:2"],
+            f"qty-{self.stormy.pk}": "5",
+            "add": str(self.ember.pk),
+        })
+
+        self.assertContains(response, "6 baths")
+
+    def test_an_added_colorway_reaches_the_printed_sheet(self):
+        self.client.post(self.url, {
+            "items": [f"{self.stormy.pk}:1"],
+            "add": str(self.ember.pk),
+        })
+
+        run = ProductionRun.objects.get()
+        names = {r.finished_product.recipe.name for r in run.rows.all()}
+        self.assertEqual(names, {"Stormy Sea", "Ember"})
+
+    def test_something_that_cannot_be_dyed_is_refused_by_name_too(self):
+        passthrough = make_bathable(None, "Undyed Skein", on_hand=5, par=8, bath=4)
+
+        self.client.post(self.url, {"add": str(passthrough.pk)})
+
+        self.assertEqual(ProductionRun.objects.count(), 0)
+
+    def test_an_unreadable_add_does_nothing_rather_than_raising(self):
+        response = self.client.get(self.url, {"add": "not-a-number"})
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_the_results_submit_into_the_list_form(self):
+        """The wiring that replaced the handler: without `form=` the button
+        sits outside the list form and posts nothing."""
+        response = self.client.get(
+            reverse("product_search"), {"q": "Ember", "mode": "plan"}
+        )
+
+        self.assertContains(response, 'form="sheet-list"')
+        self.assertContains(response, 'name="add"')
+
+    def test_the_list_form_is_rendered_even_when_empty(self):
+        response = self.client.get(self.url)
+
+        self.assertContains(response, 'id="sheet-list"')
+
+    def test_the_search_renders_inline_with_no_script(self):
+        response = self.client.get(self.url, {"q": "Ember"})
+
+        self.assertContains(response, "Ember")
+        self.assertContains(response, 'name="add"')
+
+    def test_searching_does_not_lose_the_list(self):
+        response = self.client.get(self.url, {
+            "items": [f"{self.stormy.pk}:2"], "q": "Ember",
+        })
+
+        self.assertContains(response, "Stormy Sea")
+        self.assertContains(response, "2 baths")
+
+
 class TheListIsEditableHoweverItWasSeededTests(TestCase):
     """One list, two ways to fill it, and every row editable either way.
 
@@ -10312,7 +10505,7 @@ class HandPickedSheetTests(TestCase):
         )
 
         self.assertContains(response, "Ember")
-        self.assertContains(response, f'data-pk="{self.ember.pk}"')
+        self.assertContains(response, f'value="{self.ember.pk}"')
 
     def test_the_search_greys_out_what_is_not_made_in_a_bath(self):
         """Shown rather than hidden: dropping it silently means somebody
