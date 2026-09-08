@@ -1387,6 +1387,45 @@ chosen. `FinishedProduct.is_fancy` was dropped in migration 0029 for this
 reason: a boolean cannot carry a price, and it was one well-meaning afternoon
 away from becoming the design dimension.
 
+## The app advises, a person decides — and the tell is a number that looks like a fact
+
+The rule is everywhere in here already: `colorbands` fills the form in and
+somebody confirms, the sheet scanner pre-ticks and somebody submits, the photo
+walk orders the candidates and somebody picks, the restock board predicts a
+shortage and somebody walks it. What is worth writing down is **how it gets
+broken**, because it was broken for a long time in the production sheet and
+nobody noticed.
+
+**It breaks wherever the input looks authoritative enough that nobody thinks
+of it as advice.** `colorbands` got an override because a hue classifier is
+visibly fallible — the need is obvious. `par` got none, because par is a
+number in a database column and reads as a recorded fact. So the sheet derived
+a work order from it, offered no way to change the answer, and the only
+choices were print it or don't. That is the computer deciding.
+
+The asymmetry inside this app is the giveaway. `number_on_hand` is also the
+app's belief, and it has an elaborate apparatus for a person to overrule it —
+the Sunday close, the restock walk, bulk adjustments, all absolute counts. Par
+had nothing, and par was never dialled in. **The number that looked least like
+an estimate was the one most in need of a human.**
+
+Two things follow, and both are cheap:
+
+- **Every derived answer needs somewhere to disagree with it.** The production
+  sheet is now editable end to end — strike a row, add a bath the shortage
+  query cannot see, or build the list by hand from "I know what to dye" — and
+  the picker offers a suggestion rather than a verdict.
+- **Advice you cannot inspect is a decision in disguise.** An override is
+  necessary and not sufficient: if the basis is hidden there is nothing to
+  judge. Hence the sold count printed beside each colorway on
+  `private/production-needed/`, the stock printed beside every zero on
+  `private/slow-sellers/`, and the belief printed beside the requirement on
+  the collection sheet — `12 (we think 2 on hand)`.
+
+Worth asking of anything new here: what is this page's par? Which stored
+number is it treating as ground truth that is really somebody's estimate, and
+where is the person's way to say otherwise?
+
 ## Self-healing, and eventually concurrent
 
 The governing assumption for anything that moves stock: **nobody will
