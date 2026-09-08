@@ -10225,6 +10225,8 @@ class SlowSellersTests(TestCase):
 
     def _rows(self, **params):
         params.setdefault("range", "all")
+        # This class is about the per-blank view, which is now the opt-in.
+        params.setdefault("group", "product")
         return self.client.get(self.url, params).context["rows"]
 
     def test_a_colorway_that_sold_nothing_is_listed(self):
@@ -10259,7 +10261,8 @@ class SlowSellersTests(TestCase):
         self.assertEqual(rows["Wasteland"].on_hand, 12)
 
     def test_the_counts_split_the_two_kinds_of_zero(self):
-        tally = self.client.get(self.url, {"range": "all"}).context["tally"]
+        tally = self.client.get(
+            self.url, {"range": "all", "group": "product"}).context["tally"]
 
         self.assertEqual(tally["zero"], 3)
         self.assertEqual(tally["zero_with_stock"], 2)
@@ -10298,6 +10301,112 @@ class SlowSellersTests(TestCase):
         self.client.logout()
 
         self.assertEqual(self.client.get(self.url).status_code, 302)
+
+
+class GroupingByColorwayTests(TestCase):
+    """Pooled across every blank, because that is how a recipe is retired.
+
+    A colorway that sells nowhere is a recipe to stop dyeing. A colorway that
+    sells on one blank and not another is a fact about the blank — nobody
+    stops dyeing a colour for one yarn while the others move.
+    """
+
+    def setUp(self):
+        self.client.force_login(User.objects.create_user("staff", password="pw"))
+        self.url = reverse("slow_sellers")
+        # One colour on four yarns, none of it selling: the retirement case.
+        self.dead = make_recipe("Wasteland")
+        self.dead_products = [
+            self._on(self.dead, blank, on_hand=6)
+            for blank in ("Heavenly", "Homespun", "Artisan", "Noble")
+        ]
+        # One colour that works on one yarn and not another.
+        self.mixed = make_recipe("Aegean")
+        self.mixed_good = self._on(self.mixed, "Heavenly", on_hand=3)
+        self.mixed_bad = self._on(self.mixed, "Artisan", on_hand=9)
+
+    def _on(self, recipe, blank, on_hand):
+        p = make_bathable(recipe, blank, on_hand=on_hand, par=8, bath=4)
+        return p
+
+    def _sell(self, product, units):
+        sale = Sale.objects.create(
+            order_id=f"o{product.pk}", sold_at=timezone.now(),
+            source=Sale.SOURCE_SQUARE_API,
+        )
+        SaleLine.objects.create(
+            sale=sale, line_key=f"k{product.pk}", sold_at=timezone.now(),
+            item_name=product.raw_product.name, price_point=product.recipe.name,
+            quantity=units, finished_product=product,
+            raw_product=product.raw_product, source=Sale.SOURCE_SQUARE_API,
+        )
+
+    def _names(self, **params):
+        params.setdefault("range", "all")
+        return [r.name for r in self.client.get(self.url, params).context["rows"]]
+
+    def test_a_colour_that_sells_nowhere_is_listed(self):
+        self.assertIn("Wasteland", self._names())
+
+    def test_a_colour_selling_on_one_blank_is_not(self):
+        """The whole point of pooling. Its Artisan row sold nothing, but the
+        colour is not the problem — retiring it would be wrong."""
+        self._sell(self.mixed_good, 20)
+
+        self.assertNotIn("Aegean", self._names())
+
+    def test_and_it_would_be_listed_without_pooling(self):
+        """Guards the test above: the same data does surface per product, so
+        pooling is what changes the answer rather than the fixture."""
+        self._sell(self.mixed_good, 20)
+
+        per_product = [
+            r.product.recipe.name
+            for r in self.client.get(
+                self.url, {"range": "all", "group": "product"}).context["rows"]
+        ]
+
+        self.assertIn("Aegean", per_product)
+
+    def test_it_pools_before_the_threshold_not_after(self):
+        """One unit on each of four blanks is four, not four rows of one."""
+        for product in self.dead_products:
+            self._sell(product, 1)
+
+        self.assertNotIn("Wasteland", self._names(max="1"))
+        self.assertIn("Wasteland", self._names(max="4"))
+
+    def test_it_counts_the_blanks_and_which_had_stock(self):
+        """'Sold none across four boards' is a stronger argument than the
+        same zero on one empty peg."""
+        rows = {r.name: r for r in self.client.get(
+            self.url, {"range": "all"}).context["rows"]}
+
+        self.assertEqual(rows["Wasteland"].products, 4)
+        self.assertEqual(rows["Wasteland"].stocked, 4)
+        self.assertEqual(rows["Wasteland"].on_hand, 24)
+
+    def test_a_colour_with_nothing_anywhere_reads_as_never_out(self):
+        for product in self.dead_products:
+            FinishedProduct.objects.filter(pk=product.pk).update(number_on_hand=0)
+
+        rows = {r.name: r for r in self.client.get(
+            self.url, {"range": "all"}).context["rows"]}
+
+        self.assertTrue(rows["Wasteland"].never_out)
+
+    def test_the_toggle_carries_the_rest_of_the_reading(self):
+        response = self.client.get(self.url, {"range": "all", "max": "3"})
+        body = response.content.decode()
+
+        self.assertIn("max=3", body)
+        self.assertIn("group=product", body)
+
+    def test_the_header_counts_the_rows_on_screen(self):
+        response = self.client.get(self.url, {"range": "all"})
+
+        self.assertEqual(response.context["tally"]["listed"],
+                         len(response.context["rows"]))
 
 
 class MiscodedColorwayIsCalledOutTests(TestCase):

@@ -41,6 +41,10 @@ things — stop dyeing it, or dye more of it.
 
   <p class="lead">
     What this app tracks and isn't selling, over {{ range.label|lower }}.
+    {% if by_colorway %}Pooled across every blank a colorway is dyed on — the
+    unit a recipe gets retired in. A colour that sells on three yarns and not
+    the fourth isn't a dog: the cadence absorbs it, and it is still making the
+    stall look full.{% endif %}
     Reads what Square rang up, on Square's own clock — not the stock log.
   </p>
 
@@ -103,47 +107,95 @@ things — stop dyeing it, or dye more of it.
   on the restock board, and for the same reason — this is a question you ask
   once, not a lens you walk around in.
   {% endcomment %}
+  {% comment %}
+  Two axes, and every pill carries the other one rather than resetting it —
+  the colour page's rule. Grouping is a mode and rides along; `never` is a
+  reveal and does not.
+  {% endcomment %}
+  <div class="pills">
+    <a class="pill {% if by_colorway %}on{% endif %}" href="?{{ carry }}">
+      By colorway
+    </a>
+    <a class="pill {% if not by_colorway %}on{% endif %}" href="?{{ carry }}&group=product">
+      By blank &amp; colorway
+    </a>
+  </div>
+
   <div class="pills">
     <a class="pill {% if not never_only %}on{% endif %}"
-       href="?max={{ max_units }}&range={{ range.key }}{% if category %}&category={{ category.pk }}{% endif %}">
+       href="?{{ carry }}{% if not by_colorway %}&group=product{% endif %}">
       Everything quiet ({{ tally.listed }})
     </a>
     <a class="pill {% if never_only %}on{% endif %}"
-       href="?max={{ max_units }}&range={{ range.key }}{% if category %}&category={{ category.pk }}{% endif %}&never=1">
+       href="?{{ carry }}{% if not by_colorway %}&group=product{% endif %}&never=1">
       Nothing on hand to sell ({{ tally.never_out }})
     </a>
   </div>
 
-  <table class="rows">
-    <thead>
-      <tr>
-        <th>Colorway</th><th>Blank</th>
-        <th class="num">Sold</th><th class="num">On hand</th><th class="num">Par</th>
-        <th></th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for row in rows %}
-        <tr {% if row.never_out %}class="never"{% endif %}>
-          <td><a href="{% url 'recipe_detail' row.product.recipe_id %}">{{ row.product.recipe.name }}</a></td>
-          <td>{{ row.product.raw_product.name }}</td>
-          <td class="num {% if not row.units %}zero{% endif %}">{{ row.units }}</td>
-          <td class="num">{{ row.on_hand }}</td>
-          <td class="num">{{ row.product.par }}</td>
-          <td>
-            {% comment %}
-            The distinction the page is for. A zero with nothing on hand is
-            not a slow seller — nobody could buy it — so it reads as a
-            candidate rather than a dud.
-            {% endcomment %}
-            {% if row.never_out %}<span class="tag">none to sell</span>{% endif %}
-          </td>
+  {% if by_colorway %}
+    {% comment %}
+    Pooled across every blank the colour is dyed on, because that is the unit
+    a recipe gets retired in. `On boards` is what makes a zero here worth
+    acting on: sold none anywhere while sitting on four blanks is a much
+    stronger argument than the same zero on one empty peg.
+    {% endcomment %}
+    <table class="rows">
+      <thead>
+        <tr>
+          <th>Colorway</th><th class="num">Sold</th>
+          <th class="num">On hand</th><th class="num">Blanks</th>
+          <th class="num">On boards</th><th></th>
         </tr>
-      {% empty %}
-        <tr><td colspan="6" class="empty">Nothing sold that little over {{ range.label|lower }}.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+          <tr {% if row.never_out %}class="never"{% endif %}>
+            <td><a href="{% url 'recipe_detail' row.recipe.pk %}">{{ row.name }}</a></td>
+            <td class="num {% if not row.units %}zero{% endif %}">{{ row.units }}</td>
+            <td class="num">{{ row.on_hand }}</td>
+            <td class="num">{{ row.products }}</td>
+            <td class="num">{{ row.stocked }}</td>
+            <td>
+              {% if row.never_out %}<span class="tag">none to sell</span>{% endif %}
+            </td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="6" class="empty">No colorway sold that little over {{ range.label|lower }}.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <table class="rows">
+      <thead>
+        <tr>
+          <th>Colorway</th><th>Blank</th>
+          <th class="num">Sold</th><th class="num">On hand</th><th class="num">Par</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+          <tr {% if row.never_out %}class="never"{% endif %}>
+            <td><a href="{% url 'recipe_detail' row.product.recipe_id %}">{{ row.product.recipe.name }}</a></td>
+            <td>{{ row.product.raw_product.name }}</td>
+            <td class="num {% if not row.units %}zero{% endif %}">{{ row.units }}</td>
+            <td class="num">{{ row.on_hand }}</td>
+            <td class="num">{{ row.product.par }}</td>
+            <td>
+              {% comment %}
+              The distinction the page is for. A zero with nothing on hand is
+              not a slow seller — nobody could buy it — so it reads as a
+              candidate rather than a dud.
+              {% endcomment %}
+              {% if row.never_out %}<span class="tag">none to sell</span>{% endif %}
+            </td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="6" class="empty">Nothing sold that little over {{ range.label|lower }}.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
 
   {% if unattributed %}
     {% comment %}

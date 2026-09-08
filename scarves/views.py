@@ -4004,7 +4004,19 @@ def slow_sellers(request):
     if category_id and category_id.isdigit():
         category = RawProductCategory.objects.filter(pk=category_id).first()
 
-    found = slowsellers.rows(rng, max_units=max_units, category=category)
+    # **Colorway is the default, and the per-blank view is the opt-in.**
+    # A colour that sells on three yarns and not the fourth is not a dog:
+    # production cadence absorbs it, and it is still doing a job on the
+    # display, where a full colourful stall is worth something the sales
+    # column cannot show. What this page is for is the colour that sells
+    # nowhere — and that only exists once the blanks are pooled.
+    by_colorway = request.GET.get("group") != "product"
+    if by_colorway:
+        found = slowsellers.colorway_rows(
+            rng, max_units=max_units, category=category
+        )
+    else:
+        found = slowsellers.rows(rng, max_units=max_units, category=category)
     # A reveal, not a mode — nothing carries it onward, the same inversion
     # `?bare=1` makes on the restock board.
     if request.GET.get("never") == "1":
@@ -4018,6 +4030,16 @@ def slow_sellers(request):
         "categories": RawProductCategory.objects.order_by("name"),
         "category": category,
         "never_only": request.GET.get("never") == "1",
+        "by_colorway": by_colorway,
+        # Everything the toggles have to carry so a click keeps the rest of
+        # the reading — the colour page's pills, again.
+        "carry": urlencode(
+            {k: v for k, v in (
+                ("max", max_units),
+                ("range", rng.key),
+                ("category", category.pk if category else ""),
+            ) if v not in ("", None)}
+        ),
         # The page's own blind spots, printed under the table: sales with no
         # colorway at all, and sales that all landed on one.
         "unattributed": slowsellers.unattributed(rng, category=category),

@@ -32,6 +32,19 @@ that all matter more at the bottom of a list than the top:
   all, but they invent bottom sellers out of products that did sell.
 - It is the ledger that was checked against Square's own API and agreed.
 
+## The unit is the colorway, not the product
+
+**A zero on one blank is not a dog.** A colour that sells on three yarns and
+not the fourth is absorbed by the production cadence, and it is still earning
+its place on the display — a full, colourful stall is worth something no sales
+column can show, and pulling colours to make the numbers tidy would cost more
+than it saved.
+
+So the page pools every blank a colorway is dyed on and asks the question of
+the total. That is also the unit a recipe is retired in: nobody stops dyeing a
+colour for one yarn while the others move. `rows()` still answers per blank
+and is one click away, but it is the opt-in.
+
 ## Scope: what this app tracks
 
 Active products with a recipe, and nothing else. Roughly 43% of this season's
@@ -181,6 +194,78 @@ def rows(rng, max_units=1, category=None):
     return sorted(found, key=lambda r: (r.units, -r.on_hand, r.product.name))
 
 
+@dataclass
+class ColorwayRow:
+    """One colorway pooled across every blank it is dyed on.
+
+    The retirement unit. A colorway that sells nowhere is a recipe to stop
+    dyeing; a colorway that sells on Heavenly and not on Artisan is a fact
+    about that blank, not about the colour — and nobody retires a recipe for
+    one yarn while the others move.
+    """
+
+    recipe: object
+    units: int
+    on_hand: int
+    products: int
+    stocked: int          # how many of its blanks had something to sell
+
+    @property
+    def never_out(self) -> bool:
+        """Sold nothing anywhere, and had nothing anywhere to sell."""
+        return self.units == 0 and self.on_hand == 0
+
+    @property
+    def name(self):
+        return self.recipe.name
+
+
+def colorway_rows(rng, max_units=1, category=None):
+    """Colorways whose *total* across every blank is `max_units` or fewer.
+
+    **Aggregated before the threshold, never after.** Regrouping the rows of
+    `rows()` would be wrong in the direction that costs the most: a colorway
+    selling twenty on Heavenly and none on Artisan would have its Artisan row
+    kept and its Heavenly row dropped, and would then read as a colour nobody
+    wants. It is the opposite — a colour that works, on a blank that didn't.
+
+    So this pools every active product of the recipe first and asks the
+    question of the total. `stocked` says how many of those blanks had stock,
+    because "sold none anywhere, and was on four boards" is a far stronger
+    argument than the same zero on one empty peg.
+    """
+    catalogue = (
+        FinishedProduct.objects.filter(is_active=True, recipe__isnull=False)
+        .select_related("recipe", "raw_product")
+    )
+    if category is not None:
+        catalogue = catalogue.filter(raw_product__category=category)
+
+    sold = sold_units(rng)
+    pooled = {}
+    for product in catalogue:
+        row = pooled.setdefault(
+            product.recipe_id,
+            {"recipe": product.recipe, "units": 0, "on_hand": 0,
+             "products": 0, "stocked": 0},
+        )
+        row["units"] += sold.get(product.pk, 0)
+        row["on_hand"] += product.number_on_hand
+        row["products"] += 1
+        if product.number_on_hand:
+            row["stocked"] += 1
+
+    found = [
+        ColorwayRow(
+            recipe=row["recipe"], units=row["units"], on_hand=row["on_hand"],
+            products=row["products"], stocked=row["stocked"],
+        )
+        for row in pooled.values()
+        if row["units"] <= max_units
+    ]
+    return sorted(found, key=lambda r: (r.units, -r.on_hand, r.name))
+
+
 def unattributed(rng, category=None):
     """`[(blank name, units)]` sold with no colorway recorded, biggest first.
 
@@ -285,6 +370,11 @@ def lopsided(rng, category=None):
 
 def tally(found):
     """Counts for the header, over the rows on screen.
+
+    Serves both groupings, because a product row and a colorway row expose
+    the same three things — units, stock, and whether there was anything to
+    sell. A second tally would be a second place for the header to disagree
+    with the list under it.
 
     Scoped to what is being shown for the same reason the colour page's pills
     are: a number over a list it does not describe is the page contradicting

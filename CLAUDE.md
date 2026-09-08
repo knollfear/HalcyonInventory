@@ -2086,6 +2086,18 @@ stock is a good proxy for "it was on the table". A zero with none is not a
 slow seller at all; it is a colorway nobody could buy, and it is the reason
 the page exists.
 
+**The unit is the colorway, pooled across every blank it is dyed on**, and a
+per-blank view is one click away as the opt-in. A zero on one yarn is not a
+dog: the production cadence absorbs it, and it is still earning its place on
+the display, where a full colourful stall is worth something no sales column
+can show. Pooling is also the unit a recipe gets *retired* in — nobody stops
+dyeing a colour for one yarn while the others move.
+
+**Pooled before the threshold, never after.** Regrouping the filtered rows
+would keep a colour's dead blank and drop its live one, so a colour selling
+twenty on Heavenly and none on Artisan would read as one nobody wants — the
+opposite of the truth, and in the direction that gets it retired.
+
 **It reads `SaleLine`, not `InventoryLog`**, which is the opposite of the top
 sellers page and deliberate. `sold_at` is Square's own clock, so a
 season-scoped window means what it says where `created_at` would land a
