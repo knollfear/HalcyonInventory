@@ -47,6 +47,21 @@ signal — the same reasoning as the booth form.
   /* Indented under the count it is a subset of, so "of those" reads as
      belonging to the number above rather than as a second total. */
   .yield.fancy { margin-left: 14px; }
+
+  /* Deliberately quiet next to the tick: calling a bath off is a normal
+     thing to report, but it is not the thing this page is mainly for. */
+  .rowbtn {
+      display: block; margin: -4px 0 10px auto; font: inherit; font-size: 13px;
+      padding: 7px 12px; border: 1px solid #d3d7dd; border-radius: 8px;
+      background: #fff; color: #6b7280; cursor: pointer;
+  }
+  .rowbtn.undo { margin: 0; align-self: center; color: #2f5b8a; }
+  .btn-off {
+      width: 100%; margin-top: 10px; padding: 14px; font: inherit;
+      font-size: 1rem; border: 1px solid #d3d7dd; border-radius: 10px;
+      background: #fff; color: #6b7280; cursor: pointer;
+  }
+  .row.cancelled { justify-content: space-between; }
   .yield input {
       width: 62px; height: auto; padding: 8px; font: inherit; font-size: 16px;
       text-align: center; border: 1px solid #c8cfd8; border-radius: 8px;
@@ -90,6 +105,19 @@ signal — the same reasoning as the booth form.
       {% else %}
         <strong>Nothing new to record.</strong>
         Everything you ticked was already in.
+      {% endif %}
+    </div>
+  {% endif %}
+
+  {% if just_noted %}
+    <div class="panel">
+      {% if just_noted.cancelled %}
+        <strong>Noted — {{ just_noted.cancelled }}
+        bath{{ just_noted.cancelled|pluralize }} marked as not coming.</strong>
+        Nothing moved, and {{ just_noted.cancelled|pluralize:"that colorway goes,those colorways go" }}
+        back on the next sheet.
+      {% else %}
+        <strong>Nothing to change there.</strong>
       {% endif %}
     </div>
   {% endif %}
@@ -172,13 +200,22 @@ signal — the same reasoning as the booth form.
         Called off — the bath never ran, so nothing was used and the colorway
         goes back on the next sheet. Shown for the same reason: a row that
         disappeared would look like one that was never on the paper.
+
+        Undo, for the reason the Sunday close has one. This is reachable with
+        nothing but the code on the paper, by somebody with no account and no
+        way to reach an admin screen — and a mis-tap they cannot fix is a
+        mistake they have to go and tell somebody about, which is exactly the
+        cost that gets one left unmentioned. It is free to offer here in a
+        way undoing an acceptance is not: nothing moved, so nothing undoes.
         {% endcomment %}
         <div class="row cancelled">
           <div>
             <div class="what">{{ row.quantity }} × {{ row.finished_product.recipe.name }}</div>
             <div class="detail">{{ row.finished_product.raw_product.name }}</div>
-            <div class="tag">Called off</div>
+            <div class="tag">Not coming</div>
           </div>
+          <button type="submit" name="uncancel" value="{{ row.pk }}"
+                  class="rowbtn undo">undo</button>
         </div>
       {% else %}
         {% comment %}
@@ -232,10 +269,37 @@ signal — the same reasoning as the booth form.
             {% endif %}
           </div>
         </label>
+        {% comment %}
+        Outside the label, or tapping it would toggle the tick box on the way
+        past. A submit of its own, carrying this row's id — the view treats it
+        as its own action and banks nothing that happens to be ticked, because
+        a cancel that also accepted a half-entered row would move stock this
+        page has no way to take back.
+        {% endcomment %}
+        <button type="submit" name="cancel" value="{{ row.pk }}"
+                class="rowbtn">not coming</button>
       {% endif %}
     {% endfor %}
 
     <button class="btn" type="submit">These are ready</button>
+
+    {% if run.is_open %}
+      {% comment %}
+      The crew reporting a session is the only person who knows the rest
+      isn't coming — a lost sheet, a session that stopped, a bath nobody is
+      going to get to. Nothing moves and no blanks are used, so the colorways
+      go back to being asked for on the next sheet, which is the right answer
+      whether the paper turned up later or not.
+
+      Safe to reach with only the code because of the direction: this hands
+      claims back, where accepting puts stock on the books. That is the same
+      reason there is a cancel-all and never an accept-all.
+      {% endcomment %}
+      <button type="submit" name="cancel_rest" value="1" class="btn-off"
+              onclick="return confirm('Say the remaining {{ run.pending_count }} bath{{ run.pending_count|pluralize }} aren\'t coming? Nothing moves, and those colorways go back on the next sheet.')">
+        The rest isn't coming
+      </button>
+    {% endif %}
   </form>
 
   <p class="muted" style="margin-top:18px">

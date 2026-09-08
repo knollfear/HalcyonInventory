@@ -732,6 +732,28 @@ def cancel_row(row):
     return True
 
 
+def uncancel_row(row):
+    """Put a called-off bath back to pending. Nothing moved, so nothing undoes.
+
+    **This exists for the same reason the Sunday close has an Undo button.**
+    Cancelling is reachable with nothing but the code printed on the paper,
+    which means it is reachable by somebody with no account and no way to
+    reach an admin screen — and a mis-tap they cannot fix is a mistake they
+    have to go and tell somebody about. That cost is exactly the pressure
+    that gets one left unmentioned instead.
+
+    It is free to offer here in a way undoing an *acceptance* is not: a
+    cancelled row moved no stock, so putting it back is a row going from one
+    unreported state to another. Nothing is erased and nothing is
+    compensated, because nothing happened.
+    """
+    if row.applied_log_id is not None or row.cancelled_at is None:
+        return False
+    row.cancelled_at = None
+    row.save(update_fields=["cancelled_at"])
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Drawing
 # ---------------------------------------------------------------------------

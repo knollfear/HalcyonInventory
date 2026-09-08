@@ -746,6 +746,27 @@ session never happened, and a sheet with four baths still drying looks exactly
 like a sheet somebody abandoned. `MAX_OPEN_RUNS` survives as `RUNS_LISTED`, a
 display limit on the picker's convenience list and nothing more.
 
+**The code on the paper is enough to call a bath off.** It was already enough
+to *accept* one, which moves stock — so requiring a staff login to say "this
+isn't happening", which moves nothing, had the permissions backwards. The crew
+reporting a session is also the only person who knows the rest isn't coming: a
+lost sheet, a session that stopped. So `secret/production/<token>/` carries a
+per-row **not coming** and a **The rest isn't coming**, and both are safe to
+reach with a token for the same reason cancel-all is a button at all — they
+hand claims back rather than putting stock on the books.
+
+Two rules keep that honest. **A cancel never banks whatever was ticked**: each
+cancel branch does only its own work, because a cancel that also accepted a
+half-entered row would move stock this page has no way to take back, and the
+cost of the alternative is a re-tick. And **a cancel can be undone with no
+account**, which is free here in a way undoing an acceptance is not — nothing
+moved, so nothing is erased or compensated. That is the Sunday close's Undo
+argument exactly: a fix somebody cannot make is a mistake they have to go and
+tell somebody about, and that cost is what gets one left unmentioned.
+
+Adding a bath stays staff-side, because it needs the catalogue search and is a
+planning decision rather than a report on the session.
+
 **Cancel-all yes, accept-all never.** Direction decides which bulk actions are
 allowed. Cancelling moves nothing into inventory and hands a claim back, so
 the worst case is being asked about those colorways again. Accepting puts

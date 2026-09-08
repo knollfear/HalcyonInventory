@@ -9732,6 +9732,148 @@ class WorkSheetAndReportingSheetTests(TestCase):
         self.assertTrue(response.content.startswith(b"%PDF"))
 
 
+class CrewCanSayTheRestIsNotComingTests(TestCase):
+    """The code on the paper is enough to call a bath off.
+
+    It was already enough to *accept* one, which moves stock — so requiring a
+    staff login to say "this isn't happening", which moves nothing, had the
+    permissions backwards. The person reporting the session is also the only
+    one who knows the rest isn't coming.
+    """
+
+    def setUp(self):
+        self.recipe = make_recipe("Stormy Sea")
+        self.product = make_bathable(
+            self.recipe, "Stormy Silk", on_hand=0, par=20, bath=4
+        )
+        self.run = ProductionRun.objects.create()
+        self.rows = [
+            ProductionRunRow.objects.create(
+                run=self.run, finished_product=self.product, order=i, quantity=4
+            )
+            for i in (1, 2, 3)
+        ]
+        self.url = reverse("production_run", args=[self.run.token])
+
+    def test_no_login_is_needed(self):
+        self.client.post(self.url, {"cancel": str(self.rows[0].pk)})
+
+        self.rows[0].refresh_from_db()
+        self.assertTrue(self.rows[0].is_cancelled)
+
+    def test_calling_one_off_moves_nothing(self):
+        self.client.post(self.url, {"cancel": str(self.rows[0].pk)})
+
+        self.product.refresh_from_db()
+        self.product.raw_product.refresh_from_db()
+        self.assertEqual(self.product.number_on_hand, 0)
+        self.assertEqual(self.product.raw_product.number_on_hand, 100)
+        self.assertEqual(InventoryLog.objects.count(), 0)
+
+    def test_the_rest_isnt_coming_closes_the_sheet(self):
+        self.client.post(self.url, {"cancel_rest": "1"})
+
+        self.run.refresh_from_db()
+        self.assertTrue(self.run.is_closed)
+        self.assertEqual(self.run.cancelled_count, 3)
+        self.assertEqual(InventoryLog.objects.count(), 0)
+
+    def test_the_rest_leaves_what_was_already_accepted_alone(self):
+        self.client.post(self.url, {"done": [str(self.rows[0].pk)]})
+
+        self.client.post(self.url, {"cancel_rest": "1"})
+
+        self.rows[0].refresh_from_db()
+        self.run.refresh_from_db()
+        self.assertTrue(self.rows[0].is_accepted)
+        self.assertIsNone(self.rows[0].cancelled_at)
+        self.assertEqual(self.run.cancelled_count, 2)
+
+    def test_the_colorway_is_asked_for_again(self):
+        """That is the difference from a bath that ran and was binned.
+
+        Par 20 against a bath of 4 needs five baths. Three are on this sheet
+        and so subtracted while it is live; calling them off hands all three
+        claims back.
+        """
+        self.assertEqual(len(production.plan_baths(10)), 2)
+
+        self.client.post(self.url, {"cancel_rest": "1"})
+
+        self.assertEqual(len(production.plan_baths(10)), 5)
+
+    def test_a_cancel_never_banks_whatever_was_ticked(self):
+        """A cancel that also accepted a half-entered row would move stock
+        this page has no way to take back."""
+        self.client.post(self.url, {
+            "cancel": str(self.rows[0].pk),
+            "done": [str(self.rows[1].pk)],
+        })
+
+        self.rows[1].refresh_from_db()
+        self.product.refresh_from_db()
+        self.assertFalse(self.rows[1].is_accepted)
+        self.assertEqual(self.product.number_on_hand, 0)
+
+    def test_a_mis_tap_can_be_undone_without_an_account(self):
+        """Same reasoning as the Sunday close's Undo: a fix they cannot make
+        is a mistake they have to go and tell somebody about."""
+        self.client.post(self.url, {"cancel": str(self.rows[0].pk)})
+
+        self.client.post(self.url, {"uncancel": str(self.rows[0].pk)})
+
+        self.rows[0].refresh_from_db()
+        self.assertTrue(self.rows[0].is_pending)
+
+    def test_an_accepted_bath_cannot_be_called_off(self):
+        """Stock moved; that is an adjustment with a reason, not a button."""
+        self.client.post(self.url, {"done": [str(self.rows[0].pk)]})
+
+        self.client.post(self.url, {"cancel": str(self.rows[0].pk)})
+
+        self.rows[0].refresh_from_db()
+        self.assertTrue(self.rows[0].is_accepted)
+        self.assertIsNone(self.rows[0].cancelled_at)
+
+    def test_a_row_from_another_sheet_cannot_be_touched(self):
+        other = ProductionRun.objects.create()
+        stranger = ProductionRunRow.objects.create(
+            run=other, finished_product=self.product, order=1, quantity=4
+        )
+
+        self.client.post(self.url, {"cancel": str(stranger.pk)})
+
+        stranger.refresh_from_db()
+        self.assertIsNone(stranger.cancelled_at)
+
+    def test_an_unreadable_id_does_nothing_rather_than_raising(self):
+        response = self.client.post(self.url, {"cancel": "not-a-number"})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self.run.cancelled_count, 0)
+
+    def test_the_page_offers_it(self):
+        response = self.client.get(self.url)
+
+        self.assertContains(response, "not coming")
+        self.assertContains(response, "The rest isn't coming")
+
+    def test_a_finished_sheet_stops_offering_the_rest(self):
+        self.client.post(self.url, {"cancel_rest": "1"})
+
+        response = self.client.get(self.url)
+
+        self.assertNotContains(response, "The rest isn't coming")
+        self.assertContains(response, "undo")
+
+    def test_cancelling_records_who_replied(self):
+        """A cancel is a reply too — somebody picked the phone up."""
+        self.client.post(self.url, {"cancel": str(self.rows[0].pk)})
+
+        self.run.refresh_from_db()
+        self.assertIsNotNone(self.run.submitted_at)
+
+
 class FancyAtProductionTests(TestCase):
     """Routing a bath's output to fancy at the moment it is made.
 

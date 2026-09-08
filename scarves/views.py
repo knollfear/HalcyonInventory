@@ -4273,6 +4273,33 @@ def production_run_index(request):
     })
 
 
+def _row_named(run, value):
+    """One of this run's rows, by pk, or `None`.
+
+    Scoped to the run and parsed defensively: the id arrives from a button on
+    a page with no login, so an unreadable one has to degrade to doing
+    nothing rather than raising — and one belonging to another sheet must not
+    resolve at all.
+    """
+    if not (value or "").isdigit():
+        return None
+    return run.rows.filter(pk=int(value)).first()
+
+
+def _note_reporter(request, run):
+    """Stamp who replied and when, without deciding anything.
+
+    A cancel is a reply too — somebody picked the phone up and said the rest
+    isn't coming. `submitted_at` is a record of that and nothing more; what
+    is open, overdue or finished is read off the rows.
+    """
+    if run.submitted_at is None:
+        run.submitted_at = timezone.now()
+    employee, _pin = crew.remembered(request)
+    if employee is not None and run.submitted_by_id is None:
+        run.submitted_by = employee
+
+
 def _photo_reading(request, run):
     """`(summary, prefilled)` from a `?done=` handed over by the upload page.
 
@@ -4431,6 +4458,44 @@ def production_run(request, token):
     )
 
     if request.method == "POST":
+        # **Calling baths off is a separate submit from accepting them, and
+        # never a side effect of one.** The crew reporting a session is the
+        # only person who knows the rest isn't coming — a lost sheet, a
+        # session that stopped — so they must be able to say it. But a
+        # cancel button that also banked whatever happened to be ticked
+        # would move stock somebody hadn't finished entering numbers for,
+        # and that is the one direction this page cannot undo.
+        #
+        # So each cancel branch does only its own work. Ticks left on screen
+        # are lost, which costs a re-tick; the alternative costs an
+        # inventory adjustment nobody on this page can make.
+        if "cancel" in request.POST:
+            row = _row_named(run, request.POST.get("cancel"))
+            done = row is not None and production.cancel_row(row)
+            _note_reporter(request, run)
+            run.save(update_fields=["submitted_at", "submitted_by"])
+            request.session["production_run_note"] = (
+                {"cancelled": 1} if done else {}
+            )
+            return redirect("production_run", token=run.token)
+
+        if "uncancel" in request.POST:
+            row = _row_named(run, request.POST.get("uncancel"))
+            if row is not None:
+                production.uncancel_row(row)
+            return redirect("production_run", token=run.token)
+
+        if "cancel_rest" in request.POST:
+            cancelled = 0
+            with transaction.atomic():
+                for row in run.rows.select_for_update():
+                    if production.cancel_row(row):
+                        cancelled += 1
+                _note_reporter(request, run)
+                run.save(update_fields=["submitted_at", "submitted_by"])
+            request.session["production_run_note"] = {"cancelled": cancelled}
+            return redirect("production_run", token=run.token)
+
         ticked = set(request.POST.getlist("done"))
         applied = units = lost = fancied = 0
         with transaction.atomic():
@@ -4453,11 +4518,7 @@ def production_run(request, token):
                 fancied += row.fancy_yield
                 lost += row.loss
 
-            if run.submitted_at is None:
-                run.submitted_at = timezone.now()
-            employee, _pin = crew.remembered(request)
-            if employee is not None and run.submitted_by_id is None:
-                run.submitted_by = employee
+            _note_reporter(request, run)
             run.save(update_fields=["submitted_at", "submitted_by"])
 
         request.session["production_run_applied"] = {
@@ -4467,11 +4528,13 @@ def production_run(request, token):
         return redirect("production_run", token=run.token)
 
     applied = request.session.pop("production_run_applied", None)
+    note = request.session.pop("production_run_note", None)
     scan, prefilled = _photo_reading(request, run)
     employee, _pin = crew.remembered(request)
     return render(request, "scarves/production_run.html", {
         "run": run,
         "just_applied": applied,
+        "just_noted": note,
         "remembered": employee,
         "scan": scan,
         # Pre-ticked from the photo, if there was one and the sheet has
