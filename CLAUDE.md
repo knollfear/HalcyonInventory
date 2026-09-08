@@ -1589,6 +1589,15 @@ and 0 in the bag — `put_out` falls to zero and the peg settles back to amber.
 A tile that stayed blue after the job would send somebody to an empty bag on
 the next pass, which is this same bug wearing the opposite coat.
 
+**The pull list reads `put_out` too.** `_to_bring` took `min(sold, capacity)`
+— the peg bound on its own, with the bag and the colorway missing — so it
+survived the tile being fixed and went on feeding the picker's unit count and
+`pull_list()`, which is the armful somebody physically carries to the stall.
+It asked for 49 skeins off the Artisan wall against the tiles' 46. A pull
+list is checked by opening the bag, which is the one place an overstatement
+is found out with the walk already made, so it is now the same field the tile
+prints: one answer, because two is how they disagree.
+
 **The count wins the badge, and `bare` is its colour.** `empty` used to
 replace the number outright. That was right while it competed with a sales
 figure and wrong the moment the badge became the work: the tile read `empty`

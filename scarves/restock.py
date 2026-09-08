@@ -579,21 +579,14 @@ def board_status(fixture):
         "bare": len(bare),
         "topup": sum(1 for c in cells if c["needs_refill"] and not c["bare_since"]),
         "unfillable": sum(1 for c in cells if c["short"]),
-        "units": sum(_to_bring(c) for c in cells),
+        # `put_out`, never a bound on `sold`. This used to be
+        # `min(sold, capacity)`, which is the peg bound alone — so the picker
+        # and the pull list asked for skeins the bag did not have and counted
+        # a colorway's sales once per peg. The tile already answers this; two
+        # answers is how they disagree.
+        "units": sum(c["put_out"] for c in cells),
         "oldest_bare": min((c["bare_since"] for c in bare), default=None),
     }
-
-
-def _to_bring(cell):
-    """How many units this peg wants back, capped at what a peg holds.
-
-    `sold` is what left it, so putting that many back restores it — but a peg
-    that sold five over two days still only takes what it holds, and asking
-    for five would send somebody to the bag for three that have nowhere to go.
-    """
-    if not cell["needs_refill"]:
-        return 0
-    return min(cell["sold"] or 0, cell["capacity"])
 
 
 def pull_list():
@@ -607,6 +600,13 @@ def pull_list():
     That is how the shelf is arranged and how the label sheets come off, so
     the list reads in the order the bags are actually stood in rather than in
     an order the app found convenient.
+
+    **This is the armful, so it reads `put_out` and nothing else.** It used to
+    take `min(sold, capacity)`, which is the peg bound on its own — the bag
+    and the colorway were not in it, so the list asked for skeins that were
+    not behind the display and counted a colorway's sales once per peg it
+    hangs on. A pull list is checked by opening the bag, which is exactly the
+    kind of claim that must not overstate.
     """
     wanted = {}
     for fixture in DisplayFixture.objects.filter(is_active=True).select_related(
@@ -616,7 +616,7 @@ def pull_list():
             for cell in row:
                 if cell["kind"] != "home":
                     continue
-                units = _to_bring(cell)
+                units = cell["put_out"]
                 if not units:
                     continue
                 entry = wanted.setdefault(

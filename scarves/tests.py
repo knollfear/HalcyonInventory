@@ -15022,6 +15022,64 @@ class RestockPageTests(TestCase):
         self.assertIn('class="badge bare">+2</span>', html)
         self.assertNotRegex(html, r"\+2\s*·\s*\d")
 
+    def test_the_pull_list_never_asks_for_more_than_the_bag_has(self):
+        """**The pull list is the armful, so it must not overstate.**
+
+        It read `min(sold, capacity)` — the peg bound on its own, with the bag
+        and the colorway missing — so it survived the tile being fixed and
+        went on asking for skeins that are not behind the display. It is
+        checked by opening the bag, which is the one place an overstatement
+        gets found out with a walk already made.
+        """
+        product = make_close_product("One Left", on_hand=1, slots=2)
+        position = hang(self.fixture, product, 3, 5)
+
+        walk = restock.open_pass(self.fixture, employee=self.employee)
+        restock.record(walk, position)
+        for _ in range(8):
+            InventoryLog.objects.create(
+                finished_product=product,
+                raw_product=product.raw_product,
+                log_type=InventoryLog.SALE,
+                source=InventoryLog.SOURCE_SQUARE_WEBHOOK,
+                quantity=-1,
+            )
+
+        cell = self._cell_for(position)
+        self.assertEqual(cell["sold"], 8)
+        self.assertEqual(cell["put_out"], 1)
+
+        # Eight sold, a peg that holds two, and one skein in the world.
+        entry = next(e for e in restock.pull_list() if e["product"] == product)
+        self.assertEqual(entry["units"], 1)
+        self.assertEqual(restock.board_status(self.fixture)["units"], 1)
+
+    def test_the_pull_list_counts_a_colorway_once_across_its_pegs(self):
+        """Two pegs, two sold, two to carry — not two per peg. The tile and
+        the pull list have to agree, because somebody reads the list, fills
+        the bag, and walks to the board expecting it to run out exactly."""
+        product = make_close_product("Two Pegs", on_hand=4, slots=4)
+        first = hang(self.fixture, product, 3, 6)
+        second = hang(self.fixture, product, 4, 1)
+
+        walk = restock.open_pass(self.fixture, employee=self.employee)
+        restock.record(walk, first)
+        restock.record(walk, second)
+        InventoryLog.objects.create(
+            finished_product=product,
+            raw_product=product.raw_product,
+            log_type=InventoryLog.SALE,
+            source=InventoryLog.SOURCE_SQUARE_WEBHOOK,
+            quantity=-2,
+        )
+
+        entry = next(e for e in restock.pull_list() if e["product"] == product)
+        self.assertEqual(entry["units"], 2)
+        self.assertEqual(
+            entry["units"],
+            self._cell_for(first)["put_out"] + self._cell_for(second)["put_out"],
+        )
+
     def test_a_bare_peg_still_says_how_many_to_carry(self):
         """`empty` over `2/2` is a contradiction to read — the fraction is
         what the peg holds when the job is done, not what is on it now — and
