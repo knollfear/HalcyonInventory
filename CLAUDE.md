@@ -1531,12 +1531,30 @@ POST redirect), so a circuit walked in one mode stays in it. Text is still the
 fallback *inside* photo mode, because half the catalogue has no picture and a
 grey box names nothing.
 
-**Every number on a tile is a checkable claim.** A peg says what to put out
-and what the bag should hold afterwards (`on_hand - display_slots`), never a
-total — a total needs the peg counted, the bag counted and the two added,
-which is not something anybody falsifies at a glance. The bag figure is read
-straight off the bag as the work finishes, so a tap confirms both halves of
-the app's belief rather than only the visible one.
+**Every number on a tile is a checkable claim, and every one is the present
+tense.** A peg says what is hanging on it, how many to put out, and what is
+in the bag behind it — `1/2, +1, bag 6` is "one hanging up, add one, six in
+the bag". Never a total: a total needs the peg counted, the bag counted and
+the two added, which is not something anybody falsifies at a glance, while
+each of these is one look.
+
+**The tile is the board as it is, not as it will be once somebody has done
+the work.** Both figures used to be after-states — `fill/capacity` for the
+peg and `on_hand - display_slots` for the bag — so between them they
+described a board in a condition nobody had said had been reached. Ticking
+the box is what says the top-up happened; the numbers are what it was before.
+
+The fraction was the louder half of that. `fill` and `capacity` are equal on
+every peg that is not short, so it could only ever read `2/2` — a constant
+wearing the costume of a reading — and `2/2` over `+1` says full and
+put-one-out in the same breath. Printing `on_peg` also puts the badge's own
+basis on the tile: `+1` is derived from "the app thinks one is hanging
+there", so if that belief is wrong it is now visible and `count it` is one
+tap away. Advice you cannot inspect is a decision in disguise.
+
+One sold, one on the peg, more in the bag is **situation normal** — a top-up,
+not an exception. An emptied bag is what generates a kanban card, and that is
+the close's business, not the board's.
 
 **The badge is the work, and for a long time it was a sales counter.** It read
 `+11` on Avocado — a hook holding two, nothing in the bag — because it printed

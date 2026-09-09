@@ -281,20 +281,21 @@ interrupted, and an unticked peg means "not walked yet", never "empty".
   {% endif %}
 
   <p class="lead">
-    Each peg says <strong>how many to put out</strong> and
-    <strong>how many should be left in the bag</strong> afterwards. Fill it,
-    glance in the bag, and tap the tile if both look right. A peg the app
-    already knows is empty still gets tapped — <strong>you did the job</strong>,
-    and saying so is the point of the restock.
+    A peg says <strong>the board as it is right now</strong>: what's hanging
+    on it, how many to put out, and what's in the bag behind it. So
+    <em>1/2, +1, bag 6</em> is "one hanging up, add one, and there are six in
+    the bag". Top it up and tap the tile — <strong>the tick is what says you
+    did it</strong>. A peg the app already knows is empty still gets tapped;
+    saying so is the point of the restock.
   </p>
   <p class="lead">
     A <strong>blue peg with +2 on it</strong> wants two out of the bag —
     that's the work, and it's never more than the bag has. <strong>Amber</strong>
     means there is nothing to put out and the peg still won't be full, which
     isn't work: nothing you do at the board fixes it. A peg can want one and
-    still not fill — it's blue, because there's a skein to put out, and the
-    <strong>1/2</strong> on it says where that leaves you. Worth a very quick
-    look either way — if it fills, say so.
+    still not fill — it's blue, because there's a skein to put out, and amber
+    is what says it won't reach the top. Worth a very quick look either way —
+    if it fills, say so.
   </p>
   {% comment %}
   There was a paragraph here explaining the red “empty” badge. It went
@@ -382,15 +383,39 @@ interrupted, and an unticked peg means "not walked yet", never "empty".
                       <span class="name">{{ cell.product.recipe.name|default:cell.product.name }}</span>
                     {% endif %}
                     {% comment %}
-                    Two checkable claims, not a total. "Put 2 out" is read off
-                    the peg and "1 left in the bag" is read off the bag —
-                    both at the moment the work finishes. A total would need
-                    the peg counted, the bag counted and the two added, which
-                    is not something anybody can falsify at a glance.
+                    Checkable claims, not a total. A total would need the peg
+                    counted, the bag counted and the two added, which is not
+                    something anybody falsifies at a glance.
+
+                    **Both figures are the present tense.** The tile shows
+                    the board as it is; ticking the box is what says it was
+                    topped up. They were both after-states — `fill/capacity`
+                    for the peg and `on_hand - display_slots` for the bag — so
+                    between them they described a board as it would be once
+                    somebody had done the work, which is an event nobody had
+                    said occurred.
+
+                    The fraction was the louder half. `fill` and `capacity`
+                    are equal on every peg that isn't short, so it could only
+                    ever read `2/2` — a constant wearing the costume of a
+                    reading — and it read as "full". A tile saying `2/2` over
+                    `+1` says full and put-one-out in the same breath.
+
+                    Showing `on_peg` instead makes the three numbers one
+                    sentence — 1 on it, put 1 out, 5 in the bag afterwards —
+                    and it prints the belief the badge is *derived from*. If
+                    the app is wrong about what is hanging there, that is the
+                    number that is wrong, and it is now on the tile where
+                    somebody can see it and tap `count it`. Advice you cannot
+                    inspect is a decision in disguise.
+
+                    A peg nobody has walked has no belief to print, so
+                    `on_peg` falls back to the allocation — which is what this
+                    always showed.
                     {% endcomment %}
                     <span class="foot">
-                      <span class="n">{{ cell.expected }}/{{ cell.capacity }}</span>
-                      <span>bag {{ cell.backstock }}</span>
+                      <span class="n">{{ cell.on_peg }}/{{ cell.capacity }}</span>
+                      <span>bag {{ cell.bag_now }}</span>
                     </span>
                   </label>
 

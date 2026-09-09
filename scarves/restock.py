@@ -204,7 +204,7 @@ def expected_fill(position) -> int:
 
 
 def refill_plan(product, walked, sales):
-    """`{position_id: (fill, on_peg, put_out)}` — the work at each of a colorway's pegs.
+    """`{position_id: (fill, on_peg, put_out, bag_now)}` — the work at a colorway's pegs.
 
     **`put_out` is work, and it used to be a sales counter.** The tile's badge
     read "+11" on a peg holding two, off a colorway with none in the bag: that
@@ -257,12 +257,17 @@ def refill_plan(product, walked, sales):
             on_peg[home.pk] -= take
             units -= take
 
-    bag = max(0, product.number_on_hand - sum(on_peg.values()))
+    # **What is in the bag now**, not what will be in it once the display is
+    # full. One bag per colorway, so the same figure rides on each of its
+    # pegs; see `board` for why the tile prints the present tense.
+    bag_now = max(0, product.number_on_hand - sum(on_peg.values()))
+
+    bag = bag_now
     plan = {}
     for home in homes:
         take = min(max(0, fills[home.pk] - on_peg[home.pk]), bag)
         bag -= take
-        plan[home.pk] = (fills[home.pk], on_peg[home.pk], take)
+        plan[home.pk] = (fills[home.pk], on_peg[home.pk], take, bag_now)
     return plan
 
 
@@ -408,8 +413,8 @@ def board(fixture, photos=False):
             product_sales = sales.get(product.pk, [])
             if product.pk not in plans:
                 plans[product.pk] = refill_plan(product, walked, product_sales)
-            fill, on_peg, put_out = plans[product.pk].get(
-                position.pk, (expected_fill(position), 0, 0)
+            fill, on_peg, put_out, bag_now = plans[product.pk].get(
+                position.pk, (expected_fill(position), 0, 0, product.backstock)
             )
             # Not "the display has a hole", which is a merchandising reading
             # nothing acts on — this is "there is nothing you can do at the
@@ -438,13 +443,22 @@ def board(fixture, photos=False):
                 # put out, and every possible answer is a button. Nobody
                 # types for the finding that actually happens.
                 "options": list(range((product.display_slots or 1) + 1)),
-                # **What the bag should hold once the peg is full**, not the
-                # total. A total is not checkable by any single observation —
-                # you would have to count the peg, count the bag and add — so
-                # printing one states a prediction nobody standing at the
-                # board can falsify. `on_hand - display_slots` can be read
-                # straight off the bag at the moment the job is finished,
-                # which is what makes the tap worth anything.
+                # **What is in the bag now**, not what will be left in it.
+                #
+                # This was `product.backstock` — `on_hand - display_slots`,
+                # which is the bag once the display is full. Paired with a
+                # peg figure that was also an after-state, the tile described
+                # a board as it would be once somebody had done the work,
+                # which is an event nobody had said occurred. The page shows
+                # the board as it is; ticking the box is what says it was
+                # topped up.
+                #
+                # Still not a total: a total needs the peg counted, the bag
+                # counted and the two added, which nobody falsifies at a
+                # glance. Each of these is one look.
+                "bag_now": bag_now,
+                # The after-state is still derived and still true — kept off
+                # the tile rather than deleted, because the close reads it.
                 "backstock": product.backstock,
                 # **How many to put back on this peg** — bounded by the peg,
                 # by the bag and by the colorway, which the raw sales count

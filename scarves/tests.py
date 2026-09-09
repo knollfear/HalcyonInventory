@@ -15022,6 +15022,44 @@ class RestockPageTests(TestCase):
         self.assertIn('class="badge bare">+2</span>', html)
         self.assertNotRegex(html, r"\+2\s*·\s*\d")
 
+    def test_the_tile_is_the_board_as_it_is_not_as_it_will_be(self):
+        """**Ticking the box is what says the top-up happened.**
+
+        Both figures used to be after-states: `fill/capacity` for the peg and
+        `on_hand - display_slots` for the bag. Between them the tile described
+        a board as it would be once somebody had done the work — an event
+        nobody had said occurred — and `2/2` over `+1` said full and
+        put-one-out in the same breath. One sold, one on the peg, more in the
+        bag is situation normal, and the tile has to read that way.
+        """
+        product = make_close_product("Soft Tan", on_hand=7, slots=2)
+        position = hang(self.fixture, product, 4, 2)
+
+        walk = restock.open_pass(self.fixture, employee=self.employee)
+        restock.record(walk, position)
+        InventoryLog.objects.create(
+            finished_product=product,
+            raw_product=product.raw_product,
+            log_type=InventoryLog.SALE,
+            source=InventoryLog.SOURCE_SQUARE_WEBHOOK,
+            quantity=-1,
+        )
+
+        cell = self._cell_for(position)
+        self.assertEqual(cell["on_peg"], 1)
+        self.assertEqual(cell["put_out"], 1)
+        self.assertEqual(cell["bag_now"], 6)
+        # The after-state is still derivable and is deliberately not printed.
+        # If these were equal the test would pass without proving anything.
+        self.assertEqual(cell["backstock"], 5)
+
+        html = self.client.get(
+            reverse("restock_board", args=[self.fixture.pk])
+        ).content.decode()
+        self.assertIn(">1/2</span>", html)
+        self.assertIn("bag 6", html)
+        self.assertNotIn("bag 5", html)
+
     def test_the_pull_list_never_asks_for_more_than_the_bag_has(self):
         """**The pull list is the armful, so it must not overstate.**
 
