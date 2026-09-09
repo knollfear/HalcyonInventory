@@ -1733,13 +1733,33 @@ individual taps with a name attached. One button would make the same claim
 free, and it is precisely the convenience somebody reasonable asks for after
 the third morning. The cost *is* the evidence.
 
-The one thing said out loud is `_drained_at`: **a peg reckoned to have run
-bare while stock is still behind it.** That is yarn that could be selling and
-isn't, which is the only version anybody cares about. The tile says `empty`
-and the picker counts how many — a state and a count of work available, with
-no threshold and no escalation. Whether it matters depends on how busy the
-stall is and whether anyone is free, neither of which the app can see, so it
-states the fact and a person decides. Same rule `colorbands` follows.
+The one thing said out loud is **a spot with no scarf on it and something
+behind it to fix that with.** That is yarn that could be selling and isn't,
+which is the only version anybody cares about. The badge goes red and the
+picker counts how many — a state and a count of work available, with no
+threshold and no escalation. Whether it matters depends on how busy the stall
+is and whether anyone is free, neither of which the app can see, so it states
+the fact and a person decides. Same rule `colorbands` follows.
+
+**Bare is "nothing out", not "cannot be filled", and those were one test.**
+It used to key on `not short` — `fill == capacity` — so a peg with nothing on
+it and one skein in the bag was denied the badge purely because the bag could
+not fill it to the top. Wrong question: *one of two on a hook is fine,
+because there is something there and a customer can see it and buy it.* None
+out is a bare spot whatever the hook holds. Three pegs on the Artisan wall
+were in that state reading as ordinary work, and at capacity one it is the
+whole rack — a veil spot that sold its scarf is empty, and 24 of 42 were.
+
+Still only where something can be done about it: a spot with nothing on it
+**and nothing behind it** stays amber, because that is not yarn that could be
+selling, it is a decision about what gets dyed, and nothing carried to the
+board fixes it.
+
+**The state is its own field, because the timestamp could not carry it.**
+`bare_since` is a *moment*, and `_drained_at` has no sale to point at when
+the peg was already empty at the last walk — so reading the state off the
+timestamp dropped exactly the pegs that had been bare longest. `bare` is the
+fact; `bare_since` is the `?bare=1` half and is allowed to be null under it.
 
 **How long it has been bare is behind `?bare=1` on both pages, advertised
 nowhere.** An elapsed time on a peg reads as a stopwatch on whoever is

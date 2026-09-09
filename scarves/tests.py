@@ -10589,9 +10589,17 @@ class ClearColorwayAttributionTests(TestCase):
         )
 
     def _run(self, *args):
+        # **`localdate`, not `.date()`.** `self.day` is UTC-aware, so
+        # `.date()` is the UTC date — while the command filters
+        # `sold_at__date`, which Django evaluates in `TIME_ZONE`. The two
+        # agree for twenty hours a day and disagree for the four after 8pm in
+        # New York, which is when the window asked for tomorrow and matched
+        # nothing. A date an operator types is a local date, so the command
+        # is right and this was building its window in the wrong zone.
+        day = str(timezone.localdate(self.day))
         out = StringIO()
         call_command("clear_colorway_attribution", "--blank", "Sash Belt",
-                     "--from", str(self.day.date()), "--to", str(self.day.date()),
+                     "--from", day, "--to", day,
                      *args, stdout=out)
         return out.getvalue()
 
@@ -15428,7 +15436,13 @@ class RestockPageTests(TestCase):
     def test_a_bare_peg_with_nothing_to_refill_it_is_not_hurried_about(self):
         """Nothing done at the board fixes it — it belongs to whoever decides
         what gets dyed, and shouting about it here would be shouting at the
-        wrong person."""
+        wrong person.
+
+        Note the setup: **nothing on the peg and nothing behind it.** This
+        test used to leave one in the bag, which made its own premise false —
+        there was something to put out, and it was reading as unfixable only
+        because the peg could not be filled to the top. See the next one.
+        """
         product = make_close_product("Nothing Behind It", on_hand=1, slots=2)
         position = hang(self.fixture, product, 3, 3)
         walk = restock.open_pass(self.fixture, employee=self.employee)
@@ -15441,10 +15455,97 @@ class RestockPageTests(TestCase):
             source=InventoryLog.SOURCE_SQUARE_WEBHOOK,
             quantity=-1,
         )
+        product.number_on_hand = 0
+        product.save()
 
         cell = self._cell_for(position)
         self.assertTrue(cell["short"])
+        self.assertEqual(cell["put_out"], 0)
+        self.assertFalse(cell["bare"])
+
+    def test_no_scarf_out_is_a_bare_spot_even_if_the_peg_wont_fill(self):
+        """**Bare is "nothing out", not "can't be filled."**
+
+        Those were one test — `not short` — and they are two questions. A
+        hook holding two with one on it is fine: there is something there, a
+        customer can see it and buy it. A spot with nothing on it is bare
+        even when the bag can only make it one of two, and three pegs on the
+        Artisan wall were in exactly that state reading as ordinary work.
+
+        At capacity one this is the whole board: a veil rack spot that sold
+        its scarf is empty, and 24 of 42 of them were.
+        """
+        product = make_close_product("Ochre", on_hand=1, slots=2)
+        position = hang(self.fixture, product, 3, 4)
+        walk = restock.open_pass(self.fixture, employee=self.employee)
+        restock.record(walk, position)
+        InventoryLog.objects.create(
+            finished_product=product,
+            raw_product=product.raw_product,
+            log_type=InventoryLog.SALE,
+            source=InventoryLog.SOURCE_SQUARE_WEBHOOK,
+            quantity=-1,
+        )
+
+        cell = self._cell_for(position)
+        self.assertTrue(cell["short"])
+        self.assertEqual(cell["on_peg"], 0)
+        self.assertEqual(cell["put_out"], 1)
+        self.assertTrue(cell["bare"])
+
+        html = self.client.get(
+            reverse("restock_board", args=[self.fixture.pk])
+        ).content.decode()
+        self.assertIn('class="badge bare">+1</span>', html)
+
+    def test_one_of_two_on_the_peg_is_not_bare(self):
+        """There is a scarf out and somebody can buy it. It wants topping up
+        — blue — and that is a different urgency from a spot with none."""
+        product = make_close_product("Soft Tan", on_hand=7, slots=2)
+        position = hang(self.fixture, product, 4, 3)
+        walk = restock.open_pass(self.fixture, employee=self.employee)
+        restock.record(walk, position)
+        InventoryLog.objects.create(
+            finished_product=product,
+            raw_product=product.raw_product,
+            log_type=InventoryLog.SALE,
+            source=InventoryLog.SOURCE_SQUARE_WEBHOOK,
+            quantity=-1,
+        )
+
+        cell = self._cell_for(position)
+        self.assertEqual(cell["on_peg"], 1)
+        self.assertEqual(cell["put_out"], 1)
+        self.assertFalse(cell["bare"])
+
+    def test_a_peg_bare_since_before_the_last_walk_still_counts_as_bare(self):
+        """**The pegs bare the longest were the ones reporting as not bare.**
+
+        `bare_since` is a moment, and there is no moment to name when the peg
+        was already empty when somebody last walked it — `_drained_at` has no
+        sale to point at and returns `None`. Reading the state off that
+        timestamp dropped exactly those pegs, which is backwards. So the
+        state is its own field and the timestamp is only the `?bare=1` half.
+        """
+        product = make_close_product("Long Bare", on_hand=4, slots=2)
+        position = hang(self.fixture, product, 4, 4)
+        product.number_on_hand = 0
+        product.save()
+        walk = restock.open_pass(self.fixture, employee=self.employee)
+        restock.record(walk, position)
+        # Nothing went out at that walk, so nothing can have sold off it.
+        self.assertEqual(walk.checks.get(position=position).expected, 0)
+
+        # A bath arrives afterwards and goes in the bag.
+        product.number_on_hand = 4
+        product.save()
+
+        cell = self._cell_for(position)
+        self.assertEqual(cell["on_peg"], 0)
+        self.assertEqual(cell["put_out"], 2)
+        self.assertTrue(cell["bare"])
         self.assertIsNone(cell["bare_since"])
+        self.assertEqual(restock.board_status(self.fixture)["bare"], 1)
 
     def test_a_peg_nobody_answered_keeps_counting_its_sales(self):
         """**Submitting a pass must not clear a peg it didn't cover.**

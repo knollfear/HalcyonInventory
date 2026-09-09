@@ -424,13 +424,29 @@ def board(fixture, photos=False):
 
             baseline = walked.get(position.pk)
             sold = bare_since = None
+            # **Bare is "no scarf out", not "cannot be filled".** Those were
+            # the same test — `not short` — and they are different questions.
+            # A hook holding two with one on it is fine: there is something
+            # there, a customer can see it and buy it. A spot with nothing on
+            # it is a bare spot even when the bag can only make it one of
+            # two, and three pegs were in exactly that state reading as
+            # ordinary work.
+            #
+            # Still only where something can be done about it. A spot with
+            # nothing on it and nothing behind it is not yarn that could be
+            # selling, it is a decision about what gets dyed, and nothing
+            # carried to the board fixes it.
+            bare = on_peg == 0 and put_out > 0
             if baseline is not None:
                 cutoff, went_out = baseline
                 sold = sum(u for when, u in product_sales if when >= cutoff)
-                # Bare *and* fixable. A peg with nothing left to put on it is
-                # somebody else's decision about what gets dyed, not a thing
-                # to hurry about at the board.
-                if not short:
+                if bare:
+                    # **The moment, which is not the same as the state.** It
+                    # is `None` when the peg was already empty at the last
+                    # walk — there is no sale to point at, because it went
+                    # bare before the baseline. That used to make the pegs
+                    # bare the longest the ones that reported as not bare at
+                    # all, which is why the state is its own field now.
                     bare_since = _drained_at(product_sales, cutoff, went_out)
             cells.append({
                 "position": position,
@@ -489,12 +505,16 @@ def board(fixture, photos=False):
                 # and won't-fill are independent, and the work is what the
                 # colour is for. The peg's `1/2` already says it won't fill.
                 "needs_refill": bool(put_out),
-                # When this peg is reckoned to have run bare with stock still
-                # behind it. The one thing here worth noticing — but the
-                # board prints only *that* it is bare. The elapsed time is
-                # behind `?bare=1`: it reads as a stopwatch on whoever is
-                # walking, and it mostly measures how long since anybody
-                # walked rather than how long the yarn sat unsold.
+                # Nothing on this spot, and something behind it to fix that
+                # with. The one thing here worth noticing, and the board
+                # prints only the fact of it.
+                "bare": bare,
+                # *When* it went bare, which is a different claim and is
+                # behind `?bare=1`: an elapsed time reads as a stopwatch on
+                # whoever is walking, and it mostly measures how long since
+                # anybody walked rather than how long the yarn sat unsold.
+                # `None` while `bare` is true means the peg was already empty
+                # at the last walk, so there is no moment to name.
                 "bare_since": bare_since,
                 # The app's own prediction of a gap, and the whole reason the
                 # walk is worth doing with a phone rather than by eye: it is
@@ -588,10 +608,13 @@ def board_status(fixture):
     docstring on why this page is not a task master.
     """
     cells = [cell for row in board(fixture) for cell in row if cell["kind"] == "home"]
-    bare = [c for c in cells if c["bare_since"]]
+    # The state, not the timestamp: a peg already empty at the last walk has
+    # no moment to name and is the barest of the lot, so counting on
+    # `bare_since` would leave exactly those out.
+    bare = [c for c in cells if c["bare"]]
     return {
         "bare": len(bare),
-        "topup": sum(1 for c in cells if c["needs_refill"] and not c["bare_since"]),
+        "topup": sum(1 for c in cells if c["needs_refill"] and not c["bare"]),
         "unfillable": sum(1 for c in cells if c["short"]),
         # `put_out`, never a bound on `sold`. This used to be
         # `min(sold, capacity)`, which is the peg bound alone — so the picker
@@ -599,7 +622,9 @@ def board_status(fixture):
         # a colorway's sales once per peg. The tile already answers this; two
         # answers is how they disagree.
         "units": sum(c["put_out"] for c in cells),
-        "oldest_bare": min((c["bare_since"] for c in bare), default=None),
+        "oldest_bare": min(
+            (c["bare_since"] for c in bare if c["bare_since"]), default=None
+        ),
     }
 
 

@@ -292,10 +292,12 @@ interrupted, and an unticked peg means "not walked yet", never "empty".
     A <strong>blue peg with +2 on it</strong> wants two out of the bag —
     that's the work, and it's never more than the bag has. <strong>Amber</strong>
     means there is nothing to put out and the peg still won't be full, which
-    isn't work: nothing you do at the board fixes it. A peg can want one and
-    still not fill — it's blue, because there's a skein to put out, and amber
-    is what says it won't reach the top. Worth a very quick look either way —
-    if it fills, say so.
+    isn't work: nothing you do at the board fixes it. <strong>Red</strong> is
+    a spot with nothing on it and something in the bag — a customer can't buy
+    what isn't out, so do those first. A peg can want one and still not fill:
+    it's blue or red because there's a skein to put out, and amber is what
+    says it won't reach the top. Worth a very quick look either way — if it
+    fills, say so.
   </p>
   {% comment %}
   There was a paragraph here explaining the red “empty” badge. It went
@@ -362,20 +364,26 @@ interrupted, and an unticked peg means "not walked yet", never "empty".
                     is a hint about which to do first, not a warning, and it
                     costs nothing to carry as the badge's colour.
 
-                    "empty" survives for the peg that is bare with nothing to
-                    put on it — rare, since `bare_since` is only computed when
-                    the peg can be filled at all, but reachable when an
-                    earlier peg of the same colorway has taken the bag.
+                    **Red means no scarf out, not "can't be filled".** Those
+                    were one test and they are two questions: a hook holding
+                    two with one on it is fine — there is something there, and
+                    a customer can see it and buy it — while a spot with
+                    nothing on it is bare even when the bag can only make it
+                    one of two. There is no "empty" text any more, because
+                    `bare` requires something to put out, so every badge
+                    carries a number. A spot with nothing on it and nothing
+                    behind it is the amber case, where a red badge would be
+                    shouting at the wrong person.
 
                     The *state*, not the stopwatch. How long it has been like
                     this only prints when `?bare=1` asks, because an elapsed
                     time here reads as a measurement of whoever is walking and
-                    mostly measures the gap since the last walk anyway.
+                    mostly measures the gap since the last walk anyway — and
+                    it is absent on the pegs that have been bare longest,
+                    which is the other reason the state is its own field.
                     {% endcomment %}
                     {% if cell.put_out %}
-                      <span class="badge{% if cell.bare_since %} bare{% endif %}">+{{ cell.put_out }}{% if bare_age and cell.bare_since %} · {{ cell.bare_since|timesince }}{% endif %}</span>
-                    {% elif cell.bare_since %}
-                      <span class="badge bare">empty{% if bare_age %} {{ cell.bare_since|timesince }}{% endif %}</span>
+                      <span class="badge{% if cell.bare %} bare{% endif %}">+{{ cell.put_out }}{% if bare_age and cell.bare_since %} · {{ cell.bare_since|timesince }}{% endif %}</span>
                     {% endif %}
                     {% if photos and cell.image %}
                       <img src="{{ cell.image }}" alt="{{ cell.product.name }}">
