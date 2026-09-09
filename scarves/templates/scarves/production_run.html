@@ -176,29 +176,41 @@ signal — the same reasoning as the booth form.
   <form method="post">
     {% csrf_token %}
 
-    {% for row in run.rows.all %}
-      {% if row.is_accepted %}
+    {% comment %}
+    **One line per colorway, not per bath.** Three baths of Artisan Cabernet
+    is one pile of fifteen and one question about it — three boxes would be
+    three marks for one answer and three chances to tick the wrong one.
+    Artisan Peacock and Noble Peacock stay apart, because they came out of
+    two different pots: the key is blank × colorway, which is the axis the
+    catalogue is already organised on.
+
+    The work sheet in the dye room still reads a row per bath. Its boxes hold
+    a pot at a point in a three-day process, and two dry with one still wet
+    is exactly what it has to be able to say.
+    {% endcomment %}
+    {% for line in lines %}
+      {% if line.is_accepted %}
         {% comment %}
-        Already in, and shown rather than hidden — a row that vanished would
+        Already in, and shown rather than hidden — a line that vanished would
         read as "I never ticked that". Not un-tickable: once stock has moved,
         taking it back is an inventory adjustment with a reason on it, not a
         checkbox on a page with no login.
         {% endcomment %}
         <div class="row recorded">
           <div>
-            <div class="what">{{ row.yielded }} × {{ row.finished_product.recipe.name }}</div>
+            <div class="what">{{ line.yielded }} × {{ line.product.recipe.name }}</div>
             <div class="detail">
-              {{ row.finished_product.raw_product.name }}
-              {% if row.fancy_yield %} · {{ row.fancy_yield }} fancy{% endif %}
-              {% if row.loss %} · {{ row.loss }} of {{ row.quantity }} didn't make it{% endif %}
+              {{ line.product.raw_product.name }}
+              {% if line.fancy_yield %} · {{ line.fancy_yield }} fancy{% endif %}
+              {% if line.loss %} · {{ line.loss }} of {{ line.expected }} didn't make it{% endif %}
             </div>
             <div class="tag">In stock</div>
           </div>
         </div>
-      {% elif row.is_cancelled %}
+      {% elif line.is_cancelled %}
         {% comment %}
-        Called off — the bath never ran, so nothing was used and the colorway
-        goes back on the next sheet. Shown for the same reason: a row that
+        Called off — the baths never ran, so nothing was used and the colorway
+        goes back on the next sheet. Shown for the same reason: a line that
         disappeared would look like one that was never on the paper.
 
         Undo, for the reason the Sunday close has one. This is reachable with
@@ -210,11 +222,11 @@ signal — the same reasoning as the booth form.
         {% endcomment %}
         <div class="row cancelled">
           <div>
-            <div class="what">{{ row.quantity }} × {{ row.finished_product.recipe.name }}</div>
-            <div class="detail">{{ row.finished_product.raw_product.name }}</div>
+            <div class="what">{{ line.quantity }} × {{ line.product.recipe.name }}</div>
+            <div class="detail">{{ line.product.raw_product.name }}</div>
             <div class="tag">Not coming</div>
           </div>
-          <button type="submit" name="uncancel" value="{{ row.pk }}"
+          <button type="submit" name="uncancel" value="{{ line.key }}"
                   class="rowbtn undo">undo</button>
         </div>
       {% else %}
@@ -222,8 +234,13 @@ signal — the same reasoning as the booth form.
         Tick, and say how many came out. The number is pre-filled with what
         the paper asked for, because that is the answer nearly every time —
         it is there to be corrected, not to be entered. A tick with the box
-        left alone means the full bath, which is exactly what a tick used to
+        left alone means the whole line, which is exactly what a tick used to
         mean on its own, so nothing is lost if a thumb never reaches it.
+
+        Ten out of fifteen is spread whole pots first — 5, 5, 0 — because a
+        line coming up a third short means one bath failed, not that three
+        each lost a bit. Nobody at a sink knows which pot it was and nothing
+        asks them.
 
         The number rides *inside* the label so tapping anywhere else on the
         row still toggles the box, and `onclick:event.stopPropagation()` is
@@ -231,22 +248,31 @@ signal — the same reasoning as the booth form.
         its own, and a script here would be a script this page has to load.
         {% endcomment %}
         <label class="row">
-          <input type="checkbox" name="done" value="{{ row.pk }}"
-                 {% if row.pk in prefilled %}checked{% endif %}>
+          <input type="checkbox" name="done" value="{{ line.key }}"
+                 {% if line.key in prefilled %}checked{% endif %}>
           <div>
-            <div class="what">{{ row.quantity }} × {{ row.finished_product.recipe.name }}</div>
+            <div class="what">{{ line.open_quantity }} × {{ line.product.recipe.name }}</div>
             <div class="detail">
-              {{ row.finished_product.raw_product.name }} ·
-              #{{ row.order }} on the sheet
+              {{ line.product.raw_product.name }} ·
+              #{{ line.number }} on the sheet{% if line.baths > 1 %} ·
+              {{ line.baths }} baths{% endif %}
+              {% comment %}
+              A line part-settled says so rather than being rounded to one of
+              the two clean answers. It happens when a bath was struck on the
+              run page, and it is the one case where the screen and the paper
+              genuinely differ about how many were asked for — so the screen
+              says which number it is using.
+              {% endcomment %}
+              {% if line.is_part_done %} · {{ line.quantity }} on the paper{% endif %}
             </div>
             <div class="yield">
               <span>came out</span>
-              <input type="number" name="yielded-{{ row.pk }}"
-                     value="{{ row.quantity }}" min="0" max="{{ row.quantity }}"
+              <input type="number" name="yielded-{{ line.key }}"
+                     value="{{ line.open_quantity }}" min="0" max="{{ line.open_quantity }}"
                      inputmode="numeric">
-              <span>of {{ row.quantity }}</span>
+              <span>of {{ line.open_quantity }}</span>
             </div>
-            {% if row.fancy_target %}
+            {% if line.fancy_target %}
               {% comment %}
               Only where this blank has a fancy counterpart, which is a few
               silk veils and nothing else — no yarn row ever shows this,
@@ -254,29 +280,33 @@ signal — the same reasoning as the booth form.
 
               Defaults to zero because that is the answer nearly every time,
               and it is a subset of what came out rather than an addition: a
-              bath of five that came out five with one fancy is "5 of 5" and
-              "1 fancy". Recording it here means the fancy veil is never
-              counted as plain, so there is no overcount for somebody to
+              line of fifteen that came out fifteen with one fancy is "15 of
+              15" and "1 fancy". Recording it here means the fancy veil is
+              never counted as plain, so there is no overcount for somebody to
               notice weeks later on a peg.
               {% endcomment %}
               <div class="yield fancy">
                 <span>of those,</span>
-                <input type="number" name="fancy-{{ row.pk }}"
-                       value="0" min="0" max="{{ row.quantity }}"
+                <input type="number" name="fancy-{{ line.key }}"
+                       value="0" min="0" max="{{ line.open_quantity }}"
                        inputmode="numeric">
-                <span>finished as {{ row.fancy_target.raw_product.name }}</span>
+                <span>finished as {{ line.fancy_target.raw_product.name }}</span>
               </div>
             {% endif %}
           </div>
         </label>
         {% comment %}
         Outside the label, or tapping it would toggle the tick box on the way
-        past. A submit of its own, carrying this row's id — the view treats it
-        as its own action and banks nothing that happens to be ticked, because
-        a cancel that also accepted a half-entered row would move stock this
-        page has no way to take back.
+        past. A submit of its own, carrying this line's key — the view treats
+        it as its own action and banks nothing that happens to be ticked,
+        because a cancel that also accepted a half-entered line would move
+        stock this page has no way to take back.
+
+        It calls off the whole colorway, every open bath of it, because that
+        is what the crew are answering about. Dropping one bath of three is a
+        planning decision and lives on the staff run page.
         {% endcomment %}
-        <button type="submit" name="cancel" value="{{ row.pk }}"
+        <button type="submit" name="cancel" value="{{ line.key }}"
                 class="rowbtn">not coming</button>
       {% endif %}
     {% endfor %}

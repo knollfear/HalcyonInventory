@@ -92,7 +92,7 @@ UNSURE = "unsure"
 class Mark:
     """One decoded row: which row it is, and how full its box looked."""
 
-    code: str         # `SKU#order`, as printed — see production.row_code
+    code: str         # `SKU#line`, as printed — see production.line_code
     state: str
     score: float
     top: int          # for ordering marks down the page
@@ -281,31 +281,38 @@ def read_sheet(data):
 
 
 def rows_to_tick(run, scan):
-    """Which of `run`'s rows the scan says were done.
+    """Which of `run`'s lines the scan says were done, as their tick keys.
 
-    One mark, one row: the barcode carries the row's position as well as its
-    SKU, so there is nothing to match up by counting. That matters most for
-    the case a sheet is *expected* to contain — several baths of the same
-    colorway, printed together on purpose.
+    One mark, one **line** — the reporting sheet now prints a colorway once
+    however many baths of it there are, so a mark is an answer about a pile
+    of fifteen rather than about one pot. The key handed back is the line's
+    own (`production.Line.key`, its first row's pk), which is what the
+    checkbox posts and what `?done=` has always carried, so nothing about the
+    URL shape or the form changed.
 
-    Rows already recorded are skipped, which is what makes re-reading the
-    same photo harmless: the second pass ticks nothing new rather than
-    finding another row with the same SKU to put the mark on.
+    The barcode still carries the position as well as the SKU. Grouping made
+    that redundant for uniqueness — a SKU appears on one line now — and it
+    stays as a second check on being pointed at the right sheet.
+
+    Lines already fully recorded are skipped, which is what makes re-reading
+    the same photo harmless: the second pass ticks nothing new. A line with
+    one bath still open comes back, because there is genuinely something left
+    to accept on it.
     """
     filled = scan.filled_codes
     return [
-        row.pk
-        for row in run.rows.all()
-        if not row.is_accepted and production.row_code(row) in filled
+        line.key
+        for line in production.lines_for_run(run)
+        if not line.is_accepted and production.line_code(line) in filled
     ]
 
 
 def strays(run, scan):
-    """Codes in the photo that aren't rows of `run`.
+    """Codes in the photo that aren't lines of `run`.
 
     Expected to be empty forever. If it isn't, the photo is of some other
     sheet, and saying so costs a line — the marks that *did* match would
     otherwise be applied to this run without comment.
     """
-    codes = {production.row_code(row) for row in run.rows.all()}
+    codes = {production.line_code(line) for line in production.lines_for_run(run)}
     return sorted({mark.code for mark in scan.marks} - codes)

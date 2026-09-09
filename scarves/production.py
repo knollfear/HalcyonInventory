@@ -785,25 +785,241 @@ def uncancel_row(row):
 
 
 # ---------------------------------------------------------------------------
+# Lines: identical baths, reported once
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Line:
+    """Every bath of one colorway on one blank, as a single thing to report.
+
+    **Three baths of Artisan Cabernet is not three groups of five, it is one
+    group of fifteen.** The sheet used to print a row per bath with a tick
+    box each, because a bath is what somebody physically does — which is
+    true, and is why the *work* sheet still reads that way. But the reporting
+    sheet asks a different question. Three boxes for one colorway is three
+    marks for one answer, three chances to tick the wrong line, and three
+    lines a photograph has to resolve where the crew are holding one pile of
+    fifteen scarves.
+
+    **The blank is half the identity.** Artisan Peacock and Noble Peacock are
+    two different things that came out of two different pots, so they stay
+    two lines. That is exactly `finished_product` — blank × colorway — which
+    is the axis the whole catalogue is organised on, so the grouping key
+    needed no new concept.
+
+    Where this does *not* apply:
+
+    - **The work sheet.** Its boxes hold a bath at a point in a one-to-three
+      day process, and three baths of Cabernet really are three pots that dry
+      separately. Grouping there would ask one row of boxes to say that two
+      are dry and one is still wet.
+    - **The rows in the database.** A bath stays a row: `quantity` is frozen
+      per bath because the paper said `× 5`, striking releases one bath's
+      claim rather than a colorway's, and `applied_log` stops one bath being
+      counted twice. Grouping is how they are asked about, not how they are
+      kept.
+    """
+
+    product: object
+    rows: list
+    number: int
+
+    @property
+    def key(self):
+        """What a tick posts, and what a scan resolves to.
+
+        The first row's pk, rather than a new identifier: `?done=` already
+        carries row pks from the photo path, so the URL shape and the
+        checkbox name are unchanged and a stale link degrades the same way.
+        """
+        return self.rows[0].pk
+
+    @property
+    def quantity(self) -> int:
+        """What the paper asked for — every bath, whatever state it is in.
+
+        The PDF reads this, and reads nothing else about state: a reprint
+        mid-session has to be the same document as the first print.
+        """
+        return sum(r.quantity for r in self.rows)
+
+    @property
+    def pending(self):
+        return [r for r in self.rows if r.is_pending]
+
+    @property
+    def expected(self) -> int:
+        """What is still open plus what has already been banked.
+
+        The live figure, for the crew's page. It differs from `quantity` once
+        a bath has been struck — the paper still says fifteen and the screen
+        says ten, which is the paper being frozen rather than either being
+        wrong.
+        """
+        return sum(r.quantity for r in self.rows if not r.is_cancelled)
+
+    @property
+    def open_quantity(self) -> int:
+        return sum(r.quantity for r in self.pending)
+
+    @property
+    def yielded(self) -> int:
+        return sum(r.yielded for r in self.rows if r.is_accepted)
+
+    @property
+    def fancy_yield(self) -> int:
+        return sum(r.fancy_yield for r in self.rows if r.is_accepted)
+
+    @property
+    def loss(self) -> int:
+        return sum(r.loss for r in self.rows if r.is_accepted)
+
+    @property
+    def baths(self) -> int:
+        return len(self.rows)
+
+    @property
+    def is_accepted(self) -> bool:
+        return bool(self.rows) and all(r.is_accepted for r in self.rows)
+
+    @property
+    def is_cancelled(self) -> bool:
+        return bool(self.rows) and all(r.is_cancelled for r in self.rows)
+
+    @property
+    def is_pending(self) -> bool:
+        return bool(self.pending)
+
+    @property
+    def is_part_done(self) -> bool:
+        """Some baths settled and some not — a line that is neither state.
+
+        Reachable by striking one bath of three, or by a submit that landed
+        halfway. Said out loud on the page rather than rounded to one of the
+        two clean answers, because rounding it either way is the page
+        claiming something nobody reported.
+        """
+        return self.is_pending and any(
+            r.is_accepted or r.is_cancelled for r in self.rows
+        )
+
+    @property
+    def fancy_target(self):
+        return self.rows[0].fancy_target
+
+
+def lines_for(rows):
+    """`rows` folded to one line per colorway, in the order they first appear.
+
+    First appearance rather than a re-sort, because `plan_baths` already
+    clumps a recipe's baths together — one mix and one pot serve several
+    loads, which is what makes a session cheaper — and the order between
+    recipes is the urgency the planner chose. Re-sorting here would throw
+    that away to achieve the grouping it already has.
+    """
+    order = []
+    grouped = {}
+    for row in rows:
+        pk = row.finished_product_id
+        if pk not in grouped:
+            grouped[pk] = []
+            order.append(pk)
+        grouped[pk].append(row)
+    return [
+        Line(product=grouped[pk][0].finished_product, rows=grouped[pk], number=n)
+        for n, pk in enumerate(order, start=1)
+    ]
+
+
+def lines_for_run(run):
+    return lines_for(
+        run.rows.select_related(
+            "finished_product__recipe", "finished_product__raw_product"
+        )
+    )
+
+
+def accept_line(line, yielded=None, fancy=0):
+    """Bank a whole line, spreading what came out across its open baths.
+
+    **One tick means the whole group came in.** Fifteen were asked for and
+    fifteen arrived, which is the answer nearly every time. The write-in is
+    for the session that produced thirteen, and the app decides which baths
+    those thirteen belong to — because nobody standing at a sink knows or
+    cares whether the two that were lost came out of the first pot or the
+    third, and asking would be the app demanding a fact to satisfy its own
+    schema.
+
+    Greedy in sheet order, the same way `restock.expected_fill` spreads stock
+    across pegs: fill the first bath, then the next. **That is not a
+    tie-break, it is the likeliest story.** Ten out of fifteen almost
+    certainly means one pot failed, not that each of three lost 1.67 — so
+    5/5/0 records one bath at zero and two that came out whole, which is the
+    event. Spreading the shortfall evenly would invent a bad afternoon out of
+    a single ruined lot, and `ProductionRunRow` is the only place a scrap
+    question can be answered from.
+
+    Somebody turning up ten short because a bath never ran is the other
+    reading and the rarer one, and it costs nothing here: the rows say the
+    same thing either way, and if it matters the bath can be struck instead.
+
+    Cancelled baths are not filled, and already-accepted ones are left alone:
+    `apply_row` is a no-op on a row that has a log, so a re-tapped submit
+    still moves nothing twice.
+    """
+    pending = line.pending
+    if not pending:
+        return []
+
+    asked = sum(r.quantity for r in pending)
+    made = asked if yielded is None else min(max(int(yielded), 0), asked)
+    fancied = min(max(int(fancy or 0), 0), made)
+    if line.fancy_target is None:
+        fancied = 0
+
+    # **One product instance across the whole line.** Every row here points
+    # at the same colorway, and `select_related` hands each of them its own
+    # copy of it — so two rows applied in one pass would each read
+    # `number_on_hand` as it was before either ran, add their own yield, and
+    # save. Last write wins and a bath vanishes. That never bit while a tick
+    # was one bath and one request; it bites the moment a line banks three.
+    #
+    # Sharing the instance makes the increments accumulate in memory and each
+    # save write the running total. The raw product comes along with it, so
+    # the blanks are consumed once per bath rather than once per line.
+    product = line.product
+    logs = []
+    for row in pending:
+        row.finished_product = product
+        take = min(made, row.quantity)
+        fancy_take = min(fancied, take)
+        logs.append(apply_row(row, yielded=take, fancy=fancy_take))
+        made -= take
+        fancied -= fancy_take
+    return logs
+
+
+# ---------------------------------------------------------------------------
 # Drawing
 # ---------------------------------------------------------------------------
 
 
-def row_code(row):
-    """What a row's barcode carries: its SKU *and* its place on the sheet.
+def line_code(line):
+    """What a line's barcode carries: its SKU *and* its place on the sheet.
 
-    The order matters because a decoder returns one result per distinct
-    symbol, not per printed symbol — three identical barcodes on one page
-    come back as one. A sheet routinely prints the same SKU several times
-    (`plan_baths` groups repeated baths of a colorway together on purpose),
-    so a SKU-only barcode would silently collapse them and the scan would
-    report one bath where four were marked.
+    This used to be `row_code`, one code per bath, and the reason for the
+    position half was that a decoder returns one result per distinct symbol
+    rather than per printed symbol — three identical barcodes came back as
+    one, and a sheet printed the same SKU several times because `plan_baths`
+    groups repeated baths of a colorway together.
 
-    Carrying the SKU as well as the position keeps the code self-describing
-    and gives the scan a second check on being pointed at the right sheet,
-    which is worth the handful of extra bars.
+    Grouping removed that hazard at the source: a SKU appears on exactly one
+    line now, so the code would be unique on the SKU alone. The position
+    stays anyway, because it is a second check on being pointed at the right
+    sheet and costs a handful of bars.
     """
-    return f"{row.finished_product.sku or 'ROW'}#{row.order}"
+    return f"{line.product.sku or 'ROW'}#{line.number}"
 
 
 def barcode_symbol(value):
@@ -904,6 +1120,14 @@ def render_sheet(run, return_url) -> bytes:
         .select_related("finished_product__recipe", "finished_product__raw_product")
         .prefetch_related("finished_product__recipe__recipe_dyes__dye__brand")
     )
+    # **The reporting sheet groups; the work sheet does not.** Three baths of
+    # Artisan Cabernet come back as one line of fifteen with one box, because
+    # the pile at the end of the session is one pile and three boxes for it
+    # are three chances to mark the wrong one. The work sheet keeps a row per
+    # bath, because its boxes hold a pot at a point in a three-day process
+    # and two dry with one still wet is exactly what it has to be able to
+    # say.
+    lines = lines_for(rows)
     per_page = int((page_h - PAGE_MARGIN * 2 - HEADER_HEIGHT) // ROW_HEIGHT)
     per_page = max(per_page, 1)
 
@@ -915,8 +1139,8 @@ def render_sheet(run, return_url) -> bytes:
     _draw_pages(pdf, run, return_url, rows, page_w, page_h, per_page,
                 instructions=WORK_INSTRUCTIONS, draw=_draw_work_row, qr=False,
                 headings=True)
-    _draw_pages(pdf, run, return_url, rows, page_w, page_h, per_page,
-                instructions=BATH_INSTRUCTIONS, draw=_draw_row, qr=True)
+    _draw_pages(pdf, run, return_url, lines, page_w, page_h, per_page,
+                instructions=BATH_INSTRUCTIONS, draw=_draw_line, qr=True)
 
     pdf.save()
     buf.seek(0)
@@ -1181,14 +1405,18 @@ def _draw_work_row(pdf, row, number, y, page_w):
         pdf.rect(x, baseline + 2, STAGE_BOX, STAGE_BOX)
 
 
-def _draw_row(pdf, row, number, y, page_w):
-    """One bath on the reporting sheet: box, barcode, and what came out.
+def _draw_line(pdf, line, number, y, page_w):
+    """One colorway on the reporting sheet: box, barcode, and what came out.
+
+    **One box for every bath of it.** Three baths of Cabernet print as
+    `15 × Cabernet` with a single tick, not as three fives — the crew are
+    holding one pile and answering one question about it.
 
     The box and the barcode are at exactly the offsets `sheetscan` reads back
     along — `box_geometry` derives them from these same constants, so there
     is no second copy of the layout to drift.
     """
-    product = row.finished_product
+    product = line.product
     baseline = y - ROW_HEIGHT + 12
 
     # The box. Heavy stroke so a photo of it has something unambiguous to
@@ -1200,7 +1428,7 @@ def _draw_row(pdf, row, number, y, page_w):
     barcode_x = BOX_LEFT + BOX_SIZE + BOX_TO_BARCODE
     drawn_width = BARCODE_WIDTH
     if product.sku:
-        symbol = barcode_symbol(row_code(row))
+        symbol = barcode_symbol(line_code(line))
         symbol.drawOn(pdf, barcode_x, baseline + BARCODE_BASELINE_OFFSET)
         # The real width, not the target: quiet zones don't scale, so the
         # symbol runs wider than BARCODE_WIDTH and the text has to start
@@ -1210,11 +1438,15 @@ def _draw_row(pdf, row, number, y, page_w):
     text_x = barcode_x + drawn_width + 14
 
     pdf.setFont("Helvetica-Bold", 11)
-    pdf.drawString(text_x, baseline + 14, f"{row.quantity} × {product.recipe.name}")
+    pdf.drawString(text_x, baseline + 14, f"{line.quantity} × {product.recipe.name}")
     pdf.setFont("Helvetica", 9)
+    # The bath count is stated where the line is more than one, because the
+    # collection page and the work sheet are both still counted in baths and
+    # somebody comparing the two needs to see where fifteen came from.
+    baths = f" · {line.baths} baths" if line.baths > 1 else ""
     pdf.drawString(
         text_x, baseline + 2,
-        f"{product.raw_product.name} · {product.sku or 'no SKU'} · "
+        f"{product.raw_product.name} · {product.sku or 'no SKU'}{baths} · "
         f"{product.number_on_hand} on hand, par {product.par}",
     )
 
@@ -1228,6 +1460,6 @@ def _draw_row(pdf, row, number, y, page_w):
     pdf.line(rule_x, baseline + 1, rule_x + rule_w, baseline + 1)
     pdf.setFont("Helvetica", 7)
     pdf.drawCentredString(rule_x + rule_w / 2, baseline - 8,
-                          f"OF {row.quantity}")
+                          f"OF {line.quantity}")
     pdf.setFont("Helvetica", 8)
     pdf.drawRightString(rule_x - 10, baseline + 2, f"#{number}")

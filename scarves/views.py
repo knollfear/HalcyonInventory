@@ -4401,6 +4401,20 @@ def _row_named(run, value):
     return run.rows.filter(pk=int(value)).first()
 
 
+def _line_named(run, value):
+    """One of this run's lines, by its tick key, or `None`.
+
+    Same defensiveness as `_row_named` and for the same reason — these
+    buttons are on a page reachable with a code off a piece of paper.
+    """
+    if not (value or "").isdigit():
+        return None
+    key = int(value)
+    return next(
+        (line for line in production.lines_for_run(run) if line.key == key), None
+    )
+
+
 def _note_reporter(request, run):
     """Stamp who replied and when, without deciding anything.
 
@@ -4517,10 +4531,11 @@ def _hand_off_photo(request, held):
         return None
 
     filled = set(held.get("codes") or [])
-    codes = {production.row_code(row): row for row in run.rows.all()}
+    lines = production.lines_for_run(run)
+    codes = {production.line_code(line) for line in lines}
     ticked = [
-        row.pk for code, row in codes.items()
-        if code in filled and not row.is_accepted
+        line.key for line in lines
+        if production.line_code(line) in filled and not line.is_accepted
     ]
 
     # The reading rides in the query string rather than the session. It
@@ -4541,7 +4556,7 @@ def _hand_off_photo(request, held):
         # Rows in the photo that aren't on this sheet. Expected to be empty
         # forever; if it isn't, the photo is of another run and the matched
         # marks would otherwise land here unremarked.
-        "strays": len(filled - set(codes)),
+        "strays": len(filled - codes),
     }, doseq=True)
     request.session.pop("production_photo", None)
     return redirect(f"{reverse('production_run', args=[run.token])}?{query}")
@@ -4585,19 +4600,32 @@ def production_run(request, token):
         # are lost, which costs a re-tick; the alternative costs an
         # inventory adjustment nobody on this page can make.
         if "cancel" in request.POST:
-            row = _row_named(run, request.POST.get("cancel"))
-            done = row is not None and production.cancel_row(row)
+            # **A line is called off whole.** The crew are answering about one
+            # pile of scarves, so "not coming" means the colorway isn't
+            # coming — releasing every open bath of it back to the planner.
+            # Striking one bath of three is a planning decision and stays on
+            # the staff run page, where the person making it can see the
+            # sheet.
+            line = _line_named(run, request.POST.get("cancel"))
+            cancelled = 0
+            if line is not None:
+                with transaction.atomic():
+                    for row in line.pending:
+                        if production.cancel_row(row):
+                            cancelled += 1
             _note_reporter(request, run)
             run.save(update_fields=["submitted_at", "submitted_by"])
             request.session["production_run_note"] = (
-                {"cancelled": 1} if done else {}
+                {"cancelled": cancelled} if cancelled else {}
             )
             return redirect("production_run", token=run.token)
 
         if "uncancel" in request.POST:
-            row = _row_named(run, request.POST.get("uncancel"))
-            if row is not None:
-                production.uncancel_row(row)
+            line = _line_named(run, request.POST.get("uncancel"))
+            if line is not None:
+                with transaction.atomic():
+                    for row in line.rows:
+                        production.uncancel_row(row)
             return redirect("production_run", token=run.token)
 
         if "cancel_rest" in request.POST:
@@ -4614,28 +4642,37 @@ def production_run(request, token):
         ticked = set(request.POST.getlist("done"))
         applied = units = lost = fancied = 0
         with transaction.atomic():
-            for row in run.rows.all():
-                if str(row.pk) not in ticked or row.is_accepted:
+            # **One tick per colorway, not per bath.** Three baths of Artisan
+            # Cabernet are one line of fifteen with one box; `accept_line`
+            # spreads what came out across the open baths, whole pots first,
+            # because ten of fifteen means one failed rather than three
+            # coming up short together.
+            for line in production.lines_for_run(run):
+                if str(line.key) not in ticked or line.is_accepted:
                     continue
                 # The tick is the claim and the number is its size. Blank or
-                # unreadable means the full bath, which is what a tick on its
-                # own has always meant — so a phone that never gets as far as
-                # the number box still reports exactly what it used to.
-                typed = (request.POST.get(f"yielded-{row.pk}") or "").strip()
+                # unreadable means the whole line, which is what a tick on
+                # its own has always meant — so a phone that never gets as
+                # far as the number box still reports exactly what it used to.
+                typed = (request.POST.get(f"yielded-{line.key}") or "").strip()
                 yielded = int(typed) if typed.isdigit() else None
                 # Only offered where the blank has a fancy counterpart, so an
                 # absent value is the overwhelmingly common answer of none.
-                typed_fancy = (request.POST.get(f"fancy-{row.pk}") or "").strip()
+                typed_fancy = (request.POST.get(f"fancy-{line.key}") or "").strip()
                 fancy_units = int(typed_fancy) if typed_fancy.isdigit() else 0
-                production.apply_row(row, yielded=yielded, fancy=fancy_units)
+                production.accept_line(line, yielded=yielded, fancy=fancy_units)
                 applied += 1
-                units += row.yielded
-                fancied += row.fancy_yield
-                lost += row.loss
+                units += line.yielded
+                fancied += line.fancy_yield
+                lost += line.loss
 
             _note_reporter(request, run)
             run.save(update_fields=["submitted_at", "submitted_by"])
 
+        # `baths` is now a count of colorways accepted rather than of pots.
+        # The page says "lines" for it, because a number captioned baths that
+        # counts something else is the kind of quiet wrong this app spends
+        # most of its comments on.
         request.session["production_run_applied"] = {
             "baths": applied, "units": units, "lost": lost, "fancy": fancied,
         }
@@ -4648,6 +4685,10 @@ def production_run(request, token):
     employee, _pin = crew.remembered(request)
     return render(request, "scarves/production_run.html", {
         "run": run,
+        # Built here rather than walked in the template: the grouping is a
+        # judgement about what one answer covers, and a template working it
+        # out inline would be the second place the rule lived.
+        "lines": production.lines_for_run(run),
         "just_applied": applied,
         "just_noted": note,
         "remembered": employee,

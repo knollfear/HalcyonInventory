@@ -688,10 +688,50 @@ reason the rows have to mean something on their own. **Don't build that on
 `submitted_by`**: it is filled from the remembered-PIN cookie as a record of
 who replied, and it is not a claim about who did the work.
 
-**The row is a bath, not a scarf.** A bath is one blank plus one recipe
-yielding `number_per_dye_bath` units of a single SKU, so production is not a
-column of counts to be entered — it is a handful of answers in the same order
-as the paper, which makes reporting recognition rather than transcription.
+**The row is a bath, and the reporting line is a colorway.** A bath is one
+blank plus one recipe yielding `number_per_dye_bath` units of a single SKU,
+and that is still what a `ProductionRunRow` is — it is where scrap is
+answered from, what `applied_log` stops counting twice, and what striking
+releases.
+
+**But the sheet that comes back groups them.** Three baths of Artisan
+Cabernet is not three groups of five, it is one group of fifteen: one line,
+one tick box, one number. The crew are standing in front of one pile that
+came out of one colour, and three boxes for it are three marks for one
+answer, three chances to tick the wrong line, and three lines a photograph
+has to resolve.
+
+**The blank is the other half of the identity.** Artisan Peacock and Noble
+Peacock came out of two different pots and stay two lines. That falls out of
+grouping on `finished_product` — blank × colorway, the axis the catalogue is
+already organised on — so it needed no new concept. `production.Line` and
+`lines_for` are the fold; the order is first-appearance, because `plan_baths`
+already clumps a recipe's baths together and the order between recipes is the
+urgency it chose.
+
+**The work sheet does not group.** Its boxes hold a pot at a point in a
+one-to-three day process, and three baths of Cabernet genuinely are three
+pots that dry separately — one row of boxes cannot say two are dry and one is
+still wet.
+
+**A short line loses whole baths first.** Ten of fifteen almost certainly
+means one pot failed, not that three each lost 1.67, so `accept_line` fills
+greedily — 5, 5, 0 — and the loss lands on a bath. Spreading it evenly would
+invent a bad afternoon out of one ruined lot, in the only place a scrap
+question can be answered from. Nobody at a sink knows which pot it was and
+nothing asks them.
+
+**One product instance across a line, and this one is sharp.** Every row of a
+line points at the same colorway and `select_related` hands each its own copy
+— so applying several in one pass had each read `number_on_hand` as it was
+before any of them ran, add its own yield, and save. Last write wins and two
+baths of three vanish, with no error, a closed run and every log present.
+That could not happen while a tick was one bath in one request, which is
+exactly why it arrived with the grouping.
+
+So production is not a column of counts to be entered — it is a handful of
+answers in the same order as the paper, which makes reporting recognition
+rather than transcription.
 
 **A row ends as pending, accepted at n ≥ 0, or cancelled**, and `closed`
 derives from "nothing pending". There is no run-level retired flag, because
@@ -932,8 +972,11 @@ requested. A control that is a form submit cannot fail that way: either it
 navigates or it was never clicked.
 
 The count is **baths, not scarves** — two baths of a blank yielding four print
-as `4 ×` twice, because a row is a bath and a bath is what somebody physically
-does. The list shows what they make beside it so nobody multiplies.
+as `4 ×` twice on the planner, because a row is a bath and a bath is what
+somebody physically does. The list shows what they make beside it so nobody
+multiplies. The *reporting* sheet is the one place that folds them back
+together, for the reason above: planning is done in pots, answering is done
+in piles.
 
 **Nothing about a pick is filtered on par, and none of it is subtracted for
 what is already in flight.** `plan_baths` derives what is needed and so must
@@ -1088,10 +1131,13 @@ Two subtleties there, both of which bite silently:
   drawn symbol is wider than `BARCODE_WIDTH` by a margin that depends on the
   value. Scale comes from `bars_width()`, never the target width.
 - **A decoder returns one result per distinct symbol, not per printed
-  symbol.** Three identical barcodes come back as one, and a sheet routinely
-  prints the same SKU several times — `plan_baths` groups repeated baths of a
-  colorway together on purpose. So `row_code()` carries the row's position as
-  well as its SKU (`RAWSIL-STORMY#3`).
+  symbol.** Three identical barcodes come back as one, which used to matter
+  because a sheet printed the same SKU several times — `plan_baths` groups
+  repeated baths of a colorway together on purpose. Grouping the reporting
+  sheet removed that collision at its source: a SKU appears on exactly one
+  line. `line_code()` still carries the position as well as the SKU
+  (`RAWSIL-STORMY#3`), now purely as a check on being pointed at the right
+  sheet.
 
 **Ink, not colour.** Each barcode is full-black bars on full-white paper a
 couple of centimetres from its own box, so it doubles as a calibration

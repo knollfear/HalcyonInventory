@@ -8627,17 +8627,29 @@ class ProductionReturnTests(TestCase):
     def setUp(self):
         self.recipe = make_recipe("Stormy Sea")
         self.product = make_bathable(self.recipe, "Stormy Silk", on_hand=0, par=8, bath=4)
+        self.other = make_bathable(
+            make_recipe("Ember"), "Ember Silk", on_hand=0, par=8, bath=4
+        )
         self.run = ProductionRun.objects.create()
+        # Two baths of one colorway — which is now **one line of eight**, one
+        # box, one answer — plus a second colorway so there is something for a
+        # partial report to leave behind.
         self.rows = [
             ProductionRunRow.objects.create(
                 run=self.run, finished_product=self.product, order=i, quantity=4
             )
             for i in (1, 2)
         ]
+        self.other_row = ProductionRunRow.objects.create(
+            run=self.run, finished_product=self.other, order=3, quantity=4
+        )
+        self.line, self.other_line = production.lines_for_run(self.run)
         self.url = reverse("production_run", args=[self.run.token])
 
-    def _report(self, *rows):
-        return self.client.post(self.url, {"done": [str(r.pk) for r in rows]})
+    def _report(self, *lines, **extra):
+        data = {"done": [str(line.key) for line in lines]}
+        data.update(extra)
+        return self.client.post(self.url, data)
 
     def test_it_serves_an_anonymous_get(self):
         """The crew have no accounts, and a login here would mean the sheet
@@ -8649,41 +8661,48 @@ class ProductionReturnTests(TestCase):
             self.client.get(reverse("production_run", args=["nope"])).status_code, 404
         )
 
-    def test_ticking_a_bath_moves_stock_both_ways(self):
-        self._report(self.rows[0])
+    def test_ticking_a_line_banks_every_bath_of_it(self):
+        """**One tick, one colorway, all of it.** Three baths of Artisan
+        Cabernet is one pile of fifteen, so the box beside it means the pile
+        arrived — not that one pot of it did."""
+        self._report(self.line)
 
         self.product.refresh_from_db()
         self.product.raw_product.refresh_from_db()
-        self.assertEqual(self.product.number_on_hand, 4)
-        self.assertEqual(self.product.raw_product.number_on_hand, 96)
-        self.assertEqual(InventoryLog.objects.count(), 1)
+        self.assertEqual(self.product.number_on_hand, 8)
+        self.assertEqual(self.product.raw_product.number_on_hand, 92)
+        # A row per bath underneath, because that is where scrap is answered
+        # from and what stops a bath being counted twice.
+        self.assertEqual(InventoryLog.objects.count(), 2)
 
-    def test_an_unticked_bath_moves_nothing(self):
-        """Ten of twenty is the normal outcome, not an error state."""
-        self._report(self.rows[0])
+    def test_an_unticked_line_moves_nothing(self):
+        """Half a sheet is the normal outcome, not an error state."""
+        self._report(self.line)
 
-        self.rows[1].refresh_from_db()
-        self.assertIsNone(self.rows[1].accepted_at)
-        self.product.refresh_from_db()
-        self.assertEqual(self.product.number_on_hand, 4)
+        self.other_row.refresh_from_db()
+        self.assertIsNone(self.other_row.accepted_at)
+        self.other.refresh_from_db()
+        self.assertEqual(self.other.number_on_hand, 0)
 
-    def test_reporting_the_same_bath_twice_applies_it_once(self):
-        self._report(self.rows[0])
-        self._report(self.rows[0])
-
-        self.product.refresh_from_db()
-        self.assertEqual(self.product.number_on_hand, 4)
-        self.assertEqual(InventoryLog.objects.count(), 1)
-
-    def test_a_bath_remembered_later_still_goes_in(self):
-        """Reopening the page and adding one is normal, and must add rather
-        than replace."""
-        self._report(self.rows[0])
-        self._report(self.rows[1])
+    def test_reporting_the_same_line_twice_applies_it_once(self):
+        self._report(self.line)
+        self._report(self.line)
 
         self.product.refresh_from_db()
         self.assertEqual(self.product.number_on_hand, 8)
         self.assertEqual(InventoryLog.objects.count(), 2)
+
+    def test_a_line_remembered_later_still_goes_in(self):
+        """Reopening the page and adding one is normal, and must add rather
+        than replace."""
+        self._report(self.line)
+        self._report(self.other_line)
+
+        self.product.refresh_from_db()
+        self.other.refresh_from_db()
+        self.assertEqual(self.product.number_on_hand, 8)
+        self.assertEqual(self.other.number_on_hand, 4)
+        self.assertEqual(InventoryLog.objects.count(), 3)
 
     def test_one_bath_back_does_not_close_the_sheet(self):
         """The rule this replaced said one tick was enough.
@@ -8693,52 +8712,92 @@ class ProductionReturnTests(TestCase):
         its baths still on a line — and calling it finished there is what put
         the app one to three days ahead of the shelf.
         """
-        self._report(self.rows[0])
+        self._report(self.line)
 
         self.run.refresh_from_db()
         self.assertTrue(self.run.is_open)
         self.assertEqual(self.run.pending_count, 1)
 
     def test_the_sheet_closes_when_nothing_is_left_pending(self):
-        self._report(self.rows[0])
-        self._report(self.rows[1])
+        self._report(self.line)
+        self._report(self.other_line)
 
         self.run.refresh_from_db()
         self.assertTrue(self.run.is_closed)
 
     def test_a_reply_is_still_recorded_even_though_it_decides_nothing(self):
-        self._report(self.rows[0])
+        self._report(self.line)
 
         self.run.refresh_from_db()
         self.assertIsNotNone(self.run.submitted_at)
 
     def test_an_accepted_row_is_shown_not_hidden(self):
         """A row that vanished would read as 'I never ticked that'."""
-        self._report(self.rows[0])
+        self._report(self.line)
 
         response = self.client.get(self.url)
 
         self.assertContains(response, "In stock")
 
-    def test_a_short_bath_credits_what_came_out_and_consumes_the_blanks(self):
+    def test_a_short_line_credits_what_came_out_and_consumes_the_blanks(self):
         """The scarves that failed still used their blanks up."""
-        self.client.post(self.url, {
-            "done": [str(self.rows[0].pk)],
-            f"yielded-{self.rows[0].pk}": "3",
-        })
+        self._report(self.line, **{f"yielded-{self.line.key}": "3"})
 
         self.product.refresh_from_db()
         self.product.raw_product.refresh_from_db()
         self.assertEqual(self.product.number_on_hand, 3)
-        self.assertEqual(self.product.raw_product.number_on_hand, 96)
+        self.assertEqual(self.product.raw_product.number_on_hand, 92)
 
-    def test_a_binned_bath_is_a_log_at_zero_not_a_missing_log(self):
+    def test_banking_three_baths_at_once_does_not_lose_two_of_them(self):
+        """**The bug grouping introduced, and it was silent.**
+
+        Every row of a line points at the same colorway, and `select_related`
+        hands each row its own copy of it. Applied in one pass, each read
+        `number_on_hand` as it was before any of them ran, added its own
+        yield and saved — last write wins, and a line of three baths banked
+        five units instead of fifteen. Nothing errored; the run closed, the
+        logs were all there, and only the count was wrong.
+
+        It could never happen while a tick was one bath in one request, which
+        is exactly why it arrived with the grouping.
+        """
+        third = ProductionRunRow.objects.create(
+            run=self.run, finished_product=self.product, order=4, quantity=4
+        )
+        line = production.lines_for_run(self.run)[0]
+        self.assertEqual(line.rows, [self.rows[0], self.rows[1], third])
+
+        self._report(line)
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.number_on_hand, 12)
+        # And the blanks go once per bath, not once per line.
+        self.product.raw_product.refresh_from_db()
+        self.assertEqual(self.product.raw_product.number_on_hand, 88)
+
+    def test_a_short_line_loses_whole_baths_first(self):
+        """**Four of eight means one pot failed, not that both came up
+        short.** So the shortfall lands on a whole bath — 4 and 0 — which is
+        the event somebody describing the session would report, and
+        `ProductionRunRow` is the only place a scrap question is answerable
+        from. Spreading it evenly would invent a bad afternoon out of one
+        ruined lot.
+        """
+        self._report(self.line, **{f"yielded-{self.line.key}": "4"})
+
+        first, second = [r for r in self.line.rows]
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertEqual([first.yielded, second.yielded], [4, 0])
+        self.assertEqual([first.loss, second.loss], [0, 4])
+        # Both pots were emptied of blanks either way.
+        self.product.raw_product.refresh_from_db()
+        self.assertEqual(self.product.raw_product.number_on_hand, 92)
+
+    def test_a_binned_line_is_a_log_at_zero_not_a_missing_log(self):
         """`applied_log` is the only guard against a row being counted
         twice, so a total loss has to write one like everything else."""
-        self.client.post(self.url, {
-            "done": [str(self.rows[0].pk)],
-            f"yielded-{self.rows[0].pk}": "0",
-        })
+        self._report(self.line, **{f"yielded-{self.line.key}": "0"})
 
         self.rows[0].refresh_from_db()
         self.product.refresh_from_db()
@@ -8746,16 +8805,17 @@ class ProductionReturnTests(TestCase):
         self.assertTrue(self.rows[0].is_accepted)
         self.assertEqual(self.rows[0].yielded, 0)
         self.assertEqual(self.product.number_on_hand, 0)
-        self.assertEqual(self.product.raw_product.number_on_hand, 96)
-        self.assertEqual(InventoryLog.objects.count(), 1)
+        self.assertEqual(self.product.raw_product.number_on_hand, 92)
+        self.assertEqual(InventoryLog.objects.count(), 2)
 
-    def test_a_tick_with_no_number_still_means_the_whole_bath(self):
+    def test_a_tick_with_no_number_still_means_the_whole_line(self):
         """A thumb that never reaches the number box reports what a tick has
         always reported."""
-        self._report(self.rows[0])
+        self._report(self.line)
 
         self.rows[0].refresh_from_db()
-        self.assertEqual(self.rows[0].yielded, 4)
+        self.rows[1].refresh_from_db()
+        self.assertEqual([self.rows[0].yielded, self.rows[1].yielded], [4, 4])
 
     def test_a_cancelled_bath_moves_nothing_and_writes_no_log(self):
         production.cancel_row(self.rows[0])
@@ -8776,17 +8836,15 @@ class ProductionReturnTests(TestCase):
         are different states rather than two names for one.
         """
         production.cancel_row(self.rows[0])
-        self.client.post(self.url, {
-            "done": [str(self.rows[1].pk)],
-            f"yielded-{self.rows[1].pk}": "0",
-        })
+        line = production.lines_for_run(self.run)[0]
+        self._report(line, **{f"yielded-{line.key}": "0"})
 
         self.product.raw_product.refresh_from_db()
         self.assertEqual(self.product.raw_product.number_on_hand, 96)
 
     def test_an_accepted_row_cannot_then_be_cancelled(self):
         """Stock has moved; taking it back is an adjustment with a reason."""
-        self._report(self.rows[0])
+        self._report(self.line)
         self.rows[0].refresh_from_db()
 
         self.assertFalse(production.cancel_row(self.rows[0]))
@@ -8800,17 +8858,17 @@ class ProductionReturnTests(TestCase):
             "work_date": timezone.localdate().isoformat(),
         })
 
-        self._report(self.rows[0])
+        self._report(self.line)
 
         self.run.refresh_from_db()
         self.assertEqual(self.run.submitted_by, employee)
 
     def test_an_unknown_phone_still_reports(self):
-        self._report(self.rows[0])
+        self._report(self.line)
 
         self.run.refresh_from_db()
         self.assertIsNone(self.run.submitted_by)
-        self.assertEqual(InventoryLog.objects.count(), 1)
+        self.assertEqual(InventoryLog.objects.count(), 2)
 
     def test_the_fallback_page_lists_open_sheets(self):
         """For a cracked camera or a photocopied sheet."""
@@ -8827,19 +8885,133 @@ class ProductionReturnTests(TestCase):
         of a three-day session would have left the rest with no way back in
         short of typing the code.
         """
-        self._report(self.rows[0])
+        self._report(self.line)
 
         response = self.client.get(reverse("production_run_index"))
 
         self.assertContains(response, f"Run {self.run.pk}")
 
     def test_a_finished_sheet_leaves_the_fallback_list(self):
-        self._report(self.rows[0])
-        self._report(self.rows[1])
+        self._report(self.line)
+        self._report(self.other_line)
 
         response = self.client.get(reverse("production_run_index"))
 
         self.assertNotContains(response, f"Run {self.run.pk}")
+
+
+class IdenticalBathsAreOneLineTests(TestCase):
+    """Three baths of Artisan Cabernet is one group of fifteen, not three of five.
+
+    **The reporting sheet asks about a pile, and the pile is one pile.** A
+    box per bath is three marks for one answer, three chances to tick the
+    wrong line, and three lines a photograph has to resolve — while the crew
+    are standing in front of fifteen scarves that came out of one colour.
+
+    The blank is the other half of the identity. Artisan Peacock and Noble
+    Peacock came out of two different pots and stay two lines, which falls
+    out of grouping on `finished_product` — blank × colorway, the axis the
+    catalogue is already organised on.
+
+    What does *not* group: the work sheet, whose boxes hold a pot at a point
+    in a one-to-three day process, and the rows in the database, where a bath
+    stays a bath because that is where scrap is answered from.
+    """
+
+    def setUp(self):
+        self.run = ProductionRun.objects.create()
+        self.cabernet = make_recipe("Cabernet")
+        self.peacock = make_recipe("Peacock")
+        self.artisan_cabernet = make_bathable(
+            self.cabernet, "Artisan", on_hand=0, par=40, bath=5
+        )
+        self.artisan_peacock = make_bathable(
+            self.peacock, "Artisan Two", on_hand=0, par=40, bath=5
+        )
+        self.noble_peacock = make_bathable(
+            self.peacock, "Noble", on_hand=0, par=40, bath=5
+        )
+
+    def _row(self, product, order):
+        return ProductionRunRow.objects.create(
+            run=self.run, finished_product=product, order=order, quantity=5
+        )
+
+    def test_three_baths_of_one_colorway_are_one_line_of_fifteen(self):
+        for order in (1, 2, 3):
+            self._row(self.artisan_cabernet, order)
+
+        lines = production.lines_for_run(self.run)
+
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0].quantity, 15)
+        self.assertEqual(lines[0].baths, 3)
+
+    def test_the_blank_is_half_the_identity(self):
+        """**Artisan Peacock and Noble Peacock are not matches.** Same
+        colour, two different pots, two different things on the shelf."""
+        self._row(self.artisan_peacock, 1)
+        self._row(self.noble_peacock, 2)
+
+        lines = production.lines_for_run(self.run)
+
+        self.assertEqual(len(lines), 2)
+        self.assertEqual([line.quantity for line in lines], [5, 5])
+
+    def test_lines_keep_the_order_the_planner_chose(self):
+        """`plan_baths` already clumps a recipe's baths together — one mix
+        and one pot serve several loads — and the order between recipes is
+        the urgency it decided. Grouping must not re-sort that away."""
+        self._row(self.artisan_peacock, 1)
+        self._row(self.artisan_cabernet, 2)
+        self._row(self.artisan_cabernet, 3)
+        self._row(self.noble_peacock, 4)
+
+        lines = production.lines_for_run(self.run)
+
+        self.assertEqual(
+            [line.product for line in lines],
+            [self.artisan_peacock, self.artisan_cabernet, self.noble_peacock],
+        )
+        self.assertEqual([line.number for line in lines], [1, 2, 3])
+
+    def test_the_crew_page_shows_one_box_per_colorway(self):
+        for order in (1, 2, 3):
+            self._row(self.artisan_cabernet, order)
+        self._row(self.noble_peacock, 4)
+
+        html = self.client.get(
+            reverse("production_run", args=[self.run.token])
+        ).content.decode()
+
+        self.assertEqual(html.count('name="done"'), 2)
+        self.assertIn("15 × Cabernet", html)
+        self.assertIn("5 × Peacock", html)
+
+    def test_the_sheet_still_prints(self):
+        """A smoke test with a grouped line on it, because the reporting
+        page's geometry is derived from the same constants `sheetscan` reads
+        back along."""
+        for order in (1, 2, 3):
+            self._row(self.artisan_cabernet, order)
+
+        pdf = production.render_sheet(self.run, "http://example.test/x/")
+
+        self.assertTrue(pdf.startswith(b"%PDF"))
+
+    def test_one_code_per_line_not_per_bath(self):
+        """The position half of the code used to be what stopped a decoder
+        collapsing three identical symbols into one. Grouping removed the
+        collision at its source; the position stays as a check on being
+        pointed at the right sheet."""
+        for order in (1, 2, 3):
+            self._row(self.artisan_cabernet, order)
+        self._row(self.noble_peacock, 4)
+
+        codes = [production.line_code(l) for l in production.lines_for_run(self.run)]
+
+        self.assertEqual(len(codes), 2)
+        self.assertEqual(len(set(codes)), 2)
 
 
 class BoothSignedInTests(TestCase):
@@ -9606,31 +9778,38 @@ class SheetStaysReachableTests(TestCase):
 
     def setUp(self):
         self.client.force_login(User.objects.create_user("staff", password="pw"))
-        make_bathable(make_recipe("Stormy Sea"), "Stormy Silk", on_hand=0, par=80, bath=4)
+        # **Two colorways, one bath short each.** The sheet groups identical
+        # baths onto one line now, so two baths of one colorway would be a
+        # single tick and the run would close on the first submit — which is
+        # the opposite of what this class is about.
+        make_bathable(make_recipe("Stormy Sea"), "Stormy Silk", on_hand=0, par=4, bath=4)
+        make_bathable(make_recipe("Ember"), "Ember Silk", on_hand=0, par=4, bath=4)
         self.client.post(reverse("production_sheet_index"), {"baths": "2"})
         self.run = ProductionRun.objects.get()
+        self.lines = production.lines_for_run(self.run)
+        # Stated rather than assumed: if the planner ever stops giving one
+        # bath of each, this fails here instead of somewhere confusing.
+        self.assertEqual(len(self.lines), 2)
 
     def test_a_part_reported_sheet_is_still_reachable_by_its_code(self):
-        rows = list(self.run.rows.all())
         url = reverse("production_run", args=[self.run.token])
-        self.client.post(url, {"done": [str(rows[0].pk)]})
+        self.client.post(url, {"done": [str(self.lines[0].key)]})
 
         self.assertEqual(self.client.get(url).status_code, 200)
 
-        self.client.post(url, {"done": [str(rows[1].pk)]})
+        self.client.post(url, {"done": [str(self.lines[1].key)]})
         self.run.refresh_from_db()
         self.assertEqual(self.run.accepted_count, 2)
 
     def test_it_stays_on_the_working_list_until_every_bath_is_settled(self):
         """It used to drop off on the first tick, which read one answered
         bath as a finished session."""
-        rows = list(self.run.rows.all())
         url = reverse("production_run", args=[self.run.token])
-        self.client.post(url, {"done": [str(rows[0].pk)]})
+        self.client.post(url, {"done": [str(self.lines[0].key)]})
 
         self.assertTrue(production.open_runs().filter(pk=self.run.pk).exists())
 
-        self.client.post(url, {"done": [str(rows[1].pk)]})
+        self.client.post(url, {"done": [str(self.lines[1].key)]})
 
         self.assertFalse(production.open_runs().filter(pk=self.run.pk).exists())
 
@@ -9748,13 +9927,22 @@ class CrewCanSayTheRestIsNotComingTests(TestCase):
         self.product = make_bathable(
             self.recipe, "Stormy Silk", on_hand=0, par=20, bath=4
         )
+        self.other = make_bathable(
+            make_recipe("Ember"), "Ember Silk", on_hand=0, par=20, bath=4
+        )
         self.run = ProductionRun.objects.create()
+        # Two baths of one colorway and one of another: two lines, so
+        # banking the first still leaves something for "the rest".
         self.rows = [
             ProductionRunRow.objects.create(
                 run=self.run, finished_product=self.product, order=i, quantity=4
             )
-            for i in (1, 2, 3)
+            for i in (1, 2)
         ]
+        self.rows.append(ProductionRunRow.objects.create(
+            run=self.run, finished_product=self.other, order=3, quantity=4
+        ))
+        self.lines = production.lines_for_run(self.run)
         self.url = reverse("production_run", args=[self.run.token])
 
     def test_no_login_is_needed(self):
@@ -9781,7 +9969,8 @@ class CrewCanSayTheRestIsNotComingTests(TestCase):
         self.assertEqual(InventoryLog.objects.count(), 0)
 
     def test_the_rest_leaves_what_was_already_accepted_alone(self):
-        self.client.post(self.url, {"done": [str(self.rows[0].pk)]})
+        """One line banked — both its baths — and the other called off."""
+        self.client.post(self.url, {"done": [str(self.lines[0].key)]})
 
         self.client.post(self.url, {"cancel_rest": "1"})
 
@@ -9789,20 +9978,22 @@ class CrewCanSayTheRestIsNotComingTests(TestCase):
         self.run.refresh_from_db()
         self.assertTrue(self.rows[0].is_accepted)
         self.assertIsNone(self.rows[0].cancelled_at)
-        self.assertEqual(self.run.cancelled_count, 2)
+        self.assertEqual(self.run.accepted_count, 2)
+        self.assertEqual(self.run.cancelled_count, 1)
 
     def test_the_colorway_is_asked_for_again(self):
         """That is the difference from a bath that ran and was binned.
 
-        Par 20 against a bath of 4 needs five baths. Three are on this sheet
-        and so subtracted while it is live; calling them off hands all three
-        claims back.
+        Par 20 against a bath of 4 needs five baths of each colorway, so ten
+        in all. This sheet holds two of Stormy and one of Ember, and those
+        three are subtracted while it is live — leaving seven. Calling the
+        sheet off hands all three claims back.
         """
-        self.assertEqual(len(production.plan_baths(10)), 2)
+        self.assertEqual(len(production.plan_baths(10)), 7)
 
         self.client.post(self.url, {"cancel_rest": "1"})
 
-        self.assertEqual(len(production.plan_baths(10)), 5)
+        self.assertEqual(len(production.plan_baths(10)), 10)
 
     def test_a_cancel_never_banks_whatever_was_ticked(self):
         """A cancel that also accepted a half-entered row would move stock
@@ -11502,7 +11693,7 @@ class CancelAllButNeverAcceptAllTests(TestCase):
         self.assertEqual(self.run.cancelled_count, 0)
 
 
-def sheet_photo(rows, filled=(), ink=(190, 30, 40), token=None, scale=5.0,
+def sheet_photo(lines, filled=(), ink=(190, 30, 40), token=None, scale=5.0,
                 partial=()):
     """A synthetic photograph of a printed production sheet.
 
@@ -11552,7 +11743,7 @@ def sheet_photo(rows, filled=(), ink=(190, 30, 40), token=None, scale=5.0,
                 draw.rectangle([a[0], a[1], b[0] - 1, b[1] - 1], fill="black")
 
     y = page_h - production.PAGE_MARGIN - production.HEADER_HEIGHT
-    for index, row in enumerate(rows):
+    for index, line in enumerate(lines):
         baseline = y - production.ROW_HEIGHT + 12
 
         box_x = production.BOX_LEFT
@@ -11573,7 +11764,7 @@ def sheet_photo(rows, filled=(), ink=(190, 30, 40), token=None, scale=5.0,
                 fill=ink,
             )
 
-        symbol = production.barcode_symbol(production.row_code(row))
+        symbol = production.barcode_symbol(production.line_code(line))
         symbol.validated = symbol.validate()
         symbol.encoded = symbol.encode()
         left = (production.BOX_LEFT + production.BOX_SIZE
@@ -11622,10 +11813,13 @@ class SheetScanTests(TestCase):
             self.rows.append(ProductionRunRow.objects.create(
                 run=self.run, finished_product=product, order=i, quantity=4,
             ))
-        self.codes = [production.row_code(r) for r in self.rows]
+        # One bath each, so a line is a row here — which is what makes the
+        # grouping test below the interesting one.
+        self.lines = production.lines_for_run(self.run)
+        self.codes = [production.line_code(line) for line in self.lines]
 
     def _read(self, **kwargs):
-        return sheetscan.read_sheet(sheet_photo(self.rows, **kwargs))
+        return sheetscan.read_sheet(sheet_photo(self.lines, **kwargs))
 
     # --- the reading ------------------------------------------------------
 
@@ -11633,7 +11827,7 @@ class SheetScanTests(TestCase):
         scan = self._read()
 
         self.assertEqual(scan.error, "")
-        self.assertEqual(len(scan.marks), len(self.rows))
+        self.assertEqual(len(scan.marks), len(self.lines))
 
     def test_a_filled_box_reads_filled_and_a_blank_one_blank(self):
         scan = self._read(filled=(0, 2))
@@ -11681,14 +11875,14 @@ class SheetScanTests(TestCase):
         frame is the same reading."""
         for scale in (4.0, 7.0):
             scan = sheetscan.read_sheet(
-                sheet_photo(self.rows, filled=(0, 2), scale=scale),
+                sheet_photo(self.lines, filled=(0, 2), scale=scale),
             )
             self.assertEqual(len(scan.filled), 2, f"at scale {scale}")
 
     def test_rows_not_on_this_run_are_reported(self):
         """Expected to be empty forever; if it isn't, the photo is of some
         other sheet and the matched marks would land here unremarked."""
-        scan = sheetscan.read_sheet(sheet_photo(self.rows, filled=(0,)))
+        scan = sheetscan.read_sheet(sheet_photo(self.lines, filled=(0,)))
 
         self.assertEqual(sheetscan.strays(self.run, scan), [])
 
@@ -11702,7 +11896,7 @@ class SheetScanTests(TestCase):
 
     def test_the_qr_confirms_which_sheet_this_is(self):
         scan = sheetscan.read_sheet(
-            sheet_photo(self.rows, filled=(0,), token=self.run.token))
+            sheet_photo(self.lines, filled=(0,), token=self.run.token))
 
         self.assertEqual(scan.qr_token, self.run.token)
         self.assertEqual(len(scan.filled), 1)
@@ -11711,7 +11905,7 @@ class SheetScanTests(TestCase):
         """Two sheets printed days apart share most of their rows, so marks
         off the wrong one land on rows that look right."""
         scan = sheetscan.read_sheet(
-            sheet_photo(self.rows, filled=(0, 1, 2), token="SOMEOTHERTOKEN"))
+            sheet_photo(self.lines, filled=(0, 1, 2), token="SOMEOTHERTOKEN"))
 
         self.assertEqual(scan.qr_token, "SOMEOTHERTOKEN")
 
@@ -11724,29 +11918,42 @@ class SheetScanTests(TestCase):
 
         self.assertEqual(set(ticked), {self.rows[0].pk, self.rows[2].pk})
 
-    def test_repeated_baths_of_one_colorway_are_counted_separately(self):
-        """The case a sheet is *expected* to contain — `plan_baths` groups
-        repeated baths together on purpose. A decoder returns one result per
-        distinct symbol, so SKU-only barcodes would collapse these into one
-        and report a single bath where three were marked."""
+    def test_repeated_baths_of_one_colorway_are_one_mark(self):
+        """**The inversion of what this used to test, and the reason the
+        sheet changed.**
+
+        `plan_baths` clumps repeated baths of a colorway together, so a sheet
+        is *expected* to contain several of one SKU. That used to mean
+        several boxes, and the barcode carried the row's position because a
+        decoder returns one result per distinct symbol and SKU-only codes
+        would have collapsed them.
+
+        They are one line now: one box, one mark, one answer about one pile.
+        The position stays in the code as a check on being pointed at the
+        right sheet, but it no longer has anything to disambiguate.
+        """
         extra = ProductionRunRow.objects.create(
             run=self.run, finished_product=self.rows[0].finished_product,
             order=9, quantity=4,
         )
-        rows = self.rows + [extra]
-        scan = sheetscan.read_sheet(sheet_photo(rows, filled=(0, 4)))
+        lines = production.lines_for_run(self.run)
+        self.assertEqual(len(lines), 4)
+        self.assertEqual(lines[0].rows, [self.rows[0], extra])
+        self.assertEqual(lines[0].quantity, 8)
 
-        self.assertEqual(len(scan.filled), 2)
-        ticked = sheetscan.rows_to_tick(self.run, scan)
-        self.assertEqual(set(ticked), {self.rows[0].pk, extra.pk})
+        scan = sheetscan.read_sheet(sheet_photo(lines, filled=(0,)))
+
+        self.assertEqual(len(scan.filled), 1)
+        # One key back, and it banks both baths when it is submitted.
+        self.assertEqual(sheetscan.rows_to_tick(self.run, scan), [lines[0].key])
 
     def test_re_reading_the_same_photo_ticks_nothing_new(self):
         """Somebody re-uploads the original picture after it has been acted
         on. The marks for rows already recorded must not go looking for
         another row to land on."""
         scan = self._read(filled=(0, 1))
-        for pk in sheetscan.rows_to_tick(self.run, scan):
-            production.apply_row(ProductionRunRow.objects.get(pk=pk))
+        for key in sheetscan.rows_to_tick(self.run, scan):
+            production.apply_row(ProductionRunRow.objects.get(pk=key))
 
         again = self._read(filled=(0, 1))
 
@@ -11803,18 +12010,32 @@ class PhotoUploadFlowTests(TestCase):
 
     def setUp(self):
         self.run = ProductionRun.objects.create()
-        recipe = make_recipe("Stormy Sea", hexes=())
-        self.product = make_bathable(recipe, "Silk Infinity", on_hand=0, par=8, bath=4)
+        # Three colorways rather than three baths of one: the sheet prints a
+        # line per colorway now, and a photo that reads some lines and misses
+        # others is the failure this class is about.
         self.rows = [
             ProductionRunRow.objects.create(
-                run=self.run, finished_product=self.product, order=i, quantity=4)
-            for i in (1, 2, 3)
+                run=self.run,
+                finished_product=make_bathable(
+                    make_recipe(name, hexes=()), blank, on_hand=0, par=8, bath=4
+                ),
+                order=i,
+                quantity=4,
+            )
+            for i, (name, blank) in enumerate(
+                [("Stormy Sea", "Silk Infinity"),
+                 ("Aegean", "Silk Rectangle"),
+                 ("Ember", "Wool Wrap")],
+                start=1,
+            )
         ]
+        self.product = self.rows[0].finished_product
+        self.lines = production.lines_for_run(self.run)
         self.url = reverse("production_upload")
 
-    def _send(self, rows=None, **kwargs):
+    def _send(self, lines=None, **kwargs):
         from django.core.files.uploadedfile import SimpleUploadedFile
-        photo = sheet_photo(rows if rows is not None else self.rows, **kwargs)
+        photo = sheet_photo(lines if lines is not None else self.lines, **kwargs)
         return self.client.post(self.url, {
             "sheet": SimpleUploadedFile("s.png", photo, content_type="image/png"),
         })
@@ -11891,7 +12112,7 @@ class PhotoUploadFlowTests(TestCase):
 
     def test_the_run_page_reports_what_the_photo_missed(self):
         """The everyday failure is a soft photo, and it fails partially."""
-        response = self._send(rows=self.rows[:2], filled=(0,), token=self.run.token)
+        response = self._send(lines=self.lines[:2], filled=(0,), token=self.run.token)
 
         page = self.client.get(response["Location"])
 
