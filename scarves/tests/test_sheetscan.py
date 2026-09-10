@@ -590,6 +590,56 @@ def sheet_photo(lines, filled=(), ink=(190, 30, 40), token=None, scale=5.0,
     out = BytesIO()
     image.save(out, "PNG")
     return out.getvalue()
+class TokenInTests(TestCase):
+    """Which QR in a photograph is allowed to name a run.
+
+    `_read` keeps the *first* QR that yields a token, so a code this refuses
+    to read is a code that cannot win. That is the whole guard: a stray URL
+    in frame used to come back as a token and name a run that doesn't exist,
+    which is not a failure the reader retries — it is one it reports as an
+    answer.
+    """
+
+    def test_a_run_url_gives_its_token(self):
+        url = "https://shop.test" + reverse(
+            "production_run", args=["07-brisk-otter"]
+        )
+        self.assertEqual(sheetscan.token_in(url), "07-brisk-otter")
+
+    def test_a_bare_path_works_too(self):
+        """Whatever the QR held, decoded — it is an absolute URL in practice,
+        but the reader must not depend on the host being there."""
+        self.assertEqual(
+            sheetscan.token_in(reverse("production_run", args=["41-idle-teal"])),
+            "41-idle-teal",
+        )
+
+    def test_the_upload_page_is_not_a_run(self):
+        """The collision the URLconf already ordered around, and the one the
+        collection page's second QR would otherwise walk into: this used to
+        come back as the token `upload`."""
+        url = "https://shop.test" + reverse("production_upload")
+        self.assertIsNone(sheetscan.token_in(url))
+
+    def test_an_unrelated_page_is_not_a_run(self):
+        """Anything else in the shot — another sheet, a phone screen, a label
+        — used to come back as whatever its URL ended in."""
+        url = "https://shop.test" + reverse("index")
+        self.assertIsNone(sheetscan.token_in(url))
+
+    def test_a_url_this_app_has_never_heard_of_is_not_a_run(self):
+        """`mysite` ends in a catch-all, so resolution *succeeds* for an
+        unknown path. The check has to be on the route's name, and this is
+        what pins that it is."""
+        self.assertIsNone(
+            sheetscan.token_in("https://example.test/anything/at/all/")
+        )
+
+    def test_rubbish_is_not_a_run(self):
+        for value in ("", None, "not a url", "/", "12345"):
+            self.assertIsNone(sheetscan.token_in(value), value)
+
+
 class SheetScanTests(TestCase):
     """Reading tick boxes off a photo of a sheet.
 

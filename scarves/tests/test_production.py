@@ -61,6 +61,7 @@ from ..models import (
 )
 from .helpers import (
     _pdf_text,
+    _pdf_text_items,
     make_bathable,
     make_employee,
     make_recipe,
@@ -1327,7 +1328,9 @@ class IdenticalBathsAreOneLineTests(TestCase):
         for order in (1, 2, 3):
             self._row(self.artisan_cabernet, order)
 
-        pdf = production.render_sheet(self.run, "http://example.test/x/")
+        pdf = production.render_sheet(
+            self.run, "http://example.test/x/", "http://example.test/upload/"
+        )
 
         self.assertTrue(pdf.startswith(b"%PDF"))
 
@@ -1636,6 +1639,120 @@ class SheetStaysReachableTests(TestCase):
         self.client.post(url, {"done": [str(self.lines[1].key)]})
 
         self.assertFalse(production.open_runs().filter(pk=self.run.pk).exists())
+class UploadCodeOnPaperTests(TestCase):
+    """Where a photo of the finished sheet goes, printed on the paper.
+
+    Nothing said. The reporting sheet's QR opens that run, and the upload page
+    was reachable by knowing the URL or having bookmarked it — a step that has
+    to be remembered, which is the one thing this app assumes will not happen.
+    """
+
+    def setUp(self):
+        self.product = make_bathable(
+            make_recipe("Stormy Sea"), "Stormy Silk", on_hand=0, par=8, bath=4
+        )
+        self.run = ProductionRun.objects.create()
+        ProductionRunRow.objects.create(
+            run=self.run, finished_product=self.product, order=1, quantity=4
+        )
+        self.upload = "https://x.test/scarves/secret/production/upload/"
+
+    def _pdf(self):
+        return production.render_sheet(
+            self.run, "https://x.test/report/", self.upload
+        )
+
+    def _text(self):
+        return _pdf_text(self._pdf())
+
+    def test_the_paper_says_where_a_photo_goes(self):
+        text = self._text()
+        self.assertIn("SEND A PHOTO", text)
+        self.assertIn(self.upload, text)
+
+    def test_the_url_is_printed_as_well_as_encoded(self):
+        """The QR is the convenience and the paper is the record — a dead
+        phone shouldn't be why a session goes unreported. Same bargain the
+        run's own URL and printed code make."""
+        self.assertIn(self.upload, self._text())
+
+    def test_it_is_on_the_collection_page_and_not_on_the_photographed_one(self):
+        """The load-bearing placement.
+
+        The reporting sheet is the page that gets photographed, so a second
+        code there lands in every shot and `_read` keeps the first QR that
+        yields a token — which of the two names the run would be a coin flip.
+        `token_in` refuses anything that isn't the run route now, but the
+        collection page is never photographed at all, so here the question
+        does not arise. Structural beats guarded.
+        """
+        text = self._text()
+        # The working copy sits between the collection page and the reporting
+        # sheet, so its banner splits the print into before and after.
+        #
+        # Asserted on the footer's own heading rather than on the label under
+        # the code: the reporting sheet names that label on purpose, to say
+        # where the code is, and matching on it would find the pointer and
+        # report it as the thing being pointed at.
+        before, after = text.split("WORKING COPY", 1)
+        self.assertIn("WHEN THE SESSION IS DONE", before)
+        self.assertNotIn("WHEN THE SESSION IS DONE", after)
+        self.assertNotIn(self.upload, after)
+        self.assertEqual(text.count(self.upload), 1)
+
+    def test_the_working_copy_still_carries_nothing_scannable(self):
+        """The absence that stops a marked-up working copy being read as a
+        report of baths still on a drying line. An upload code names no run,
+        but a page that says 'do not photograph' should not also offer a
+        camera."""
+        work = self._text().split("WORKING COPY", 1)[1].split("Production sheet")[0]
+        self.assertNotIn("WHEN THE SESSION IS DONE", work)
+        self.assertNotIn(self.upload, work)
+
+    def test_the_run_code_now_says_what_it_opens(self):
+        """Two unlabelled QRs on one page is a choice with consequences and
+        nothing to make it by."""
+        self.assertIn("OPEN THIS SHEET", self._text())
+
+    def test_the_reporting_sheet_says_where_the_other_code_is(self):
+        """Removing the guesswork without moving the code: the sheet in her
+        hand is the reporting sheet, so that is where the pointer belongs."""
+        after = self._text().split("WORKING COPY", 1)[1]
+        self.assertIn("collection page", after)
+
+    def test_the_footer_sits_at_the_foot(self):
+        # Exactly the label under the code, not the reporting sheet's line
+        # naming it — which sits in the header, near the top of its own page.
+        low = [
+            (x, y, text) for x, y, text in _pdf_text_items(self._pdf())
+            if text == "SEND A PHOTO"
+        ]
+        self.assertTrue(low)
+        for _x, y, _text in low:
+            self.assertLess(y, production.PAGE_MARGIN + production.FOOTER_HEIGHT)
+
+    def test_a_long_list_spills_to_a_second_page_rather_than_over_the_code(self):
+        """The reserve is what makes the footer unconditional. Without it a
+        dye list long enough to reach the bottom prints straight through it,
+        and the failure is a page that still looks complete."""
+        big = make_recipe("Everything", hexes=tuple(
+            f"#{n:02x}33cc" for n in range(40)
+        ))
+        product = make_bathable(big, "Everything Silk", on_hand=0, par=8, bath=4)
+        ProductionRunRow.objects.create(
+            run=self.run, finished_product=product, order=2, quantity=4
+        )
+
+        text = _pdf_text(self._pdf())
+
+        # Every dye still listed, the code still printed exactly once, and the
+        # collection page drawn twice — which is the spill.
+        for n in range(40):
+            self.assertIn(f"Everything-dye-{n + 1}", text)
+        self.assertEqual(text.count(self.upload), 1)
+        self.assertGreaterEqual(text.count("Collect these before you start"), 2)
+
+
 class WorkSheetAndReportingSheetTests(TestCase):
     """Three documents in one print, in the order the job happens.
 
@@ -1659,7 +1776,9 @@ class WorkSheetAndReportingSheetTests(TestCase):
         ]
 
     def _pdf(self):
-        return production.render_sheet(self.run, "https://x.test/report/")
+        return production.render_sheet(
+            self.run, "https://x.test/report/", "https://x.test/upload/"
+        )
 
     def _text(self):
         return _pdf_text(self._pdf())
@@ -2992,7 +3111,9 @@ class BlankCollectionTests(TestCase):
         RawProduct.objects.filter(pk=raw.pk).update(number_on_hand=2)
         run = ProductionRun.objects.get(pk=self.run.pk)
 
-        pdf = production.render_sheet(run, "https://example.test/x/")
+        pdf = production.render_sheet(
+            run, "https://example.test/x/", "https://example.test/upload/"
+        )
 
         self.assertTrue(pdf.startswith(b"%PDF"))
 

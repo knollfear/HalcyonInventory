@@ -5032,7 +5032,14 @@ def production_run_cancel_remaining(request, pk):
 @login_required
 def production_sheet_pdf(request, pk):
     run = get_object_or_404(ProductionRun, pk=pk)
-    pdf = production.render_sheet(run, _crew_run_url(request, run))
+    pdf = production.render_sheet(
+        run,
+        _crew_run_url(request, run),
+        # Absolute, and built off this request rather than a setting, for the
+        # same reason the run's URL is: whatever host the sheet was printed
+        # from is the host the phone scanning it can reach.
+        request.build_absolute_uri(reverse("production_upload")),
+    )
     response = HttpResponse(pdf, content_type="application/pdf")
     response["Content-Disposition"] = (
         f'inline; filename="production-run-{run.pk}.pdf"'

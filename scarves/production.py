@@ -93,6 +93,18 @@ HEADER_HEIGHT = 120
 ROW_HEIGHT = 46
 QR_SIZE = 74
 
+#: Reserved at the foot of the *first* collection page for the upload code.
+#: Has to clear the rule, the QR, its label and the URL under it. The blanks
+#: and dyes flow above it; if they run past it they start a fresh page, which
+#: carries no footer and gets the full height back.
+FOOTER_HEIGHT = 108
+#: The second QR is smaller than the header's on purpose. It is scanned off a
+#: page held in the hand rather than read out of a photograph, so it needs to
+#: be findable rather than robust to a camera at arm's length — and at the
+#: header's size two codes on one page start to look like a choice with
+#: consequences.
+UPLOAD_QR_SIZE = 62
+
 #: The tick box. Deliberately large and asking to be filled in rather than
 #: ticked: a filled box is an ink-density question with an obvious answer,
 #: where a small tick that overruns its box is the sort of thing that needs
@@ -134,6 +146,7 @@ BATH_INSTRUCTIONS = (
     ("Not when it comes out of the pot — the box means it is counted in stock.", False),
     ("Scan the code, then tap the boxes or photograph this page.", True),
     ("Include the code above in a photo so it can check which sheet.", False),
+    ("To send a photo: scan SEND A PHOTO on the collection page.", False),
 )
 DYE_INSTRUCTIONS = (
     ("Collect these before you start — the baths are on the next page.", False),
@@ -1330,7 +1343,7 @@ def bars_width(value):
     return symbol.width - symbol.lquiet - symbol.rquiet
 
 
-def render_sheet(run, return_url) -> bytes:
+def render_sheet(run, return_url, upload_url) -> bytes:
     """The sheet, as PDF bytes: collect, then work, then report.
 
     **Three documents in one print, in the order the job happens.** The
@@ -1392,7 +1405,7 @@ def render_sheet(run, return_url) -> bytes:
     # one walk to the shelf, then the session. It is its own page rather than
     # a block above the rows so a long list can't squeeze them, and so it can
     # be carried to the shelf on its own.
-    _draw_collection_page(pdf, run, return_url, rows, page_w, page_h)
+    _draw_collection_page(pdf, run, return_url, upload_url, rows, page_w, page_h)
     _draw_pages(pdf, run, return_url, rows, page_w, page_h, per_page,
                 instructions=WORK_INSTRUCTIONS, draw=_draw_work_row, qr=False)
     _draw_pages(pdf, run, return_url, lines, page_w, page_h, per_page,
@@ -1424,11 +1437,28 @@ def _draw_pages(pdf, run, return_url, rows, page_w, page_h, per_page,
         pdf.showPage()
 
 
-def _draw_collection_page(pdf, run, return_url, rows, page_w, page_h):
+def _draw_collection_page(pdf, run, return_url, upload_url, rows, page_w,
+                          page_h):
     """The shelf list: the blanks and the dyes this run needs.
 
     Both halves of one errand, in the order the work happens — you carry
     scarves to the dye room, and you carry dye to them.
+
+    **It also carries the upload code, and this is the page that can.**
+    Nothing on paper said where a photo of a marked sheet goes: the reporting
+    sheet's QR opens that run, and the upload page was reachable by knowing
+    the URL or having bookmarked it — a step that has to be remembered, which
+    is the one thing this app takes as given that nobody will do.
+
+    The obvious home for it was the reporting sheet, and that is the one page
+    it must not go on. That sheet is the one photographed, so a second code
+    lands in every shot: `_read` keeps the first QR that yields a token, so
+    which of the two names the run becomes a coin flip. `token_in` now
+    refuses anything that isn't the run route, which closes that — but the
+    collection page is never photographed at all, so here the question does
+    not arise, and structural beats guarded. It is also where the paper
+    already is: this is the sheet that goes to the shelf and stays in the dye
+    room, so it is in the room when the session ends.
     """
     plan = dye_plan([row.finished_product.recipe for row in rows])
     blanks = blank_demand(rows)
@@ -1436,17 +1466,29 @@ def _draw_collection_page(pdf, run, return_url, rows, page_w, page_h):
     _draw_header(pdf, run, return_url, page_w, page_h,
                  page_no=None, page_count=None,
                  instructions=DYE_INSTRUCTIONS)
+    # Drawn now, at the foot of the page, rather than after the lists — a
+    # canvas takes marks anywhere on the page it is on, and doing it here is
+    # what makes the footer unconditional. Drawn at the end it would depend
+    # on where the dye list happened to stop, and a long list would leave the
+    # page it belongs on without it.
+    _draw_upload_footer(pdf, upload_url, page_w)
 
     y = page_h - PAGE_MARGIN - HEADER_HEIGHT
 
+    # The floor the lists stop at. It starts above the footer and drops to the
+    # ordinary margin as soon as a second page starts, because only the first
+    # collection page carries one.
+    floor = [PAGE_MARGIN + FOOTER_HEIGHT]
+
     def carry_on(cursor):
         """Start a fresh page when the current one runs out."""
-        if cursor >= PAGE_MARGIN + 20:
+        if cursor >= floor[0] + 20:
             return cursor
         pdf.showPage()
         _draw_header(pdf, run, return_url, page_w, page_h,
                      page_no=None, page_count=None,
                      instructions=DYE_INSTRUCTIONS)
+        floor[0] = PAGE_MARGIN
         return page_h - PAGE_MARGIN - HEADER_HEIGHT
 
     # --- blanks ------------------------------------------------------------
@@ -1606,6 +1648,60 @@ def _draw_header(pdf, run, return_url, page_w, page_h, page_no, page_count,
                         f"CODE: {run.token}")
     pdf.setFont("Helvetica", 7)
     pdf.drawRightString(page_w - PAGE_MARGIN, top - QR_SIZE - 24, return_url)
+    # What this code *does*, said on every page that carries it. It was
+    # unlabelled while it was the only code in the print; the collection page
+    # now carries a second one, and two unlabelled QRs on one sheet is a
+    # choice with consequences and nothing to make it by.
+    pdf.setFont("Helvetica-Bold", 7)
+    pdf.drawRightString(page_w - PAGE_MARGIN, top - QR_SIZE - 34,
+                        "OPEN THIS SHEET")
+
+
+def _draw_upload_footer(pdf, upload_url, page_w):
+    """Where a photo of the finished sheet goes, on paper.
+
+    The upload page is camera-first by design — the photo is what names the
+    sheet, so there is nothing to navigate to before taking it — and that
+    only pays off if you can get to it without already knowing the address.
+    Bookmarking it was the answer and a bookmark is a step that has to be
+    remembered, which this app takes as a step that will not happen.
+
+    The URL is printed under the code for the same reason the run's is: the
+    QR is the convenience and the paper is the record, and a dead phone
+    should not be the reason a session goes unreported.
+    """
+    from reportlab.graphics import renderPDF
+    from reportlab.graphics.barcode import qr as qr_module
+    from reportlab.graphics.shapes import Drawing
+
+    band = PAGE_MARGIN + FOOTER_HEIGHT
+
+    pdf.setLineWidth(0.5)
+    pdf.line(PAGE_MARGIN, band - 8, page_w - PAGE_MARGIN, band - 8)
+
+    pdf.setFont("Helvetica-Bold", 12)
+    pdf.drawString(PAGE_MARGIN, band - 28, "WHEN THE SESSION IS DONE")
+    pdf.setFont("Helvetica", 10)
+    pdf.drawString(PAGE_MARGIN, band - 44,
+                   "Scan to send a photo of the marked reporting sheet.")
+    pdf.drawString(PAGE_MARGIN, band - 58,
+                   "It reads the boxes and ticks them for you — check them "
+                   "and submit.")
+    pdf.setFont("Helvetica", 7)
+    pdf.drawString(PAGE_MARGIN, band - 76, upload_url)
+
+    widget = qr_module.QrCodeWidget(upload_url, barLevel="M")
+    bounds = widget.getBounds()
+    drawing = Drawing(UPLOAD_QR_SIZE, UPLOAD_QR_SIZE, transform=[
+        UPLOAD_QR_SIZE / (bounds[2] - bounds[0]), 0, 0,
+        UPLOAD_QR_SIZE / (bounds[3] - bounds[1]), 0, 0,
+    ])
+    drawing.add(widget)
+    renderPDF.draw(drawing, pdf,
+                   page_w - PAGE_MARGIN - UPLOAD_QR_SIZE, PAGE_MARGIN + 12)
+
+    pdf.setFont("Helvetica-Bold", 7)
+    pdf.drawRightString(page_w - PAGE_MARGIN, PAGE_MARGIN + 2, "SEND A PHOTO")
 
 
 def _draw_work_row(pdf, row, number, y, page_w):

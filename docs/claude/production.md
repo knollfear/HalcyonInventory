@@ -208,6 +208,37 @@ something you are holding, so a PIN would be friction with nothing behind it.
 **The QR on the paper is the permanent door**, which is what makes every list
 of sheets in the app pure UI — losing one from a list costs nothing.
 
+### Two codes in the print, and which page each is allowed on
+
+The run code (`OPEN THIS SHEET`, in the header of the collection page and the
+reporting sheet) and the upload code (`SEND A PHOTO`, in the collection page's
+footer). They do different jobs and they are labelled, because two unlabelled
+QRs on one sheet is a choice with consequences and nothing to make it by.
+
+**The upload code is on the collection page precisely because that page is
+never photographed.** The reporting sheet is the obvious home for it — it is
+the page in her hand when the session ends — and it is the one page it must
+not go on: that sheet is what gets photographed, so a second code lands in
+every shot, and `_read` keeps the **first** QR that yields a token. Which of
+the two named the run would be a coin flip, and the losing outcome is not a
+retry — it is a sheet the app confidently cannot find. The collection page is
+also where the paper already is: it goes to the shelf and stays in the dye
+room for the session.
+
+The reporting sheet says in its instructions where the other code is, since
+moving a door without a sign leaves somebody hunting the page that used to
+have it.
+
+**`sheetscan.token_in` was the latent half of that, and is fixed regardless.**
+It took the last non-empty segment of *any* URL, so
+`/secret/production/upload/` read as the token `upload` and a shipping label
+or a phone screen at the edge of a shot read as whatever its URL ended in — a
+stray code did not merely fail, it **won**. It resolves against the URLconf
+now and accepts only the `production_run` route, which is also the guard the
+URLconf itself already had (`upload/` is registered ahead of the token route
+for this exact collision). Note that resolution does not *fail* for an unknown
+path — `mysite` ends in a catch-all — so the check is on the route's name.
+
 `quantity` is frozen when the sheet prints rather than read back off the raw
 product. The paper says `x4` and the paper is what somebody worked from; if
 the bath size is edited next week, that row still has to mean what it said.
@@ -298,6 +329,8 @@ close's tag search makes, for the same reason.
 **One print, three documents, in the order the job happens:**
 
 1. **Collection page** — the blanks, then the dyes. One walk to the shelf.
+   It also carries the **upload code** in a footer; see *Two codes in the
+   print* below for why it is on this page and not on the one that comes back.
 2. **Work sheet** — `WORK_BOXES` (4) blank boxes per bath, with a ruled line
    over each column. This lives in the dye room for the whole session.
 3. **Reporting sheet** — name, expected, a ruled space for the actual, and
@@ -783,8 +816,15 @@ the reading.
 is what says which sheet this is, so there is nothing to navigate to before
 taking it. That is what makes the QR do real work — it isn't a second
 presentation of something the address bar already proved, it is the only
-thing that names the sheet. Bookmark the upload page and the whole job is:
-mark the paper, open it, shoot.
+thing that names the sheet. The whole job is: mark the paper, scan the
+collection page's SEND A PHOTO code, shoot.
+
+**That code is on the paper because a bookmark is a step to be remembered.**
+The page was reachable by knowing the URL or having bookmarked it, and nothing
+in the print said so — the reporting sheet's QR opens that run, which is a
+different thing and looks like the only thing. A camera-first page only pays
+off if you can get to it without already knowing the address, so the address
+is printed on the sheet that is already in the room.
 
 Arriving at a run's URL first and tapping the boxes is the manual path. It
 still works and is the fallback, but it means answering by hand the question

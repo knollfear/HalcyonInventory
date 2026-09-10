@@ -105,13 +105,42 @@ class Mark:
 def token_in(text):
     """The run token out of a sheet's return URL, or None.
 
-    The QR holds an absolute URL ending `/secret/production/<token>/`, so the
-    token is its last non-empty segment.
+    **It has to be the run route and nothing else.** This used to take the
+    last non-empty segment of any URL at all, which is safe exactly as long as
+    the only code in frame is the one in the sheet's own header — and wrong
+    the moment anything else decodes. `/secret/production/upload/` came back
+    as the token `upload`; a URL off a shipping label, a second sheet at the
+    edge of the shot or a phone screen on the bench came back as whatever it
+    happened to end in. And a stray code doesn't merely fail: `_read` keeps
+    the *first* QR that yields anything, so it wins, and names a run that
+    does not exist.
+
+    The URLconf already knew about the collision — `upload/` is registered
+    ahead of the token route for precisely this reason. Resolving against it
+    rather than re-reading the path by hand is what stops the two drifting,
+    and rejects every foreign URL by construction.
+
+    Note that `resolve` does not raise for an unknown path here: `mysite`
+    ends in a catch-all, so an unmatched URL matches `lost_and_found`
+    instead. The check is therefore on the route's *name*, never on whether
+    resolution succeeded.
     """
     if not text or "/" not in text:
         return None
-    parts = [part for part in str(text).split("/") if part]
-    return parts[-1] if parts else None
+    from urllib.parse import urlsplit
+
+    from django.urls import resolve
+
+    try:
+        match = resolve(urlsplit(str(text)).path)
+    except Exception:
+        # An unparseable or relative path. Nothing decodable off a sheet
+        # looks like this, and a reading that can't be trusted is one the
+        # upload page asks for the printed code instead.
+        return None
+    if match.url_name != "production_run":
+        return None
+    return match.kwargs.get("token") or None
 
 
 #: Where a logged photograph goes, and how long it lives there.
