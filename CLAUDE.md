@@ -392,6 +392,17 @@ the Sunday close, the restock walk, bulk adjustments, all absolute counts. Par
 had nothing, and par was never dialled in. **The number that looked least like
 an estimate was the one most in need of a human.**
 
+**Par now has a door of its own**, `?par=1` on a recipe page — see *Editing
+par* in `docs/claude/recipes.md`. It is the smallest possible fix and it is
+the one that was missing: a box per blank, absolute like every other
+correction here, and nothing anywhere proposing what to type in it. Note what
+it deliberately is *not*. It does not compute a par from a sales rate, from
+`display_slots`, or from anything else — a derived par would put capacity
+back on the path to production, which is the coupling half this file exists
+to keep broken. What sold this season prints beside the box because a
+decision you cannot check is not a decision; what to do about it is the
+person's.
+
 Two things follow, and both are cheap:
 
 - **Every derived answer needs somewhere to disagree with it.** The production

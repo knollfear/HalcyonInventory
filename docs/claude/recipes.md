@@ -456,6 +456,75 @@ reload, and the sendable-link property is the reason the filter is in the
 query string at all. The chips keep their `href`, so with the script blocked
 they are the ordinary links they always were.
 
+### Editing par: a mode, and the only place par has ever been editable
+
+`?par=1` turns the finished-products table from the production form into a par
+form. Par is the number this app treats as a fact and never was one — it reads
+across the catalogue as a uniform remnant rather than as forty decisions about
+demand, which is why `private/production-needed/` orders on sales instead and
+says so on the page. Until this the only ways to change one were the Django
+admin and a bulk action that writes **every** colorway on a blank at once. The
+number most in need of a person had the fewest doors.
+
+**It is a mode, and the showcase's "editing is not a mode" does not apply.**
+That ruling was about render cost: there, opening a row *is* the job, and the
+mode was charging a page reload for permission to do it. Here the two jobs are
+different jobs, and the reason for the mode is structural rather than
+performance. Bath boxes and par boxes would live in the same rows, so one
+table carrying both means a par typed in and then abandoned by pressing
+**Record production** — written nowhere, said nothing about. That is the
+back-date disclosure again: one table, two meanings, and the losing one
+silent. In par mode the bath boxes are not rendered and the form's action is
+the par endpoint. One mode, one form, one meaning per button.
+
+The usual rules, each already made somewhere else in here:
+
+- **Absolute, never a delta.** "Par is 12" heals whatever the row said before;
+  "add four" only works if it was right. Same reason `set_on_hand` and
+  `record_count` take totals.
+- **A blank box is refused, not read as 0.** `0` is a real answer — it is how
+  you say there is no par, and it is what `production.candidates()` filters on
+  — so guessing at an empty field would drop a product out of planning
+  silently. Same bargain `parse_card_date` makes with a date it cannot read.
+- **One bad box changes nothing.** The whole form is read before any of it is
+  written, exactly as `record_recipe_production` beside it does, so an
+  unreadable value cannot leave half a colorway retuned.
+- **Writing par moves no stock and writes no `InventoryLog` row**, and posting
+  `baths_` to the par endpoint or `par_` to the production one does nothing.
+  Both directions are pinned, because the guarantee is what lets the two forms
+  share a table.
+- **The message names each change and where it came from** — *Sage 8 → 12*.
+  Nothing records a par change, so that message is the only confirmation that
+  the row which moved is the row you meant.
+
+**Two read-only facts ride beside the box and neither proposes a value.**
+
+`sold_this_season` is `production.sold_per_blank()` — the same figure
+`private/production-needed/` ranks on, not a second answer to "what sold". It
+is there because advice you cannot inspect is a decision in disguise, and here
+the *person* is the decider: par with nothing beside it is a box you fill in
+from memory. It comes off the till ledger while the lifetime figures at the
+top of the page come off the stock log, so the page **says which is which**
+under the table. Two legitimate answers to two different questions read as one
+page disagreeing with itself unless each names its question.
+
+The other is par restated in baths — *= 2.0 baths of 5*. That is the unit a
+dye pot is actually spent in: across the live catalogue every distinct
+`(par, bath size)` pair lands between 1.0 and 2.0 baths, so par is a MOQ floor
+with a bath of headroom rather than days of cover, and a par landing mid-bath
+claims a precision with nowhere to put it. **It is the number in the box in
+another unit, never a recommendation about it.** A small script keeps it
+following the box as you type — left alone it would report the *stored* par
+under a live one, which is worse than printing nothing. Server-rendered on
+load, so with the script blocked it is correct and simply doesn't move.
+
+**Nothing here suggests a par, and that is load-bearing rather than an
+omission.** A par derived from display capacity is the failure *Display
+capacity is not demand* exists to prevent; a par derived from a sales rate is
+unrepresentable at this bath size anyway (`docs/claude/production.md` has the
+arithmetic — it crosses a bath boundary for 4 products out of 333). Par moves
+because a person decided it should.
+
 **One context builder, `_recipe_history()`, serves both renderers.** Two would
 drift, and the drift shows as a swapped-in view disagreeing with the one a
 refresh produces — which reads as the app being wrong about the numbers rather

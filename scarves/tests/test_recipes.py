@@ -1235,6 +1235,273 @@ class RecordRecipeProductionTests(TestCase):
         self.assertEqual(context["produced"], 10)
         self.assertEqual(context["on_hand"], 10)
         self.assertEqual(len(context["logs"]), 1)
+
+
+class RecipeParEditTests(TestCase):
+    """Setting par from the recipe page.
+
+    Par is the number this app treats as a fact and never was one: it reads
+    across the catalogue as a uniform remnant, `private/production-needed/`
+    orders on sales instead of it and says so, and until now the only ways to
+    change one were the Django admin and a bulk action that writes every
+    colorway on a blank at once. These pin the two things that keep it a
+    decision rather than a derivation — that nothing here proposes a value,
+    and that the button which writes par cannot also move stock.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("par", "par@example.test", "pw")
+        self.client.force_login(self.user)
+        self.recipe = make_recipe("Sage")
+        self.category, _ = RawProductCategory.objects.get_or_create(name="Yarn")
+        self.base = RawProduct.objects.create(
+            name="Heavenly - Angel", category=self.category, price="5.00",
+            number_per_dye_bath=5, number_on_hand=100,
+        )
+        self.product = FinishedProduct.objects.create(
+            name="Heavenly - Angel - Sage", raw_product=self.base,
+            recipe=self.recipe, price="30.00", number_on_hand=3, par=8,
+        )
+        self.url = reverse("recipe_par_save", args=[self.recipe.pk])
+        self.page = reverse("recipe_detail", args=[self.recipe.pk])
+
+    def _product(self, name, par=8, on_hand=0, per_bath=5, active=True):
+        base = RawProduct.objects.create(
+            name=f"{name} base", category=self.category, price="5.00",
+            number_per_dye_bath=per_bath, number_on_hand=100,
+        )
+        return FinishedProduct.objects.create(
+            name=name, raw_product=base, recipe=self.recipe, price="30.00",
+            number_on_hand=on_hand, par=par, is_active=active,
+        )
+
+    def test_it_requires_login(self):
+        self.client.logout()
+        response = self.client.post(self.url, {})
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/login", response["Location"])
+
+    def test_it_refuses_a_get(self):
+        self.assertEqual(self.client.get(self.url).status_code, 405)
+
+    def test_it_writes_the_number_that_was_typed(self):
+        self.client.post(self.url, {f"par_{self.product.pk}": "12"})
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.par, 12)
+
+    def test_the_value_is_absolute_not_a_delta(self):
+        """Every correction in this app is a total, for the reason
+        `set_on_hand` and `record_count` are: "par is 12" heals whatever the
+        row said before, where "add four" only works if it was already
+        right."""
+        self.client.post(self.url, {f"par_{self.product.pk}": "4"})
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.par, 4)
+
+    def test_a_whole_colorway_is_one_submit(self):
+        other = self._product("Homespun - Single & Stunning - Sage", par=8)
+
+        self.client.post(self.url, {
+            f"par_{self.product.pk}": "12",
+            f"par_{other.pk}": "0",
+        })
+
+        self.product.refresh_from_db()
+        other.refresh_from_db()
+        self.assertEqual(self.product.par, 12)
+        self.assertEqual(other.par, 0)
+
+    def test_zero_is_a_real_answer_and_means_no_par(self):
+        """`production.candidates()` filters on `par__gt=0`, so 0 is how you
+        take a product out of planning — not a rejected value."""
+        self.client.post(self.url, {f"par_{self.product.pk}": "0"})
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.par, 0)
+
+    def test_a_bad_box_changes_nothing_at_all(self):
+        """Read the whole form before writing any of it, the same as the
+        production form beside it — one unreadable box must not leave half a
+        colorway retuned."""
+        other = self._product("Homespun - Single & Stunning - Sage", par=8)
+
+        response = self.client.post(self.url, {
+            f"par_{self.product.pk}": "12",
+            f"par_{other.pk}": "lots",
+        }, follow=True)
+
+        self.product.refresh_from_db()
+        other.refresh_from_db()
+        self.assertEqual(self.product.par, 8)
+        self.assertEqual(other.par, 8)
+        self.assertContains(response, "isn&#x27;t a par")
+
+    def test_an_empty_box_is_refused_rather_than_read_as_zero(self):
+        """Reading blank as 0 would silently drop the product out of
+        production planning — the same class of mistake as guessing at a
+        month-only date."""
+        self.client.post(self.url, {f"par_{self.product.pk}": ""})
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.par, 8)
+
+    def test_a_negative_is_refused(self):
+        self.client.post(self.url, {f"par_{self.product.pk}": "-2"})
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.par, 8)
+
+    def test_it_names_what_moved_and_where_from(self):
+        """A par change is rare, deliberate, and recorded nowhere, so the
+        message is the only confirmation that the row that moved is the row
+        you meant."""
+        response = self.client.post(
+            self.url, {f"par_{self.product.pk}": "12"}, follow=True
+        )
+
+        self.assertContains(response, "Heavenly - Angel - Sage 8 → 12")
+
+    def test_a_retired_product_is_not_retuned(self):
+        retired = self._product("Heavenly - Angel - Old", par=8, active=False)
+
+        self.client.post(self.url, {f"par_{retired.pk}": "40"})
+
+        retired.refresh_from_db()
+        self.assertEqual(retired.par, 8)
+
+    def test_writing_par_moves_no_stock_and_writes_no_log(self):
+        """The load-bearing separation. Par is a statement about demand;
+        `number_on_hand` is a count of a pile. A page that quietly did both
+        would be the back-date disclosure again."""
+        self.client.post(self.url, {f"par_{self.product.pk}": "40"})
+
+        self.product.refresh_from_db()
+        self.base.refresh_from_db()
+        self.assertEqual(self.product.number_on_hand, 3)
+        self.assertEqual(self.base.number_on_hand, 100)
+        self.assertEqual(InventoryLog.objects.count(), 0)
+
+    def test_the_production_form_cannot_write_a_par(self):
+        """The other half of the same guarantee, from the other side: a par
+        posted at the production endpoint by hand must do nothing."""
+        self.client.post(
+            reverse("record_recipe_production", args=[self.recipe.pk]),
+            {f"baths_{self.product.pk}": "1", f"par_{self.product.pk}": "40"},
+        )
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.par, 8)
+        self.assertEqual(self.product.number_on_hand, 8)
+
+    def test_the_par_form_cannot_record_a_bath(self):
+        self.client.post(self.url, {
+            f"par_{self.product.pk}": "12",
+            f"baths_{self.product.pk}": "3",
+        })
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.par, 12)
+        self.assertEqual(self.product.number_on_hand, 3)
+        self.assertEqual(InventoryLog.objects.count(), 0)
+
+
+class RecipeParModeTests(TestCase):
+    """What the page offers, and the one thing it must never offer.
+
+    Editing par is a mode here and editing dyes is not one on the showcase,
+    which looks like an inconsistency and isn't: there, opening a row is the
+    job and the mode was only protecting render cost. Here bath boxes and par
+    boxes would share the same rows, and a par typed into a live input then
+    abandoned by pressing Record production would be lost with nothing said.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("mode", "m@example.test", "pw")
+        self.client.force_login(self.user)
+        self.recipe = make_recipe("Sage")
+        category, _ = RawProductCategory.objects.get_or_create(name="Yarn")
+        self.base = RawProduct.objects.create(
+            name="Heavenly - Angel", category=category, price="5.00",
+            number_per_dye_bath=5, number_on_hand=100,
+        )
+        self.product = FinishedProduct.objects.create(
+            name="Heavenly - Angel - Sage", raw_product=self.base,
+            recipe=self.recipe, price="30.00", number_on_hand=3, par=10,
+        )
+        self.page = reverse("recipe_detail", args=[self.recipe.pk])
+
+    def test_the_default_page_is_the_production_form(self):
+        response = self.client.get(self.page)
+        self.assertContains(response, f'name="baths_{self.product.pk}"')
+        self.assertNotContains(response, f'name="par_{self.product.pk}"')
+
+    def test_the_page_offers_the_way_in(self):
+        """A mode nothing links to is a mode nobody finds."""
+        response = self.client.get(self.page)
+        self.assertContains(response, f"{self.page}?par=1")
+
+    def test_par_mode_offers_the_boxes_and_posts_to_the_par_endpoint(self):
+        response = self.client.get(self.page, {"par": "1"})
+        self.assertContains(response, f'name="par_{self.product.pk}"')
+        self.assertContains(
+            response, reverse("recipe_par_save", args=[self.recipe.pk])
+        )
+
+    def test_par_mode_turns_production_entry_off(self):
+        """Two live forms in one table is how a typed number gets lost to the
+        other one's button."""
+        response = self.client.get(self.page, {"par": "1"})
+        self.assertNotContains(response, f'name="baths_{self.product.pk}"')
+        self.assertNotContains(
+            response, reverse("record_recipe_production", args=[self.recipe.pk])
+        )
+
+    def test_par_mode_prints_the_evidence_beside_the_box(self):
+        """Advice you cannot inspect is a decision in disguise, and the
+        person is the decider here — so what sold has to be on the row."""
+        with mock.patch.object(
+            production, "sold_per_blank", return_value={self.product.pk: 37}
+        ):
+            response = self.client.get(self.page, {"par": "1"})
+
+        self.assertContains(response, "Sold this season")
+        self.assertContains(response, "<td class=\"num\">37</td>", html=False)
+        # And it says which ledger it came from, because the figures at the
+        # top of this page are the other one.
+        self.assertContains(response, "till ledger")
+
+    def test_the_sold_figure_is_the_one_the_production_pages_rank_on(self):
+        """One answer to "what sold". Two would let the page that tunes par
+        disagree with the page that spends it."""
+        with mock.patch.object(
+            production, "sold_per_blank", return_value={self.product.pk: 37}
+        ):
+            response = self.client.get(self.page, {"par": "1"})
+
+        self.assertEqual(response.context["products"][0].sold_this_season, 37)
+
+    def test_par_is_restated_in_baths_never_recommended(self):
+        """A bath is indivisible, so baths are the unit a change to par lands
+        in. It is the number in the box in another unit — nothing on this
+        page proposes a different one."""
+        response = self.client.get(self.page, {"par": "1"})
+        self.assertEqual(response.context["products"][0].par_baths, 2.0)
+        self.assertContains(response, "= 2.0 baths of 5")
+
+    def test_nothing_on_the_page_suggests_a_par(self):
+        """The northstar, pinned. Display capacity must never reach
+        production, and neither may a sales rate: no suggested value, no
+        prefilled recommendation, no 'we think it should be'."""
+        response = self.client.get(self.page, {"par": "1"})
+        body = response.content.decode()
+        for word in ("suggested par", "recommended par", "we suggest"):
+            self.assertNotIn(word, body.lower())
+        # The only value in the box is the one already stored.
+        self.assertContains(response, 'value="10"')
+
+
 class RecipeShowcaseFilterTests(TestCase):
     """The filter is client-side, so what's testable server-side is that
     every row carries the haystack the script searches."""

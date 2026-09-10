@@ -20,6 +20,13 @@ for what par is *for*, and `private/slow-sellers/` for the evidence being
 gathered). This ordering is what makes the list usable in the meantime, not a
 replacement for that work.
 
+**Par is changed at `private/recipes/<pk>/?par=1`** — a box per blank on the
+recipe page, described in `docs/claude/recipes.md` under *Editing par*. That
+is the door, and it is the only one besides the admin. When par starts meaning
+something this page's default ordering is the thing to revisit; until then it
+still ranks on sales, because the ordering is a statement about how much par
+has been dialled in and not about how much it *could* be.
+
 **Furthest below par first is one click away, and neither ordering filters.**
 Every colorway is listed either way, so the choice changes what gets read
 first and never what exists — a page that hid the quiet ones would be making

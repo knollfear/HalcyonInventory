@@ -94,6 +94,14 @@ urlpatterns = [
         views.record_recipe_production,
         name="record_recipe_production",
     ),
+    # POST-only, and deliberately not folded into the production form above:
+    # one writes stock and one writes a demand target, and a button that
+    # meant both is the mistake the back-date disclosure already made here.
+    path(
+        "private/recipes/<int:pk>/par/",
+        views.recipe_par_save,
+        name="recipe_par_save",
+    ),
     path("private/recipes/<int:pk>/row/", views.recipe_row, name="recipe_row"),
     # POST-only row actions from the bulk editing list, so no `@page_meta` and
     # neither reaches the site map. Retiring is `is_active = False` — see the

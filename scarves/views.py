@@ -1471,7 +1471,35 @@ def recipe_detail(request, pk):
         Recipe.objects.prefetch_related("recipe_dyes__dye"), pk=pk
     )
     products = _recipe_products(recipe)
-    context = {"recipe": recipe, "products": products}
+
+    # Par editing is a mode and production entry is the default, which is the
+    # opposite of the recipe showcase's ruling that editing is not a mode —
+    # deliberately, because the two pages are answering different questions.
+    # There, opening a row *is* the job. Here the job is recording a session,
+    # par is the occasional visit, and both controls would otherwise sit in
+    # one table: a par typed into a live input and then abandoned by pressing
+    # Record production would be lost with nothing said. One mode, one form,
+    # one meaning per button.
+    par_mode = request.GET.get("par") == "1"
+    if par_mode:
+        # What the till sold this season, per blank — the same function
+        # `private/production-needed/` ranks on, not a second answer to the
+        # question. It is here because par is the one number in this app that
+        # a person is expected to overrule and there was nothing beside it to
+        # judge by. It does not propose a par: display capacity must never
+        # reach production, and neither may a sales figure on its own.
+        sold = production.sold_per_blank()
+        for product in products:
+            product.sold_this_season = sold.get(product.pk, 0)
+            # Par restated in the unit production actually spends. Across the
+            # live catalogue every distinct (par, bath size) pair lands
+            # between 1.0 and 2.0 baths — par is a MOQ floor with a bath of
+            # headroom, not days of cover — so baths are how a change to it
+            # reads. It is the number in the box in another unit, never a
+            # recommendation about it.
+            product.par_baths = round(product.par / product.bath_size, 1)
+
+    context = {"recipe": recipe, "products": products, "par_mode": par_mode}
     context.update(_recipe_history(request, recipe, products))
     return render(request, "scarves/recipe_detail.html", context)
 
@@ -1697,6 +1725,76 @@ def record_recipe_production(request, pk):
         f"for {recipe.name}.",
     )
     return redirect("recipe_detail", pk=pk)
+
+
+@require_POST
+@login_required
+def recipe_par_save(request, pk):
+    """Set par on one colorway's finished products, one blank per row.
+
+    **Par is the number this app treats as a fact and never was one.** It
+    reads across the catalogue as a uniform remnant rather than as forty
+    decisions about demand, `private/production-needed/` orders on sales
+    instead of on it and says so, and the production sheet had to be made
+    editable end to end because the work order derived from par offered
+    nowhere to disagree. Until this there was nowhere to change one either,
+    short of the Django admin or a bulk action that writes every colorway on
+    a blank at once — so the one number most in need of a person had the
+    fewest doors.
+
+    **Nothing here proposes a value.** The season's sold count is printed
+    beside the box so the decision can be checked by looking, and that is the
+    whole of the help this page gives: par is about demand, and a number that
+    moved on its own — off display capacity, off a sales rate, off anything —
+    is the failure this codebase keeps naming.
+
+    Absolute values, like every other correction in the app: "par is 12"
+    heals whatever the row said before, where "add four" only works if what
+    was there was right.
+
+    Reads the whole form before writing any of it, the same as
+    `record_recipe_production` — a bad box must not leave half a colorway
+    retuned. A blank box is refused rather than guessed at: **0 is how you
+    say there is no par**, and it is what `production.candidates()` filters
+    on, so treating an empty field as 0 would silently drop the product out
+    of planning.
+    """
+    recipe = get_object_or_404(Recipe, pk=pk)
+    back = f"{reverse('recipe_detail', args=[pk])}?par=1"
+
+    changes = []
+    for product in recipe.finished_products.filter(is_active=True):
+        raw_value = (request.POST.get(f"par_{product.pk}") or "").strip()
+        if not raw_value.isdigit():
+            messages.error(
+                request,
+                f"'{raw_value}' isn't a par for {product.name} — nothing was "
+                "changed. Par is a whole number, and 0 means no par is set.",
+            )
+            return redirect(back)
+        par = int(raw_value)
+        if par != product.par:
+            changes.append((product, product.par, par))
+
+    if not changes:
+        messages.info(request, "Every par is already what the form says.")
+        return redirect(back)
+
+    with transaction.atomic():
+        for product, _old, par in changes:
+            product.par = par
+            product.save(update_fields=["par"])
+
+    # Named one by one with the number it moved from. A par change is rare and
+    # deliberate and nothing anywhere records it, so the message is the only
+    # confirmation that the thing you meant to change is the thing that moved.
+    messages.success(
+        request,
+        "Par updated: "
+        + ", ".join(f"{p.name} {old} → {new}" for p, old, new in changes)
+        + ".",
+    )
+    return redirect(back)
 
 
 #: Blank rows offered per card. A card holds a handful of entries; you can

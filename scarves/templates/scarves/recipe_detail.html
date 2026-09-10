@@ -73,6 +73,22 @@
   .baths-col input { width: 4rem; text-align: right; }
   .perbath { font-size: 12px; color: #888; margin-left: 6px; }
 
+  /* Par editing. The box is the only control in the mode, so it gets room;
+     the cover line under it is a restatement of what is in it, which is why
+     it sits under rather than beside — nothing to read across a gap. */
+  .par-col { white-space: nowrap; width: 11rem; }
+  .par-col input { width: 4rem; text-align: right; }
+  .cover { display: block; font-size: 12px; color: #888; margin-top: 3px; }
+
+  /* Which of the two jobs this table is doing. The mode in force is filled
+     rather than bolded, same as the history chips: on a page this dense a
+     weight change is not a state. */
+  .modebar { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin: 10px 0; }
+  .mode.on {
+      font-size: 12px; border-radius: 999px; padding: 3px 10px;
+      background: var(--accent); color: #fff;
+  }
+
   /* Direction is the fastest thing to read in a log, so it carries the
      colour and the sign rather than the type name. */
   .qty { font-weight: 700; white-space: nowrap; }
@@ -114,6 +130,30 @@
   The listener is on the container rather than the chips, because the chips
   are themselves replaced by every swap.
   {% endcomment %}
+  {% comment %}
+  The cover line is a restatement of the box beside it, so it has to follow
+  the box. Left alone it would keep reporting the *stored* par while somebody
+  types a new one over it — a stale number sitting under a live one, which is
+  worse than no number at all. Server-rendered on load, so with the script
+  blocked it is correct and simply doesn't move.
+  {% endcomment %}
+  <script>
+    (function () {
+      document.querySelectorAll("input[data-bath]").forEach(function (input) {
+        var out = input.parentNode.querySelector(".cover");
+        if (!out) { return; }
+        input.addEventListener("input", function () {
+          var bath = parseInt(input.dataset.bath, 10) || 1;
+          var par = parseInt(input.value, 10);
+          if (isNaN(par) || par < 0) { out.textContent = ""; return; }
+          var baths = Math.round((par / bath) * 10) / 10;
+          out.textContent = "= " + baths + " bath" + (baths === 1 ? "" : "s") +
+                            " of " + bath;
+        });
+      });
+    })();
+  </script>
+
   <script>
     (function () {
       var box = document.getElementById("history");
@@ -186,11 +226,30 @@
   <h2>Finished products</h2>
   {% if products %}
     {% comment %}
-    The table doubles as the production form. A dye session is one colourway
-    across two or three bases, so the natural entry is a bath count per row
-    and a single submit — not a click per product.
+    The table doubles as one form, and *which* form is a mode: recording a
+    session by default, editing par behind `?par=1`.
+
+    This is the opposite of the recipe showcase's ruling that editing is not a
+    mode, and deliberately so — there, opening a row is the job, and the mode
+    was only ever protecting render cost. Here the two jobs are different
+    jobs. Bath boxes and par boxes live in the same rows, so one table with
+    both would mean a par typed and then abandoned by pressing Record
+    production, lost with nothing said. One mode, one form, one meaning per
+    button — the same reasoning that took the back-date off this form.
     {% endcomment %}
-    <form method="post" action="{% url 'record_recipe_production' recipe.pk %}">
+    <div class="modebar">
+      {% if par_mode %}
+        <span class="mode on">Editing par</span>
+        <span class="small muted">
+          Production entry is off while you do. Par is a decision about demand
+          — nothing on this page proposes one.
+        </span>
+        <a class="small" href="{% url 'recipe_detail' recipe.pk %}">Done</a>
+      {% else %}
+        <a class="small" href="{% url 'recipe_detail' recipe.pk %}?par=1">Edit par</a>
+      {% endif %}
+    </div>
+    <form method="post" action="{% if par_mode %}{% url 'recipe_par_save' recipe.pk %}{% else %}{% url 'record_recipe_production' recipe.pk %}{% endif %}">
       {% csrf_token %}
       <div class="card">
         <table>
@@ -199,10 +258,23 @@
               <th colspan="2">Product</th>
               <th>Base (raw)</th>
               <th class="num">On hand</th>
-              <th class="num">Par</th>
-              <th class="num">Shortage</th>
-              <th class="num">Price</th>
-              <th class="baths-col">Baths</th>
+              {% if par_mode %}
+                {% comment %}
+                What the till sold this season, per blank — `sold_per_blank`,
+                the same figure `private/production-needed/` ranks on rather
+                than a second answer to the question. Par is the number this
+                app treats as a fact and never was one, and it is the one
+                thing here a person is expected to overrule, so the evidence
+                to judge it by prints beside the box. It proposes nothing.
+                {% endcomment %}
+                <th class="num">Sold this season</th>
+                <th class="par-col">Par</th>
+              {% else %}
+                <th class="num">Par</th>
+                <th class="num">Shortage</th>
+                <th class="num">Price</th>
+                <th class="baths-col">Baths</th>
+              {% endif %}
             </tr>
           </thead>
           <tbody>
@@ -222,34 +294,83 @@
                 </td>
                 <td>{{ p.raw_product.name }} <span class="muted small">{{ p.raw_product.category.name }}</span></td>
                 <td class="num">{{ p.number_on_hand }}</td>
-                <td class="num">{{ p.par }}</td>
-                <td class="num">
-                  {% if p.shortage %}<span class="short">{{ p.shortage }}</span>{% else %}—{% endif %}
-                </td>
-                <td class="num">${{ p.price }}</td>
-                <td class="baths-col">
-                  {% if p.is_active %}
-                    <input type="number" name="baths_{{ p.pk }}" min="0" step="1"
-                           inputmode="numeric" placeholder="0"
-                           aria-label="Dye baths of {{ p.name }}">
-                    <span class="perbath">×{{ p.raw_product.number_per_dye_bath|default:1 }}</span>
-                  {% else %}
-                    <span class="muted small">retired</span>
-                  {% endif %}
-                </td>
+                {% if par_mode %}
+                  <td class="num">{{ p.sold_this_season }}</td>
+                  <td class="par-col">
+                    {% if p.is_active %}
+                      <input type="number" name="par_{{ p.pk }}" min="0" step="1"
+                             inputmode="numeric" value="{{ p.par }}"
+                             data-bath="{{ p.bath_size }}"
+                             aria-label="Par for {{ p.name }}">
+                      {% comment %}
+                      Par in the unit a dye pot is spent in. Every distinct
+                      (par, bath size) pair in the live catalogue lands
+                      between 1.0 and 2.0 baths, so baths are how a change to
+                      this number reads — and a bath is indivisible, so a par
+                      landing mid-bath is claiming a precision with nowhere
+                      to put it. Restated, never recommended.
+                      {% endcomment %}
+                      <span class="cover">= {{ p.par_baths }} bath{{ p.par_baths|pluralize }} of {{ p.bath_size }}</span>
+                    {% else %}
+                      <span class="muted small">retired</span>
+                    {% endif %}
+                  </td>
+                {% else %}
+                  <td class="num">{{ p.par }}</td>
+                  <td class="num">
+                    {% if p.shortage %}<span class="short">{{ p.shortage }}</span>{% else %}—{% endif %}
+                  </td>
+                  <td class="num">${{ p.price }}</td>
+                  <td class="baths-col">
+                    {% if p.is_active %}
+                      <input type="number" name="baths_{{ p.pk }}" min="0" step="1"
+                             inputmode="numeric" placeholder="0"
+                             aria-label="Dye baths of {{ p.name }}">
+                      <span class="perbath">×{{ p.raw_product.number_per_dye_bath|default:1 }}</span>
+                    {% else %}
+                      <span class="muted small">retired</span>
+                    {% endif %}
+                  </td>
+                {% endif %}
               </tr>
             {% endfor %}
           </tbody>
         </table>
       </div>
 
-      <div class="actions">
-        <button class="btn" type="submit">Record production</button>
-        <span class="small muted">
-          Enter how many baths of each you dyed. One bath makes the number
-          beside the box; raw stock is drawn down to match.
-        </span>
-      </div>
+      {% if par_mode %}
+        <div class="actions">
+          <button class="btn" type="submit">Save par</button>
+          <span class="small muted">
+            How many of each you expect to have. Absolute, like every other
+            correction here — type what it should be, not how much to add.
+            <strong>0 means no par is set</strong> and takes the product out
+            of production planning.
+          </span>
+        </div>
+        {% comment %}
+        Said out loud because the number beside the box comes from the till
+        ledger and the "sold, all time" figure at the top of this page comes
+        from the stock log — two legitimate answers to two different
+        questions, which on one page read as the page disagreeing with itself
+        unless each says which question it answered.
+        {% endcomment %}
+        <p class="small muted">
+          Sold counts the current season off the till ledger — the same figure
+          <a href="{% url 'production_needed' %}">Production Needed</a> ranks
+          on and <a href="{% url 'slow_sellers' %}">Slow Sellers</a> reports.
+          The lifetime figures at the top of this page are the stock log,
+          which is a different question.
+        </p>
+      {% else %}
+        <div class="actions">
+          <button class="btn" type="submit">Record production</button>
+          <span class="small muted">
+            Enter how many baths of each you dyed. One bath makes the number
+            beside the box; raw stock is drawn down to match.
+          </span>
+        </div>
+      {% endif %}
 
       {% comment %}
       This form means one thing: baths dyed now, stock moves. It used to carry
@@ -262,12 +383,14 @@
       card is a column of dates and bath counts, it reads a month-only date
       honestly, and nothing on that page can move current stock at all.
       {% endcomment %}
-      <p class="small muted">
-        Typing up a session from the past?
-        <a href="{% url 'card_backfill_index' %}">Use the kanban cards</a> —
-        that yarn was counted or sold long ago, so those entries record
-        history without touching current stock.
-      </p>
+      {% if not par_mode %}
+        <p class="small muted">
+          Typing up a session from the past?
+          <a href="{% url 'card_backfill_index' %}">Use the kanban cards</a> —
+          that yarn was counted or sold long ago, so those entries record
+          history without touching current stock.
+        </p>
+      {% endif %}
     </form>
   {% else %}
     <p class="empty">
