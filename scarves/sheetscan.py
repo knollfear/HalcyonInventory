@@ -114,6 +114,111 @@ def token_in(text):
     return parts[-1] if parts else None
 
 
+#: Where a logged photograph goes, and how long it lives there.
+#:
+#: **Nothing in the database points at these.** There is no row, no model and
+#: no admin — the bucket is browsable and a pointer would only be a second
+#: place for the answer to live, which is the place that goes stale the moment
+#: the bucket's own lifecycle rule deletes the object underneath it. What a
+#: row would have carried rides in the key instead, so a listing of the prefix
+#: is the report: sorted by name it comes out in time order, and a read that
+#: went badly says so in its own filename.
+#:
+#: The prefix is the retention group. S3 has no per-object TTL — expiry is a
+#: bucket rule matched on a prefix — so everything under here is the thing
+#: being timed, and nothing else is.
+PHOTO_PREFIX = "sheet_photos/"
+
+#: A week. Long enough to tune the scanner against a real photograph, short
+#: enough that a shop's paperwork is not quietly accumulating. A constant
+#: rather than a setting, because a retention promise with a dial on it is not
+#: a promise — `KEEP_SHEET_PHOTOS` turns the whole thing off, and that is the
+#: only lever there is.
+PHOTO_KEEP_DAYS = 7
+
+
+def photo_key(scan, when, suffix=".jpg"):
+    """The object key for one logged photograph — and the whole of its record.
+
+    Everything a database row would have held is in the name: when, which
+    sheet it claimed to be, how big it was, and what the scanner made of it.
+    That is not a compression of the row, it is the reason there is no row.
+    A listing of the prefix sorts into time order on its own, and the photos
+    worth looking at — `r0` read nothing, `u3` was unsure three times — are
+    findable by eye without opening any of them.
+    """
+    stamp = when.strftime("%Y%m%dT%H%M%S")
+    named = scan.qr_token or "unnamed"
+    safe = "".join(c for c in named if c.isalnum() or c in "-_")[:40] or "unnamed"
+    return (
+        f"{PHOTO_PREFIX}{stamp}-{safe}"
+        f"-w{scan.width}-r{len(scan.marks)}-f{len(scan.filled)}"
+        f"-u{len(scan.unsure)}{suffix}"
+    )
+
+
+#: Below this the Code128 on a row cannot be decoded, whatever is done to the
+#: pixels — a 7.7 mil module needs about two pixels to survive, and a sheet is
+#: 8.5in across. Measured on a 1308px-wide picture of run 5: the modules landed
+#: on 1.18px and **not one of thirteen decode attempts read a single row
+#: barcode**, including 4x upscaling with unsharp masking. Interpolation cannot
+#: invent a sample that was never taken.
+ROWS_NEED_WIDTH = 2200
+
+#: Enough room for a doubled 12MP frame and not for a doubled 48MP one. Past
+#: here a photo that failed did not fail for want of pixels — it was soft, or
+#: moving, or badly lit — so the second pass would cost hundreds of megabytes
+#: to learn nothing.
+UPSCALE_MAX_PIXELS = 60_000_000
+
+
+def _passes(grey):
+    """The image, then the same image enlarged, then enlarged and sharpened.
+
+    **Every pass runs and their findings are pooled**, because they are good
+    at different things and no single one of them was best. Measured on a
+    3024px iPhone photo of run 5:
+
+    ==========================  ====  ==
+    pass                        rows  QR
+    ==========================  ====  ==
+    as-is                         11   0
+    2x lanczos                    12   1
+    2x lanczos + unsharp           1   1
+    ==========================  ====  ==
+
+    Three things fall out of that table and each one is a decision here:
+
+    * **The plain enlargement is the workhorse.** It was the only pass that
+      read the whole sheet, and it recovered a QR that the native-resolution
+      pass missed entirely — which on the upload page is the difference
+      between a photo that names its run and one that asks you to type a code
+      off the paper.
+    * **Sharpening wrecks row barcodes.** Twelve down to one. It survives as
+      a last pass only because it is what rescued the QR out of a 1308px
+      screenshot where every row was hopeless anyway, and pooling means it can
+      contribute that without taking anything away.
+    * **Stopping at the first pass that finds a row would have been wrong.**
+      That is pass one, which found eleven rows and no QR — so an early exit
+      throws away both the twelfth row and the only thing that names the
+      sheet.
+
+    Each pass comes with the scale it is drawn at, because pooling them makes
+    every pixel coordinate ambiguous otherwise: a row found at 2x reports a
+    `top` twice the size of the same row found at 1x, and sorting the pooled
+    marks on that puts row one in the middle of the page.
+    """
+    from PIL import Image, ImageFilter
+
+    yield grey, 1
+
+    if grey.width * grey.height * 4 > UPSCALE_MAX_PIXELS:
+        return
+    bigger = grey.resize((grey.width * 2, grey.height * 2), Image.LANCZOS)
+    yield bigger, 2
+    yield bigger.filter(ImageFilter.UnsharpMask(radius=2, percent=150)), 2
+
+
 @dataclass
 class ScanResult:
     marks: list = field(default_factory=list)
@@ -126,6 +231,31 @@ class ScanResult:
     #: photo names the run it belongs to; without it the person types the same
     #: code off the sheet.
     qr_token: str = ""
+    #: How wide the photo was, so a caller can say *why* nothing came back.
+    #: "Couldn't read that photo" and "that photo is too small to hold a row
+    #: barcode" send somebody to do completely different things.
+    width: int = 0
+
+    @property
+    def too_small_for_rows(self):
+        """The photo cannot contain a readable row barcode.
+
+        A separate question from whether any were found: a big photo that read
+        nothing was soft or badly lit and is worth retaking, while a small one
+        will read nothing however carefully it is shot again.
+        """
+        return bool(self.width) and self.width < ROWS_NEED_WIDTH
+
+    @property
+    def named_but_unread(self):
+        """It says which sheet this is, and nothing about which baths.
+
+        Worth its own name because it is not a failure — the QR is what the
+        upload page exists to get, and the boxes are the bonus. The page it
+        hands off to is the run's own, where the boxes are tapped anyway.
+        """
+        return bool(self.qr_token) and not self.marks
+
     @property
     def filled(self):
         return [m for m in self.marks if m.state == FILLED]
@@ -211,24 +341,44 @@ def read_sheet(data):
         # without this a portrait photo is read sideways and nothing decodes.
         image = ImageOps.exif_transpose(image)
         grey = image.convert("L")
-        codes = zbar_decode(grey)
+        result.width = grey.width
+
+        # Every pass runs and their findings are pooled — see `_passes` for
+        # the measurements, and for why stopping at the first pass to find a
+        # row would have thrown away both the last row and the QR.
+        #
+        # **A row is read on the image it was found in.** Each pass carries
+        # its own scale, and the tick box is located by arithmetic off the
+        # barcode's own rectangle, so a code found at 2x must have its window
+        # measured at 2x. Mixing them would put the sample on blank paper,
+        # which reads as "nobody ticked anything" — the failure this whole
+        # module takes its geometry from `production` to avoid.
+        rows = []
+        for candidate, at_scale in _passes(grey):
+            for code in zbar_decode(candidate):
+                if code.type == "QRCODE":
+                    if not result.qr_token:
+                        seen = token_in(
+                            code.data.decode("utf-8", "ignore").strip()
+                        )
+                        if seen:
+                            result.qr_token = seen
+                    continue
+                rows.append((candidate, at_scale, code))
     except Exception as exc:
         result.error = f"Couldn't read that photo ({exc})."
         return result
 
-    for code in codes:
-        if code.type != "QRCODE":
-            continue
-        seen = token_in(code.data.decode("utf-8", "ignore").strip())
-        if seen:
-            result.qr_token = seen
-            break
-
-    for code in codes:
-        if code.type == "QRCODE":
-            continue
+    # First pass to *score* a given row wins it — scoring, not merely
+    # decoding, and the difference is the whole point. A row can decode on one
+    # pass and still have its box fall outside the frame or refuse to score,
+    # and claiming it at the moment it decoded would retire the code before it
+    # produced anything, so the enlargement that would have read it properly
+    # never gets its turn. That cost two of twelve rows on the measured photo.
+    done = set()
+    for grey, at_scale, code in rows:
         value = code.data.decode("utf-8", "ignore").strip()
-        if not value:
+        if not value or value in done:
             continue
 
         rect = code.rect
@@ -272,8 +422,14 @@ def read_sheet(data):
             state = EMPTY
         else:
             state = UNSURE
+        done.add(value)
         result.marks.append(
-            Mark(code=value, state=state, score=round(score, 3), top=rect.top)
+            Mark(
+                code=value, state=state, score=round(score, 3),
+                # Back to the original image's coordinates, so marks pooled
+                # from passes at different scales still sort down the page.
+                top=rect.top // at_scale,
+            )
         )
 
     result.marks.sort(key=lambda m: m.top)

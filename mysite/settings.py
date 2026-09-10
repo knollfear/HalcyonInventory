@@ -106,7 +106,18 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
+    # Counts page opens onto a cookie, as evidence for the pinned-nav choice
+    # on private/navigation/. It writes nothing else and decides nothing.
+    'scarves.nav.NavMiddleware',
 ]
+
+# Whether to log the photograph a sheet scan was given. **This is logging**,
+# so it behaves like it: nothing in the database points at one, the key carries
+# what a row would have (`sheetscan.photo_key`), the *sink* owns retention via
+# `set_bucket_lifecycle`, and turning it off changes nothing else because
+# nothing reads them back. It exists because a scan is optics, and "it didn't
+# work" with the input discarded is a bug report nobody can act on.
+KEEP_SHEET_PHOTOS = os.environ.get("KEEP_SHEET_PHOTOS", "1") not in ("0", "false", "False")
 
 ROOT_URLCONF = 'mysite.urls'
 
@@ -121,6 +132,8 @@ TEMPLATES = [
                 'django.template.context_processors.request',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
+                # The pinned pages in the corner of every internal page.
+                'scarves.nav.context',
             ],
         },
     },

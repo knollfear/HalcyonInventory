@@ -1,5 +1,6 @@
 import base64
 import colorsys
+import logging
 from collections import Counter
 from urllib.parse import urlencode
 import hashlib
@@ -27,6 +28,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST, require_http_methods
 
+from . import nav
 from .models import (
     BoothPhoto,
     CloseRun,
@@ -48,6 +50,8 @@ from .models import (
 
 from django.contrib import messages
 from django.shortcuts import render, redirect
+
+logger = logging.getLogger(__name__)
 from django.template.response import TemplateResponse
 
 from . import (
@@ -193,6 +197,126 @@ def index(request):
     context = _site_map()
     context["public_map_url"] = reverse("public_index")
     return render(request, "scarves/index.html", context)
+
+
+@page_meta(
+    title="Navigation",
+    description="Choose the handful of pages that sit in the corner of every "
+                "staff page, beside the site map link. Shows how often each "
+                "one has actually been opened on this device.",
+    category="Overview",
+    note="A ?nav= link sets the pins and can be sent to somebody.",
+)
+@login_required
+def navigation(request):
+    """Pick the pinned pages — and the one place that writes the pin cookie.
+
+    **Two doors, one writer.** A person ticks boxes and saves; or a `?nav=`
+    link arrives with the set already in it, which is how one gets sent to
+    somebody. Both land here, so there is exactly one piece of code that
+    decides what a pin is — and the link lands on a page that *says what it
+    did* rather than silently rearranging the corner of somebody's screen.
+    That second half is the crew cookie's argument: a pre-filled thing nothing
+    mentions is unrecoverable by the person looking at it.
+
+    **A link never fails quietly.** Names that reverse to nothing are dropped
+    and listed, because a nav that came back one pill short with no
+    explanation is the collection sheet's missing-dye problem — you act on the
+    list and nothing says it was incomplete.
+
+    **The visit counts are evidence, not a ranking.** They order nothing and
+    choose nothing; they sit beside a checkbox so somebody can see what they
+    actually use before deciding. See `nav.py` for why the obvious version —
+    promote the top four automatically — is the `par` mistake wearing a
+    different hat.
+    """
+    pages = nav.pinnable()
+    allowed = {p["name"]: p for p in pages}
+
+    # **Every write redirects, and that is the whole point of the page.**
+    # The corner is rendered by a context processor reading `request.COOKIES`,
+    # so a response that sets the cookie *and* renders shows the new pins in
+    # the preview and the old ones in the corner — on the one page whose job
+    # is to show you what the corner will look like. Post/Redirect/Get makes
+    # the next request carry the new cookie, so both agree.
+    if request.method == "POST":
+        pins, dropped = nav.parse(
+            ",".join(request.POST.getlist("pin")[: nav.MAX_PINS]), allowed=allowed
+        )
+        return _navigation_redirect(pins, "saved", dropped)
+
+    if nav.PARAM in request.GET:
+        wanted = request.GET[nav.PARAM]
+        if wanted.strip() == nav.FORGET:
+            return _navigation_redirect([], "forgotten", [])
+        pins, dropped = nav.parse(wanted, allowed=allowed)
+        return _navigation_redirect(pins, "from-link", dropped)
+
+    seen = nav.read_seen(request)
+    pins = nav.pinned(request, allowed=allowed)
+    notice = request.GET.get("done", "")
+    # Carried across the redirect rather than held in a session: what could
+    # not be pinned belongs to the link that asked for it, and a nav that came
+    # back a pill short with nothing to say why is the silence this reports.
+    dropped = [
+        name for name in request.GET.get("dropped", "").split(",") if name.strip()
+    ]
+
+    # Ordered by what somebody has actually opened, most first, because that
+    # is the question the page is answering — "what do I use?" — and an
+    # alphabetical list of thirty-odd pages answers nothing. The count prints
+    # beside each row so the basis of the ordering is checkable by looking,
+    # the same call `private/production-needed/` makes about its sold figure.
+    pinned_names = {p["name"] for p in pins}
+    rows = sorted(
+        (
+            {**page, "seen": seen.get(page["name"], 0),
+             "on": page["name"] in pinned_names}
+            for page in pages
+        ),
+        key=lambda r: (-r["seen"], r["category"], r["title"]),
+    )
+
+    return render(
+        request,
+        "scarves/navigation.html",
+        {
+            "rows": rows,
+            "pins": pins,
+            "dropped": dropped,
+            "notice": notice,
+            "max_pins": nav.MAX_PINS,
+            "share": nav.encode(pins),
+            "share_url": request.build_absolute_uri(
+                f"{reverse('navigation')}?{nav.PARAM}={nav.encode(pins)}"
+            ) if pins else "",
+            "forget_url": f"{reverse('navigation')}?{nav.PARAM}={nav.FORGET}",
+            "unopened": sum(1 for r in rows if not r["seen"]),
+        },
+    )
+
+
+def _navigation_redirect(pins, done, dropped):
+    """Write the pin cookie, then send the browser round again.
+
+    A plain render would set the cookie on a page already built from the old
+    one, so the preview and the corner would disagree — see `navigation`. The
+    outcome rides in the query string because there is nowhere else for it to
+    ride that a redirect survives, and because it makes the result of a link
+    something you can look at rather than something that flashed past.
+    """
+    params = {"done": done}
+    if dropped:
+        params["dropped"] = ",".join(dropped)
+    response = redirect(f"{reverse('navigation')}?{urlencode(params)}")
+    if pins:
+        response.set_cookie(
+            nav.PIN_COOKIE, nav.encode(pins),
+            max_age=nav.MAX_AGE, samesite="Lax",
+        )
+    else:
+        response.delete_cookie(nav.PIN_COOKIE)
+    return response
 
 
 @page_meta(
@@ -861,12 +985,20 @@ def color_suggest_from_photo(request, pk):
     )
 
 
-def _showcase_recipes(missing_only=False):
+def _showcase_recipes(missing_only=False, category=None):
     """Active recipes with their dyes and their finished products.
 
     Finished products (and a photo) come along because the recipe name alone is
     often not enough to know what a colorway actually was — looking at the
     scarf is how you identify the dyes.
+
+    **`category` narrows which recipes are listed and never which products a
+    listed recipe shows.** Category is which table at the stall, and a
+    colorway dyed on both a yarn and a silk is one colorway — so it belongs on
+    both tables' lists, and on either of them it has to show the whole colorway
+    or the row would be a partial answer to "what is this colour on". A recipe
+    filtered *within* would put a different set of products under the same name
+    depending on how you arrived, with nothing on the row to say so.
     """
     recipes = (
         Recipe.objects.filter(is_active=True)
@@ -886,42 +1018,159 @@ def _showcase_recipes(missing_only=False):
     )
     if missing_only:
         recipes = recipes.filter(recipe_dyes__isnull=True)
+    if category is not None:
+        # `distinct()` because a colorway on three yarns matches three times.
+        recipes = recipes.filter(
+            finished_products__is_active=True,
+            finished_products__raw_product__category=category,
+        ).distinct()
     return recipes
 
 
-def _recipe_row_context(request, recipe, form=None, source=None, saved=False):
-    """Shared context for one showcase row, however it is rendered."""
+def _showcase_categories(missing_only=False):
+    """The tables that have any of this list's colorways on them.
+
+    Derived from the rows rather than from a list of names, so a shop that
+    grows a third table gets a third pill with nothing to change — the same
+    call the Sunday close makes. A list whose colorways all sit on one table
+    draws no pills at all, because a filter offering one choice is furniture.
+
+    Verified by iterating, never by counting: `.count()` wraps a `distinct()`
+    in a subquery and reports the right number while the query itself returns
+    a row per match. That is how the season page shipped eleven thousand
+    pills.
+    """
+    scope = RawProductCategory.objects.filter(
+        raw_products__finished_products__is_active=True,
+        raw_products__finished_products__recipe__is_active=True,
+    )
+    if missing_only:
+        scope = scope.filter(
+            raw_products__finished_products__recipe__recipe_dyes__isnull=True
+        )
+    return list(scope.order_by("name").distinct())
+
+
+def _recipe_read_only_row(recipe, saved=False, missing_only=False, category=None):
+    """One showcase row with its editor closed.
+
+    Every row carries its Edit button, because **editing is not a mode.** It
+    used to be — `?edit=true` swapped the whole page into a different thing —
+    and that was one decision too many in front of a one-row job: you came to
+    look at a colorway, found you wanted to change a dye, and had to go back
+    up to a pill and reload the page to be allowed to. `edit_mode` now means
+    only *this row is showing its pickers*, which is true of at most one row
+    at a time and is nobody's mode.
+    """
+    return {
+        "recipe": recipe,
+        "edit_mode": False,
+        "saved": saved,
+        "edit_row_url": _edit_row_url(
+            recipe, missing_only=missing_only, category=category
+        ),
+        "band_dots": _band_dots(recipe),
+    }
+
+
+def _band_dots(recipe):
+    """The stored bands as coloured dots, for a row that isn't open.
+
+    Only what a person confirmed — a closed row draws no guesses, for the same
+    reason the reference sheet skips an unconfirmed colorway: a dot nobody
+    agreed to is indistinguishable from one somebody did.
+    """
+    stored = set(recipe.color_bands or [])
+    return [
+        {"slug": slug, "label": label, "color": color}
+        for slug, label, color in colorbands.BANDS
+        if slug in stored
+    ]
+
+
+def _showcase_url(*, missing=False, category=None, row=None):
+    """Every link on the showcase, built in one place.
+
+    Each control carries the rest of the page's state rather than resetting
+    it — switching table mid-edit must not drop you back to read-only, and
+    opening a row must not drop the table you were reading. That is the same
+    rule `private/colors/` pills and `private/sales/` follow, and the reason
+    it is one function is that four templates each remembering to re-add three
+    parameters is four chances to drop one silently.
+
+    Reversed and absolute rather than a bare `?…`, because the row partial is
+    also rendered by the fragment endpoints — where a relative query string
+    would resolve against `/row/` and land nowhere.
+    """
+    params = {}
+    if missing:
+        params["missing"] = "true"
+    if category is not None:
+        params["category"] = category.name
+    if row is not None:
+        params["row"] = row
+    url = reverse("recipe_showcase")
+    if params:
+        url += "?" + urlencode(params)
+    if row is not None:
+        url += f"#recipe-row-{row}"
+    return url
+
+
+def _edit_row_url(recipe, missing_only=False, category=None):
+    """The no-script way into one row's editor."""
+    return _showcase_url(missing=missing_only, category=category, row=recipe.pk)
+
+
+def _recipe_row_context(recipe, form=None, saved=False, missing_only=False,
+                        category=None):
+    """One showcase row with its editor open."""
     if form is None:
-        # Prefill from the source recipe when copying, else from the recipe's
-        # own dyes. Either way nothing is written until Save.
-        prefill = source if source is not None else recipe
         initial = {
             f"dye{i}": rd.dye_id
-            for i, rd in enumerate(prefill.recipe_dyes.all()[: RecipeDyesForm.SLOTS], start=1)
+            for i, rd in enumerate(recipe.recipe_dyes.all()[: RecipeDyesForm.SLOTS], start=1)
         }
-        # From the recipe itself even when the dyes are being copied from
-        # another one: copying a palette says nothing about which box this
-        # colorway is made in.
+        # Without this the box renders unticked on a flagged recipe, and the
+        # next Save on that row silently un-flags it.
         initial["oven_dyed"] = recipe.oven_dyed
         form = RecipeDyesForm(initial=initial)
     return {
         "recipe": recipe,
         "form": form,
         "edit_mode": True,
-        "copied_from": source,
         "saved": saved,
-        "dye_sources": _dye_source_recipes(),
+        "edit_row_url": _edit_row_url(
+            recipe, missing_only=missing_only, category=category
+        ),
+        **_editor_band_chips(recipe),
     }
 
 
-def _dye_source_recipes():
-    """Recipes that have dyes recorded — the library you can copy from."""
-    return (
-        Recipe.objects.filter(recipe_dyes__isnull=False)
-        .distinct()
-        .order_by("name")
-        .values("pk", "name")
-    )
+def _editor_band_chips(recipe):
+    """The rainbow chips as this row draws them — which is not how
+    `private/colors/` draws them, and the difference is deliberate.
+
+    **The classifier's reading is shown unticked here.** On the colour page a
+    suggestion arrives pre-ticked, because that page has exactly one button
+    and pressing it is answering the one question the page asks. Here the
+    button says Save and its subject is the dyes, so a pre-ticked guess would
+    be confirmed by a click that was about something else — and a wrong band
+    is the silent kind of wrong: you look in the orange section, the scarf
+    isn't there, and nothing says it was filed under red.
+
+    So a dashed chip means "the dyes read as this, tick it if that's right"
+    rather than "a machine has already ticked this for you". Solid ticks are
+    only ever what a person stored.
+    """
+    from_dyes = colorbands.bands_from_dyes(recipe)
+    return {
+        "chips": _band_chips(
+            recipe.color_bands or [],
+            # No point suggesting at a colorway somebody has already ruled on.
+            [] if recipe.bands_confirmed else from_dyes,
+        ),
+        "bands_suggested": [] if recipe.bands_confirmed else from_dyes,
+    }
 
 
 @page_meta(
@@ -931,46 +1180,106 @@ def _dye_source_recipes():
                 "missing dyes, including copying them from a recipe that "
                 "already has them.",
     category="Recipes",
-    note="Add ?edit=true to edit dyes, &missing=true for just the backlog.",
+    note="Add ?missing=true for just the backlog, ?category=Yarn for one table.",
 )
 @login_required
 def recipe_showcase(request):
-    edit_mode = request.GET.get("edit") == "true"
+    """The colorway list, with one row's dye pickers open at a time.
+
+    **Editing is not a mode.** Every row carries its own Edit button and the
+    page has one state. It used to have two, behind `?edit=true`, and that was
+    a decision demanded before the job: you came to look at a colorway, found
+    a dye you wanted to change, and had to go back to a pill and reload the
+    whole page to be allowed to touch it. Nothing about a mode was earning
+    that — the pickers are per row either way.
+
+    **What the mode was really protecting was the render cost, and that is
+    fixed at the root instead.** A `DyeSelect` offers the whole dye catalogue,
+    and each `<option>` carries the colour and search text the type-ahead
+    reads off it — about 225 bytes, so one picker is ~30 KB of markup and a
+    row is five of them. Rendering all 162 rows' pickers was 810 copies of the
+    same list: 121,000 options, 27 MB, 810 identical queries for the dyes
+    (Django's `ModelChoiceField.queryset` setter calls `.all()`, which clones
+    and drops the result cache), and thirteen seconds of server render before
+    anybody could type. None of that list is *read* until a row is opened, and
+    a pass down this page opens a handful.
+
+    So a row renders its editor only when asked for — an htmx swap of
+    `recipe_row`, or `?row=<pk>` with the script blocked, which is the same
+    door the ✕ on the production sheet uses.
+
+    `?row=` is parity rather than a promise: Save and Reset here have always
+    been htmx buttons, so a script-blocked visitor could never write a dye on
+    this page anyway. What the parameter preserves is that the way in is a
+    *link with an `href`* — which cannot fail the way a click handler on a
+    table that got reworked underneath it can — and that a row stays reachable
+    and readable without the script. The dye form that really does post
+    without one is `private/quick-recipes/`.
+    """
     missing_only = request.GET.get("missing") == "true"
-    recipes = list(_showcase_recipes(missing_only=missing_only))
+
+    # Named rather than numbered so a reading is a link somebody can read as
+    # well as send, and an unknown name is no filter rather than an error —
+    # the same call `secret/close/` makes about its table pills.
+    categories = _showcase_categories(missing_only=missing_only)
+    wanted = request.GET.get("category") or ""
+    category = next((c for c in categories if c.name == wanted), None)
+
+    recipes = list(_showcase_recipes(missing_only=missing_only, category=category))
+
+    # The one row to render open. Unreadable or unknown falls back to none of
+    # them rather than erroring: a filter is navigation, and the worst a stale
+    # link should do here is show the list it was a link into.
+    try:
+        open_pk = int(request.GET.get("row", ""))
+    except (TypeError, ValueError):
+        open_pk = None
 
     rows = []
-    if edit_mode:
-        sources = _dye_source_recipes()
-        for recipe in recipes:
-            initial = {
-                f"dye{i}": rd.dye_id
-                for i, rd in enumerate(recipe.recipe_dyes.all()[: RecipeDyesForm.SLOTS], start=1)
-            }
-            # Without this the box renders unticked on a flagged recipe, and
-            # the next Save on that row silently un-flags it.
-            initial["oven_dyed"] = recipe.oven_dyed
-            rows.append({
-                "recipe": recipe,
-                "form": RecipeDyesForm(initial=initial),
-                "edit_mode": True,
-                "dye_sources": sources,
-            })
-    else:
-        rows = [{"recipe": r, "edit_mode": False} for r in recipes]
+    for recipe in recipes:
+        maker = (
+            _recipe_row_context if recipe.pk == open_pk else _recipe_read_only_row
+        )
+        rows.append(
+            maker(recipe, missing_only=missing_only, category=category)
+        )
 
-    total = Recipe.objects.filter(is_active=True).count()
-    without = Recipe.objects.filter(is_active=True, recipe_dyes__isnull=True).count()
+    # Scoped to what is on screen. "91 of 162 have no dyes" printed over a
+    # list of forty is the page contradicting itself, and the number people
+    # act on is the one beside the list they are reading — the rule
+    # `private/colors/` pills and the close's banner already follow.
+    if category is None:
+        total = Recipe.objects.filter(is_active=True).count()
+        without = Recipe.objects.filter(is_active=True, recipe_dyes__isnull=True).count()
+    else:
+        in_table = _showcase_recipes(category=category)
+        total = in_table.count()
+        without = in_table.filter(recipe_dyes__isnull=True).count()
 
     return render(
         request,
         "scarves/recipe_showcase.html",
         {
             "rows": rows,
-            "edit_mode": edit_mode,
             "missing_only": missing_only,
+            "categories": categories,
+            "category": category,
             "total_count": total,
             "missing_count": without,
+            # Every control carries the rest of the state rather than
+            # resetting it, so switching table mid-edit doesn't drop you back
+            # to read-only and switching mode doesn't drop the table.
+            "url_all_recipes": _showcase_url(category=category),
+            "url_missing": _showcase_url(missing=True, category=category),
+            "url_every_table": _showcase_url(missing=missing_only),
+            "category_links": [
+                {
+                    "name": c.name,
+                    "on": category is not None and c.pk == category.pk,
+                    "url": _showcase_url(missing=missing_only, category=c),
+                }
+                for c in categories
+            ],
         },
     )
 
@@ -1022,39 +1331,81 @@ def recipe_restore(request, pk):
     return render(
         request,
         "scarves/partials/recipe_row.html",
-        _recipe_row_context(request, recipe),
+        {"row": _recipe_read_only_row(recipe)},
     )
 
 
 @login_required
 def recipe_row(request, pk):
-    """One showcase row, re-rendered. `?source=<pk>` prefills the pickers from
-    another recipe's dyes without saving; no source re-renders the row as it
-    stands (used by Cancel)."""
+    """One showcase row, re-rendered — **closed unless `?edit=1` asks.**
+
+    Closed is the default because of what a dropped parameter does either
+    way: lose it here and you get the row as it reads on the page, which is
+    harmless. Were the editor the default, the same slip would spring five
+    pickers open on a row nobody asked to change.
+
+    That makes this one endpoint both halves of the toggle. Edit opens it,
+    Reset closes it — and closing *is* the reset, because nothing on the row
+    was written: the pickers hold a form, and a form thrown away leaves the
+    recipe exactly as the closed row already shows it. Reset used to
+    re-render the pickers back to their stored values, which is the same
+    outcome reached by a longer route, and it left the row looking like it
+    was still mid-edit.
+    """
     recipe = get_object_or_404(
         Recipe.objects.prefetch_related("recipe_dyes__dye", "finished_products__images"),
         pk=pk,
     )
-    source = None
-    source_pk = request.GET.get("source")
-    if source_pk:
-        source = (
-            Recipe.objects.filter(pk=source_pk)
-            .prefetch_related("recipe_dyes__dye")
-            .first()
-        )
-
-    return render(
-        request,
-        "scarves/partials/recipe_row.html",
-        _recipe_row_context(request, recipe, source=source),
+    maker = (
+        _recipe_row_context if request.GET.get("edit") == "1" else _recipe_read_only_row
     )
+    return render(
+        request, "scarves/partials/recipe_row.html", {"row": maker(recipe)}
+    )
+
+
+def _save_editor_bands(request, recipe):
+    """Store the rainbow chips that rode in on the recipe row's Save.
+
+    **This will not manufacture a confirmation out of silence.** Ticking
+    nothing on an unconfirmed colorway leaves it unconfirmed, because an empty
+    answer here is indistinguishable from somebody who opened the row to fix a
+    dye and never looked at the chips — and `confirmed with no bands` is a
+    state this app has been in before, arrived at by giving up, which prints
+    the colorway in no section of the reference sheet at all.
+
+    The deliberate "this colorway belongs in no section" answer still exists;
+    it is `private/colors/`, where Confirm is the only button and pressing it
+    means exactly that.
+
+    A colorway already confirmed keeps its stamp, so saving dyes on one is
+    idempotent rather than a quiet un-confirmation.
+    """
+    picked = colorbands.sort_bands(
+        b for b in request.POST.getlist("bands") if b in colorbands.BAND_SLUGS
+    )
+    if not picked and not recipe.bands_confirmed:
+        return
+    recipe.color_bands = picked
+    recipe.bands_confirmed_at = timezone.now()
+    recipe.save(update_fields=["color_bands", "bands_confirmed_at"])
 
 
 @require_POST
 @login_required
 def recipe_dyes_save(request, pk):
-    """Save one recipe's dyes and hand back the re-rendered row."""
+    """Save one recipe's dyes, its oven flag and its rainbow bands.
+
+    One Save for all three because they are one pass down one list: the person
+    filling in a colorway's dyes is looking at the colorway, which is who can
+    say which box it is made in and which sections of the sheet it prints in.
+    Three controls with three buttons would be three trips through 162 rows —
+    the argument the oven checkbox already made, extended to the chips.
+
+    What keeps that from collapsing two questions into one button is
+    `_save_editor_bands`: the bands are only written when somebody ticked
+    something, so a save that was about the dyes says nothing about the bands.
+    """
     recipe = get_object_or_404(Recipe, pk=pk)
     form = RecipeDyesForm(request.POST)
 
@@ -1065,17 +1416,25 @@ def recipe_dyes_save(request, pk):
         return render(
             request,
             "scarves/partials/recipe_row.html",
-            _recipe_row_context(request, recipe, form=form),
+            {"row": _recipe_row_context(recipe, form=form)},
         )
 
     form.save(recipe)
+    _save_editor_bands(request, recipe)
     recipe = Recipe.objects.prefetch_related(
         "recipe_dyes__dye", "finished_products__images"
     ).get(pk=pk)
+    # Closed, not back to the pickers. Two reasons, and the second is the one
+    # that matters: a saved row that reappears identical is the weakest
+    # possible confirmation, where the closed row shows the dye chips and
+    # swatches that were just recorded — you check the save by looking at the
+    # colours. And a pass down 162 rows that left every editor open would put
+    # back, one row at a time, exactly the 30 KB-per-picker weight this page
+    # stopped paying up front. Editing again is one click.
     return render(
         request,
         "scarves/partials/recipe_row.html",
-        _recipe_row_context(request, recipe, saved=True),
+        {"row": _recipe_read_only_row(recipe, saved=True)},
     )
 
 
@@ -4684,7 +5043,10 @@ def production_upload(request):
     held = request.session.get("production_photo") or {}
 
     if request.method == "POST" and "sheet" in request.FILES:
-        scan = sheetscan.read_sheet(request.FILES["sheet"].read())
+        upload = request.FILES["sheet"]
+        data = upload.read()
+        scan = sheetscan.read_sheet(data)
+        _log_sheet_photo(upload, data, scan)
         held = {
             "error": scan.error,
             "read": len(scan.marks),
@@ -4710,6 +5072,56 @@ def production_upload(request):
     return render(request, "scarves/production_upload.html", {"photo": held})
 
 
+def _log_sheet_photo(upload, data, scan):
+    """Log the photograph. **This is logging, and every property follows.**
+
+    Naming it right settles the design questions in one go, which is why it is
+    worth saying plainly: it is not a feature, not a record, and not state.
+    A scan is optics — focus, curl, glare, the angle a page was lying at — and
+    "it didn't work" with the evidence discarded is a bug report nobody can act
+    on. So the input gets logged, exactly like a request body would be.
+
+    Everything else is what logging is:
+
+    * **Nothing points at it.** No model, no row, no admin. A pointer would be
+      application state describing a diagnostic, and it would go stale the
+      moment the bucket's lifecycle rule deleted the object under it.
+    * **The sink owns retention**, not the app — `set_bucket_lifecycle` puts
+      the week on the bucket. A log that has to be rotated by the program that
+      writes it stops being rotated the first time that program stops running.
+    * **It has a level**, which is `KEEP_SHEET_PHOTOS`, and turning it off
+      changes nothing else because nothing reads it back.
+    * **It never affects the request.** A bucket having a bad afternoon must
+      not cost somebody the reading of a sheet they are standing there
+      holding, so the failure is swallowed and logged.
+    * **The line and the object carry the same summary**, so the ordinary log
+      is usually enough on its own and names the object to fetch when it
+      isn't. A log line pointing at a blob you have to open to learn anything
+      is half a log.
+
+    The key is `sheetscan.photo_key` and holds what a row would have.
+    """
+    if not getattr(settings, "KEEP_SHEET_PHOTOS", False):
+        return
+    summary = (
+        f"width={scan.width} rows={len(scan.marks)} filled={len(scan.filled)} "
+        f"unsure={len(scan.unsure)} token={scan.qr_token or '-'}"
+        + (f" error={scan.error}" if scan.error else "")
+    )
+    try:
+        name = upload.name or ""
+        suffix = name[name.rfind("."):] if "." in name[-6:] else ".jpg"
+        key = default_storage.save(
+            sheetscan.photo_key(scan, timezone.now(), suffix), ContentFile(data)
+        )
+        logger.info("sheet photo %s  %s", key, summary)
+    except Exception:
+        # Still says what was read. The picture is the better evidence and the
+        # summary is the evidence that survives the sink being unreachable —
+        # which is the moment somebody most wants to know what happened.
+        logger.exception("could not keep the sheet photo  %s", summary)
+
+
 def _hand_off_photo(request, held):
     """Send a read photo to its run's page, pre-ticked. None if it can't be."""
     token = (held.get("token") or "").strip()
@@ -4724,8 +5136,13 @@ def _hand_off_photo(request, held):
         ),
         None,
     )
-    if run is None:
+    if run is None or run.is_revoked:
+        # Named either way, because "that sheet's code was revoked" and "that
+        # is not a code I know" both end the same way for somebody standing
+        # there with a photo — and neither should read as the upload silently
+        # doing nothing.
         held["unknown_run"] = token[:40]
+        held["revoked"] = bool(run is not None and run.is_revoked)
         request.session["production_photo"] = held
         return None
 
@@ -4785,6 +5202,23 @@ def production_run(request, token):
         ),
         token=token,
     )
+
+    # **Revoked says so, rather than 404ing.** The code on the paper is right
+    # and the door is shut, which is a different thing from a code that was
+    # mistyped — and only one of them is worth trying again. A sheet reading
+    # "no such run" sends somebody to squint at `18-tranquil-bobcat` for a
+    # character they got wrong, which is a hunt with nothing at the end of it.
+    #
+    # It confirms to anybody holding the code that the code was real. That is
+    # the trade, and it is the right way round: the person most likely to be
+    # holding it is the crew, and the door is shut either way.
+    if run.is_revoked:
+        return render(
+            request,
+            "scarves/production_revoked.html",
+            {"run": run},
+            status=410,
+        )
 
     if request.method == "POST":
         # **Calling baths off is a separate submit from accepting them, and

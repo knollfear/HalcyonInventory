@@ -171,6 +171,92 @@ The site map is for pages a user can GET and see. Omitting the decorator keeps
 those endpoints off the map automatically (no metadata = skipped). Use
 `show_in_index=False` only when a GET page should exist but stay hidden.
 
+### The pinned pages: a shortcut past the hub, never a ranking
+
+Hub-and-spoke is right for a directory of thirty-odd pages nobody memorises
+and wrong for the four somebody opens every day — those cost two clicks each,
+forever, and the second click is a page nobody wanted to look at. So
+`base_internal.html` carries a few pinned pages beside the `← Site map` link
+that was already in the corner. `scarves/nav.py` holds all of it.
+
+**The pins grow leftward and the map link keeps its exact corner.** That is
+the whole reason they go on that end: whatever anybody has already learned
+about where the way out is stays true. The page you are on renders dimmed
+rather than dropped, because a set that silently loses whichever one you are
+looking at changes shape as you move through it, which is the thing a fixed
+nav exists not to do.
+
+**Pinned, never ranked**, and this is the load-bearing decision. The obvious
+version counts visits and promotes the top four on its own. It fails four ways:
+
+- **It is self-reinforcing.** A page in the top four is one click away, so it
+  gets opened more, so it stays; one that drops out becomes two clicks away
+  and gets opened less. The set freezes around whatever the first week looked
+  like.
+- **It counts the wrong thing.** A page opened forty times in an afternoon
+  because it is awkward outranks one somebody depends on weekly. The restock
+  board already says this out loud — five passes in five minutes is a good
+  afternoon — which is why it counts nothing.
+- **Navigation that reorders itself cannot be learned.** The value of a fixed
+  nav is that the third pill is always the third pill; a set that reshuffles
+  costs a read on every glance, which is worse than the site map it was meant
+  to save you from.
+- **It is `par` again**: a derived number that reads as a fact because it came
+  out of a counter, with nowhere to disagree with it. See *The app advises, a
+  person decides*.
+
+**The counter still exists, one step back.** Visits are counted onto a cookie
+by `NavMiddleware`, and the count prints beside each page on
+`private/navigation/` as evidence for a decision somebody makes by ticking a
+box. Fill the form in, a person confirms — the same bargain `colorbands` makes
+with the rainbow sheet. It orders that one list and reads nowhere else; it
+never chooses a pin, and `test_the_count_never_chooses_what_is_pinned` is the
+pin on that.
+
+Four things are excluded from the tally, and each is a different way it would
+stop meaning "pages she opens": a non-200 or non-GET (a login redirect is not
+a visit), a route the site map doesn't list (so POST endpoints and the webhook
+never appear in a list of pages to pin), **an htmx fragment** — the recipe
+showcase would otherwise out-count every page in the app by the width of an
+afternoon's dye entry — and an anonymous request. It is middleware rather than
+a call per view because thirty-odd views each having to remember is the rule
+this app runs on: never add a step that has to be remembered to be correct.
+
+**A `?nav=` link is the dashboard, and there is nothing stored.**
+`?nav=recipe_showcase:Recipes,color_classify:Colours` sets the pins for whoever
+opens it, so several links kept in a note are several purpose-made navs — one
+for a dye day, one for a close — with no admin screen and nothing to manage.
+The optional `:Label` exists because `@page_meta` titles are written for a site
+map card and a pill has room for a word; `encode` drops a label that is just
+the title again, so a renamed page follows its new name rather than being
+frozen under the one it had the day the link was made.
+
+**Route names, never paths.** There is no 404 here, so a stale path in a nav
+would land on the public map looking like a working page. A route name either
+reverses or it does not — and one that does not is **dropped and named** on the
+navigation page, never quietly, because a nav that came back a pill short with
+no explanation is the collection sheet's missing-dye problem: you act on the
+list and nothing says it was incomplete.
+
+**Both doors land on `private/navigation/`, which is the only writer.** A link
+arrives there rather than applying silently from wherever it was opened, so the
+page can *say what it did* and offer `?nav=forget` — the crew cookie's argument
+that a pre-filled thing nothing mentions is unrecoverable by the person looking
+at it.
+
+**What can be pinned is what the staff site map lists**, derived rather than
+kept in a list here, which excludes two groups for free: anything with no
+`@page_meta`, and anything parameterised, since it reverses to nothing.
+`secret/` pages are pinnable — they are on the staff map already — and this
+leaks nothing, because `restock_board`, `hours_entry` and `booth_photo` extend
+`base_public.html`, so no staff nav ever renders on a page the crew reach.
+
+The cookies are plain where `crew.py` signs its own. Nothing here is a claim
+about identity or permission: every page a pin points at is `@login_required`
+in its own right, so a forged cookie buys a link to a page the browser could
+already reach. Defensive parsing is what actually matters, and a malformed
+cookie gives an empty nav rather than an error on every staff page.
+
 ### Rule: every `foo/<int:some_id>/` page needs a `foo/` picker
 
 If you add a GET-able page at `foo/<int:some_id>/`, **always** add `foo/` as a
@@ -207,7 +293,8 @@ unauthenticated and missing from the map. `SiteMapTests` guards this.
 
 ## Dye entry: the list you can read, and the dye that isn't on it
 
-The dye boxes on `private/quick-recipes/` and `private/recipes/?edit=true`
+The dye boxes on `private/quick-recipes/` and on an open row of
+`private/recipes/`
 are one control, `DyeSelect` plus `partials/dye_picker.html`. Two failures
 put it there, and both are quiet.
 
@@ -368,6 +455,13 @@ Two judgements are baked in and are not bugs:
   recipe in stock reads as something else too (`turq-mid-black`,
   `grey-forest-navy`), and nobody looks for those under grey.
 
+**There are two places to confirm bands now**, and they differ in one
+deliberate way. `private/colors/` is the dedicated pass, where Confirm is the
+only button and a suggestion therefore arrives **pre-ticked**. The recipe
+showcase's editor row carries the same chips beside the dyes, where Save is
+about the dyes, so a suggestion arrives **unticked** and ticking nothing leaves
+the colorway unconfirmed. See *`private/recipes/`: one editor open at a time*.
+
 ### Two axes on the confirmation page
 
 `private/colors/` filters on **confirmed-or-not** and **has-an-active-product
@@ -461,7 +555,7 @@ finished products stay active, so `production.candidates()` and
 *existed*, not that anybody still dyed it. The symptom was a dye room sent to
 make a colour somebody had decided to stop making, with nothing anywhere
 saying why. Both now filter `recipe__is_active=True`; the reference sheets and
-label runs always did. `Retire` on each row of `private/recipes/?edit=true` is
+label runs always did. `Retire` on each open row of `private/recipes/` is
 the button, and it collapses the row to a strip with an **Undo** rather than
 letting it vanish — a row that disappeared is indistinguishable from a click
 that never arrived, and this one sits beside Save on a list a couple of
@@ -598,6 +692,181 @@ three blanks it covered; **don't build it.** Recovering which entries on which
 cards belonged to one session means collating dates across a stack by hand
 before typing anything, which is more work than the typing and produces a
 grouping nothing downstream reads. Write the dates off the card and move on.
+
+## `private/recipes/`: one editor open at a time, and editing is not a mode
+
+The colorway list, and where the dye backlog gets filled in. **Every row
+carries its own Edit button and the page has one state.** It used to have two,
+behind `?edit=true`, and that was a decision demanded before the job: you came
+to look at a colorway, found a dye you wanted to change, and had to go back to
+a pill and reload the page into a different version of itself to be allowed to
+touch it. Nothing about a mode was earning that — the pickers are per row
+either way.
+
+**What the mode was really protecting was the render cost, and that is fixed
+at the root instead.**
+
+Worth recording the arithmetic, because the instinct is to look for a repeated
+query and the repeated query was the small half. A `DyeSelect` offers the whole
+catalogue, and each `<option>` carries the colour and search text the
+type-ahead reads off it — about **225 bytes**, so one picker is **~30 KB** and
+a row is five of them. 162 rows is **810 copies of the same list**: 121,000
+options, and 810 identical `SELECT * FROM dye` because Django's
+`ModelChoiceField.queryset` setter calls `.all()`, which clones and drops the
+result cache.
+
+**The queries were noise and the markup was everything.** The profile put ~97%
+of the request inside form-widget rendering. And 27 MB gzips to 1.15 MB, so the
+wire was never the problem either — what hurt was the two things that don't
+compress: the server CPU building the options, and the browser building 121,000
+DOM nodes.
+
+So **a row renders its editor only when asked for**. Opening one is an htmx
+swap of `recipe_row`, or `?row=<pk>`, which the Edit control carries as its
+`href`. Measured, at the real catalogue size:
+
+| | before | after |
+|---|---|---|
+| the list | 13.58s, 819 queries, 27 MB | 0.04s, 9 queries, 0.23 MB |
+| one row open | — | 0.11s, 15 queries, 0.40 MB |
+
+**`recipe_row` is closed by default and opens on `?edit=1`**, which makes one
+endpoint both halves of the toggle. Closed is the default because of what a
+dropped parameter does either way: lose it and you get the row as the page
+already reads, which is harmless, where an editor default would spring five
+pickers open on a row nobody asked to change.
+
+**Cancel closes the row, and closing *is* the reset.** Nothing on an open row
+was written — the pickers hold a form, and a form thrown away leaves the recipe
+exactly as the closed row shows it. It used to re-render the pickers at their
+stored values, which reached the same place by a longer route and left the row
+looking like it was still mid-edit.
+
+**There is no copy-dyes-from picker.** It sat above the dye boxes on every open
+row, offering to prefill from another colorway, and it answered a question
+nobody was asking there: the row is for *this* colorway, and a second recipe
+named on it read as though it were part of the record.
+
+**`?row=` is parity, not a promise.** Save and Reset here have always been htmx
+buttons, so a script-blocked visitor could never write a dye on this page
+anyway. What the parameter preserves is that the way in is a *link with an
+`href`* — which cannot fail the way a click handler on a table that got
+reworked underneath it can, the bug the production picker already has on record
+— and that a row is reachable and readable without the script. The dye form
+that really does post without one is `private/quick-recipes/`.
+
+**A saved row comes back closed**, the same as a cancelled one. Two reasons,
+and the second is the one that matters: pickers that reappear identical are the
+weakest confirmation there is, where the closed row shows the dye chips and
+swatches just recorded, so the save is checked by looking at the colours. And a
+pass down 162 rows that left every editor open would put back, one row at a
+time, exactly the weight the page stopped paying up front.
+
+The htmx and dye-picker scripts load on every visit rather than behind a mode,
+because any row can be opened at any time. No picker is on the page until one
+is, so the cost is the script itself and nothing else.
+
+**The row partial takes one `row` variable**, not eight loose ones on the
+`{% include %}` tag. The failure mode of the loose list is a key added in the
+view and forgotten on the tag, which renders as an empty string rather than an
+error — a missing chip row would look exactly like a colorway with no bands.
+
+### The rainbow chips ride the row's Save, and arrive unticked
+
+The bands are editable here as well as on `private/colors/`, because the
+colorway is in front of you and its dyes are in the boxes above — that is the
+moment somebody can answer which sections of the sheet it prints in. One Save
+for dyes, oven flag and bands: the same argument the oven checkbox already
+made, which is that three controls with three buttons is three trips through
+162 rows.
+
+**But the classifier's reading is shown unticked here, and that is the
+difference from the colour page.** There, Confirm is the only button, so a
+pre-ticked suggestion is answering the page's one question. Here Save's subject
+is the dyes, so a pre-ticked guess would be confirmed by a click aimed at
+something else — and a wrong band is the silent kind of wrong. A dashed chip
+therefore means "the dyes read as this, tick it if that's right" rather than "a
+machine has already ticked this for you". Solid ticks are only ever what a
+person stored.
+
+**Ticking nothing leaves the colorway unconfirmed.** `_save_editor_bands` will
+not manufacture a confirmation out of silence: an empty answer here is
+indistinguishable from somebody who opened the row to fix a dye and never
+looked at the chips, and *confirmed with no bands* is a state this app has been
+in before, arrived at by giving up, which prints the colorway in no section at
+all. The deliberate "this belongs in no section" answer still exists — it is
+`private/colors/`, where Confirm is the only button and pressing it means
+exactly that. A colorway **already** confirmed keeps its stamp and can be
+cleared back to nothing, so saving dyes on one is idempotent rather than a
+quiet un-confirmation.
+
+The caption under the chips is drawn **only while there is a guess on screen to
+explain**. A colorway somebody has already ruled on is not being asked
+anything, and a line of help under its own ticks reads as a warning about them.
+
+A closed row draws **confirmed bands only**, and badges the rest `bands
+unconfirmed`, for the same reason the reference sheet skips them: a chip nobody
+agreed to is indistinguishable from one somebody did. Showing it on the list is
+what makes the work findable — a page that offers the function without saying
+which rows still need it makes you open every row to find out.
+
+**Bands and dyes share one column, and the dye's hex rides inside its own
+pill.** There were three columns for this: dye names, dye swatches, and later
+the bands. The swatch and its name sat in *different table cells*, so a
+five-dye recipe asked somebody to count across a gap to work out which colour
+was which — inside the pill there is nothing to line up. And they answer one
+question between them, so they are one column: **bands first, because they are
+the answer, then the dyes, which are the ingredients.**
+
+**The band chips are filled and the dye pills are not**, which is what keeps
+them apart at a glance now that they sit together — near-identical markup in
+adjacent cells became near-identical markup in the same cell. It is also the
+language the editor already speaks: a filled chip is one a person ticked. The
+dots are deliberately large for their pills, because the colour is the thing
+being read on a page about colour and the name beside it is the caption. A dye
+with no hex on file still gets hatching rather than a colour, same as in the
+picker — a placeholder swatch is a guess somebody then reads off the screen as
+fact.
+
+**Edit gets its own column at the trailing edge**, so the button is in the same
+place on every row. Above the chips it moved down the cell as a colorway gained
+dyes.
+
+**Render only `form.dye_fields` in the pickers, never `{% for field in form %}`.**
+That renders every field, and `oven_dyed` is a declared attribute while the dye
+slots are added in `__init__` — so Django orders it first, and the row came out
+with a stray checkbox in front of the dye boxes which was the *same field* the
+oven label below already renders. Two inputs sharing one name is worse than
+untidy: unticking the visible one while the stray stays ticked still posts
+`on`.
+
+### Which table at the stall
+
+`?category=Yarn` narrows the list to colorways with an active product on that
+table. Category means which table, which is why the reference sheets print per
+category.
+
+**It narrows which colorways are listed and never which products a listed
+colorway shows.** A colour dyed on a yarn and on a silk is one colour: it
+appears under both tables, and on either of them the row shows the whole
+colorway. Filtering *within* the row would put a different set of products
+under the same recipe name depending on how you arrived, with nothing on the
+row to say so.
+
+The usual four rules apply, and each one is a mistake this app has made
+somewhere else: the pills are **derived from the rows** rather than a list of
+names, so a third table needs no code; a list whose colorways all sit on one
+table **draws no pills**, because a filter offering one choice is furniture;
+**counts are scoped to what is on screen**, since "91 of 162" printed over a
+list of forty is the page contradicting itself; and **every control carries the
+rest of the state** — the mode pills, the table pills and every row's
+`edit_row_url` — built in one `_showcase_url` because four templates each
+remembering to re-add three parameters is four chances to drop one silently.
+The `.distinct()` matters: a colorway on three yarns joins three rows, and
+without it the page prints it three times, each separately editable. Verify
+that by iterating, never by counting — `.count()` wraps a `distinct()` in a
+subquery and reports the right number while the query returns a row per match,
+which is how the season page shipped eleven thousand pills.
 
 ## The recipe page: one colorway, and which blank you're reading
 
@@ -786,6 +1055,31 @@ a row that already has a log — same failure as the Square webhook and
 redelivered orders, same fix. Un-ticking is deliberately **not** the inverse:
 once stock has moved, taking it back is an inventory adjustment with a reason
 attached, not a checkbox on a page with no login.
+
+**A printed code can be killed two ways, and they are different acts.** Edit
+the token in the admin and the old code stops resolving at all — use it when
+the sheet is finished with. **Revoke** it (`revoked_at`, an admin action) and
+the token stays on the record, the door shuts, and the crew's page returns 410
+saying so — use it when somebody may still be holding the paper, because "that
+code has been revoked" is a sentence where "no such run" is a hunt for a
+character they think they mistyped. The token was read-only until somebody
+needed to kill one; orphaning the paper is a real cost and *exactly* what is
+wanted when a code has got out, and a rule that only stops the deliberate case
+is not a guard. Neither touches the work: baths are still accepted and
+cancelled from the staff page, and `is_revoked` is deliberately outside the
+four run states, so a revoked sheet's pending baths go on being subtracted
+from the plan.
+
+Worth knowing what a leaked token is worth, since it decides how much any of
+this matters: the code is `NN-adjective-animal` over 104 × 100 × 100 = **1.04M
+combinations, 20 bits**. With five sheets live that is one in 208,000 a guess
+— a few hours of scripted requests for a coin flip. It stays words rather than
+a UUID because somebody types it off paper when the QR won't read, which is
+the entire reason the fallback exists, and because what a guess wins is
+production recorded against one sheet: visible on that sheet's own page and
+correctable. A UUID would change that arithmetic and nothing about the failure
+that actually happened, which was a code printed on a page somebody
+photographed.
 
 **One QR for the sheet, not one per row.** Twenty codes would be twenty scans
 to record what is one session's work. The token in that URL is what
@@ -1097,7 +1391,7 @@ types, and the gap is the number the page is actually about.
 **`Recipe.oven_dyed` is the axis, because the technique is a property of the
 colour.** An oven colorway is oven-dyed on every blank it is dyed on, so
 flagging the recipe answers it once instead of a few hundred times. It is a
-checkbox on each row of `private/recipes/?edit=true`, riding the Save that is
+checkbox on each open row of `private/recipes/`, riding the Save that is
 already there — the person filling in a colorway's dyes is the person who
 knows which box it is made in, and a control with its own button would be a
 second trip through every row. It is `list_editable` in the admin too.
@@ -1264,8 +1558,8 @@ baths aren't covered and name the recipes.
 The two say it differently on purpose. **On paper it's a warning**, because
 the person at the shelf needs to know the list is short. **On screen it's an
 invitation**: the missing recipes are listed by name and linked to
-`recipe_showcase?edit=true&missing=true`, which can copy dyes from a recipe
-that already has them. A count reads as a standing chore; six names read as
+`recipe_showcase?missing=true`, which is the backlog with a dye picker one
+click into each row. A count reads as a standing chore; six names read as
 an afternoon with a payoff attached, and every one added shows up on every
 sheet afterwards. That framing is the point — the backlog gets filled in by
 somebody with other demands on their time, so the app's job is to make the
@@ -1342,6 +1636,57 @@ rows and leaving others. So the run page reports how many rows it read
 against how many are on the sheet: a count of what was found reads as a
 complete answer unless something says what was missed.
 
+**Decode three times and pool the findings**, because the passes are good at
+different things and no single one of them is best. Measured on a real 3024px
+iPhone photo of run 5:
+
+| pass | rows | QR |
+|---|---|---|
+| as-is | 11 | ✗ |
+| 2× lanczos | **12** | ✓ |
+| 2× lanczos + unsharp | 1 | ✓ |
+
+Four decisions come out of that table:
+
+- **The plain enlargement is the workhorse**, and this is the surprise. It was
+  the only pass that read the whole sheet, and it recovered a QR the
+  native-resolution pass missed entirely — which on the upload page is the
+  difference between a photo that names its run and one that asks somebody to
+  type a code off the paper.
+- **Sharpening wrecks row barcodes** — twelve down to one. It survives as a
+  third pass only because it is what rescued the QR out of a 1308px
+  screenshot where every row was hopeless anyway, and pooling lets it
+  contribute that without taking anything away.
+- **Stopping at the first pass that finds a row is wrong.** That is pass one,
+  with eleven rows and no QR, so an early exit throws away both the twelfth
+  row and the only thing that names the sheet.
+- **A row is claimed when it *scores*, not when it decodes.** A code can
+  decode on one pass and still have its box fall outside the frame or refuse
+  to score; retiring the code at the moment it decoded means the enlargement
+  that would have read it properly never gets its turn. That was two of twelve
+  rows.
+
+Each pass carries the scale it is drawn at, because pooling makes every pixel
+coordinate ambiguous otherwise: a row found at 2× reports a `top` twice the
+size of the same row at 1×, and sorting pooled marks on that puts row one in
+the middle of the page.
+
+**Resolution is a floor nothing can lift.** A 7.7 mil module needs about two
+pixels to survive and a sheet is 8.5in across, so a photo under ~2200px wide
+cannot hold a readable row barcode however it is processed — measured on a
+1308px picture where the modules landed on 1.18px and **not one of thirteen
+decode attempts read a single row**, 4× upscaling and sharpening included.
+Interpolation cannot invent a sample that was never taken. `too_small_for_rows`
+says so, because "couldn't read that photo" and "that photo is too small to
+hold a row barcode" send somebody to do completely different things — retake
+it, or stop retaking it and tap the boxes.
+
+**The QR alone is a good outcome, not a failure.** `named_but_unread` is its
+own state: the photo's job on the upload page is to say which sheet this is,
+and the boxes are the bonus. A screenshot of a sheet reads no rows at all and
+still lands you on the right run with the boxes ready to tap, which is the
+whole flow minus the shortcut.
+
 When the QR itself can't be read, the upload page asks for the code printed
 beside it (`42-brisk-wombat` — words, because someone types this off paper;
 `normalize_token` makes case and punctuation irrelevant). That is nearly
@@ -1350,8 +1695,34 @@ than an interrogation. Rows in the photo that aren't on the named run are
 reported too — expected to be empty forever, but the matched marks would
 otherwise land there unremarked.
 
-The photo is **not stored**. It's read in the request and discarded — an
-input to a form, not a record. The record is the inventory log.
+**The photo is not stored, unless `KEEP_SHEET_PHOTOS` says otherwise.** It is
+an input to a form, not a record — the record is the inventory log.
+
+**That toggle is a temporary measure and is meant to be turned off again.** It
+is on to collect real photographs of real sheets, because tuning the scanner
+means holding the thing that failed: a scan is optics — focus, curl, glare,
+the angle a page was lying at — and "it didn't work" with the input already
+discarded is a bug report nobody can act on. Once there are enough to look at,
+set it to `0` and the page behaves exactly as it always did.
+
+**It is built as logging, which is what keeps it disposable.** Nothing in the
+database points at a stored photo — no model, no row, no admin — so turning
+the toggle off leaves nothing behind and nothing to migrate away. What a row
+would have carried is in the key instead: `sheetscan.photo_key` gives
+`sheet_photos/20260909T220134-18-tranquil-bobcat-w3024-r11-f9-u2.jpg`, so a
+listing of the prefix sorts into time order and the ones worth opening say so
+in their own names (`r0` read nothing, `unnamed` decoded no QR). The same
+summary goes in the log line, because a log line pointing at a blob you have
+to open to learn anything is half a log. Writing it can never affect the
+request, so a bucket having a bad afternoon cannot cost somebody the reading
+of a sheet they are standing there holding.
+
+**Retention belongs to the bucket, not the app.** `set_bucket_lifecycle`
+expires the prefix after a week, so the photos age out whether or not anybody
+remembers the toggle — a log rotated by the program that writes it stops being
+rotated the first time that program stops running. **S3 has no per-object
+TTL**: expiry is a bucket rule matched on a prefix, which is why these have a
+prefix of their own.
 
 **Marking is positive only.** Tick what you did; never cross out what you
 didn't. Pen through a Code128 sometimes still decodes and sometimes doesn't,

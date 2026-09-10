@@ -137,7 +137,12 @@
     {% if not recipe.is_active %}<span class="inactive">Inactive recipe</span>{% endif %}
     <span class="muted small">
       <a href="{% url 'recipe_showcase' %}">All recipes</a>
-      · <a href="{% url 'recipe_showcase' %}?edit=true">Edit its dyes</a>
+      {% comment %}
+      Straight to this colorway's own open row, not to the top of a list of a
+      hundred and sixty two. `?row=` is the address the Edit button on that
+      page builds, so both doors land in the same place.
+      {% endcomment %}
+      · <a href="{% url 'recipe_showcase' %}?row={{ recipe.pk }}#recipe-row-{{ recipe.pk }}">Edit its dyes</a>
     </span>
   </div>
 
@@ -174,7 +179,7 @@
   {% else %}
     <p class="empty">
       No dyes recorded yet.
-      <a href="{% url 'recipe_showcase' %}?edit=true">Add them on the showcase</a>.
+      <a href="{% url 'recipe_showcase' %}?row={{ recipe.pk }}#recipe-row-{{ recipe.pk }}">Add them on the showcase</a>.
     </p>
   {% endif %}
 

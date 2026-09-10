@@ -1,0 +1,30 @@
+{% extends "scarves/base_public.html" %}
+
+{% comment %}
+The crew reached a sheet whose printed code has been killed. Said plainly, and
+without a way back in: nothing on this page can be tapped, because the point of
+revoking is that this door is shut.
+{% endcomment %}
+
+{% block title %}That code has been revoked{% endblock %}
+{% block heading %}That code has been revoked{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  .card { border: 1px solid #f0c8c4; background: #fdf2f1; }
+{% endblock %}
+
+{% block content %}
+  <div class="card">
+    <p>
+      The code on that sheet — <strong>{{ run.token }}</strong> — no longer
+      opens run {{ run.pk }}. It was switched off on
+      {{ run.revoked_at|date:"d M Y" }}.
+    </p>
+    <p class="muted">
+      You have not lost the session. The baths on that sheet are still on the
+      run, and staff can accept or cancel them from the office. Ask for a
+      reprint if you need to report from paper again.
+    </p>
+  </div>
+{% endblock %}

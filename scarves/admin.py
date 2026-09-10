@@ -6,6 +6,7 @@ from django.conf import settings
 from django.contrib import admin, messages
 from django.db.models import Count, Max, Q
 from django.template.response import TemplateResponse
+from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
@@ -638,9 +639,28 @@ class ProductionRunAdmin(admin.ModelAdmin):
     `CloseRun` makes for the same reason. Two things follow that are worth
     knowing before wanting the old behaviour back:
 
-    **The token is write-once.** It is printed on paper and encoded in that
-    sheet's QR code, and this app can rewrite neither — the same reasoning
-    that makes a SKU write-once.
+    **The token is editable, and it is the one field here that is.** It used
+    to be read-only on the reasoning that it is printed on paper and encoded
+    in a QR, so rewriting it orphans the sheet. That is a real cost and it is
+    not a reason to refuse: it is exactly what you want when a printed code
+    has got out — into a photograph, a public repository, a text message —
+    and the paper *should* stop working. There is no technical reason to
+    forbid it, and a rule that only stops the deliberate case is not a guard.
+
+    Two ways to make a printed code dead, and they are not the same act:
+
+    * **Type a new token here.** The old code stops resolving at all. Use it
+      when the sheet is finished with, or when you want no trace of the old
+      code anywhere.
+    * **Revoke the printed code** (the action below). The token stays on the
+      record, the door shuts, and the crew's page says so rather than 404ing.
+      Use it when somebody may still be holding the paper — "that code has
+      been revoked" is a sentence, where "no such run" is a hunt for a
+      character they think they mistyped.
+
+    Either way the staff side is unaffected: baths are still accepted and
+    cancelled from `private/production-sheet/<pk>/`, so a session in progress
+    is interrupted rather than lost.
 
     **Retiring a sheet is cancelling what is left on it**, on the run's own
     page, not deleting it here. That is also why there is no run-level
@@ -649,16 +669,65 @@ class ProductionRunAdmin(admin.ModelAdmin):
     """
     list_display = (
         "pk", "token", "created_at", "bath_count", "reported", "state",
-        "submitted_at", "submitted_by",
+        "door", "submitted_at", "submitted_by",
     )
-    list_filter = (("submitted_at", admin.EmptyFieldListFilter), "category")
+    list_filter = (
+        ("submitted_at", admin.EmptyFieldListFilter),
+        ("revoked_at", admin.EmptyFieldListFilter),
+        "category",
+    )
     search_fields = ("token", "note")
     ordering = ("-created_at",)
     readonly_fields = (
-        "token", "created_at", "submitted_at", "submitted_by", "category",
-        "included_overshoot", "note",
+        "created_at", "submitted_at", "submitted_by", "category",
+        "included_overshoot", "note", "revoked_at",
     )
     inlines = [ProductionRunRowInline]
+    actions = ["revoke_code", "restore_code"]
+
+    @admin.display(description="Code")
+    def door(self, obj):
+        return "revoked" if obj.is_revoked else "live"
+
+    @admin.action(description="Revoke the printed code")
+    def revoke_code(self, request, queryset):
+        """Kill the no-login door on these sheets.
+
+        **An action rather than an editable field**, and the difference is the
+        whole reason it can exist on a read-only admin. `token` stays
+        untypeable because rewriting one is always a mistake — it orphans the
+        paper it is printed on. Revoking is not a correction, it is a decision
+        somebody makes on purpose, so it gets a control that cannot be
+        arrived at by tabbing through a form.
+
+        **Revoked, not rotated.** A new token would leave the printed sheet
+        pointing at nothing and take the trail from paper to record with it.
+        This keeps every word of the run and shuts one door.
+
+        It shuts *only* that door: the staff page still accepts and cancels
+        baths, so a session in progress is interrupted rather than lost.
+        """
+        count = queryset.filter(revoked_at__isnull=True).update(
+            revoked_at=timezone.now()
+        )
+        self.message_user(
+            request,
+            f"{count} printed code(s) revoked. The sheets still exist and "
+            f"their baths can still be accepted from the staff page — only "
+            f"the crew's no-login link is shut. Reprint to hand out a working "
+            f"code.",
+        )
+
+    @admin.action(description="Put a revoked code back")
+    def restore_code(self, request, queryset):
+        """The inverse, because a mis-click on the action above is ordinary.
+
+        Free to offer for the same reason the close's cancel-undo is: nothing
+        was destroyed and nothing moved, so putting it back is the plain
+        opposite rather than a compensating entry.
+        """
+        count = queryset.filter(revoked_at__isnull=False).update(revoked_at=None)
+        self.message_user(request, f"{count} printed code(s) live again.")
 
     def has_add_permission(self, request):
         # A run exists because somebody printed a sheet. One typed in here

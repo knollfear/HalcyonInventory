@@ -30,6 +30,10 @@ urlpatterns = [
     # staff page, so it lives under private/ and the bare path points there.
     path("", RedirectView.as_view(pattern_name="index", permanent=False)),
     path("private/", views.index, name="index"),
+    # Which pages sit in the corner of every staff page. Beside the map
+    # because it is about the map: the shortcut past the hub, not a feature of
+    # any one page.
+    path("private/navigation/", views.navigation, name="navigation"),
 
     # --- Production ---
     path(

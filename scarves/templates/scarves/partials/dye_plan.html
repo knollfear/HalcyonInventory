@@ -59,7 +59,7 @@ attached rather than a standing chore.
         {% for name in plan.unrecorded %}<li>{{ name }}</li>{% endfor %}
       </ul>
       <p>
-        <a href="{% url 'recipe_showcase' %}?edit=true&amp;missing=true">
+        <a href="{% url 'recipe_showcase' %}?missing=true">
           Fill in the missing dyes →
         </a>
         Each one you add shows up here, and on every sheet after it.

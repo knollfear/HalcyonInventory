@@ -160,11 +160,40 @@ renders bare. BaseTemplateTests guards it.
   .btn-quiet:hover { background: #eef2f7; border-color: var(--accent); }
   .actions { margin-top: 18px; display: flex; align-items: center; gap: 12px; }
 
+  /* The pinned pages, and the way back. Both live in the corner rather than
+     at the foot of the page. Navigation here is hub-and-spoke — every staff
+     page is reached from the site map and left the same way — so on a long
+     table or a tall form the one link that is always wanted was the one
+     thing you had to scroll to the bottom to find.
+
+     The pins sit *before* the map link and grow leftward, so "← Site map"
+     keeps the exact corner it has always had. That is the whole reason they
+     go on this end: whatever anybody has already learned about where the way
+     out is stays true.
+
+     Chosen on private/navigation/ and never ranked by the app — see
+     scarves/nav.py for why a self-ordering nav is the `par` mistake. */
+  .navbar {
+      position: fixed; right: 18px; bottom: 18px; z-index: 30;
+      display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+      justify-content: flex-end; max-width: calc(100vw - 36px);
+  }
+  .navbar .back { position: static; right: auto; bottom: auto; }
+  .navpin {
+      font-size: 13px; text-decoration: none; color: var(--ink);
+      background: #fff; border: 1px solid #cfd6de; border-radius: 999px;
+      padding: 8px 14px; box-shadow: 0 2px 12px rgba(20, 40, 70, .16);
+      white-space: nowrap;
+  }
+  .navpin:hover { border-color: var(--accent); background: #eef2f7; }
+  /* The page you are on is a pill that would take you nowhere. Dimmed rather
+     than dropped: a set that silently loses whichever one you are looking at
+     is a set that changes shape as you move through it, which is the thing a
+     fixed nav exists not to do. */
+  .navpin.here { color: #8b929b; background: #f4f6f8; box-shadow: none; }
+
   /* The way back is pinned to the viewport rather than sitting at the foot
-     of the page. Navigation here is hub-and-spoke — every staff page is
-     reached from the site map and left the same way — so on a long table or
-     a tall form the one link that is always wanted was the one thing you
-     had to scroll to the bottom to find.
+     of the page.
 
      Bottom *right* because everything in this app's forms is left-aligned:
      `.actions` is a flex row from the start edge, and the map editor's
@@ -188,11 +217,11 @@ renders bare. BaseTemplateTests guards it.
      moment you look, which is the deal — but at the bottom of a page there
      is nothing left to scroll, so without this it would sit on the last row
      of a table or the note under a save button permanently. */
-  body { padding-bottom: 80px; }
+  body { padding-bottom: 110px; }
 
   /* Several staff pages get printed. A fixed element repeats on every sheet
      in some browsers, and a "← Site map" on paper is nothing to anybody. */
-  @media print { .back { display: none; } }
+  @media print { .navbar { display: none; } }
 {% endblock %}
 
 {% block body %}
@@ -208,5 +237,18 @@ renders bare. BaseTemplateTests guards it.
 
   {% block content %}{% endblock %}
 
-  {% block back %}<a class="back" href="{% url 'index' %}">← Site map</a>{% endblock %}
+  {% block back %}
+    <nav class="navbar" aria-label="Shortcuts">
+      {% comment %}
+      Pinned pages, then the map. Nothing here is ranked by the app: the set
+      is what somebody chose on private/navigation/, in the order they chose,
+      so the third pill is always the third pill.
+      {% endcomment %}
+      {% for pin in nav_pins %}
+        <a class="navpin{% if request.path == pin.url %} here{% endif %}"
+           href="{{ pin.url }}">{{ pin.label }}</a>
+      {% endfor %}
+      <a class="back" href="{% url 'index' %}">← Site map</a>
+    </nav>
+  {% endblock %}
 {% endblock %}

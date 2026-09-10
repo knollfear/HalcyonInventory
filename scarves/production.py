@@ -148,30 +148,31 @@ DYE_INSTRUCTIONS = (
 #: days — not because anything needs it back.
 WORK_INSTRUCTIONS = (
     ("Your working copy — yours to mark up however you like.", True),
-    ("Label the columns at the top if you want them named.", False),
+    ("The dyes for each bath are listed beside it.", False),
     ("Nothing here reports anything. The sheet to send back is the last one.", False),
 )
 
-#: How many stage boxes each bath gets on the working copy.
+#: How many boxes each bath gets on the working copy.
 #:
-#: **A count, not a list of names.** The obvious version of this printed
-#: DYED / DRIED / TAGGED / BAGGED across the top, and that is the app telling
-#: somebody how to do a job it does not do — the stages are hers, they vary
-#: by what is in the pot, and a printed name is an instruction whether or not
-#: it was meant as one.
+#: **One. It was four, and four was a guess.** The reasoning for a row of
+#: them was that a bath moves through stages over one to three days and paper
+#: holds that better than a phone by a sink does — which is true, and it does
+#: not follow that the app should decide how many stages there are. It never
+#: knew: the count was invented here, the boxes were deliberately left
+#: unlabelled *because* nothing could honestly name them, and a ruled line was
+#: printed over each column so somebody could name them herself. A column
+#: nobody asked for, headed by nothing, is not an invitation — it is four
+#: boxes to ignore per row and a wider sheet for the privilege.
 #:
-#: So the boxes are blank and there is a ruled line above each column for her
-#: to write her own heading, once per page. Nothing in the app stores what
-#: she writes, reads it back, or knows how many stages a bath "should" have.
-#: The one transition that matters to the count has its own box on the
-#: reporting sheet.
-WORK_BOXES = 4
+#: One box says the one thing the paper is for: this bath is done with. The
+#: sheet is still hers to mark up however she likes, and now there is room in
+#: the row for something she actually needs, which is what goes in the pot.
+WORK_BOXES = 1
 
-#: The work sheet's boxes. Smaller than the reporting sheet's tick box
-#: because nothing photographs them — they are read by the person who made
-#: the marks, standing over them.
+#: The work sheet's box. Smaller than the reporting sheet's tick box because
+#: nothing photographs it — it is read by the person who made the mark,
+#: standing over it.
 STAGE_BOX = 15
-STAGE_GAP = 9
 
 
 @dataclass
@@ -1291,8 +1292,7 @@ def render_sheet(run, return_url) -> bytes:
     # be carried to the shelf on its own.
     _draw_collection_page(pdf, run, return_url, rows, page_w, page_h)
     _draw_pages(pdf, run, return_url, rows, page_w, page_h, per_page,
-                instructions=WORK_INSTRUCTIONS, draw=_draw_work_row, qr=False,
-                headings=True)
+                instructions=WORK_INSTRUCTIONS, draw=_draw_work_row, qr=False)
     _draw_pages(pdf, run, return_url, lines, page_w, page_h, per_page,
                 instructions=BATH_INSTRUCTIONS, draw=_draw_line, qr=True)
 
@@ -1302,7 +1302,7 @@ def render_sheet(run, return_url) -> bytes:
 
 
 def _draw_pages(pdf, run, return_url, rows, page_w, page_h, per_page,
-                instructions, draw, qr, headings=False):
+                instructions, draw, qr):
     """One list of baths, paginated, with `draw` doing each row.
 
     The work sheet and the reporting sheet are the same rows in the same
@@ -1316,8 +1316,6 @@ def _draw_pages(pdf, run, return_url, rows, page_w, page_h, per_page,
                      page_count=pages,
                      instructions=instructions, qr=qr)
         y = page_h - PAGE_MARGIN - HEADER_HEIGHT
-        if headings:
-            _draw_stage_headings(pdf, page_w, y + 6)
         for index, row in enumerate(rows[start:start + per_page]):
             draw(pdf, row, start + index + 1, y, page_w)
             y -= ROW_HEIGHT
@@ -1508,39 +1506,20 @@ def _draw_header(pdf, run, return_url, page_w, page_h, page_no, page_count,
     pdf.drawRightString(page_w - PAGE_MARGIN, top - QR_SIZE - 24, return_url)
 
 
-def _stage_columns(page_w):
-    """Left edge of each stage box, right-aligned off the margin.
-
-    Shared by the row and the heading rule so the two cannot drift apart —
-    a heading over the wrong column is worse than no heading.
-    """
-    width = WORK_BOXES * STAGE_BOX + (WORK_BOXES - 1) * STAGE_GAP
-    start = page_w - PAGE_MARGIN - width
-    return [start + i * (STAGE_BOX + STAGE_GAP) for i in range(WORK_BOXES)]
-
-
-def _draw_stage_headings(pdf, page_w, y):
-    """A ruled line over each column, for her to name it herself.
-
-    Blank on purpose. Printing DYED / DRIED / TAGGED / BAGGED here would be
-    the app telling somebody how to do a job it doesn't do — the stages vary
-    with what is in the pot, and a printed name is an instruction whether or
-    not it was meant as one. A line is an invitation.
-
-    Once per page rather than once per sheet, because pages get separated.
-    """
-    pdf.setLineWidth(0.6)
-    for x in _stage_columns(page_w):
-        pdf.line(x - 2, y, x + STAGE_BOX + 2, y)
-    pdf.setLineWidth(1)
-
-
 def _draw_work_row(pdf, row, number, y, page_w):
-    """One bath on the working copy: what to make, and blank boxes.
+    """One bath on the working copy: what to make, what goes in it, one box.
 
-    No barcode and no tick box — nothing here is read by anything. What the
-    sheet is *for* is holding twenty baths at different points across three
-    days, which is a thing paper does well and a phone by a sink does not.
+    No barcode and no tick box that anything reads — the absence is the
+    feature, because it is what stops a marked-up working copy being
+    photographed and read as a report.
+
+    **The dyes are printed per bath, and that is what this row is for.** The
+    collection page already lists them pooled, which is the right shape for
+    one walk to the shelf and the wrong shape at the sink: standing over a pot
+    the question is what goes in *this* one, and the answer used to be on a
+    different page in a different order. A recipe with nothing on file says so
+    rather than printing an empty line — a blank there reads as "no dyes
+    needed", which is a bath somebody starts and cannot finish.
     """
     product = row.finished_product
     baseline = y - ROW_HEIGHT + 12
@@ -1554,9 +1533,48 @@ def _draw_work_row(pdf, row, number, y, page_w):
     pdf.setFont("Helvetica", 9)
     pdf.drawString(text_x, baseline + 2, product.raw_product.name)
 
+    # The one box, hard against the margin where the column of four used to
+    # start, so a stack of these sheets still fans with the boxes in line.
+    box_x = page_w - PAGE_MARGIN - STAGE_BOX
     pdf.setLineWidth(1)
-    for x in _stage_columns(page_w):
-        pdf.rect(x, baseline + 2, STAGE_BOX, STAGE_BOX)
+    pdf.rect(box_x, baseline + 2, STAGE_BOX, STAGE_BOX)
+
+    dyes = recipe_dye_names(product.recipe)
+    pdf.setFont("Helvetica" if dyes else "Helvetica-Oblique", 8)
+    text = ", ".join(dyes) if dyes else "no dyes on file"
+    # Bounded so a five-dye recipe cannot run under the box and out of the
+    # page. reportlab will happily draw past the margin and say nothing.
+    room = box_x - 8 - (text_x + 170)
+    pdf.drawString(text_x + 170, baseline + 8, _clipped(pdf, text, room))
+
+
+def recipe_dye_names(recipe):
+    """The dyes on a recipe, in slot order, for anything printing a bath.
+
+    One function because the sheet and `private/production-needed/` both ask
+    it and a second copy is how the paper and the screen come to disagree
+    about what goes in a pot.
+    """
+    if recipe is None:
+        return []
+    return [rd.dye.name for rd in recipe.recipe_dyes.all()]
+
+
+def _clipped(pdf, text, room):
+    """`text`, shortened with an ellipsis until it fits `room` points.
+
+    reportlab draws past the margin and off the page without complaining, so
+    nothing downstream would have told anybody the dye list was cut off —
+    it would simply have ended mid-word at the paper's edge.
+    """
+    if room <= 0:
+        return ""
+    font, size = pdf._fontname, pdf._fontsize
+    if pdf.stringWidth(text, font, size) <= room:
+        return text
+    while text and pdf.stringWidth(text + "…", font, size) > room:
+        text = text[:-1]
+    return (text + "…") if text else ""
 
 
 def _draw_line(pdf, line, number, y, page_w):

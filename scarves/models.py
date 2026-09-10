@@ -1557,7 +1557,33 @@ class ProductionRun(models.Model):
         help_text=(
             "The sheet's code. Rides in the crew's return URL, prints as a QR "
             "code, and prints in plain text for someone to type when the QR "
-            "won't read."
+            "won't read.\n\n"
+            "**Editable, and changing it orphans the paper** — every printed "
+            "copy of this sheet keeps pointing at the old code, which will "
+            "then resolve to nothing. That is the point when a code has got "
+            "out and you want it dead. When somebody may still be holding the "
+            "sheet, prefer Revoke: it shuts the same door and the crew's page "
+            "says so, where a rewritten token leaves them hunting for a "
+            "character they think they mistyped."
+        ),
+    )
+    revoked_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=(
+            "When somebody killed this sheet's printed code. The paper still "
+            "says what it says and this app cannot reach into a dye room to "
+            "change that, so revoking is how a code that got out stops "
+            "working.\n\n"
+            "**Revoked, not rotated.** Issuing a new token would leave the "
+            "paper pointing at nothing and take the trail from the sheet to "
+            "the run with it — the token is how a printed sheet and a record "
+            "are the same thing. Setting this keeps every word of that and "
+            "only refuses the door.\n\n"
+            "It closes the no-login door and nothing else: the staff page at "
+            "private/production-sheet/<pk>/ still accepts and cancels baths, "
+            "so a session in progress is interrupted rather than lost. "
+            "Reprint to hand the crew a working code."
         ),
     )
     created_at = models.DateTimeField(auto_now_add=True)
@@ -1640,6 +1666,18 @@ class ProductionRun(models.Model):
     #
     # `production.run_states` is the same four questions asked of a queryset,
     # and `production.OVERDUE_AFTER` is the one copy of the age bound.
+
+    @property
+    def is_revoked(self) -> bool:
+        """Whether the printed code still opens the crew's page.
+
+        Deliberately not folded into `is_open` or any of the four run states.
+        Those describe *the work* — what is pending, accepted, overdue — and
+        revoking says nothing about the work; it is a fact about the door. A
+        revoked sheet with baths still pending is exactly that, and the
+        planner must go on subtracting them.
+        """
+        return self.revoked_at is not None
 
     @property
     def accepted_count(self) -> int:

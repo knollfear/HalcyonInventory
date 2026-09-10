@@ -1,0 +1,163 @@
+{% extends "scarves/base_internal.html" %}
+
+{% block title %}Navigation{% endblock %}
+{% block heading %}Navigation{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 900px; }
+
+  .lead code { background: #eef2f7; padding: 1px 5px; border-radius: 4px; }
+
+  .notice {
+      border-radius: 8px; padding: 10px 14px; margin: 16px 0; font-size: 14px;
+      background: #f1f8f3; border: 1px solid #bcd8c6; color: #2e7d52;
+  }
+  .notice.warn { background: #fff6e0; border-color: #f0e0b0; color: #8a5a00; }
+
+  /* What the corner will look like, shown here because the corner is small
+     and somebody ticking four boxes is entitled to see the result before
+     leaving the page. */
+  .preview {
+      display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
+      padding: 14px; border-radius: 10px; background: #eef2f7;
+      border: 1px solid #dbe2ea; margin-bottom: 6px;
+  }
+  .preview .pin {
+      font-size: 13px; background: #fff; border: 1px solid #cfd6de;
+      border-radius: 999px; padding: 7px 13px; white-space: nowrap;
+  }
+  .preview .map { font-size: 13px; color: var(--accent); }
+  .preview .none { font-size: 14px; color: #667; }
+
+  .pagelist { margin-top: 6px; }
+  .pagerow {
+      display: flex; align-items: baseline; gap: 12px;
+      padding: 9px 4px; border-bottom: 1px solid #eef1f4; cursor: pointer;
+  }
+  .pagerow:last-child { border-bottom: none; }
+  .pagerow:hover { background: #f7f9fb; }
+  .pagerow input { margin: 0; }
+  .pagerow .title { font-weight: 600; }
+  .pagerow .cat { font-size: 12px; color: #8b929b; }
+  /* The evidence, and only that. It orders the list and it ticks nothing —
+     see scarves/nav.py for why the app must not promote on it. */
+  .pagerow .seen { margin-left: auto; font-size: 13px; color: #555; }
+  .pagerow .seen.never { color: #8b929b; }
+
+  .sharebox {
+      font: inherit; font-size: 13px; width: 100%; padding: 8px 10px;
+      border: 1px solid #cfd6de; border-radius: 6px; background: #fff;
+  }
+  .savebar {
+      position: sticky; bottom: 0; background: var(--page-bg);
+      padding: 14px 0; margin-top: 10px; display: flex; gap: 12px;
+      align-items: center; border-top: 1px solid #e1e5ea;
+  }
+{% endblock %}
+
+{% block content %}
+  <p class="lead">
+    The pages that sit in the corner of every staff page, beside
+    <code>← Site map</code>. Pick up to {{ max_pins }}; they stay in the order
+    you tick them down this list, and nothing ever reorders them on its own.
+  </p>
+
+  {% if notice == "saved" %}
+    <div class="notice">Saved — the corner of every staff page now carries these.</div>
+  {% elif notice == "forgotten" %}
+    <div class="notice">Forgotten. The corner is back to just the site map link.</div>
+  {% elif notice == "from-link" %}
+    {% comment %}
+    Said out loud, because a link that silently rearranged somebody's screen
+    leaves them with no way to work out what happened or undo it — the crew
+    cookie's argument about a pre-filled name nothing mentions.
+    {% endcomment %}
+    <div class="notice">
+      Set from a link. <a href="{{ forget_url }}">Forget it</a> to go back to
+      just the site map.
+    </div>
+  {% endif %}
+
+  {% if dropped %}
+    {% comment %}
+    Never a quietly shorter nav. Route names are the stable interface and a
+    renamed one reverses to nothing — and because this app has no 404, a bad
+    link would otherwise land on the public map looking like a working page.
+    {% endcomment %}
+    <div class="notice warn">
+      {{ dropped|length }} of the pages in that link went nowhere and were left
+      out: {% for name in dropped %}<code>{{ name }}</code>{% if not forloop.last %}, {% endif %}{% endfor %}.
+      Either the page was renamed, or more than {{ max_pins }} were asked for.
+    </div>
+  {% endif %}
+
+  <div class="card">
+    <div class="card-title">The corner, as it stands</div>
+    <div class="preview">
+      {% for pin in pins %}
+        <span class="pin">{{ pin.label }}</span>
+      {% empty %}
+        <span class="none">Nothing pinned —</span>
+      {% endfor %}
+      <span class="map">← Site map</span>
+    </div>
+    {% if pins %}
+      <p class="muted small" style="margin-top:10px;">
+        A link that sets this for whoever opens it. Send it, bookmark it, or
+        keep several for different jobs — the link is the dashboard, there is
+        nothing stored anywhere to manage.
+      </p>
+      <input class="sharebox" type="text" readonly value="{{ share_url }}"
+             onclick="this.select()" aria-label="Link that sets these pins">
+    {% endif %}
+  </div>
+
+  <form method="post">
+    {% csrf_token %}
+    <div class="card">
+      <div class="card-title">Every page you could pin</div>
+      {% comment %}
+      Ordered by what has actually been opened on this device, most first,
+      because that is the question somebody came here with. The count is
+      evidence beside a checkbox and nothing else reads it: it ticks nothing,
+      promotes nothing and appears on no other page. An app that promoted the
+      top four on its own would be ranking navigation on a number nobody
+      chose, and a nav that reorders itself cannot be learned.
+      {% endcomment %}
+      <p class="muted small">
+        Ordered by how often each has been opened in this browser. That count
+        is here to look at — it decides nothing, and the pins are only ever
+        what you tick.
+        {% if unopened %}
+          {{ unopened }} {{ unopened|pluralize:"page has,pages have" }} not been
+          opened here at all.
+        {% endif %}
+      </p>
+
+      <div class="pagelist">
+        {% for row in rows %}
+          <label class="pagerow">
+            <input type="checkbox" name="pin" value="{{ row.name }}"
+                   {% if row.on %}checked{% endif %}>
+            <span class="title">{{ row.title }}</span>
+            <span class="cat">{{ row.category }}</span>
+            <span class="seen{% if not row.seen %} never{% endif %}">
+              {% if row.seen %}opened {{ row.seen }}×{% else %}not opened here{% endif %}
+            </span>
+          </label>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="savebar">
+      <button type="submit" class="btn">Save</button>
+      <span class="muted small">
+        The first {{ max_pins }} ticked are the ones that fit.
+      </span>
+      {% if pins %}
+        · <a href="{{ forget_url }}">Clear them all</a>
+      {% endif %}
+    </div>
+  </form>
+{% endblock %}

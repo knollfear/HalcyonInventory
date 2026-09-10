@@ -40,7 +40,7 @@ from django.test.utils import CaptureQueriesContext
 from django.urls import NoReverseMatch, reverse
 
 from . import (
-    closing, colorbands, crew, fancy, photowalk, production, restock,
+    closing, colorbands, crew, fancy, nav, photowalk, production, restock,
     sales, seasonreport, seasons, sheetscan, skus, slowsellers, timesheets,
     weather,
 )
@@ -513,54 +513,116 @@ class RecipeEditTests(TestCase):
         self.target = make_recipe("Agean Sea", hexes=())
         make_product(self.target, "Half Circle Veil - Agean Sea")
 
-    def test_read_only_by_default(self):
+    def test_every_row_offers_editing_with_no_mode_to_switch_into(self):
+        """Editing used to be a mode behind `?edit=true`, which demanded a
+        decision before the job: you came to look at a colorway, wanted to
+        change a dye, and had to reload the page into a different version of
+        itself to be allowed to."""
         response = self.client.get(reverse("recipe_showcase"))
-        self.assertFalse(response.context["edit_mode"])
-        self.assertNotContains(response, "Copy dyes from")
 
-    def test_edit_mode_renders_pickers(self):
-        response = self.client.get(reverse("recipe_showcase"), {"edit": "true"})
-        self.assertTrue(response.context["edit_mode"])
-        self.assertContains(response, "Copy dyes from")
+        self.assertContains(
+            response, 'class="btn editlink"', count=len(response.context["rows"])
+        )
+
+    def test_the_list_renders_no_pickers_until_a_row_is_opened(self):
+        """The whole reason the page is quick. A DyeSelect carries the entire
+        dye catalogue and each option carries the type-ahead's search text, so
+        five of them is ~150 KB of markup — 162 rows of that was 27 MB and
+        thirteen seconds of server render before anybody could type."""
+        response = self.client.get(reverse("recipe_showcase"))
+
+        self.assertNotContains(response, "dye-select")
+
+    def test_one_row_opens_from_the_query_string(self):
+        """`?row=` is the no-script door into the editor, and the same address
+        htmx would have swapped into — so a link into a row is sendable."""
+        response = self.client.get(
+            reverse("recipe_showcase"), {"row": self.target.pk}
+        )
+
+        self.assertContains(response, "dye-select")
+        open_rows = [r["recipe"].pk for r in response.context["rows"] if r["edit_mode"]]
+        self.assertEqual(open_rows, [self.target.pk])
+
+    def test_the_recipe_page_links_straight_to_its_own_row(self):
+        """Not to the top of a list of a hundred and sixty two. `?row=` is the
+        address the Edit button on the showcase builds, so both doors land in
+        the same place."""
+        response = self.client.get(reverse("recipe_detail", args=[self.target.pk]))
+
+        self.assertContains(
+            response, f'{reverse("recipe_showcase")}?row={self.target.pk}'
+        )
+
+    def test_the_row_endpoint_is_closed_unless_asked(self):
+        """Closed is the safer default for what a dropped parameter does:
+        lose it and you get the row as the page already reads, where an
+        editor default would spring five pickers open on a row nobody asked
+        to change."""
+        closed = self.client.get(reverse("recipe_row", args=[self.target.pk]))
+        self.assertNotContains(closed, "dye-select")
+        self.assertContains(closed, "Edit dyes")
+
+        opened = self.client.get(
+            reverse("recipe_row", args=[self.target.pk]), {"edit": "1"}
+        )
+        self.assertContains(opened, "dye-select")
+
+    def test_cancel_closes_the_row_and_writes_nothing(self):
+        """Closing *is* the reset — nothing on the row was written, so a form
+        thrown away leaves the recipe exactly as the closed row shows it."""
+        before = [rd.dye_id for rd in self.source.recipe_dyes.all()]
+
+        response = self.client.get(reverse("recipe_row", args=[self.source.pk]))
+
+        self.assertNotContains(response, "dye-select")
+        self.assertEqual([rd.dye_id for rd in self.source.recipe_dyes.all()], before)
+
+    def test_nothing_offers_to_copy_another_colorway_s_dyes(self):
+        """The copy-from picker is gone. It sat above the dye boxes on every
+        open row and answered a question nobody was asking there — the row is
+        for this colorway, and a second recipe named on it read as though it
+        were part of the record."""
+        for response in (
+            self.client.get(reverse("recipe_showcase")),
+            self.client.get(reverse("recipe_row", args=[self.target.pk]), {"edit": "1"}),
+        ):
+            self.assertNotContains(response, "Copy dyes from")
+            self.assertNotContains(response, 'name="source"')
+
+    def test_an_unreadable_row_id_opens_nothing_rather_than_erroring(self):
+        """A filter is navigation: the worst a stale link should do is show
+        the list it was a link into."""
+        for bad in ("banana", "", "999999"):
+            response = self.client.get(
+                reverse("recipe_showcase"), {"row": bad}
+            )
+            self.assertEqual(response.status_code, 200, bad)
+            self.assertFalse(
+                any(r["edit_mode"] for r in response.context["rows"]), bad
+            )
+
+    def test_a_saved_row_comes_back_closed_and_showing_its_dyes(self):
+        """Pickers that reappear identical are the weakest confirmation there
+        is; the closed row shows the chips and swatches just recorded, which
+        is a save you check by looking."""
+        d1 = self.source.recipe_dyes.first().dye
+
+        response = self.client.post(
+            reverse("recipe_dyes_save", args=[self.target.pk]), {"dye1": d1.pk}
+        )
+
+        self.assertNotContains(response, "dye-select")
+        self.assertContains(response, "Edit dyes")
+        self.assertContains(response, d1.name)
 
     def test_missing_filter_shows_only_dyeless_recipes(self):
         response = self.client.get(
-            reverse("recipe_showcase"), {"edit": "true", "missing": "true"}
+            reverse("recipe_showcase"), {"missing": "true"}
         )
         names = [row["recipe"].name for row in response.context["rows"]]
         self.assertIn("Agean Sea", names)
         self.assertNotIn("blueeyes-mid-navy", names)
-
-    def test_copy_source_list_only_offers_recipes_that_have_dyes(self):
-        """Offering a dye-less recipe as a copy source is a no-op that looks
-        like a bug — and nothing else pins this query down."""
-        response = self.client.get(reverse("recipe_row", args=[self.target.pk]))
-        offered = {src["pk"] for src in response.context["dye_sources"]}
-        self.assertIn(self.source.pk, offered)
-        self.assertNotIn(self.target.pk, offered)
-        for pk in offered:
-            self.assertTrue(
-                Recipe.objects.get(pk=pk).recipe_dyes.exists(),
-                f"recipe {pk} offered as a copy source but has no dyes",
-            )
-
-    def test_recipe_is_not_offered_as_its_own_copy_source(self):
-        response = self.client.get(reverse("recipe_row", args=[self.source.pk]))
-        html = response.content.decode()
-        select = html.split('id="src-')[1].split("</select>")[0]
-        self.assertNotIn(f'value="{self.source.pk}"', select)
-
-    def test_copy_prefills_without_saving(self):
-        """The whole point of copy-then-adjust: the pickers populate but the
-        database must be untouched until Save."""
-        response = self.client.get(
-            reverse("recipe_row", args=[self.target.pk]), {"source": self.source.pk}
-        )
-        form = response.context["form"]
-        source_dye_ids = [rd.dye_id for rd in self.source.recipe_dyes.all()]
-        self.assertEqual(form.initial["dye1"], source_dye_ids[0])
-        self.assertEqual(form.initial["dye2"], source_dye_ids[1])
-        self.assertEqual(self.target.recipe_dyes.count(), 0)
 
     def test_save_writes_dyes_in_slot_order(self):
         d1, d2 = [rd.dye for rd in self.source.recipe_dyes.all()]
@@ -598,7 +660,7 @@ class RecipeEditTests(TestCase):
             reverse("recipe_dyes_save", args=[self.target.pk]),
             {"dye1": d1.pk, "dye2": d1.pk},
         )
-        self.assertFalse(response.context["form"].is_valid())
+        self.assertFalse(response.context["row"]["form"].is_valid())
         self.assertEqual(self.target.recipe_dyes.count(), 0)
 
     def test_out_of_stock_dyes_stay_selectable(self):
@@ -612,14 +674,772 @@ class RecipeEditTests(TestCase):
     def test_edit_endpoints_require_login(self):
         self.client.logout()
         for url in [
-            reverse("recipe_showcase") + "?edit=true",
-            reverse("recipe_row", args=[self.target.pk]),
+            reverse("recipe_showcase"),
+            reverse("recipe_row", args=[self.target.pk]) + "?edit=1",
         ]:
             self.assertEqual(self.client.get(url).status_code, 302, url)
         self.assertEqual(
             self.client.post(reverse("recipe_dyes_save", args=[self.target.pk])).status_code,
             302,
         )
+
+
+class RecipeShowcaseTableTests(TestCase):
+    """Which table at the stall — and what that does and does not narrow.
+
+    Category means "which table", which is why the reference sheets print per
+    category. Here it narrows *which colorways are listed* and never which
+    products a listed colorway shows, because a colour dyed on a yarn and on a
+    silk is one colour.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user("staff", password="pw")
+        self.client.force_login(self.user)
+
+        self.silk = RawProductCategory.objects.get_or_create(name="Silk")[0]
+        self.yarn = RawProductCategory.objects.get_or_create(name="Yarn")[0]
+
+        self.both = make_recipe("Cabernet")
+        self.on_silk(self.both, "Infinity Scarf - Cabernet")
+        self.on_yarn(self.both, "Artisan - Cabernet")
+
+        self.silk_only = make_recipe("Agean Sea")
+        self.on_silk(self.silk_only, "Half Circle Veil - Agean Sea")
+
+        self.yarn_only = make_recipe("Ochre")
+        self.on_yarn(self.yarn_only, "Noble - Ochre")
+
+    def _product(self, recipe, name, category):
+        raw, _ = RawProduct.objects.get_or_create(
+            name=f"raw-{name}", category=category, defaults={"price": "5.00"}
+        )
+        return FinishedProduct.objects.create(
+            name=name, raw_product=raw, recipe=recipe, price="30.00"
+        )
+
+    def on_silk(self, recipe, name):
+        return self._product(recipe, name, self.silk)
+
+    def on_yarn(self, recipe, name):
+        return self._product(recipe, name, self.yarn)
+
+    def _listed(self, **params):
+        response = self.client.get(reverse("recipe_showcase"), params)
+        return [row["recipe"].name for row in response.context["rows"]]
+
+    def test_a_table_lists_only_colorways_on_it(self):
+        self.assertEqual(sorted(self._listed(category="Yarn")),
+                         ["Cabernet", "Ochre"])
+        self.assertEqual(sorted(self._listed(category="Silk")),
+                         ["Agean Sea", "Cabernet"])
+
+    def test_a_colorway_on_both_tables_is_on_both_lists(self):
+        """One colour, two tables. Dropping it from either would leave a
+        shortage of exactly the kind that is visible from nowhere."""
+        self.assertIn("Cabernet", self._listed(category="Yarn"))
+        self.assertIn("Cabernet", self._listed(category="Silk"))
+
+    def test_it_is_listed_once_however_many_products_match(self):
+        """A colorway on three yarns joins three rows; without distinct() the
+        page prints it three times and each one is separately editable."""
+        self.on_yarn(self.both, "Heavenly - Cabernet")
+        self.on_yarn(self.both, "Homespun - Cabernet")
+
+        self.assertEqual(self._listed(category="Yarn").count("Cabernet"), 1)
+
+    def test_the_row_still_shows_the_whole_colorway(self):
+        """Narrowing the list must not narrow the row. The same recipe name
+        carrying different products depending on how you arrived, with nothing
+        on the row to say so, is worse than no filter at all."""
+        response = self.client.get(reverse("recipe_showcase"), {"category": "Yarn"})
+
+        self.assertContains(response, "Artisan - Cabernet")
+        self.assertContains(response, "Infinity Scarf - Cabernet")
+
+    def test_an_unknown_table_is_no_filter_rather_than_an_error(self):
+        response = self.client.get(reverse("recipe_showcase"), {"category": "Wax"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.context["category"])
+        self.assertEqual(len(response.context["rows"]), 3)
+
+    def test_the_pills_are_derived_from_the_rows(self):
+        """Not a list of names: a shop that grows a third table gets a third
+        pill with nothing to change."""
+        names = [c.name for c in self.client.get(
+            reverse("recipe_showcase")).context["categories"]]
+
+        self.assertEqual(names, ["Silk", "Yarn"])
+
+    def test_a_category_with_nothing_active_draws_no_pill(self):
+        RawProductCategory.objects.get_or_create(name="Wax")
+
+        names = [c.name for c in self.client.get(
+            reverse("recipe_showcase")).context["categories"]]
+
+        self.assertNotIn("Wax", names)
+
+    def test_counts_are_scoped_to_what_is_on_screen(self):
+        """A count over the whole catalogue printed above a filtered list is
+        the page contradicting itself — the same rule the colour page's pills
+        and the close's banner follow."""
+        dyeless = make_recipe("Stormy", hexes=())
+        self.on_yarn(dyeless, "Artisan - Stormy")
+
+        response = self.client.get(reverse("recipe_showcase"), {"category": "Yarn"})
+
+        self.assertEqual(response.context["total_count"], 3)      # Cabernet, Ochre, Stormy
+        self.assertEqual(response.context["missing_count"], 1)    # Stormy
+        self.assertEqual(response.context["total_count"],
+                         len(response.context["rows"]))
+
+    def test_every_control_carries_the_table(self):
+        """Switching to edit mode, or opening a row, must not silently drop
+        you back to every table — the same rule the oven tick follows on the
+        production picker, where each carrier that forgets is a silent one."""
+        response = self.client.get(
+            reverse("recipe_showcase"), {"category": "Yarn"}
+        )
+
+        self.assertIn("category=Yarn", response.context["url_missing"])
+        self.assertIn("category=Yarn", response.context["url_all_recipes"])
+        for row in response.context["rows"]:
+            self.assertIn("category=Yarn", row["edit_row_url"], row["recipe"].name)
+
+    def test_the_table_pills_carry_the_mode(self):
+        response = self.client.get(
+            reverse("recipe_showcase"), {"missing": "true"}
+        )
+
+        for link in response.context["category_links"]:
+            self.assertIn("missing=true", link["url"], link["name"])
+
+    def test_the_all_pill_drops_the_table_and_keeps_everything_else(self):
+        response = self.client.get(
+            reverse("recipe_showcase"),
+            {"missing": "true", "category": "Yarn"},
+        )
+
+        every = response.context["url_every_table"]
+        self.assertNotIn("category=", every)
+        self.assertIn("missing=true", every)
+
+
+class RecipeRowBandTests(TestCase):
+    """The rainbow chips, brought onto the row that edits the dyes.
+
+    The colorway is in front of you and its dyes are in the boxes above, which
+    is the moment somebody can answer which sections of the sheet it prints
+    in. What has to survive the move is the rule the whole classifier exists
+    for: never print an unconfirmed guess.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user("staff", password="pw")
+        self.client.force_login(self.user)
+        self.recipe = make_recipe("Cabernet", hexes=("#8c1c2f",))
+        make_product(self.recipe, "Infinity Scarf - Cabernet", with_image=False)
+
+    def _post(self, **extra):
+        data = {f"dye{i}": "" for i in range(1, 6)}
+        data.update(extra)
+        return self.client.post(
+            reverse("recipe_dyes_save", args=[self.recipe.pk]), data
+        )
+
+    def _chips(self):
+        response = self.client.get(
+            reverse("recipe_showcase"), {"row": self.recipe.pk}
+        )
+        return {c["slug"]: c for c in response.context["rows"][0]["chips"]}
+
+    def test_the_dye_reading_is_offered_unticked(self):
+        """This is the difference from private/colors/, and it is the whole
+        safety argument. There Confirm is the only button, so a pre-ticked
+        suggestion is answering the page's one question. Here Save is about
+        the dyes, so a pre-ticked guess would be confirmed by a click aimed at
+        something else — and a wrong band is silent."""
+        chips = self._chips()
+
+        self.assertTrue(chips["red"]["guessed"])
+        self.assertFalse(chips["red"]["on"])
+
+    def test_saving_dyes_without_ticking_leaves_the_bands_unconfirmed(self):
+        """Confirmed-with-no-bands prints the colorway in no section at all,
+        and it is a state this app has been in before, arrived at by giving
+        up. An empty answer here is indistinguishable from nobody looking."""
+        self._post()
+
+        self.recipe.refresh_from_db()
+        self.assertIsNone(self.recipe.bands_confirmed_at)
+        self.assertFalse(self.recipe.color_bands)
+
+    def test_ticking_a_chip_stores_and_confirms_it(self):
+        self._post(bands=["red", "pink"])
+
+        self.recipe.refresh_from_db()
+        self.assertEqual(self.recipe.color_bands, ["red", "pink"])
+        self.assertIsNotNone(self.recipe.bands_confirmed_at)
+
+    def test_a_band_that_is_not_a_band_is_dropped(self):
+        self._post(bands=["red", "banana"])
+
+        self.recipe.refresh_from_db()
+        self.assertEqual(self.recipe.color_bands, ["red"])
+
+    def test_bands_come_back_in_rainbow_order(self):
+        self._post(bands=["blue", "red"])
+
+        self.recipe.refresh_from_db()
+        self.assertEqual(self.recipe.color_bands,
+                         colorbands.sort_bands(["blue", "red"]))
+
+    def test_a_confirmed_colorway_is_not_quietly_unconfirmed_by_a_dye_save(self):
+        """Idempotent: the chips render ticked, so they post back ticked."""
+        self._post(bands=["red"])
+        stamped = Recipe.objects.get(pk=self.recipe.pk).bands_confirmed_at
+
+        self._post(bands=["red"])
+
+        self.recipe.refresh_from_db()
+        self.assertEqual(self.recipe.color_bands, ["red"])
+        self.assertIsNotNone(self.recipe.bands_confirmed_at)
+        self.assertGreaterEqual(self.recipe.bands_confirmed_at, stamped)
+
+    def test_a_confirmed_colorway_gets_no_suggestion(self):
+        """Nothing to suggest at somebody who has already ruled."""
+        self._post(bands=["red"])
+
+        chips = self._chips()
+
+        self.assertTrue(chips["red"]["on"])
+        self.assertFalse(any(c["guessed"] for c in chips.values()))
+
+    def test_a_confirmed_colorway_can_be_cleared_back_to_no_bands(self):
+        """Once somebody has ruled, unticking everything is a ruling too —
+        the deliberate 'this belongs in no section' answer, kept reachable."""
+        self._post(bands=["red"])
+
+        self._post()
+
+        self.recipe.refresh_from_db()
+        self.assertEqual(self.recipe.color_bands, [])
+        self.assertIsNotNone(self.recipe.bands_confirmed_at)
+
+    def test_the_band_chips_are_not_the_dyes_over_again(self):
+        """A recipe's dyes are not its colour — they are not blended, and a
+        band is a judgement about the scarf. The two share a column, so the
+        band group carrying dye hexes would invite exactly that reading."""
+        hex_on_file = self.recipe.recipe_dyes.first().dye.hex_color
+        Recipe.objects.filter(pk=self.recipe.pk).update(
+            color_bands=["red"], bands_confirmed_at=timezone.now()
+        )
+
+        html = self.client.get(reverse("recipe_showcase")).content.decode()
+        colors_cell = html.split('<div class="bandsummary">')[1].split("</div>")[0]
+
+        self.assertIn("bandtag", colors_cell)
+        self.assertNotIn(hex_on_file, colors_cell)
+
+    def test_the_dye_colour_rides_inside_its_own_pill(self):
+        """A swatch beside a name is two things to line up by eye, and they
+        used to sit in different table cells — so a five-dye recipe asked
+        somebody to count across a gap to find out which colour was which."""
+        hex_on_file = self.recipe.recipe_dyes.first().dye.hex_color
+
+        html = self.client.get(reverse("recipe_showcase")).content.decode()
+        dyes_cell = html.split('<div class="dyes">')[1].split("</div>")[0]
+
+        self.assertIn('class="chip"', dyes_cell)
+        self.assertIn(hex_on_file, dyes_cell)
+        self.assertNotIn('class="swatches"', html)
+
+    def test_a_dye_with_no_colour_on_file_gets_hatching_never_a_colour(self):
+        """A placeholder swatch is a guess somebody then reads off the screen
+        as fact — the same reason colorbands prints no band rather than its
+        best one."""
+        Dye.objects.filter(
+            pk=self.recipe.recipe_dyes.first().dye_id
+        ).update(hex_color="")
+
+        response = self.client.get(reverse("recipe_showcase"))
+
+        self.assertContains(response, 'class="dyedot unknown"')
+
+    def test_a_closed_row_draws_only_confirmed_bands(self):
+        """A dot nobody agreed to is indistinguishable from one somebody did —
+        the same reason the reference sheet skips an unconfirmed colorway."""
+        response = self.client.get(reverse("recipe_showcase"))
+        row = response.context["rows"][0]
+        self.assertEqual(row["band_dots"], [])
+        self.assertContains(response, "bands unconfirmed")
+
+        self._post(bands=["red"])
+
+        response = self.client.get(reverse("recipe_showcase"))
+        row = response.context["rows"][0]
+        self.assertEqual([d["slug"] for d in row["band_dots"]], ["red"])
+        self.assertNotContains(response, "bands unconfirmed")
+
+    def test_nothing_classifies_on_a_page_that_only_lists(self):
+        """The classifier never writes. It fills the form in; a person
+        decides — and simply looking at the list is not deciding."""
+        self.client.get(reverse("recipe_showcase"))
+        self.client.get(reverse("recipe_showcase"), {"row": self.recipe.pk})
+
+        self.recipe.refresh_from_db()
+        self.assertIsNone(self.recipe.bands_confirmed_at)
+        self.assertFalse(self.recipe.color_bands)
+
+
+class SheetPhotoRescueTests(TestCase):
+    """A photo too small for the rows can still name the sheet.
+
+    Measured on a real 1308px-wide picture of run 5: a 7.7 mil Code128 module
+    landed on 1.18 pixels where zbar needs about two, and **not one of
+    thirteen decode attempts read a single row barcode** — including 4x
+    upscaling with unsharp masking. Interpolation cannot invent a sample that
+    was never taken. The QR came back from the same image once it was scaled
+    up and sharpened, which is the half that matters: the photo's job on the
+    upload page is to say which sheet this is.
+    """
+
+    def _qr_image(self, url, module_px):
+        """The same QR the sheet prints, drawn at `module_px` per module.
+
+        Drawn from the encoder's own matrix rather than rendered through
+        reportlab, because `renderPM` has no raster backend installed here —
+        and drawing it directly is what lets the test say *exactly* how many
+        pixels a module got, which is the whole variable under test.
+        """
+        from PIL import Image
+
+        from reportlab.graphics.barcode import qr as qr_module
+
+        matrix = qr_module.QrCodeWidget(url, barLevel="M").qr
+        # Without this the matrix is empty and `getModuleCount()` is 0, so the
+        # "QR" is a blank square that decodes to nothing — a test that would
+        # have passed for the wrong reason had it been asserting a failure.
+        matrix.make()
+        count = matrix.getModuleCount()
+        quiet = 4                                   # the spec's quiet zone
+        side = (count + quiet * 2) * module_px
+        image = Image.new("L", (side, side), 255)
+        for row in range(count):
+            for col in range(count):
+                if not matrix.isDark(row, col):
+                    continue
+                x = (col + quiet) * module_px
+                y = (row + quiet) * module_px
+                for dx in range(module_px):
+                    for dy in range(module_px):
+                        image.putpixel((x + dx, y + dy), 0)
+        return image
+
+    def _on_a_page(self, qr_image, width):
+        """The QR pasted into the corner of a white page `width` px across.
+
+        A bare QR filling the frame is not what a photo of a sheet looks
+        like — the symbol is a small part of a mostly-white page, which is
+        exactly the condition that makes it hard to decode. Saved as JPEG at
+        the quality a phone uses, so the artefacts are there too.
+        """
+        from io import BytesIO
+
+        from PIL import Image
+
+        page = Image.new("L", (width, int(width * 11 / 8.5)), 255)
+        page.paste(qr_image, (int(width * 0.72), int(width * 0.03)))
+        out = BytesIO()
+        page.save(out, format="JPEG", quality=85)
+        return out.getvalue()
+
+    def test_a_small_photo_still_names_the_sheet(self):
+        url = "https://production.halcyonsilks.com/scarves/secret/production/18-tranquil-bobcat/"
+        # Two pixels a module: the sheet's QR in a photo of this size, and
+        # under what the first decode pass can manage on its own.
+        page = self._on_a_page(self._qr_image(url, 2), width=1300)
+
+        scan = sheetscan.read_sheet(page)
+
+        self.assertEqual(scan.qr_token, "18-tranquil-bobcat")
+
+    def test_and_says_the_rows_were_never_readable_rather_than_unread(self):
+        """"Couldn't read that photo" and "that photo is too small to hold a
+        row barcode" send somebody to do completely different things — retake
+        it, or stop retaking it and tap the boxes."""
+        url = "https://example.test/scarves/secret/production/18-tranquil-bobcat/"
+        page = self._on_a_page(self._qr_image(url, 2), width=1300)
+
+        scan = sheetscan.read_sheet(page)
+
+        self.assertTrue(scan.too_small_for_rows)
+        self.assertTrue(scan.named_but_unread)
+        self.assertFalse(scan.error)
+
+    def test_a_big_photo_that_read_nothing_is_not_blamed_on_its_size(self):
+        """That one was soft or badly lit and is worth retaking."""
+        from io import BytesIO
+
+        from PIL import Image
+
+        blank = BytesIO()
+        Image.new("L", (3000, 3800), 255).save(blank, format="JPEG")
+
+        scan = sheetscan.read_sheet(blank.getvalue())
+
+        self.assertFalse(scan.too_small_for_rows)
+        self.assertFalse(scan.named_but_unread)
+
+    def test_the_key_carries_what_a_database_row_would_have(self):
+        """There is no row and no admin: the bucket is browsable, so a pointer
+        would be a second place for the answer to live — and the one that goes
+        stale the moment the lifecycle rule deletes the object under it."""
+        from datetime import datetime
+
+        scan = sheetscan.ScanResult(qr_token="18-tranquil-bobcat", width=3024)
+        scan.marks = [
+            sheetscan.Mark(code="A#1", state=sheetscan.FILLED, score=1.0, top=1),
+            sheetscan.Mark(code="B#2", state=sheetscan.UNSURE, score=0.3, top=2),
+        ]
+
+        key = sheetscan.photo_key(scan, datetime(2026, 9, 9, 22, 1, 34))
+
+        self.assertTrue(key.startswith(sheetscan.PHOTO_PREFIX))
+        self.assertIn("20260909T220134", key)
+        self.assertIn("18-tranquil-bobcat", key)
+        self.assertIn("-w3024-r2-f1-u1", key)
+
+    def test_a_photo_that_named_no_sheet_still_gets_a_usable_key(self):
+        """`r0` read nothing and `unnamed` decoded no QR — the two photos most
+        worth looking at, findable in a listing without opening any of them."""
+        from datetime import datetime
+
+        key = sheetscan.photo_key(
+            sheetscan.ScanResult(width=1308), datetime(2026, 9, 9, 22, 1, 34)
+        )
+
+        self.assertIn("unnamed", key)
+        self.assertIn("-w1308-r0-f0-u0", key)
+
+    def test_a_hostile_token_cannot_shape_the_key(self):
+        """The token comes off a QR in a photograph, so it is somebody else's
+        string until proven otherwise — and it is about to become part of an
+        object path."""
+        from datetime import datetime
+
+        key = sheetscan.photo_key(
+            sheetscan.ScanResult(qr_token="../../etc/passwd", width=10),
+            datetime(2026, 9, 9, 22, 1, 34),
+        )
+
+        self.assertNotIn("..", key)
+        self.assertEqual(key.count("/"), sheetscan.PHOTO_PREFIX.count("/"))
+
+    def test_the_enlargement_is_skipped_when_it_would_not_fit(self):
+        """A photo that failed at 48MP did not fail for want of pixels — it
+        was soft, or moving, or badly lit — so doubling it would cost hundreds
+        of megabytes to learn nothing."""
+        from PIL import Image
+
+        huge = Image.new("L", (8000, int(sheetscan.UPSCALE_MAX_PIXELS / 4 / 8000) + 50), 255)
+        ordinary = Image.new("L", (3024, 4032), 255)
+
+        self.assertEqual(len(list(sheetscan._passes(huge))), 1)
+        self.assertEqual(len(list(sheetscan._passes(ordinary))), 3)
+
+    def test_each_pass_carries_the_scale_it_is_drawn_at(self):
+        """Pooling makes every pixel coordinate ambiguous otherwise: a row
+        found at 2x reports a `top` twice the size of the same row found at
+        1x, and sorting pooled marks on that puts row one mid-page."""
+        from PIL import Image
+
+        passes = list(sheetscan._passes(Image.new("L", (1000, 1200), 255)))
+
+        for image, at_scale in passes:
+            self.assertEqual(image.width, 1000 * at_scale)
+
+
+class PinnedNavTests(TestCase):
+    """The handful of pages in the corner of every staff page.
+
+    Hub-and-spoke is right for a directory nobody memorises and wrong for the
+    four pages somebody opens every day — those cost two clicks each, forever.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user("staff", password="pw")
+        self.client.force_login(self.user)
+        self.page = reverse("recipe_showcase")
+
+    def _pin(self, value):
+        self.client.get(reverse("navigation"), {nav.PARAM: value}, follow=True)
+
+    # --- the corner -------------------------------------------------------
+
+    def test_the_pins_render_beside_the_site_map_link(self):
+        self._pin("recipe_showcase,color_classify")
+
+        html = self.client.get(reverse("production_needed")).content.decode()
+
+        self.assertIn("Recipe Showcase", html)
+        self.assertIn("Colour Classification", html)
+        self.assertIn("← Site map", html)
+
+    def test_the_site_map_link_keeps_the_corner_it_always_had(self):
+        """The pins grow leftward from it, so whatever anybody has already
+        learned about where the way out is stays true."""
+        self._pin("recipe_showcase,color_classify")
+
+        html = self.client.get(reverse("production_needed")).content.decode()
+        bar = html.split('<nav class="navbar"')[1].split("</nav>")[0]
+
+        self.assertLess(bar.index("Recipe Showcase"), bar.index("← Site map"))
+
+    def test_the_order_is_the_order_given(self):
+        """A fixed nav's whole value is that the third pill is always the
+        third pill."""
+        self._pin("color_classify,recipe_showcase")
+
+        bar = self.client.get(reverse("production_needed")).content.decode()
+        bar = bar.split('<nav class="navbar"')[1].split("</nav>")[0]
+
+        self.assertLess(bar.index("Colour Classification"), bar.index("Recipe Showcase"))
+
+    def test_the_page_you_are_on_is_dimmed_rather_than_dropped(self):
+        """A set that silently loses whichever one you are looking at changes
+        shape as you move through it, which is the thing a fixed nav exists
+        not to do."""
+        self._pin("recipe_showcase")
+
+        html = self.client.get(self.page).content.decode()
+
+        self.assertIn("navpin here", html)
+
+    def test_no_staff_nav_reaches_a_public_page(self):
+        """`secret/` pages extend base_public too, so this is also what keeps
+        the crew's pages from advertising the staff ones."""
+        self._pin("recipe_showcase")
+
+        html = self.client.get(reverse("public_index")).content.decode()
+
+        self.assertNotIn("navpin", html)
+
+    def test_a_malformed_cookie_is_an_empty_nav_and_never_an_error(self):
+        """Read on every staff page render, so the only safe failure is a
+        shorter nav."""
+        self.client.cookies[nav.PIN_COOKIE] = "%%%,,::,not_a_route:x"
+
+        response = self.client.get(self.page)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["nav_pins"], [])
+        self.assertNotIn('<a class="navpin', response.content.decode())
+
+    # --- the link ---------------------------------------------------------
+
+    def test_a_link_sets_the_pins_and_says_that_it_did(self):
+        """A link that silently rearranged somebody's screen leaves them no
+        way to work out what happened — the crew cookie's argument about a
+        pre-filled name nothing mentions."""
+        response = self.client.get(
+            reverse("navigation"), {nav.PARAM: "recipe_showcase"}, follow=True
+        )
+
+        self.assertContains(response, "Set from a link")
+        self.assertContains(response, "Forget it")
+        self.assertEqual(
+            self.client.cookies[nav.PIN_COOKIE].value, "recipe_showcase"
+        )
+
+    def test_a_route_that_went_nowhere_is_named_and_never_dropped_quietly(self):
+        """This app has no 404, so a bad link would otherwise land on the
+        public map looking like a working page."""
+        response = self.client.get(
+            reverse("navigation"),
+            {nav.PARAM: "recipe_showcase,renamed_last_year"},
+            follow=True,
+        )
+
+        self.assertContains(response, "renamed_last_year")
+        self.assertContains(response, "went nowhere")
+        self.assertEqual(len(response.context["pins"]), 1)
+
+    def test_a_link_can_relabel_a_page(self):
+        """`@page_meta` titles are written for a site map card; a pill in the
+        corner has room for a word."""
+        self._pin("recipe_showcase:Recipes")
+
+        html = self.client.get(reverse("production_needed")).content.decode()
+
+        self.assertIn(">Recipes<", html)
+
+    def test_a_label_cannot_be_a_sentence(self):
+        long_label = "x" * 200
+        self._pin(f"recipe_showcase:{long_label}")
+
+        pins, _ = nav.parse(f"recipe_showcase:{long_label}")
+
+        self.assertEqual(len(pins[0]["label"]), nav.MAX_LABEL)
+
+    def test_more_than_the_cap_is_refused_and_reported(self):
+        """Past about four this is a second site map, worse organised than the
+        one it sits next to."""
+        every = ",".join(p["name"] for p in nav.pinnable()[:8])
+
+        response = self.client.get(
+            reverse("navigation"), {nav.PARAM: every}, follow=True
+        )
+
+        self.assertEqual(len(response.context["pins"]), nav.MAX_PINS)
+        self.assertTrue(response.context["dropped"])
+
+    def test_forget_clears_them(self):
+        self._pin("recipe_showcase")
+
+        response = self.client.get(
+            reverse("navigation"), {nav.PARAM: nav.FORGET}, follow=True
+        )
+
+        self.assertContains(response, "Forgotten")
+        self.assertFalse(self.client.cookies[nav.PIN_COOKIE].value)
+
+    def test_saving_the_form_pins_what_was_ticked(self):
+        response = self.client.post(
+            reverse("navigation"),
+            {"pin": ["recipe_showcase", "color_classify"]},
+            follow=True,
+        )
+
+        self.assertContains(response, "Saved")
+        self.assertEqual(
+            self.client.cookies[nav.PIN_COOKIE].value,
+            "recipe_showcase,color_classify",
+        )
+
+    def test_saving_redirects_so_the_corner_agrees_with_the_preview(self):
+        """The corner is rendered by a context processor reading
+        `request.COOKIES`, so a response that sets the cookie *and* renders
+        shows the new pins in the preview and the old ones in the corner — on
+        the one page whose job is to show what the corner will look like."""
+        self._pin("color_classify")
+
+        response = self.client.post(
+            reverse("navigation"), {"pin": ["recipe_showcase"]}
+        )
+        self.assertEqual(response.status_code, 302)
+
+        landed = self.client.get(response["Location"])
+        bar = landed.content.decode().split('<nav class="navbar"')[1].split("</nav>")[0]
+        self.assertIn("Recipe Showcase", bar)
+        self.assertNotIn("Colour Classification", bar)
+
+    def test_clearing_redirects_too_and_empties_the_corner(self):
+        self._pin("recipe_showcase")
+
+        response = self.client.get(reverse("navigation"), {nav.PARAM: nav.FORGET})
+        self.assertEqual(response.status_code, 302)
+
+        landed = self.client.get(response["Location"])
+        bar = landed.content.decode().split('<nav class="navbar"')[1].split("</nav>")[0]
+        self.assertNotIn('<a class="navpin', bar)
+        self.assertIn("← Site map", bar)
+
+    def test_only_pages_the_site_map_lists_can_be_pinned(self):
+        """Which excludes two groups for free rather than by a rule written
+        here: anything with no `@page_meta` (POST endpoints, htmx fragments,
+        the webhook), and anything parameterised, since it reverses to
+        nothing and a pin needs somewhere to go."""
+        names = {p["name"] for p in nav.pinnable()}
+
+        self.assertIn("recipe_showcase", names)
+        self.assertNotIn("recipe_dyes_save", names)   # POST only
+        self.assertNotIn("recipe_history", names)     # htmx fragment
+        self.assertNotIn("square_webhook", names)
+        self.assertNotIn("recipe_detail", names)      # needs a pk
+        for name in names:
+            self.assertTrue(reverse(name), name)
+
+    # --- the counter, which decides nothing --------------------------------
+
+    def test_opening_a_page_counts_it(self):
+        self.client.get(self.page)
+        self.client.get(self.page)
+
+        self.assertEqual(
+            nav.read_seen(self._request_with_cookies())["recipe_showcase"], 2
+        )
+
+    def _request_with_cookies(self):
+        from django.test import RequestFactory
+
+        request = RequestFactory().get("/")
+        request.COOKIES = {k: v.value for k, v in self.client.cookies.items()}
+        return request
+
+    def test_an_htmx_fragment_is_not_somewhere_you_went(self):
+        """The recipe showcase would otherwise out-count every page in the app
+        by the width of an afternoon's dye entry."""
+        recipe = make_recipe("Cabernet")
+
+        self.client.get(
+            reverse("recipe_row", args=[recipe.pk]), HTTP_HX_REQUEST="true"
+        )
+
+        self.assertNotIn("recipe_row", nav.read_seen(self._request_with_cookies()))
+
+    def test_a_login_redirect_is_not_a_visit(self):
+        self.client.logout()
+
+        self.client.get(self.page)
+
+        self.assertEqual(nav.read_seen(self._request_with_cookies()), {})
+
+    def test_a_post_is_not_a_visit(self):
+        recipe = make_recipe("Cabernet")
+
+        self.client.post(reverse("recipe_dyes_save", args=[recipe.pk]), {})
+
+        self.assertNotIn(
+            "recipe_dyes_save", nav.read_seen(self._request_with_cookies())
+        )
+
+    def test_the_count_never_chooses_what_is_pinned(self):
+        """The load-bearing one. Promoting the top four on its own would be
+        ranking navigation on a number nobody chose — self-reinforcing, since
+        a pinned page is one click away and so gets opened more — and it is
+        the `par` mistake exactly: a derived figure that reads as a fact
+        because it came out of a counter, with nowhere to disagree with it."""
+        for _ in range(20):
+            self.client.get(reverse("production_needed"))
+
+        response = self.client.get(self.page)
+
+        self.assertEqual(response.context["nav_pins"], [])
+        self.assertNotIn('<a class="navpin', response.content.decode())
+        self.assertGreater(
+            nav.read_seen(self._request_with_cookies())["production_needed"], 10
+        )
+
+    def test_the_counter_cookie_is_bounded(self):
+        """It rides on every request, so an unbounded tally of every page ever
+        opened is paid for on requests that never read it."""
+        counts = {}
+        for i in range(nav.MAX_SEEN + 25):
+            counts = nav.bump(counts, f"page_{i:03d}")
+
+        self.assertEqual(len(counts), nav.MAX_SEEN)
+        self.assertIn(f"page_{nav.MAX_SEEN + 24:03d}", counts)
+
+    def test_the_navigation_page_shows_the_counts_as_evidence(self):
+        self.client.get(reverse("production_needed"))
+
+        response = self.client.get(reverse("navigation"))
+        rows = {r["name"]: r for r in response.context["rows"]}
+
+        self.assertEqual(rows["production_needed"]["seen"], 1)
+        self.assertContains(response, "decides nothing")
 
 
 class PageSmokeTests(TestCase):
@@ -9090,7 +9910,7 @@ class OvenRunTests(TestCase):
 class RecipeRowActionTests(TestCase):
     """The bulk editing list's two row actions: flag the oven, retire a colour.
 
-    Both live on `private/recipes/?edit=true` because that is the one pass
+    Both live on an open row of `private/recipes/` because that is the one pass
     somebody makes down the whole catalogue — the person filling in a
     colorway's dyes is the person who knows which box it is made in and
     whether anybody still dyes it.
@@ -9126,10 +9946,25 @@ class RecipeRowActionTests(TestCase):
         anything else on that row."""
         Recipe.objects.filter(pk=self.recipe.pk).update(oven_dyed=True)
 
-        response = self.client.get(reverse("recipe_showcase"), {"edit": "true"})
+        response = self.client.get(
+            reverse("recipe_showcase"), {"row": self.recipe.pk}
+        )
 
         form = response.context["rows"][0]["form"]
         self.assertTrue(form.initial["oven_dyed"])
+
+    def test_the_editor_renders_exactly_one_oven_checkbox(self):
+        """`{% for field in form %}` renders every field, and `oven_dyed` is a
+        declared attribute while the dye slots are added in `__init__` — so
+        Django ordered it first and the row came out with a stray checkbox in
+        front of the dye boxes. Two inputs sharing one name is worse than
+        untidy: unticking the visible one while the stray stays ticked still
+        posts `on`."""
+        html = self.client.get(
+            reverse("recipe_row", args=[self.recipe.pk]), {"edit": "1"}
+        ).content.decode()
+
+        self.assertEqual(html.count('name="oven_dyed"'), 1)
 
     def test_the_box_can_be_unticked(self):
         Recipe.objects.filter(pk=self.recipe.pk).update(oven_dyed=True)
@@ -9141,19 +9976,6 @@ class RecipeRowActionTests(TestCase):
 
         self.recipe.refresh_from_db()
         self.assertFalse(self.recipe.oven_dyed)
-
-    def test_copying_dyes_does_not_carry_the_other_recipe_s_oven_flag(self):
-        """A palette says nothing about which box a colorway is made in."""
-        source = make_recipe("Ochre")
-        Recipe.objects.filter(pk=source.pk).update(oven_dyed=True)
-
-        response = self.client.get(
-            reverse("recipe_row", args=[self.recipe.pk]), {"source": source.pk}
-        )
-
-        self.assertFalse(response.context["form"].initial["oven_dyed"])
-
-    # --- retiring ---------------------------------------------------------
 
     def test_retiring_deactivates_and_never_deletes(self):
         """History points at this row — inventory logs, production rows,
@@ -9180,7 +10002,11 @@ class RecipeRowActionTests(TestCase):
 
         self.recipe.refresh_from_db()
         self.assertTrue(self.recipe.is_active)
-        self.assertContains(response, "Retire")
+        # The whole row, closed — the same shape every other row on the page
+        # is in, with its way back into the editor on it. Not the editor
+        # itself: undoing a retire says nothing about wanting to edit dyes.
+        self.assertContains(response, f'id="recipe-row-{self.recipe.pk}"')
+        self.assertContains(response, "Edit dyes")
 
     def test_a_retired_colorway_stops_being_planned(self):
         """*Retire, don't delete* promises retirement takes something out of
@@ -10540,13 +11366,41 @@ class WorkSheetAndReportingSheetTests(TestCase):
             "the named stage list is gone — the count is what remains",
         )
 
-    def test_the_working_copy_still_has_boxes_to_mark(self):
-        """A column of boxes is the useful part — it is how twenty baths at
-        different points across three days get held on one page."""
-        self.assertEqual(production.WORK_BOXES, 4)
-        self.assertEqual(
-            len(production._stage_columns(612)), production.WORK_BOXES
+    def test_the_working_copy_has_one_box_per_bath(self):
+        """It was four, and four was a guess.
+
+        The reasoning for a row of them — a bath moves through stages over one
+        to three days, and paper holds that better than a phone by a sink —
+        is true, and it does not follow that the app should decide how many
+        stages there are. It never knew: the count was invented, the boxes
+        were left unlabelled *because* nothing could honestly name them, and a
+        rule was printed over each column so somebody could name them herself.
+        A column nobody asked for, headed by nothing, is four boxes to ignore
+        per row.
+        """
+        self.assertEqual(production.WORK_BOXES, 1)
+        self.assertFalse(
+            hasattr(production, "_stage_columns"),
+            "the column layout went with the columns",
         )
+
+    def test_the_working_copy_says_what_goes_in_each_bath(self):
+        """The collection page lists dyes pooled, which is the right shape for
+        one walk to the shelf and the wrong shape at the sink: standing over a
+        pot the question is what goes in *this* one."""
+        dye = self.rows[0].finished_product.recipe.recipe_dyes.first()
+        if dye is None:
+            self.skipTest("fixture recipe has no dyes")
+
+        self.assertIn(dye.dye.name, self._text())
+
+    def test_a_recipe_with_no_dyes_on_file_says_so_on_the_sheet(self):
+        """A blank there reads as "no dyes needed", which is a bath somebody
+        starts and cannot finish."""
+        recipe = self.rows[0].finished_product.recipe
+        recipe.recipe_dyes.all().delete()
+
+        self.assertIn("no dyes on file", self._text())
 
     def test_a_reprint_does_not_read_the_run_state_back(self):
         """Information flows paper → app.
@@ -13132,14 +13986,46 @@ class ProductionRunAdminTests(TestCase):
 
         self.assertContains(response, "1 of 2")
 
-    def test_the_token_cannot_be_edited(self):
-        """It is printed on paper and encoded in that sheet's QR code, and
-        this app can rewrite neither."""
+    def test_the_token_can_be_edited(self):
+        """It used to be read-only, on the reasoning that it is printed on
+        paper and encoded in a QR so rewriting it orphans the sheet. That cost
+        is real and it is not a reason to refuse — orphaning the paper is
+        exactly what you want when a printed code has got out, and a rule that
+        only stops the deliberate case is not a guard."""
         from scarves.admin import ProductionRunAdmin
         from django.contrib.admin.sites import site
 
         admin_obj = ProductionRunAdmin(ProductionRun, site)
-        self.assertIn("token", admin_obj.get_readonly_fields(None, self.run))
+        self.assertNotIn("token", admin_obj.get_readonly_fields(None, self.run))
+
+    def test_revoking_shuts_the_crews_door_and_keeps_the_record(self):
+        """The other way to kill a printed code, and the one to use when
+        somebody may still be holding the paper: the token stays on the
+        record and the page says what happened, where a rewritten token
+        leaves them hunting for a character they think they mistyped."""
+        self.run.revoked_at = timezone.now()
+        self.run.save(update_fields=["revoked_at"])
+
+        response = self.client.get(
+            reverse("production_run", args=[self.run.token])
+        )
+
+        self.assertEqual(response.status_code, 410)
+        self.assertContains(response, "revoked", status_code=410)
+        self.assertTrue(ProductionRun.objects.filter(pk=self.run.pk).exists())
+
+    def test_revoking_does_not_touch_the_work(self):
+        """Revoking says nothing about what is pending, so the planner must go
+        on subtracting a revoked sheet's baths — otherwise shutting a door
+        quietly re-asks for a session somebody is still in the middle of."""
+        before = self.run.pending_count
+
+        self.run.revoked_at = timezone.now()
+        self.run.save(update_fields=["revoked_at"])
+        self.run.refresh_from_db()
+
+        self.assertEqual(self.run.pending_count, before)
+        self.assertTrue(self.run.counts_against_the_plan)
 
     def test_rows_are_not_editable_from_here(self):
         from scarves.admin import ProductionRunRowInline

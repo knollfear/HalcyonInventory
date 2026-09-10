@@ -222,6 +222,19 @@ class RecipeDyesForm(forms.Form):
                 widget=DyeSelect,
             )
 
+    @property
+    def dye_fields(self):
+        """Just the dye slots, for a template that wants to lay them out.
+
+        `{% for field in form %}` renders *every* field, and `oven_dyed` is a
+        declared attribute while the slots are added in `__init__` — so Django
+        orders it first and the row came out with a stray checkbox in front of
+        the dye boxes, the same field a second time. Two inputs sharing one
+        name is worse than untidy: unticking the visible one while the stray
+        stays ticked still posts `on`.
+        """
+        return [self[f"dye{i}"] for i in range(1, self.SLOTS + 1)]
+
     def clean(self):
         cleaned = super().clean()
         chosen = [cleaned.get(f"dye{i}") for i in range(1, self.SLOTS + 1)]
