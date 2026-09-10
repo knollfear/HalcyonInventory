@@ -5,7 +5,7 @@ and the link to hand over if the QR won't scan.
 {% endcomment %}
 
 {% block title %}Run {{ run.pk }}{% endblock %}
-{% block heading %}Production run {{ run.pk }}{% endblock %}
+{% block heading %}{% if run.oven %}Oven run{% else %}Production run{% endif %} {{ run.pk }}{% endblock %}
 
 {% block style %}
   {{ block.super }}
@@ -102,6 +102,33 @@ and the link to hand over if the QR won't scan.
   page had nowhere to say it — one tick flipped "still out" to "reported",
   which read as a finished session on its first reply.
   {% endcomment %}
+  {% if run.oven %}
+    {% comment %}
+    What the box holds, on the sheet that is going to fill it. Live rows
+    rather than every row, because striking one hands its tray back — the
+    same claim `production.in_flight` makes about a pending bath, asked of
+    one run instead of of the planner.
+
+    Stated and never enforced, the same as on the picker. This page can only
+    be reached once the paper exists, so the arithmetic here is a thing to
+    check a printout against rather than a gate on anything.
+    {% endcomment %}
+    <div class="panel">
+      <strong>{{ live_trays }} of {{ oven_trays }} trays.</strong>
+      {% if alongside_baths %}
+        Plus {{ alongside_baths }} bath{{ alongside_baths|pluralize }} in a pot
+        alongside, which take no tray space.
+      {% endif %}
+      {% if tray_gap > 0 %}
+        {{ tray_gap }} would go in empty — add a bath below, or run it short.
+      {% elif tray_gap < 0 %}
+        That is more than the oven holds; {{ oven_trays }} fit.
+      {% else %}
+        Full box.
+      {% endif %}
+    </div>
+  {% endif %}
+
   {% if run.is_closed %}
     <div class="panel">
       <strong>Finished — {{ run.accepted_count }} of {{ run.rows.count }}
@@ -245,7 +272,7 @@ and the link to hand over if the QR won't scan.
   <div class="addbath">
     <h2>Add a bath</h2>
     <form method="get" class="findbox"
-          hx-get="{% url 'product_search' %}?mode=sheet&run={{ run.pk }}"
+          hx-get="{% url 'product_search' %}?mode=sheet&run={{ run.pk }}{% if run.oven %}&oven=1{% endif %}"
           hx-target="#found"
           hx-swap="innerHTML">
       <input type="search" name="q" value="{{ q }}"
@@ -254,7 +281,7 @@ and the link to hand over if the QR won't scan.
     </form>
     <div id="found">
       {% if search_results is not None %}
-        {% include "scarves/partials/sheet_item_results.html" with products=search_results run_pk=run.pk %}
+        {% include "scarves/partials/sheet_item_results.html" with products=search_results run_pk=run.pk oven=run.oven %}
       {% endif %}
     </div>
     <p class="muted">

@@ -63,6 +63,26 @@ from .models import FinishedProduct
 #: never truncated — they are the ones that need looking at.
 RUNS_LISTED = 5
 
+#: How many trays fit in the oven. **One tray is one bath**, so this is a row
+#: count and nothing here needs tray arithmetic of its own.
+#:
+#: Some colorways are made in the oven rather than in a pot, and running it
+#: is an *event* — it gets heated once, it holds fifteen trays, and fifteen
+#: is what makes the heating worth it. That makes the oven the opposite
+#: planning problem from the dye room: a stovetop session is bounded by how
+#: much work there is, and an oven session is bounded by the box. So the
+#: picker plans *to* this number rather than to a number somebody types.
+#:
+#: A named constant rather than a model, because there is one oven and a
+#: second one is a one-line edit on the day it exists. A `DisplayFixture`
+#: for it would be a dimension nothing reads — the fiber-field mistake.
+#:
+#: **Nothing refuses to print short of it.** A sheet at nine trays is a
+#: session somebody has a reason for, and the app arguing with a person who
+#: can see the calendar is the same overreach as refusing to print when the
+#: blanks look short. The gap is said out loud and the paper still comes out.
+OVEN_TRAYS = 15
+
 #: Page furniture, in points (72 to the inch). Plain paper, so unlike the
 #: label stock none of this has to line up with anything physical.
 PAGE_MARGIN = 40
@@ -187,7 +207,8 @@ ORDER_SOLD = "sold"
 ORDER_PAR = "par"
 
 
-def candidates(category=None, include_overshoot=False, order=ORDER_SOLD):
+def candidates(category=None, include_overshoot=False, order=ORDER_SOLD,
+               oven=False):
     """Products worth putting on a sheet, most urgent first.
 
     The default is `FinishedProduct.behind_a_bath` — products where a whole
@@ -200,6 +221,19 @@ def candidates(category=None, include_overshoot=False, order=ORDER_SOLD):
     away anyway the next time the recipe is dyed. Printing them is worth it
     when the session has capacity to spare; leaving them off is worth it when
     it doesn't. Hence a checkbox rather than a judgement baked in here.
+
+    `oven=None` means both, which is what a page that *reports* shortages
+    wants — `private/production-needed/` covers the whole catalogue and badges
+    the oven rows rather than hiding them.
+
+    **`oven` partitions rather than filters, and it defaults to the pot.**
+    An oven colorway cannot be made at a sink and a stovetop one cannot be
+    made in the oven, so these are two disjoint populations and every sheet
+    is one or the other. Defaulting to `False` is what makes the existing
+    callers keep meaning what they meant: the dye-room sheet asks for the
+    dye room's work, and an oven colorway appearing on it would send
+    somebody to a sink to make a thing that is not made there — the failure
+    `made_in_a_dye_bath` already exists to stop, one technique further in.
     """
     qs = (
         FinishedProduct.objects.filter(
@@ -210,6 +244,14 @@ def candidates(category=None, include_overshoot=False, order=ORDER_SOLD):
             # sheet would put "4 × " with no colorway on it and send somebody
             # to the dye room to make something that arrives in a box.
             recipe__isnull=False,
+            # A retired colorway is one nobody dyes any more, and *Retire,
+            # don't delete* says retiring takes something out of production
+            # planning. That was true of a retired product and never of a
+            # retired recipe: its finished products stay active, so the
+            # colorway kept being asked for with nothing to say why. The
+            # symptom is a dye room being sent to make a colour somebody
+            # decided to stop making.
+            recipe__is_active=True,
             # Fancy veils are dyed scarves with extra line work added, so
             # they carry a colorway and slip past the test above. You cannot
             # answer a shortage of one by dyeing.
@@ -220,6 +262,10 @@ def candidates(category=None, include_overshoot=False, order=ORDER_SOLD):
         # query per bath.
         .prefetch_related("recipe__recipe_dyes__dye__brand")
     )
+    if oven is not None:
+        # The pot and the oven are two sessions, never one sheet. `None` is
+        # the reporting case, which wants both.
+        qs = qs.filter(recipe__oven_dyed=oven)
     if category is not None:
         qs = qs.filter(raw_product__category=category)
 
@@ -238,19 +284,12 @@ def candidates(category=None, include_overshoot=False, order=ORDER_SOLD):
     # result is a superset of the answer and the Python pass below narrows
     # it. Doing it here rather than in a Subquery keeps one copy of the
     # arithmetic, which the sort and `plan_baths` both read.
-    claimed = in_flight()
     wanted = []
-    for product in qs:
-        product.in_flight = claimed.get(product.pk, 0)
-        product.net_shortage = max(
-            product.par - product.number_on_hand - product.in_flight, 0
-        )
+    for product in annotate_flight(qs):
         if not product.net_shortage:
             continue
-        if not include_overshoot:
-            expected = product.number_on_hand + product.in_flight
-            if product.par < expected + product.bath_size:
-                continue
+        if not include_overshoot and not product.behind_a_bath_net:
+            continue
         wanted.append(product)
 
     if order == ORDER_PAR:
@@ -267,6 +306,43 @@ def candidates(category=None, include_overshoot=False, order=ORDER_SOLD):
         wanted,
         key=lambda p: (-sold.get(p.recipe_id, 0),) + _urgency(p),
     )
+
+
+def annotate_flight(products, claimed=None):
+    """Set `in_flight`, `net_shortage` and `behind_a_bath_net` on each product.
+
+    **One definition of "what is still short", for every page that asks.**
+    `private/production-needed/` used to carry its own SQL version — a plain
+    `par - number_on_hand` that knew nothing about printed paper — so printing
+    a sheet that covered a colorway entirely left that page still reporting the
+    full shortage. The planner was right and the page somebody reads was
+    wrong, which is the worst way round.
+
+    Two answers to one question is the failure this codebase keeps naming
+    (`sold_by_recipe` for what sold, `refill_plan` for what to carry). This is
+    the same fix: the page reports exactly what the sheet would ask for.
+
+    `claimed` is passed in when the caller already has it, so a page rendering
+    one row doesn't re-query every live sheet.
+    """
+    if claimed is None:
+        claimed = in_flight()
+
+    annotated = []
+    for product in products:
+        product.in_flight = claimed.get(product.pk, 0)
+        product.net_shortage = max(
+            (product.par or 0) - product.number_on_hand - product.in_flight, 0
+        )
+        # `behind_a_bath` asked of what is left after the paper: a whole bath
+        # still lands at or under par. The model property answers the same
+        # question about the shelf alone, which double-counts a printed sheet.
+        expected = product.number_on_hand + product.in_flight
+        product.behind_a_bath_net = (
+            (product.par or 0) >= expected + product.bath_size
+        )
+        annotated.append(product)
+    return annotated
 
 
 def in_flight():
@@ -323,7 +399,8 @@ def _urgency(product):
     )
 
 
-def plan_baths(limit, category=None, include_overshoot=False, order=ORDER_SOLD):
+def plan_baths(limit, category=None, include_overshoot=False, order=ORDER_SOLD,
+               oven=False):
     """The next `limit` baths, grouped so consecutive rows share a dye pot.
 
     Baths of the same recipe sit together because that is how the work is
@@ -335,7 +412,7 @@ def plan_baths(limit, category=None, include_overshoot=False, order=ORDER_SOLD):
     was asked for a number of baths and it delivers exactly that number.
     """
     by_recipe = {}
-    for product in candidates(category, include_overshoot, order):
+    for product in candidates(category, include_overshoot, order, oven):
         # `net_shortage`, not `shortage`: what is already out being dyed has
         # been taken off, so a sheet asks for the baths still missing rather
         # than reprinting the ones on last week's paper.
@@ -379,6 +456,83 @@ def baths_from_picks(picks):
     for recipe_baths in by_recipe.values():
         baths.extend(recipe_baths)
     return baths
+
+
+def top_ups(current, gap, category=None, oven=True):
+    """Oven colorways worth adding when the shortages don't fill the box.
+
+    `current` is the list as it stands (products already on it), `gap` is how
+    many trays are still empty. Returns `[(product, units_sold)]`, best
+    sellers first — nothing below par, because anything short is already on
+    the list by the time there is a gap at all.
+
+    **This is the one place in the app that suggests making something that
+    is not short**, and it is worth being precise about why that is not the
+    display-capacity mistake wearing a hat.
+
+    The rule that matters is that *furniture must never reach production*: a
+    new rack gets filled from the bags, a stored backstock figure reads empty
+    and calls for dye, and nothing sold. What makes that bad is that it is
+    unbounded and it is mistaken for demand. The oven is neither. It is a
+    fixed box that costs one heating whether it holds four trays or fifteen,
+    so the last eleven are the cheapest eleven of the year — the same
+    argument `include_overshoot` already makes about a bath being a fixed
+    size, at the scale of a session rather than a pot. And it is bounded
+    absolutely, at `OVEN_TRAYS`, by a thing nobody can enlarge by building
+    another one.
+
+    It also runs *with* the northstar rather than against it. The goal is a
+    flat year instead of a fast week — as much of a season pre-dyed as
+    possible — and an oven run in February that comes out full is exactly
+    that. What would be the regression is topping up with whatever sold last
+    weekend, which is why the ranking is season sales pooled by colorway and
+    not recent movement.
+
+    Three things keep it advice rather than a decision:
+
+    - **Nothing is added.** These are offered with a `+` beside them and the
+      list only ever changes because somebody clicked one. A suggestion that
+      auto-filled the sheet would be the app deciding to make ninety skeins.
+    - **The sales figure is printed beside each one**, so the basis of the
+      ranking can be checked by looking rather than trusted. Advice you
+      cannot inspect is a decision in disguise.
+    - **The panel disappears when the box is full**, so it is only ever
+      answering a question the page is already asking.
+    """
+    if gap <= 0:
+        return []
+
+    on_list = {product.pk for product in current}
+    qs = (
+        FinishedProduct.objects.filter(
+            is_active=True,
+            recipe__isnull=False,
+            recipe__is_active=True,
+            recipe__oven_dyed=oven,
+            raw_product__made_in_a_dye_bath=True,
+        )
+        .select_related("raw_product", "recipe")
+        .exclude(pk__in=on_list)
+    )
+    if category is not None:
+        qs = qs.filter(raw_product__category=category)
+
+    from . import slowsellers
+
+    sold = slowsellers.sold_by_recipe(slowsellers.season_range({}))
+    ranked = sorted(
+        qs,
+        # Sales pooled by colorway, then the name — deliberately *not*
+        # `_urgency` as the tie-break. Urgency reads a shortage, and by
+        # definition nothing here has one; sorting on how far above par
+        # something is would rank the topping-up on par, which is the number
+        # this app does not trust.
+        key=lambda product: (-sold.get(product.recipe_id, 0), product.name),
+    )
+    # A few more than the gap, so there is something to choose between
+    # rather than a list to work down. Each `+` is one tray, because a bath
+    # is the unit and any other number here would be invented.
+    return [(product, sold.get(product.recipe_id, 0)) for product in ranked[:gap + 5]]
 
 
 def blank_demand(rows):

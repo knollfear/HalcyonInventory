@@ -5,8 +5,8 @@ will ask for is on screen before any paper exists. Printing creates a run, so
 the preview is deliberately a GET and the print button is the only POST.
 {% endcomment %}
 
-{% block title %}Production Sheet{% endblock %}
-{% block heading %}Production Sheet{% endblock %}
+{% block title %}{% if oven %}Oven Run{% else %}Production Sheet{% endif %}{% endblock %}
+{% block heading %}{% if oven %}Oven Run{% else %}Production Sheet{% endif %}{% endblock %}
 
 {% block style %}
   {{ block.super }}
@@ -33,6 +33,34 @@ the preview is deliberately a GET and the print button is the only POST.
   table.rows th { font-size: 11px; text-transform: uppercase; color: #667; }
   table.rows td.num { text-align: right; font-variant-numeric: tabular-nums; }
   .headline { font-size: 26px; font-weight: 700; color: var(--accent); }
+
+  /* The tray gauge. One cell per tray, because the whole question on an oven
+     run is how much of the box is spoken for — a bar somebody reads at a
+     glance says that better than a fraction they have to subtract. */
+  .gauge { display: flex; gap: 3px; margin: 2px 0 10px; }
+  .gauge i {
+      width: 22px; height: 12px; border-radius: 3px;
+      border: 1px solid #cfd6de;
+  }
+  .gauge i.full { background: var(--accent); border-color: var(--accent); }
+  .gauge i.empty { background: #fff; }
+  .warn-line { color: #8a2f2a; font-size: 13px; }
+  .lead { font-size: 13px; color: #667; margin: 0 0 18px; }
+
+  /* Suggestions, styled as an offer rather than as a list of work. The `+`
+     is the whole control; nothing here is ticked, checked or counted off. */
+  .topups .topup-list { list-style: none; padding: 0; margin: 10px 0 0; }
+  .topups .topup-list li {
+      display: flex; gap: 10px; align-items: baseline; padding: 4px 0;
+  }
+  .topups .who { font-weight: 600; font-size: 13px; }
+  .topups .muted { font-size: 12px; }
+  button.topup {
+      flex: none; width: 26px; height: 26px; font: inherit; line-height: 1;
+      border: 1px solid #cfd6de; border-radius: 6px; background: #fff;
+      cursor: pointer; color: var(--accent); font-weight: 700;
+  }
+  button.topup:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
 
   .dyeplan { margin-top: 22px; }
   .dyeplan h2 { font-size: 15px; margin: 0 0 4px; }
@@ -123,6 +151,14 @@ the preview is deliberately a GET and the print button is the only POST.
 
 {% block content %}
 
+  {% if oven %}
+    <p class="lead">
+      Only oven colorways, planned to the {{ oven_trays }} trays the oven
+      holds — one heating costs the same whether it comes out full or not.
+      One tray is one bath.
+    </p>
+  {% endif %}
+
   {% if overdue_runs %}
     {% comment %}
     The one list on this page that is asking for something, so it is first
@@ -211,6 +247,20 @@ the preview is deliberately a GET and the print button is the only POST.
         <div class="help">{{ form.order.help_text }}</div>
         {{ form.order.errors }}
       </div>
+      {% comment %}
+      The first question, because it changes what every answer below means:
+      an oven run asks for a different set of colorways and is planned to the
+      box rather than to a number. A tick rather than a second page —
+      remembering a different URL because you are using a different appliance
+      is the wrong way round.
+      {% endcomment %}
+      <div class="field tick">
+        {{ form.oven }}
+        <div>
+          <label for="{{ form.oven.id_for_label }}">{{ form.oven.label }}</label>
+          <div class="help">{{ form.oven.help_text }}</div>
+        </div>
+      </div>
       <div class="field tick">
         {{ form.include_overshoot }}
         <div>
@@ -242,19 +292,24 @@ the preview is deliberately a GET and the print button is the only POST.
       {% endcomment %}
       <form method="get" class="findbox"
             hx-get="{% url 'product_search' %}"
-            hx-vals='{"mode": "plan"}'
+            hx-vals='{"mode": "plan"{% if oven %}, "oven": "1"{% endif %}}'
             hx-target="#bath-results"
             hx-swap="innerHTML">
         {% for row in rows %}
           <input type="hidden" name="items" value="{{ row.product.pk }}:{{ row.baths }}">
         {% endfor %}
+        {% comment %}
+        Same reason as the list form's copy: a no-script Find is a whole new
+        address, and anything not in it is dropped.
+        {% endcomment %}
+        {% if oven %}<input type="hidden" name="oven" value="1">{% endif %}
         <label for="bath-search">Find a colorway</label>
         <input type="search" id="bath-search" name="q" value="{{ q }}"
                autocomplete="off" placeholder="Type a colorway or blank…"
                hx-get="{% url 'product_search' %}"
                hx-trigger="keyup changed delay:250ms"
                hx-target="#bath-results"
-               hx-vals='{"mode": "plan"}'>
+               hx-vals='{"mode": "plan"{% if oven %}, "oven": "1"{% endif %}}'>
         <button class="btn-quiet" type="submit">Find</button>
       </form>
       <div class="results" id="bath-results">

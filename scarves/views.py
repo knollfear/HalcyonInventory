@@ -65,6 +65,7 @@ from .forms import (
     HoursForm,
     LabelRunForm,
     NewDyeForm,
+    PickedBathsField,
     ProductionSheetForm,
     QuickRecipeRowForm,
     RecipeDyesForm,
@@ -219,64 +220,31 @@ def public_index(request):
 )
 @login_required
 def production_needed_view(request):
+    """What is below par, grouped by colorway — the page beside the sheet.
+
+    **One source of truth with the sheet, and this page did not have it.** It
+    used to run its own SQL — `par - number_on_hand`, aggregated per recipe —
+    which knew nothing about paper already printed. So a sheet covering a
+    colorway's entire shortage left this page still reporting it in full, and
+    the two disagreed about the one question they both answer. The planner was
+    right and the page a person reads was wrong, which is the worse way round.
+
+    Now both read `production.candidates()`. Same filters, same in-flight
+    subtraction, same order — so "the first twenty on this list" and "ask the
+    picker for twenty baths" are the same twenty, which is what the ordering
+    was already trying to guarantee and could not while the memberships
+    differed.
+
+    `include_overshoot=True` and `oven=None`, because this **reports** where
+    the sheet **plans**: everything below par is worth reading, whichever box
+    it is made in and whether or not a whole bath would overshoot. The
+    behind-a-bath rows are badged rather than filtered, and so are the oven
+    ones.
+    """
     category_id = request.GET.get("category")
-
-    shortage_expr = ExpressionWrapper(
-        F("par") - F("number_on_hand"),
-        output_field=IntegerField(),
-    )
-
-    # The SQL half of `FinishedProduct.behind_a_bath` — shortage >= bath size,
-    # rearranged so it doesn't have to reference the annotation above. Greatest
-    # keeps a bath size of 0 from making the test vacuously true, matching the
-    # `or 1` the property and `record_dye_bath` both use.
-    behind_a_bath_expr = Case(
-        When(
-            par__gte=F("number_on_hand") + Greatest(
-                F("raw_product__number_per_dye_bath"), Value(1)
-            ),
-            then=1,
-        ),
-        default=0,
-        output_field=IntegerField(),
-    )
-
-    base_qs = (
-        FinishedProduct.objects.filter(
-            is_active=True,
-            par__gt=0,
-            number_on_hand__lt=F("par"),
-            # A passthrough has no recipe and cannot be produced — you order
-            # more, you don't dye more. `private/raw-inventory/` is where its
-            # shortfall belongs.
-            recipe__isnull=False,
-            # And a fancy veil *has* a colorway but still isn't dyed into
-            # existence — the work added to it is line work on a scarf that
-            # already exists.
-            raw_product__made_in_a_dye_bath=True,
-        )
-        .select_related("raw_product", "raw_product__category", "recipe")
-        .prefetch_related("recipe__recipe_dyes__dye")
-        .annotate(shortage_value=shortage_expr)
-    )
-
-    if category_id:
-        base_qs = base_qs.filter(raw_product__category_id=category_id)
-
-    # Aggregate per recipe to get sort keys
-    recipe_stats = (
-        base_qs.values("recipe_id", "recipe__name")
-        .annotate(
-            total_shortage=Sum("shortage_value"),
-            has_behind=Max(behind_a_bath_expr),
-        )
-        .order_by("-has_behind", "-total_shortage", "recipe__name")
-    )
-
-    # Group finished products by recipe id
-    by_recipe = {}
-    for fp in base_qs.order_by("recipe__name", "number_on_hand", "-shortage_value", "name"):
-        by_recipe.setdefault(fp.recipe_id, []).append(fp)
+    category = None
+    if category_id and str(category_id).isdigit():
+        category = RawProductCategory.objects.filter(pk=category_id).first()
 
     # What each colorway has actually sold this season, pooled across its
     # blanks — the same figure `private/slow-sellers/` reports, from the same
@@ -285,23 +253,39 @@ def production_needed_view(request):
     rng = slowsellers.season_range({})
     sold = slowsellers.sold_by_recipe(rng)
 
+    products = production.candidates(
+        category=category,
+        include_overshoot=True,
+        order=production.ORDER_SOLD,
+        oven=None,
+    )
+
+    by_recipe = {}
+    for fp in products:
+        by_recipe.setdefault(fp.recipe_id, []).append(fp)
+
     groups = []
-    for row in recipe_stats:
-        rid = row["recipe_id"]
-        fps = by_recipe.get(rid, [])
-        if not fps:
-            continue
-        groups.append(
-            {
-                "recipe_id": rid,
-                "recipe_name": row["recipe__name"],
-                "has_behind": bool(row["has_behind"]),
-                "total_shortage": row["total_shortage"] or 0,
-                "units_sold": sold.get(rid, 0),
-                "items": fps,
-                "recipe_obj": fps[0].recipe,  # already select_related
-            }
-        )
+    for rid, fps in by_recipe.items():
+        # Within a colorway: emptiest shelf first, then biggest gap, then a
+        # stable name — `_urgency` without re-deriving it here.
+        fps.sort(key=lambda p: (p.number_on_hand > 0, -p.net_shortage, p.name))
+        groups.append({
+            "recipe_id": rid,
+            "recipe_name": fps[0].recipe.name,
+            "recipe_obj": fps[0].recipe,
+            # Asked of what is left *after* the paper, like the shortage
+            # beside it. The model property answers about the shelf alone and
+            # would light up rows a printed sheet already covers.
+            "has_behind": any(p.behind_a_bath_net for p in fps),
+            "total_shortage": sum(p.net_shortage for p in fps),
+            # Printed where it is non-zero, so a number that moved because
+            # somebody printed a sheet says so rather than just dropping. A
+            # silent subtraction reads as "nothing needed", which is the same
+            # confusion in the other direction.
+            "in_flight": sum(p.in_flight for p in fps),
+            "units_sold": sold.get(rid, 0),
+            "items": fps,
+        })
 
     # **Sold, most first, is the default — because par is the number that is
     # wrong.** Par was never dialled in and reads as a uniform remnant, so
@@ -317,16 +301,22 @@ def production_needed_view(request):
     if sort == "sold":
         groups.sort(key=lambda g: (-g["units_sold"], -g["total_shortage"],
                                    g["recipe_name"]))
+    else:
+        groups.sort(key=lambda g: (-g["has_behind"], -g["total_shortage"],
+                                   g["recipe_name"]))
 
-    categories = RawProductCategory.objects.all().order_by("name")
     context = {
         "groups": groups,
-        "categories": categories,
-        "selected_category_id": int(category_id) if category_id else None,
+        "categories": RawProductCategory.objects.all().order_by("name"),
+        "selected_category_id": category.pk if category else None,
         "sort": sort,
         "range": rng,
+        # So the page can say it is netting off printed sheets rather than
+        # leaving somebody to wonder why a colorway went quiet.
+        "in_flight_total": sum(g["in_flight"] for g in groups),
     }
     return render(request, "scarves/production_needed.html", context)
+
 
 @require_POST
 @login_required
@@ -363,6 +353,10 @@ def record_dye_bath(request, pk):
             .select_related("raw_product", "raw_product__category", "recipe")
             .get(pk=finished_product.pk)
         )
+        # The row reads `net_shortage` and `behind_a_bath_net`, which only
+        # `annotate_flight` sets — and a missing attribute renders as an empty
+        # cell rather than raising, so forgetting this is silent.
+        production.annotate_flight([finished_product])
         return TemplateResponse(
             request,
             "scarves/partials/production_needed_row.html",
@@ -905,6 +899,10 @@ def _recipe_row_context(request, recipe, form=None, source=None, saved=False):
             f"dye{i}": rd.dye_id
             for i, rd in enumerate(prefill.recipe_dyes.all()[: RecipeDyesForm.SLOTS], start=1)
         }
+        # From the recipe itself even when the dyes are being copied from
+        # another one: copying a palette says nothing about which box this
+        # colorway is made in.
+        initial["oven_dyed"] = recipe.oven_dyed
         form = RecipeDyesForm(initial=initial)
     return {
         "recipe": recipe,
@@ -949,6 +947,9 @@ def recipe_showcase(request):
                 f"dye{i}": rd.dye_id
                 for i, rd in enumerate(recipe.recipe_dyes.all()[: RecipeDyesForm.SLOTS], start=1)
             }
+            # Without this the box renders unticked on a flagged recipe, and
+            # the next Save on that row silently un-flags it.
+            initial["oven_dyed"] = recipe.oven_dyed
             rows.append({
                 "recipe": recipe,
                 "form": RecipeDyesForm(initial=initial),
@@ -971,6 +972,57 @@ def recipe_showcase(request):
             "total_count": total,
             "missing_count": without,
         },
+    )
+
+
+@require_POST
+@login_required
+def recipe_retire(request, pk):
+    """Stop using a colorway, from the bulk editing list.
+
+    **Retire, don't delete.** A recipe that ever sold is pointed at by
+    inventory logs, resolved sales and production rows, and that history stays
+    interesting long after the colour stops being made — so this is
+    `is_active = False` and nothing else. The schema enforces the same thing
+    from the other side: everything recording what happened points at a
+    product with `on_delete=PROTECT`.
+
+    **The row collapses to a strip rather than vanishing.** A row that
+    disappeared is indistinguishable from a click that never arrived, and on a
+    list this long that is the mistake somebody makes twice — the same call
+    the unidentified-sales queue makes about a dismissed row.
+
+    **And the strip carries Undo**, which the dismissal queue deliberately
+    does not. The difference is what the click costs if it was wrong: a
+    dismissed sale sets a timestamp, where retiring a colorway takes it off
+    the production sheets, the reference sheets, the label runs and the Square
+    sync at once. On a page of a hundred and sixty rows, next to a Save
+    button, a mis-click is ordinary — and a fix somebody has to go and find in
+    the admin is the kind that gets left unmentioned.
+    """
+    recipe = get_object_or_404(Recipe, pk=pk)
+    Recipe.objects.filter(pk=recipe.pk).update(is_active=False)
+    recipe.refresh_from_db()
+    return render(request, "scarves/partials/recipe_retired.html", {"recipe": recipe})
+
+
+@require_POST
+@login_required
+def recipe_restore(request, pk):
+    """Put a retired colorway back, and hand the whole row back with it.
+
+    Nothing was destroyed, so this is the plain inverse — unlike the close's
+    Undo, which has to write a compensating entry because stock moved.
+    """
+    recipe = get_object_or_404(Recipe, pk=pk)
+    Recipe.objects.filter(pk=recipe.pk).update(is_active=True)
+    recipe = Recipe.objects.prefetch_related(
+        "recipe_dyes__dye", "finished_products__images"
+    ).get(pk=pk)
+    return render(
+        request,
+        "scarves/partials/recipe_row.html",
+        _recipe_row_context(request, recipe),
     )
 
 
@@ -3085,6 +3137,12 @@ def product_search(request):
     # greys out anything with no SKU. A SKU is needed to print a sticker, not
     # to dye a bath.
     for_plan = mode == "plan"
+    # Which kind of session is being planned, so the results can say why a
+    # colorway can't join *this* one. Not a filter: an oven colorway hidden
+    # from the dye-room search is one somebody searches for, doesn't find,
+    # and concludes is missing from the app — the same call the label picker
+    # makes about a product with no SKU.
+    oven = request.GET.get("oven") == "1"
     run_pk = request.GET.get("run")
     # Passed straight through to the assign call's URL. The search itself is
     # unchanged by it — a walk narrows nothing, because the whole reason this
@@ -3107,6 +3165,7 @@ def product_search(request):
     return render(request, template, {
         "products": products, "upload_id": upload_id, "stop_query": stop_query,
         "run_pk": run_pk,
+        "oven": oven,
     })
 
 
@@ -3975,6 +4034,9 @@ def sheet_list(form):
         category=form.cleaned_data.get("category"),
         include_overshoot=form.cleaned_data["include_overshoot"],
         order=form.cleaned_data.get("order") or production.ORDER_SOLD,
+        # The pot and the oven suggest from disjoint sets, and the form knows
+        # which one it is because the route told it.
+        oven=form.is_oven_run,
     )
     # Back to one row per colorway. `plan_baths` returns a bath at a time
     # because that is what the paper prints; the list is edited per colorway,
@@ -3987,17 +4049,22 @@ def sheet_list(form):
     return [(product, counts[product.pk]) for product in order]
 
 
-def _without(rows, product):
+def _without(rows, product, oven=False):
     """`?items=` for the list minus one row, for that row's remove link.
 
     Server-rendered rather than built in the browser, so removing a row is an
     ordinary link that works with the script blocked — and the address it
     produces is the same sendable URL every other filter here uses.
+
+    **It has to carry `oven`.** The link is a whole new address rather than an
+    edit to the form, so anything not in it is dropped — and dropping this one
+    turns an oven run back into a dye-room sheet halfway through editing it,
+    with the only visible sign being the tray gauge disappearing.
     """
-    return urlencode(
-        {"items": [f"{p.pk}:{n}" for p, n in rows if p.pk != product.pk]},
-        doseq=True,
-    )
+    params = {"items": [f"{p.pk}:{n}" for p, n in rows if p.pk != product.pk]}
+    if oven:
+        params["oven"] = "1"
+    return urlencode(params, doseq=True)
 
 
 @page_meta(
@@ -4088,19 +4155,40 @@ def production_sheet_index(request):
     decided to print one, so browsing the options leaves nothing behind —
     but the moment paper exists, so does the row that the crew's return URL
     points at.
+
+    **The oven is a tick on this page, not a page of its own.** It is a
+    different session — only oven colorways, planned to the box rather than
+    to the work — but it is the same job end to end: the same editable list,
+    the same collection page, the same three printed documents, the same QR
+    coming back. A second picker would be a second thing to find and a second
+    copy to keep in step.
+
+    What that costs is that the tick has to survive every round trip, where a
+    route carried it for free. Every edit here re-renders from the server, so
+    `oven` rides as a hidden input inside `#sheet-list` — the same form that
+    carries `items` — and the ✕ links carry it in their query string. Miss one
+    and the sheet quietly turns back into a dye-room sheet mid-edit, which is
+    the one way this arrangement can go wrong.
     """
+    sheet_url = reverse("production_sheet_index")
+
     if request.method == "POST":
         form = ProductionSheetForm(request.POST)
         if form.is_valid():
             baths = production.baths_from_picks(sheet_list(form))
             if not baths:
                 messages.warning(request, "Nothing needs dyeing for those settings.")
-                return redirect(f"{reverse('production_sheet_index')}?{request.POST.urlencode()}")
+                return redirect(f"{sheet_url}?{request.POST.urlencode()}")
 
             with transaction.atomic():
                 run = ProductionRun.objects.create(
                     category=form.cleaned_data.get("category"),
                     included_overshoot=form.cleaned_data["include_overshoot"],
+                    # Frozen onto the run for the reason the category and the
+                    # bath sizes are: a reprint has to say what the paper
+                    # said, and it is what the run page reads to decide what
+                    # may be added to this sheet later.
+                    oven=form.is_oven_run,
                 )
                 ProductionRunRow.objects.bulk_create([
                     ProductionRunRow(
@@ -4121,6 +4209,11 @@ def production_sheet_index(request):
             return redirect("production_run_detail", pk=run.pk)
     else:
         form = ProductionSheetForm(request.GET or None)
+
+    # Read off the form so it survives whichever way the page was reached,
+    # and before validity is known — the search results and the count box's
+    # label both need it.
+    oven = form.is_oven_run
 
     rows = []
     if form.is_bound and form.is_valid():
@@ -4143,8 +4236,52 @@ def production_sheet_index(request):
         if request.headers.get("HX-Request") == "true"
         else "scarves/production_sheet_index.html"
     )
+
+    # One tray is one bath, so the box's capacity is a row count and there is
+    # no tray arithmetic anywhere. The gap is what the page is *for* on an
+    # oven run: a heating costs the same whether it comes out full or not.
+    #
+    # **Only the oven baths take tray space.** A session is allowed to be an
+    # oven run *and* two pots on the side — forcing that onto two sheets is
+    # overhead for overhead — so the sheet holds both and the gauge counts
+    # what actually goes in the box. Counting every row instead would read
+    # "17 of 15" for fifteen trays plus two pots, which is the page telling
+    # somebody to take out work the oven was never holding.
+    oven_baths = [b for b in baths if b.product.recipe.oven_dyed]
+    pot_baths = len(baths) - len(oven_baths)
+    tray_gap = production.OVEN_TRAYS - len(oven_baths) if oven else 0
+    # Built here rather than counted in the template, which cannot range.
+    # `True` is a tray with something in it; the tail is what would go in
+    # empty. An over-full sheet has no empty tail and says so in words.
+    tray_slots = (
+        [True] * len(oven_baths) + [False] * max(tray_gap, 0) if oven else []
+    )
+
     return render(request, template, {
         "form": form,
+        "oven": oven,
+        "sheet_url": sheet_url,
+        "oven_trays": production.OVEN_TRAYS,
+        "tray_gap": tray_gap,
+        "tray_slots": tray_slots,
+        # So the count box's own limit cannot drift from the one that
+        # validates it — a client cap of 20 over a server cap of 10 is a
+        # number somebody can type and then be refused for.
+        "max_per_item": PickedBathsField.MAX_PER_ITEM,
+        "oven_bath_count": len(oven_baths),
+        "pot_bath_count": pot_baths,
+        # Offered, never added. The panel is empty once the box is full, so
+        # it only ever answers a question the page is already asking — and
+        # each suggestion prints what it sold, because the ranking has to be
+        # checkable by looking rather than trusted.
+        "top_ups": (
+            production.top_ups(
+                [product for product, _ in rows],
+                tray_gap,
+                category=form.cleaned_data.get("category") if form.is_bound and form.is_valid() else None,
+            )
+            if oven else []
+        ),
         "baths": baths,
         "plan": production.dye_plan_for_baths(baths),
         "bath_count": len(baths),
@@ -4166,7 +4303,7 @@ def production_sheet_index(request):
                 # scarves are the unit everybody thinks in, and the page has
                 # to show both without anybody multiplying.
                 "makes": product.bath_size * n,
-                "without": _without(rows, product),
+                "without": _without(rows, product, oven),
             }
             for product, n in rows
         ],
@@ -4176,8 +4313,13 @@ def production_sheet_index(request):
         # Two lists, because they ask for different things. Live sheets are a
         # convenience — "what you might still be working from" — and are
         # truncated, since a long one is just noise.
+        # Filtered to this kind of session. A sheet you might still be
+        # working from is the point of the list, and a dye-room sheet is not
+        # something anybody is working from at the oven — mixing them makes
+        # the list longer without making it more useful.
         "open_runs": (
             production.counted_runs()
+            .filter(oven=oven)
             .prefetch_related("rows")[:production.RUNS_LISTED]
         ),
         # Overdue sheets are the actionable list and are never truncated.
@@ -4186,7 +4328,7 @@ def production_sheet_index(request):
         # wrong if the session is still going. Either way somebody has to
         # say which, and the only way that happens is if the page says so.
         "overdue_runs": (
-            production.overdue_runs().prefetch_related("rows")
+            production.overdue_runs().filter(oven=oven).prefetch_related("rows")
         ),
     })
 
@@ -4222,11 +4364,28 @@ def production_run_detail(request, pk):
     # the way it would show is the swapped-in version posting somewhere the
     # inline one doesn't.
     q = (request.GET.get("q") or "").strip()
+
+    # A struck row hands its tray back, so what fills the box is what is
+    # still live on the sheet — the same claim `in_flight` makes about a
+    # pending bath, asked of one run rather than of the planner. And only the
+    # oven rows count: a sheet is allowed to carry an oven load plus a couple
+    # of pots, and the pots were never in the box.
+    live_rows = [row for row in run.rows.all() if not row.is_cancelled]
+    live = sum(
+        1 for row in live_rows
+        if row.finished_product.recipe and row.finished_product.recipe.oven_dyed
+    )
+    alongside = len(live_rows) - live
+
     return render(request, "scarves/production_run_detail.html", {
         "run": run,
         "crew_url": _crew_run_url(request, run),
         "plan": production.dye_plan_for_run(run),
         "bath_count": run.rows.count(),
+        "oven_trays": production.OVEN_TRAYS,
+        "live_trays": live,
+        "alongside_baths": alongside,
+        "tray_gap": production.OVEN_TRAYS - live if run.oven else 0,
         "q": q,
         "search_results": search_products(q) if q else None,
     })
@@ -4252,6 +4411,41 @@ def production_run_add_row(request, pk):
         FinishedProduct, pk=request.POST.get("product"), is_active=True
     )
 
+    # **Two refusals, and the line between them is who decided.**
+    #
+    # An undyed passthrough is ordered rather than made, and a fancy veil is
+    # line work on a scarf that already exists — neither is answerable by
+    # heating anything, so those stay refused. They are facts about how the
+    # thing comes into being.
+    #
+    # A mismatched oven flag is *not* that, and it used to be refused here.
+    # `Recipe.oven_dyed` is typed by a person, from a rule about the world
+    # ("a colour name goes in the oven"), and it was made a flag precisely
+    # because there will be exceptions nobody knows about today. Refusing on
+    # it means the app enforcing somebody's own provisional data back at
+    # them, at the moment they are trying to say the data is wrong — and the
+    # cost of being wrong here is a row on a sheet, which is strikeable. So
+    # it is said and allowed, like the short-blank warning and the tray gap.
+    if product.recipe is None:
+        why = "it is undyed — it gets ordered, not made."
+    elif not product.raw_product.made_in_a_dye_bath:
+        why = "it isn't made in a dye bath."
+    else:
+        why = None
+
+    if why:
+        messages.warning(request, f"{product.name} can't go on this sheet — {why}")
+        return redirect("production_run_detail", pk=run.pk)
+
+    mismatch = (
+        product.recipe.oven_dyed != run.oven
+        and (
+            "That is an oven colorway and this is a dye-room sheet"
+            if product.recipe.oven_dyed else
+            "That is made in a pot and this is an oven run"
+        )
+    )
+
     last = run.rows.order_by("-order").first()
     row = ProductionRunRow.objects.create(
         run=run,
@@ -4261,11 +4455,16 @@ def production_run_add_row(request, pk):
         # same number the planner would have frozen onto the row.
         quantity=product.bath_size,
     )
-    messages.success(
-        request,
+    added = (
         f"Added {row.quantity} × {product.name} to run {run.pk}. "
-        f"Reprint the sheet, or write it on the bottom.",
+        f"Reprint the sheet, or write it on the bottom."
     )
+    if mismatch:
+        # Said rather than refused — and said loudly, because the likely cause
+        # is a flag that needs changing rather than a row that needs striking.
+        messages.warning(request, f"{added} {mismatch} — added anyway.")
+    else:
+        messages.success(request, added)
     return redirect("production_run_detail", pk=run.pk)
 
 

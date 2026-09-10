@@ -527,11 +527,31 @@ class RecipeDyeInline(admin.TabularInline):
 
 @admin.register(Recipe)
 class RecipeAdmin(admin.ModelAdmin):
-    list_display = ("name", "dye_count", "is_active")
-    list_filter = ("is_active",)
+    # `oven_dyed` is editable from the list, which is the whole of how a
+    # catalogue of a few hundred colorways gets flagged: it is one property
+    # of the colour, it is known when the recipe is written, and the
+    # alternative is a few hundred round trips through the change form. Same
+    # bargain the dye list makes about colour, brand and stock.
+    list_display = ("name", "dye_count", "oven_dyed", "is_active")
+    list_editable = ("oven_dyed",)
+    list_filter = ("oven_dyed", "is_active")
     search_fields = ("name", "description")
     inlines = [RecipeDyeInline]
     ordering = ("name",)
+    # The whole catalogue on one screen, because flagging the oven is one
+    # pass down an alphabetical list rather than a search per colorway. At a
+    # few hundred recipes this is one page and one Save.
+    #
+    # **Nothing derives this from the name**, though there is a rule — a
+    # colour name goes in the oven, an idea doesn't. It stays typed because
+    # the rule is about the world and not about the string: `Forest Fire` is
+    # two colour words and is not an oven colorway, `Burnt Orange` is two
+    # words and is, and the dye-book shorthand (`russet-cab-black`) is
+    # neither. A classifier would be confidently wrong on exactly those, and
+    # wrong here is silent — the colorway lands on the other session's sheet
+    # and the row looks like every other row. The rule is how somebody
+    # decides what to tick; the flag is what the app reads.
+    list_per_page = 250
 
 
 class FinishedProductImageInline(admin.TabularInline):

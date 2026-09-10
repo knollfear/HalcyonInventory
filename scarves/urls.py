@@ -91,6 +91,19 @@ urlpatterns = [
         name="record_recipe_production",
     ),
     path("private/recipes/<int:pk>/row/", views.recipe_row, name="recipe_row"),
+    # POST-only row actions from the bulk editing list, so no `@page_meta` and
+    # neither reaches the site map. Retiring is `is_active = False` — see the
+    # view, and *Retire, don't delete* in CLAUDE.md.
+    path(
+        "private/recipes/<int:pk>/retire/",
+        views.recipe_retire,
+        name="recipe_retire",
+    ),
+    path(
+        "private/recipes/<int:pk>/restore/",
+        views.recipe_restore,
+        name="recipe_restore",
+    ),
     # The history half of the recipe page, for a chip click. An htmx fragment,
     # so no @page_meta — it returns a table, not a page.
     path(

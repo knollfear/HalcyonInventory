@@ -45,6 +45,30 @@
       border-radius: 999px; padding: 1px 8px; margin-left: 6px;
   }
   tr.just-saved { background: #f1f8f3; }
+
+  /* The oven badge. Same shape as the saved tag rather than the shape of a
+     warning: an oven colorway is ordinary, it is just made in the other box. */
+  .oventag {
+      font-size: 11px; color: #8a5a2b; border: 1px solid #e6cfae;
+      background: #fdf4e8; border-radius: 999px; padding: 1px 8px;
+      margin-left: 6px;
+  }
+  .ovenbox {
+      display: flex; align-items: center; gap: 8px; margin-top: 10px;
+      font-size: 13px; font-weight: 600;
+  }
+  .ovenbox .muted { font-weight: 400; }
+  /* Quiet until reached for. Retiring is a normal thing to do to a colour
+     nobody dyes any more, and it is undoable from the strip it leaves — so
+     it reads as an action, not as a hazard. */
+  .btn-danger {
+      font: inherit; font-size: 13px; padding: 5px 10px; cursor: pointer;
+      color: #8a2f2a; background: #fff; border: 1px solid #e0c3c1;
+      border-radius: 6px;
+  }
+  .btn-danger:hover { background: #8a2f2a; color: #fff; border-color: #8a2f2a; }
+  tr.retired td { background: #f7f7f8; }
+  tr.retired .btn-quiet { margin-left: 10px; }
   .thumb {
       width: 68px; height: 68px; object-fit: cover;
       border-radius: 6px; border: 1px solid #ddd; margin-right: 4px;

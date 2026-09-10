@@ -39,6 +39,17 @@
   /* Sold nothing all season reads as a fact, not an alarm — it may simply be
      new, and this page is not where that gets decided. */
   .soldcount.none { color: #6b7280; background: #f4f5f7; border-color: #d3d7dd; }
+  /* A signpost, not a warning: an oven colorway being short is ordinary, it
+     just gets answered on a different sheet. Styled like the sold pill rather
+     than like the behind-a-bath alert for exactly that reason. */
+  .ovenbadge { font-size: 12px; font-weight: 600; text-decoration: none;
+               color: #8a5a2b; background: #fdf4e8; border: 1px solid #e6cfae;
+               border-radius: 999px; padding: 2px 9px; }
+  .ovenbadge:hover { background: #f8e9d3; }
+  /* Quiet: a bath already on paper is the ordinary state of a working shop,
+     not an exception. It is here so a shortage that moved says why. */
+  .onpaper { font-size: 11px; color: #6b7280; font-weight: 400; }
+  .netnote { font-size: 12px; color: #667; margin: 0 0 14px; }
 {% endblock %}
 
 {% block head %}
@@ -81,6 +92,19 @@
     <span class="pill-note">sales over {{ range.label|lower }}</span>
   </div>
 
+  {% if in_flight_total %}
+    {% comment %}
+    The page and the sheet now answer one question from one place
+    (`production.candidates`), so printing a sheet moves these numbers. Said
+    out loud because the alternative is somebody noticing a colorway went
+    quiet and not knowing whether it was made, printed or dropped.
+    {% endcomment %}
+    <p class="netnote">
+      {{ in_flight_total }} unit{{ in_flight_total|pluralize }} already asked
+      for on a printed sheet, and taken off the shortages below.
+    </p>
+  {% endif %}
+
   {% if groups %}
     {% for g in groups %}
       <div class="card">
@@ -95,6 +119,25 @@
           <span class="soldcount {% if not g.units_sold %}none{% endif %}">
             sold {{ g.units_sold }}
           </span>
+          {% if g.recipe_obj.oven_dyed %}
+            {% comment %}
+            **This page deliberately does not filter on the oven**, and the
+            badge is what makes that safe. What is below par is a fact worth
+            reading whichever way the colour is made, and dropping the oven
+            ones would leave a shortage nobody can see from anywhere.
+
+            But the dye-room sheet *does* filter, so without a word here the
+            two pages would quietly disagree — somebody reads this list, asks
+            the picker for the first twenty baths, and gets a different set
+            with nothing on either page to say why. The badge is that
+            sentence, and it links to the session that can actually answer
+            the shortage.
+            {% endcomment %}
+            <a class="ovenbadge" href="{% url 'production_sheet_index' %}?oven=1"
+               title="Made in the oven, not in a pot — plan it on an oven run.">
+              oven
+            </a>
+          {% endif %}
           {% if g.has_behind %}
             <span class="warn">⚠ A full dye bath still lands at or under par</span>
           {% endif %}

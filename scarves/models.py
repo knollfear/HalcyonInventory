@@ -362,6 +362,29 @@ class Recipe(models.Model):
     )
     is_active = models.BooleanField(default=True)
 
+    oven_dyed = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text=(
+            "Tick for a colorway that is made in the oven rather than in a "
+            "pot, and it moves from one kind of session to the other.\n\n"
+            "This is a property of the colour, not of the yarn: the "
+            "technique is what produces the result, so an oven colorway is "
+            "oven-dyed on every blank it is dyed on.\n\n"
+            "**It partitions both ways, which is the whole point.** An oven "
+            "colorway is the only thing that can go on an oven run, and it "
+            "must also drop off the ordinary dye-room sheet — otherwise "
+            "somebody is sent to a sink to make a thing that is not made "
+            "there. That is the same failure `RawProduct.made_in_a_dye_bath` "
+            "exists to stop, one technique further in.\n\n"
+            "`private/production-needed/` deliberately does *not* filter on "
+            "this. It reports what is below par, and an oven colorway being "
+            "short is a real fact worth reading; it badges the row instead, "
+            "so the reason it is missing from the dye-room sheet is visible "
+            "rather than silent."
+        ),
+    )
+
     color_bands = ArrayField(
         models.CharField(max_length=12, choices=BAND_CHOICES),
         default=list,
@@ -1583,13 +1606,28 @@ class ProductionRun(models.Model):
             "par. See FinishedProduct.behind_a_bath for the distinction."
         ),
     )
+    oven = models.BooleanField(
+        default=False,
+        help_text=(
+            "Whether this sheet is an oven run. Recorded rather than "
+            "re-derived, for the reason the category and the bath sizes are: "
+            "a reprint has to say what the paper said, and 'were these all "
+            "oven colorways at the time?' has exactly one honest answer, "
+            "which is what was written down.\n\n"
+            "It also decides what the run page will let somebody add. The "
+            "oven holds `production.OVEN_TRAYS` trays and nothing else fits "
+            "in it, so a stovetop colorway appended to an oven sheet is a "
+            "bath that cannot be run where the paper says to run it."
+        ),
+    )
     note = models.CharField(max_length=200, blank=True)
 
     class Meta:
         ordering = ["-created_at"]
 
     def __str__(self):
-        return f"Production run #{self.pk} ({self.rows.count()} baths)"
+        kind = "Oven run" if self.oven else "Production run"
+        return f"{kind} #{self.pk} ({self.rows.count()} baths)"
 
     # --- what state this sheet is in ---------------------------------------
     #

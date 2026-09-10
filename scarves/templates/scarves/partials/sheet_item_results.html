@@ -12,19 +12,44 @@ so the swapped copy cannot start posting somewhere the inline one doesn't.
 No SKU filter here, unlike the label list. A bath does not need a barcode to
 be dyed — the sticker is printed afterwards, and refusing the row would be
 the sheet enforcing a rule that belongs to the label run.
+
+**What is greyed out is only what cannot be dyed at all** — an undyed
+passthrough, a fancy veil. A colorway whose oven flag doesn't match this sheet
+stays clickable and says so: that flag is somebody's typed judgement about a
+rule with exceptions nobody knows yet, and refusing on it would be the app
+enforcing their own provisional data against them at the moment they are
+saying it is wrong. `production_run_add_row` warns and adds, for the same
+reason.
 {% endcomment %}
 {% for p in products %}
-  <form method="post"
-        action="{% url 'production_run_add_row' run_pk %}"
-        class="addrow">
-    {% csrf_token %}
-    <input type="hidden" name="product" value="{{ p.id }}">
-    <button type="submit" class="result">
+  {% if p.recipe_id and p.raw_product.made_in_a_dye_bath %}
+    <form method="post"
+          action="{% url 'production_run_add_row' run_pk %}"
+          class="addrow">
+      {% csrf_token %}
+      <input type="hidden" name="product" value="{{ p.id }}">
+      <button type="submit" class="result">
+        <span class="who">{{ p.name }}</span>
+        <span class="muted">{{ p.sku|default:"no SKU" }}{% if p.recipe.oven_dyed != oven %} — {% if p.recipe.oven_dyed %}oven colorway{% else %}made in a pot{% endif %}{% endif %}</span>
+        <span class="qty">+{{ p.bath_size }}</span>
+      </button>
+    </form>
+  {% else %}
+    {% comment %}
+    Disabled rather than hidden, the call every picker here makes: dropped
+    silently means somebody searches, doesn't see it, and concludes it is
+    missing from the app. The reason names the session it does belong on, so
+    the grey row is a signpost to the other page.
+    {% endcomment %}
+    <button type="button" class="result" disabled
+            title="This can't go on this sheet.">
       <span class="who">{{ p.name }}</span>
-      <span class="muted">{{ p.sku|default:"no SKU" }}</span>
-      <span class="qty">+{{ p.bath_size }}</span>
+      <span class="muted">
+        {% if not p.recipe_id %}undyed — ordered, not dyed
+        {% else %}not made in a dye bath{% endif %}
+      </span>
     </button>
-  </form>
+  {% endif %}
 {% empty %}
   <div class="muted">No matching products.</div>
 {% endfor %}

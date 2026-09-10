@@ -192,6 +192,25 @@ class RecipeDyesForm(forms.Form):
 
     SLOTS = 5  # RecipeDye.order validates 1..5
 
+    #: Rides on the same row and the same Save as the dyes, because it is the
+    #: same pass down the same list — the person filling in a colorway's dyes
+    #: is the person who knows whether it goes in the oven, and a second
+    #: control with its own button would be a second trip through 162 rows.
+    #:
+    #: **Typed, never derived.** There is a rule — a colour name goes in the
+    #: oven, an idea doesn't — and it is a rule about the world rather than
+    #: about the string: `Forest Fire` is two colour words and is not an oven
+    #: colorway, `Burnt Orange` is two words and is. Dye count is the better
+    #: correlate and is not recorded for most of the catalogue. Every version
+    #: of guessing is confidently wrong on the cases that matter, and wrong
+    #: here is silent — the colorway lands on the other session's sheet and
+    #: the row reads like any other.
+    oven_dyed = forms.BooleanField(
+        required=False,
+        label="Oven",
+        help_text="Made in the oven rather than in a pot.",
+    )
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         queryset = picker_dyes()
@@ -230,6 +249,15 @@ class RecipeDyesForm(forms.Form):
         RecipeDye.objects.filter(recipe=recipe).delete()
         for order, dye in enumerate(self.selected_dyes(), start=1):
             RecipeDye.objects.create(recipe=recipe, dye=dye, order=order)
+
+        # An unticked checkbox posts nothing, so this reads as False on a row
+        # that was never touched — which is correct here only because the box
+        # is rendered with the recipe's current value as `initial` and the
+        # whole row is always submitted together. It is the same bargain the
+        # dye slots make: the form is a picture of the final state, not a
+        # diff.
+        recipe.oven_dyed = bool(self.cleaned_data.get("oven_dyed"))
+        recipe.save(update_fields=["oven_dyed"])
         return recipe
 
 
@@ -469,9 +497,17 @@ class PickedBathsField(forms.Field):
 
     widget = forms.MultipleHiddenInput
 
-    #: Per colorway. A session is planned in baths, and twenty of one colour
-    #: is already an unusual day — this is a typo guard, not a policy.
-    MAX_PER_ITEM = 20
+    #: Per colorway, and a **typo guard rather than a policy** — it exists to
+    #: catch a slip, not to have an opinion about the session.
+    #:
+    #: Ten because two digits in this box is almost always a number somebody
+    #: meant to delete half of: a stray keystroke turns 2 into 12 or 5 into
+    #: 15, and both read as perfectly ordinary plans. That is a sharper test
+    #: than "twenty is unusual", which describes the mistake without catching
+    #: it — and nothing real is on the other side of the line. Even a full
+    #: oven is fifteen trays of *different* colours; nobody wants fifteen
+    #: baths of one.
+    MAX_PER_ITEM = 10
 
     def clean(self, value):
         from .models import FinishedProduct
@@ -545,6 +581,17 @@ class ProductionSheetForm(forms.Form):
         help_text="Most urgent first — what a whole bath still leaves at or under par.",
     )
     items = PickedBathsField(required=False)
+    oven = forms.BooleanField(
+        required=False,
+        label="This is an oven run",
+        help_text=(
+            "Some colorways are made in the oven rather than in a pot. Tick "
+            "this and the sheet plans an oven session instead: only oven "
+            "colorways, and planned to the fifteen trays the oven holds, "
+            "because one heating costs the same whether it comes out full or "
+            "not. One tray is one bath."
+        ),
+    )
     order = forms.ChoiceField(
         choices=[
             ("sold", "Best sellers first"),
@@ -583,6 +630,42 @@ class ProductionSheetForm(forms.Form):
         # Per-instance, so a category added this morning is selectable
         # without a redeploy — same reasoning as the employee pickers.
         self.fields["category"].queryset = RawProductCategory.objects.order_by("name")
+
+        # **One page, one tick.** The oven is a different session — only oven
+        # colorways, and planned to the box rather than to the work — but it
+        # is the same job with the same list, the same editing and the same
+        # three printed documents, so it is a checkbox rather than a second
+        # picker to find and keep in step.
+        #
+        # Read off the raw data rather than `cleaned_data`, because the count
+        # box below has to be relabelled before anything is validated.
+        if self.is_bound and self.data.get("oven"):
+            from . import production
+
+            # The oven is planned *to* its capacity rather than to a number
+            # somebody chose. Still editable, because a session with a reason
+            # to run short is a session somebody has a reason for.
+            self.fields["baths"].label = "How many trays?"
+            self.fields["baths"].help_text = (
+                f"The oven holds {production.OVEN_TRAYS}, and one tray is one "
+                f"bath. Shortages first; anything left over can be topped up "
+                f"below."
+            )
+
+    @property
+    def is_oven_run(self) -> bool:
+        """Whether this is an oven run, safe to read before validation.
+
+        **Deliberately not named `oven`.** A property of that name sits later
+        in the class body than the `oven = forms.BooleanField(...)` above it
+        and simply overwrites it, so the metaclass never collects the field
+        and `{{ form.oven }}` renders nothing — a page with no way to tick the
+        thing on, while every behavioural test still passes because this
+        reads `self.data` directly. That is exactly how it shipped once.
+        """
+        if self.is_bound:
+            return bool(self.data.get("oven"))
+        return False
 
     @property
     def asked_anything(self) -> bool:

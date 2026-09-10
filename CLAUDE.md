@@ -454,6 +454,20 @@ Two deliberate exceptions:
   there is nothing to preserve — a row typed in by mistake shouldn't need
   retiring.
 
+**A retired *recipe* only recently started meaning this.** The promise above
+held for a retired product and quietly did not for a retired colorway: its
+finished products stay active, so `production.candidates()` and
+`production_needed_view` kept asking for it — they tested that a recipe
+*existed*, not that anybody still dyed it. The symptom was a dye room sent to
+make a colour somebody had decided to stop making, with nothing anywhere
+saying why. Both now filter `recipe__is_active=True`; the reference sheets and
+label runs always did. `Retire` on each row of `private/recipes/?edit=true` is
+the button, and it collapses the row to a strip with an **Undo** rather than
+letting it vanish — a row that disappeared is indistinguishable from a click
+that never arrived, and this one sits beside Save on a list a couple of
+hundred rows long. Undo is the plain inverse here, unlike the close's, because
+nothing moved.
+
 **A `ProductionRun` no longer deletes at all**, and the paragraph that used to
 sit here explained why deleting one was cheap: the rows cascaded, the
 `InventoryLog` rows stayed, and all that was lost was the trail from the sheet
@@ -1042,6 +1056,180 @@ working from", not a queue to be worked off — the QR on the paper is the
 permanent door, so losing one from a list costs nothing. It is truncated at
 `RUNS_LISTED`. The overdue list beside it is the opposite and is never
 truncated: those sheets are asking for something.
+
+### The oven: a second session, planned to the box instead of to the work
+
+Some colorways are made in an oven rather than in a pot. The oven holds
+**fifteen trays and one tray is one bath**, so `production.OVEN_TRAYS` is a
+row count and nothing here needs tray arithmetic of its own.
+
+**That equivalence is not a coincidence, and reading it as one is the mistake
+to avoid.** The work was broken down from the physical limits *first* — the
+size of a tray, what a pot holds, what one person can handle at once — and the
+bath is the unit those constraints define. `number_per_dye_bath` is downstream
+of the tray, not a batch size that happens to divide into it. So the absence
+of arithmetic here is the schema being right rather than the feature being
+lucky, and it is why an appliance could be added by counting rows.
+
+**The equivalence is invariant, not just currently true.** Bulk is absorbed by
+`number_per_dye_bath` — a chunky yarn simply fits fewer skeins in a tray, and
+the catalogue already runs 3, 4 and 5 across its dyeable blanks (Artisan,
+Heavenly and Noble at 5, Homespun and most others at 4). And anything that
+would want two trays is **two baths**, not one bath spanning two. So a bath
+never becomes a fraction or a multiple of a tray, whatever arrives on the
+shelf; the ratio has nowhere to come from. That is why `OVEN_TRAYS` can stay a
+row count rather than a capacity to divide into, and why nothing here should
+ever grow a trays-per-bath field.
+
+The lesson for the next appliance is therefore stronger than "check whether a
+slot is a unit of work": **let the physical constraint define the unit in the
+first place.** A capacity that has to be mapped onto a unit chosen for other
+reasons is a sign the breakdown happened in the wrong order, and the
+arithmetic that follows is the cost of that rather than an inherent
+complication.
+
+**It is the opposite planning problem from the dye room.** A stovetop session
+is bounded by how much work there is; an oven session is bounded by the box.
+Running the oven is an *event* — it heats once whether it comes out full or
+empty — so the picker plans *to* fifteen rather than to a number somebody
+types, and the gap is the number the page is actually about.
+
+**`Recipe.oven_dyed` is the axis, because the technique is a property of the
+colour.** An oven colorway is oven-dyed on every blank it is dyed on, so
+flagging the recipe answers it once instead of a few hundred times. It is a
+checkbox on each row of `private/recipes/?edit=true`, riding the Save that is
+already there — the person filling in a colorway's dyes is the person who
+knows which box it is made in, and a control with its own button would be a
+second trip through every row. It is `list_editable` in the admin too.
+
+**It is typed and never derived, and there is a rule that makes that
+tempting**: a colour name goes in the oven (Ochre, Cabernet), an idea doesn't
+(Wasteland, Forest Fire). Don't build the classifier. It is a rule about the
+world rather than about the string, and every version of it is confidently
+wrong on the cases that decide it — matching the dye catalogue's own 145
+colour words puts **Forest Fire** in the colour bucket, along with Twilight
+Forest, Midnight Plum and Blue Eyes; word count doesn't rescue it, because
+`Burnt Orange` and `Electric Violet` are two words and *are* colours while
+`Sunset` is one and isn't; and the dye-book shorthand (`russet-cab-black`, 35
+of them) is neither kind of name. The better correlate is a single dye in the
+recipe — which is uncomputable today, since 91 of 162 active recipes have no
+dyes recorded. The admin list shows `dye_count` beside the tick so that
+correlate is *visible* without the app asserting it. Wrong here is silent: the
+colorway lands on the other session's sheet and the row reads like any other.
+Exceptions will exist that nobody knows about today, which is the whole
+argument for a flag.
+
+**It partitions both ways, and that is the load-bearing half.** An oven
+colorway on a dye-room sheet sends somebody to a sink to make a thing that is
+not made there — the failure `made_in_a_dye_bath` already exists to stop, one
+technique further in, and just as silent, because the row looks like every
+other row. So `candidates(oven=...)` returns two disjoint populations and
+defaults to the pot, which is what keeps every existing caller meaning what it
+meant.
+
+**A checkbox on the one picker, not a page of its own.** It is the first
+question on the settings form, because it changes what every answer under it
+means. This was built as a second route first and that was wrong: it is the
+same job end to end — the same editable list, the same collection page, the
+same three printed documents, the same QR coming back — so a second page is a
+second thing to find and a second copy to keep in step. Nobody should have to
+remember a different URL because of which appliance they are using.
+
+**What that costs is that the tick has to be re-carried on every round trip**,
+where a path carried it for free and could not be dropped. Four carriers, and
+each miss is silent:
+
+- the hidden `oven` in `#sheet-list`, which covers qty edits, a search
+  result's add (via `hx-include`) and Print, since all three submit that form;
+- the ✕ links, which build a whole new address in `_without`;
+- the search form's own hidden copy, for a no-script Find;
+- the checkbox itself.
+
+Drop one and the sheet turns back into a dye-room sheet mid-edit, with the
+loudest symptom being a tray gauge that quietly stops being drawn. Drop it on
+the Print path and the run is *stored* as a dye-room sheet, after which the
+run page refuses the oven colorways that are actually on it.
+`test_every_control_on_the_page_carries_the_tick` walks the rendered page and
+pins all of it, rather than trusting four templates to each remember.
+
+**`private/production-needed/` deliberately does *not* filter on it**, and
+badges instead — the badge links to `?oven=1`, which is the picker with the
+tick already on. What is below par is a fact worth reading whichever way the
+colour is made, and dropping the oven ones would leave a shortage visible from
+nowhere. But the sheet *does* filter, so without the badge the two pages
+disagree silently — somebody reads that list, asks the picker for the first
+twenty, and gets a different set. The badge is that sentence, and it links to
+the session that can answer the shortage.
+
+**Filling the box past par is the one place the app suggests making something
+that is not short, and it is not the display-capacity mistake wearing a hat.**
+Worth being precise, because it is the thing most likely to be misread later.
+What makes furniture-driven production bad is that it is *unbounded* and
+*mistaken for demand*: a new rack gets filled from the bags, a backstock figure
+reads empty, and nothing sold. The oven is neither. It is a fixed cost per
+heating, so the last eleven trays are the cheapest of the year — the argument
+`include_overshoot` already makes about a bath being a fixed size, at the
+scale of a session — and it is bounded absolutely by a box nobody can enlarge.
+It also runs *with* the northstar: a flat year means pre-dyeing as much of a
+season as possible, and an oven run in February that comes out full is exactly
+that. What would be the regression is topping up with whatever sold last
+weekend, which is why the ranking is season sales pooled by colorway.
+
+Three things keep `production.top_ups` advice rather than a decision:
+**nothing is added** (a `+` per row, and the list only changes because
+somebody clicked one); **the sold figure prints beside each one**, so the
+basis of the ranking is checkable by looking; and **the panel disappears once
+the box is full**, so it only answers a question the page is already asking.
+
+**The gap is stated and never enforced.** A sheet at nine trays is a session
+somebody has a reason for, and refusing to print it would be the app arguing
+with a person who can see the calendar — the same call the short-blank warning
+makes. Over fifteen is said out loud too, and still prints.
+
+**Nothing about the oven is enforced, including which colorways go in it.**
+That was built as a refusal first and it was wrong. `Recipe.oven_dyed` is
+typed by a person, from a rule with exceptions nobody knows about today —
+which is the whole reason it is a flag — so refusing on it is the app
+enforcing somebody's own provisional data back at them, at the exact moment
+they are trying to say the data is wrong. Both search pickers keep a
+mismatched colorway **clickable** and say what it is; `production_run_add_row`
+warns and adds. The cost of being wrong is a row on a sheet, and a row is
+strikeable.
+
+The line is **who decided**: an undyed passthrough and a fancy veil stay
+refused everywhere, because how a thing comes into being is a fact rather than
+a judgement. A flag somebody typed is not that.
+
+**A sheet can be an oven load plus a couple of pots on the side**, and that
+falls out of the same decision. If the oven is running and two other colours
+want a pot the same afternoon, two sheets for one afternoon is overhead for
+overhead — so the tick says what kind of session to *suggest*, never what the
+sheet is allowed to hold.
+
+That creates one counting trap, and it is fixed rather than lived with: **only
+the oven baths take tray space.** Fifteen trays plus two pots is not seventeen
+trays, and a gauge reading `17 of 15` tells somebody to take out work the oven
+was never holding. The picker and the run page both count oven rows for the
+gauge and say the pots separately.
+
+So the full list of what an oven run will not let you do is: nothing. Ten
+trays print, sixteen print with the box's capacity said out loud, and a pot
+colorway joins an oven sheet with a warning. The only cap anywhere near this
+is `PickedBathsField.MAX_PER_ITEM`, which is a **typo guard rather than a
+policy**: ten, because two digits in that box is almost always a number
+somebody meant to delete half of — a stray keystroke turns 2 into 12 or 5
+into 15, and both read as ordinary plans. That is a sharper test than "twenty
+is unusual", which describes the mistake without catching it.
+
+It is per colorway, and it does not bind the oven: a full oven is fifteen
+trays of *different* colours, and nobody wants fifteen baths of one. The
+count box's `max` reads the constant rather than restating it, so the client
+limit cannot drift into being looser than the one that validates it.
+
+**The three printed documents needed no changes.** The work sheet's stage
+boxes carry no printed names on purpose, so oven stages already fit — which is
+the decision in *The sheet is editable, and prints as two documents* paying
+for itself.
 
 ### The collection page: blanks, then dyes
 

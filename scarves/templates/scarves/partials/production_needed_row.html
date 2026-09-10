@@ -6,7 +6,16 @@ lives here only — the two used to be copies of each other and drifted.
 Styling comes from the page, since this fragment is only ever swapped into
 a page that already extends base_internal.
 {% endcomment %}
-<tr id="fp-{{ fp.id }}"{% if fp.behind_a_bath %} class="behind"{% endif %}>
+{% comment %}
+`behind_a_bath_net` and `net_shortage`, not the model's `behind_a_bath` and
+`shortage` — both of those answer about the shelf alone and know nothing about
+paper already printed, which is what had this page reporting a full shortage
+after a sheet covering all of it. `production.annotate_flight` sets these, and
+**both renderers must call it**: Django resolves a missing attribute to the
+empty string, so a swapped row would silently show a blank shortage rather
+than erroring.
+{% endcomment %}
+<tr id="fp-{{ fp.id }}"{% if fp.behind_a_bath_net %} class="behind"{% endif %}>
   <td>{{ fp.name }}</td>
   <td>{{ fp.raw_product.category.name }}</td>
   <td>{{ fp.raw_product.name }}</td>
@@ -17,7 +26,18 @@ a page that already extends base_internal.
   attribute to the empty string rather than complaining.
   {% endcomment %}
   <td class="num">{{ fp.par }}</td>
-  <td class="num shortage">{{ fp.shortage }}</td>
+  <td class="num shortage">
+    {{ fp.net_shortage }}
+    {% if fp.in_flight %}
+      {% comment %}
+      Said rather than silently subtracted. A shortage that dropped because
+      somebody printed a sheet has to say so, or the new number reads as
+      "nothing needed" — the same confusion this fix removed, pointing the
+      other way.
+      {% endcomment %}
+      <div class="onpaper">{{ fp.in_flight }} on a sheet</div>
+    {% endif %}
+  </td>
   <td class="actions">
     <form
       method="post"

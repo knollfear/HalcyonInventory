@@ -1,0 +1,26 @@
+{% comment %}
+What a retired row collapses to, in place.
+
+**It is a strip rather than nothing.** A row that vanished is
+indistinguishable from a click that never arrived, and this list runs to a
+couple of hundred rows — so the disappearance would be read as a miss and the
+button pressed again on whatever slid up into its place.
+
+The Undo is the point of the strip. Retiring takes a colorway off the
+production sheets, the reference sheets, the label runs and the Square sync,
+and this button sits beside a Save on a very long list, so a mis-click is an
+ordinary thing rather than a careless one. Nothing was destroyed — the
+history still points at the recipe — so putting it back is the plain inverse.
+{% endcomment %}
+<tr id="recipe-row-{{ recipe.pk }}" class="retired">
+  <td colspan="4">
+    <span class="muted">
+      <strong>{{ recipe.name }}</strong> retired — off the production sheets,
+      reference sheets and label runs. Its history is untouched.
+    </span>
+    <button type="button" class="btn-quiet"
+            hx-post="{% url 'recipe_restore' recipe.pk %}"
+            hx-target="#recipe-row-{{ recipe.pk }}"
+            hx-swap="outerHTML">Undo</button>
+  </td>
+</tr>

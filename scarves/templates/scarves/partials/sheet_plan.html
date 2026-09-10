@@ -35,6 +35,20 @@ sends somebody to the shelf for the wrong things.
     {% endcomment %}
     <form method="get" id="sheet-list">
       {% csrf_token %}
+      {% comment %}
+      **The session kind, carried on every round trip.** This form is what a
+      qty edit includes, what a search result submits itself into, and what
+      Print posts — so this one hidden input covers three of the four ways
+      the tick has to survive. The fourth is the ✕ links, which build their
+      own address in `_without`.
+
+      Dropping it anywhere turns an oven run back into a dye-room sheet
+      halfway through editing, and quietly: the list keeps working and the
+      tray gauge just stops being drawn. On the Print path it is worse — the
+      run is stored as a dye-room sheet, and the run page then refuses the
+      oven colorways that are actually on it.
+      {% endcomment %}
+      {% if oven %}<input type="hidden" name="oven" value="1">{% endif %}
       {% if rows %}
       <hr>
       <table class="rows">
@@ -61,7 +75,7 @@ sends somebody to the shelf for the wrong things.
                 was a moment ago.
                 {% endcomment %}
                 <input type="number" name="qty-{{ row.product.pk }}" class="qty"
-                       value="{{ row.baths }}" min="0" max="20"
+                       value="{{ row.baths }}" min="0" max="{{ max_per_item }}"
                        hx-get="{% url 'production_sheet_index' %}"
                        hx-include="#sheet-list"
                        hx-params="not csrfmiddlewaretoken"
@@ -100,7 +114,54 @@ sends somebody to the shelf for the wrong things.
     </form>
 
   {% if submitted and rows %}
-    <p class="headline">{{ baths|length }} bath{{ baths|length|pluralize }}</p>
+    {% if oven %}
+      {% comment %}
+      **One tray is one bath, so this is a row count.** The oven gets heated
+      once whether it comes out full or not, which makes the gap the number
+      this page is actually about — a stovetop session is bounded by how much
+      work there is, and this one is bounded by the box.
+
+      Said, never enforced. A sheet at nine trays is a session somebody has a
+      reason for, and refusing to print it would be the app arguing with a
+      person who can see the calendar — the same call the short-blank warning
+      makes two blocks down.
+      {% endcomment %}
+      <p class="headline">
+        {{ oven_bath_count }} of {{ oven_trays }} tray{{ oven_trays|pluralize }}
+      </p>
+      {% if pot_bath_count %}
+        {% comment %}
+        A session is allowed to be an oven load plus a couple of pots on the
+        side — two sheets for one afternoon is overhead for overhead. Said
+        separately rather than folded into the tray count, because these were
+        never in the box.
+        {% endcomment %}
+        <p class="muted">
+          Plus {{ pot_bath_count }} bath{{ pot_bath_count|pluralize }} in a
+          pot alongside, which take no tray space.
+        </p>
+      {% endif %}
+      <div class="gauge" role="img"
+           aria-label="{{ baths|length }} of {{ oven_trays }} trays planned">
+        {% for filled in tray_slots %}<i class="{% if filled %}full{% else %}empty{% endif %}"></i>{% endfor %}
+      </div>
+      {% if tray_gap > 0 %}
+        <p class="muted">
+          {{ tray_gap }} tray{{ tray_gap|pluralize }} would go in empty. Top
+          up below, or print it as it is.
+        </p>
+      {% elif tray_gap < 0 %}
+        <p class="warn-line">
+          That is more than the oven holds — {{ oven_trays }} trays fit, and
+          the rest will not. Printed anyway; take some off if they were not
+          meant for this run.
+        </p>
+      {% else %}
+        <p class="muted">Full box.</p>
+      {% endif %}
+    {% else %}
+      <p class="headline">{{ baths|length }} bath{{ baths|length|pluralize }}</p>
+    {% endif %}
 
     {% if short_blanks %}
       <div class="panel warn">
@@ -112,6 +173,57 @@ sends somebody to the shelf for the wrong things.
         <ul>
           {% for raw, needed, on_hand in short_blanks %}
             <li>{{ raw.name }} — needs {{ needed }}, {{ on_hand }} on hand</li>
+          {% endfor %}
+        </ul>
+      </div>
+    {% endif %}
+
+    {% if top_ups %}
+      {% comment %}
+      **The one place in the app that suggests making something that is not
+      short**, and it is offered rather than added. See `production.top_ups`
+      for why an oven is not the display-capacity mistake wearing a hat: the
+      box is a fixed cost per heating and it is bounded absolutely at fifteen,
+      so the last trays are the cheapest of the year — the argument
+      `include_overshoot` already makes about a bath, at the scale of a
+      session.
+
+      Each row prints what it sold, because the ranking has to be checkable
+      by looking. Advice you cannot inspect is a decision in disguise.
+
+      The panel is gone once the box is full, so it only ever answers a
+      question the page is already asking.
+      {% endcomment %}
+      <div class="panel topups">
+        <strong>Fill the last {{ tray_gap }} tray{{ tray_gap|pluralize }}?</strong>
+        <p class="muted">
+          Oven colorways that aren't below par, best sellers first. One tray
+          each — add what's worth the space, and nothing is added on its own.
+        </p>
+        <ul class="topup-list">
+          {% for product, sold in top_ups %}
+            <li>
+              {% comment %}
+              The same button the search results use: an htmx swap of the
+              list when the script is there, and a plain submit of the list
+              form with one more `add` when it isn't.
+              {% endcomment %}
+              <button type="submit" form="sheet-list" formmethod="get"
+                      name="add" value="{{ product.pk }}"
+                      class="topup"
+                      hx-get="{% url 'production_sheet_index' %}"
+                      hx-vals='{"add": "{{ product.pk }}"}'
+                      hx-include="#sheet-list"
+                      hx-params="not csrfmiddlewaretoken"
+                      hx-target="#sheet"
+                      hx-swap="outerHTML"
+                      hx-push-url="true">+</button>
+              <span class="who">{{ product.name }}</span>
+              <span class="muted">
+                sold {{ sold }} · {{ product.number_on_hand }} on hand ·
+                makes {{ product.bath_size }}
+              </span>
+            </li>
           {% endfor %}
         </ul>
       </div>

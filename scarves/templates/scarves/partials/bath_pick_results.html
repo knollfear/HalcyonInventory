@@ -19,6 +19,18 @@ number — the add silently does nothing, which is how this arrived.
 
 No SKU filter here, unlike the label list: a SKU prints a sticker, it doesn't
 dye a bath.
+
+The oven tick rides in `#sheet-list`, which `hx-include` sends with the add —
+so a `+` on an oven run stays on an oven run without this template knowing
+anything about it.
+{% endcomment %}
+{% comment %}
+**Two states, and the line between them is who decided.** An undyed
+passthrough and a fancy veil cannot be dyed at all, so those stay disabled —
+facts about how the thing comes into being. A mismatched oven flag is a
+person's typed judgement about a rule with exceptions nobody knows yet, so it
+stays clickable and says what it is. Disabling it would be the app enforcing
+somebody's own provisional data against them.
 {% endcomment %}
 {% for p in products %}
   {% if p.recipe_id and p.raw_product.made_in_a_dye_bath %}
@@ -33,7 +45,11 @@ dye a bath.
             hx-swap="outerHTML"
             hx-push-url="true">
       <span class="who">{{ p.name }}</span>
-      <span class="muted">{{ p.bath_size }} per bath</span>
+      <span class="muted">
+        {{ p.bath_size }} per bath{% if p.recipe.oven_dyed != oven %} —
+        {% if p.recipe.oven_dyed %}an oven colorway{% else %}made in a pot{% endif %},
+        so not what this sheet is for{% endif %}
+      </span>
     </button>
   {% else %}
     {% comment %}
@@ -42,12 +58,19 @@ dye a bath.
     doesn't see it, and never learns why. An undyed passthrough is ordered and
     a fancy veil is line work added to a scarf that already exists — neither
     is answerable by heating a pot.
+
+    The last case is the oven, and it is worth naming from both sides. A
+    colorway made in the oven cannot be run at a sink and one made in a pot
+    cannot be run in the oven, so each picker greys the other's work and says
+    which session it belongs on — which is a signpost rather than a refusal,
+    and the only way somebody learns the other page exists.
     {% endcomment %}
     <button type="button" class="result" disabled
-            title="This isn't made in a dye bath.">
+            title="This can't go on this sheet.">
       <span class="who">{{ p.name }}</span>
       <span class="muted">
-        {% if not p.recipe_id %}undyed — ordered, not dyed{% else %}not made in a dye bath{% endif %}
+        {% if not p.recipe_id %}undyed — ordered, not dyed
+        {% else %}not made in a dye bath{% endif %}
       </span>
     </button>
   {% endif %}

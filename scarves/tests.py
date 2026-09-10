@@ -8549,6 +8549,672 @@ class BathsAlreadyInFlightTests(TestCase):
         self.assertEqual(len(production.plan_baths(10)), 1)
 
 
+class OneAnswerToWhatIsShortTests(TestCase):
+    """`private/production-needed/` and the sheet answer one question.
+
+    They did not. The page ran its own SQL — `par - number_on_hand`,
+    aggregated per recipe — which knew nothing about paper already printed, so
+    a sheet covering a colorway's whole shortage left the page still reporting
+    it in full. The planner was right and the page a person reads was wrong.
+
+    Same failure this codebase keeps naming: two answers to one question, and
+    the disagreement is silent because each side looks perfectly sensible on
+    its own.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user("staff", password="pw")
+        self.client.force_login(self.user)
+        self.recipe = make_recipe("Cabernet")
+        self.product = make_bathable(self.recipe, "Cabernet Wool",
+                                     on_hand=0, par=8, bath=4)
+
+    def _shortage(self):
+        response = self.client.get(reverse("production_needed"))
+        for group in response.context["groups"]:
+            if group["recipe_name"] == "Cabernet":
+                return group["total_shortage"]
+        return None
+
+    def test_printing_a_sheet_moves_the_shortage(self):
+        self.assertEqual(self._shortage(), 8)
+
+        self.client.post(reverse("production_sheet_index"), {"baths": 20})
+
+        # Two baths of four cover the whole shortage, so there is nothing left
+        # to ask for — and the page has to say so, because it is what somebody
+        # reads before deciding to print another one.
+        self.assertIsNone(self._shortage())
+
+    def test_a_partly_covered_colorway_reports_what_is_left(self):
+        self.client.post(
+            reverse("production_sheet_index"),
+            {"items": f"{self.product.pk}:1"},
+        )
+
+        self.assertEqual(self._shortage(), 4)
+
+    def test_the_page_says_what_is_already_on_paper(self):
+        """Silently subtracting is the same confusion pointing the other way:
+        a colorway that went quiet reads as 'nothing needed'."""
+        self.client.post(
+            reverse("production_sheet_index"),
+            {"items": f"{self.product.pk}:1"},
+        )
+
+        response = self.client.get(reverse("production_needed"))
+
+        self.assertEqual(response.context["in_flight_total"], 4)
+        # Substrings that don't span the template's own line wrapping.
+        self.assertContains(response, "on a printed sheet")
+        self.assertContains(response, "taken off the shortages below")
+        self.assertContains(response, "4 on a sheet")
+
+    def test_the_two_pages_agree_on_what_is_left(self):
+        """The property that matters: read the list, ask the picker for that
+        many baths, get the ones you were looking at."""
+        self.client.post(
+            reverse("production_sheet_index"),
+            {"items": f"{self.product.pk}:1"},
+        )
+
+        page = {
+            product.pk
+            for group in self.client.get(reverse("production_needed")).context["groups"]
+            for product in group["items"]
+        }
+        planner = {bath.product.pk for bath in production.plan_baths(20)}
+
+        self.assertEqual(page, planner)
+
+    def test_a_cancelled_bath_comes_back_onto_the_page(self):
+        """Cancelling hands the claim back, and the page has to hear about it
+        for the same reason it had to hear about the print."""
+        self.client.post(reverse("production_sheet_index"), {"baths": 20})
+        run = ProductionRun.objects.get()
+        self.assertIsNone(self._shortage())
+
+        for row in run.rows.all():
+            production.cancel_row(row)
+
+        self.assertEqual(self._shortage(), 8)
+
+    def test_the_swap_path_renders_the_same_fields(self):
+        """`record_dye_bath` re-renders the row partial, which now reads
+        `net_shortage`. A missing attribute renders as an empty cell rather
+        than raising, so forgetting to annotate there is silent."""
+        response = self.client.post(
+            reverse("record_dye_bath", args=[self.product.pk]),
+            {"qty": 4},
+            HTTP_HX_REQUEST="true",
+        )
+
+        html = response.rendered_content
+        self.assertIn('class="num shortage"', html)
+        # 8 par, 4 just bagged, nothing on paper -> 4 left, and it is printed.
+        self.assertRegex(html, r'class="num shortage">\s*4')
+
+    def test_an_oven_colorway_is_still_reported(self):
+        """The page reports where the sheet plans: `oven=None`, so both boxes
+        are listed and the oven ones are badged rather than dropped."""
+        Recipe.objects.filter(pk=self.recipe.pk).update(oven_dyed=True)
+
+        self.assertEqual(self._shortage(), 8)
+
+
+class OvenRunTests(TestCase):
+    """The oven: a second kind of session, planned to the box rather than to
+    the work.
+
+    Some colorways are made in an oven rather than in a pot, and running it
+    is an *event* — it heats once, holds `OVEN_TRAYS` trays, and fifteen is
+    what makes the heating worth it. Two things follow, and both are the sort
+    that fail silently if they come undone:
+
+    **The partition runs both ways.** An oven colorway on a dye-room sheet
+    sends somebody to a sink to make a thing that is not made there, which is
+    exactly the failure `made_in_a_dye_bath` exists to stop. It is invisible
+    on the paper — the row looks like every other row.
+
+    **The gap is stated, never enforced.** A short sheet is somebody's
+    decision and the app does not get to refuse it.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user("staff", password="pw")
+        self.client.force_login(self.user)
+
+        self.pot = make_recipe("Stormy Sea")
+        self.oven = make_recipe("Speckled Ember")
+        Recipe.objects.filter(pk=self.oven.pk).update(oven_dyed=True)
+        self.oven.refresh_from_db()
+
+        self.pot_product = make_bathable(self.pot, "Stormy Silk", on_hand=0, par=8, bath=4)
+        self.oven_product = make_bathable(self.oven, "Ember Wool", on_hand=0, par=8, bath=4)
+
+        # One page, one tick — the oven is a checkbox on the picker, not a
+        # second URL somebody has to remember because of which appliance
+        # they are using.
+        self.sheet_url = reverse("production_sheet_index")
+
+    # --- the partition ----------------------------------------------------
+
+    def test_the_dye_room_sheet_never_suggests_an_oven_colorway(self):
+        """The silent one. A pot cannot make it, and the row on the paper
+        looks like every other row."""
+        names = {bath.recipe_name for bath in production.plan_baths(20)}
+
+        self.assertIn("Stormy Sea", names)
+        self.assertNotIn("Speckled Ember", names)
+
+    def test_the_oven_run_suggests_only_oven_colorways(self):
+        names = {bath.recipe_name for bath in production.plan_baths(20, oven=True)}
+
+        self.assertEqual(names, {"Speckled Ember"})
+
+    def test_the_two_sessions_are_disjoint_rather_than_one_being_a_subset(self):
+        """Neither list is the other with something taken off — they are two
+        populations, and every dyeable colorway is on exactly one."""
+        pot = {b.product.pk for b in production.plan_baths(50)}
+        oven = {b.product.pk for b in production.plan_baths(50, oven=True)}
+
+        self.assertEqual(pot & oven, set())
+        self.assertEqual(pot | oven, {self.pot_product.pk, self.oven_product.pk})
+
+    def test_printing_an_oven_run_records_that_it_was_one(self):
+        """Frozen onto the run, for the reason the bath size is: a reprint
+        has to say what the paper said, and the run page reads it to decide
+        what may be added later."""
+        self.client.post(self.sheet_url, {"baths": 15, "oven": "1"})
+
+        run = ProductionRun.objects.get()
+        self.assertTrue(run.oven)
+        self.assertEqual(
+            {row.finished_product.recipe.name for row in run.rows.all()},
+            {"Speckled Ember"},
+        )
+
+    def test_a_dye_room_sheet_is_not_marked_as_one(self):
+        self.client.post(self.sheet_url, {"baths": 10})
+
+        self.assertFalse(ProductionRun.objects.get().oven)
+
+    def test_the_checkbox_is_actually_on_the_page(self):
+        """**The tick has to be tickable**, which is not implied by any of the
+        behaviour tests below.
+
+        This shipped once with no checkbox at all. A `@property` named `oven`
+        sat below `oven = forms.BooleanField(...)` in the same class body and
+        overwrote it, so the metaclass never collected the field — while every
+        test here still passed, because the property read the raw POST data
+        and the behaviour was therefore right. The feature worked perfectly
+        and could not be switched on.
+        """
+        response = self.client.get(self.sheet_url, {"baths": 10})
+        html = response.content.decode()
+
+        self.assertIn("oven", response.context["form"].fields)
+        self.assertIn('name="oven"', html)
+        self.assertIn("This is an oven run", html)
+
+    def test_the_checkbox_comes_back_ticked_on_an_oven_run(self):
+        """Or every re-render silently offers to turn it off again."""
+        response = self.client.get(self.sheet_url, {"baths": 15, "oven": "1"})
+
+        self.assertIn("checked", str(response.context["form"]["oven"]))
+
+    def test_every_control_on_the_page_carries_the_tick(self):
+        """**The cost of a checkbox instead of a route, pinned.**
+
+        A route carried the session kind in the URL and could not be dropped.
+        A tick has to be re-carried by every control that makes a round trip,
+        and each miss is silent: the list keeps working and the tray gauge
+        simply stops being drawn. On the Print path it is worse — the run is
+        stored as a dye-room sheet, and the run page then refuses the oven
+        colorways that are actually on it.
+
+        So this walks the rendered page rather than trusting four templates to
+        each remember.
+        """
+        # A second oven colorway, so a remove link still has rows left in it
+        # — the single-row case reduces to `?oven=1` and would pass trivially.
+        second = make_recipe("Ash Bloom")
+        Recipe.objects.filter(pk=second.pk).update(oven_dyed=True)
+        make_bathable(second, "Ash Wool", on_hand=0, par=8, bath=4)
+
+        response = self.client.get(self.sheet_url, {"baths": 15, "oven": "1"})
+        html = response.content.decode()
+
+        # The list form: covers qty edits, the search's add, and Print, all of
+        # which submit or `hx-include` it.
+        self.assertIn('<input type="hidden" name="oven" value="1">', html)
+
+        # Every ✕ builds its own address, so each one has to say it itself —
+        # including the one that empties the list, which still has to come
+        # back as an oven run rather than as a dye-room sheet.
+        removes = re.findall(r'<a class="drop"[^>]*?href="\?([^"]*)"', html, re.S)
+        self.assertEqual(len(removes), 2, f"expected two remove links, got {removes}")
+        for link in removes:
+            self.assertIn("oven=1", link)
+        self.assertTrue(any("items=" in link for link in removes))
+
+    def test_the_tick_survives_an_edit(self):
+        """The round trip that actually happens: change a count, and the
+        sheet still has to be an oven run on the other side."""
+        response = self.client.get(
+            self.sheet_url,
+            {"items": f"{self.oven_product.pk}:2", "oven": "1"},
+            HTTP_HX_REQUEST="true",
+        )
+
+        self.assertTrue(response.context["oven"])
+        self.assertIn('name="oven" value="1"', response.content.decode())
+
+    def test_a_dropped_tick_would_store_the_wrong_kind_of_run(self):
+        """Why the one above matters, stated as the failure it prevents."""
+        self.client.post(self.sheet_url, {"items": f"{self.oven_product.pk}:2"})
+
+        # No tick posted, so this is a dye-room sheet — and the guard on the
+        # run page will then refuse the oven colorway sitting on it.
+        run = ProductionRun.objects.get()
+        self.assertFalse(run.oven)
+
+    def test_each_picker_lists_only_its_own_live_sheets(self):
+        """A dye-room sheet is not something anybody is working from at the
+        oven — mixing them makes the list longer without making it useful."""
+        self.client.post(self.sheet_url, {"baths": 15, "oven": "1"})
+        oven_run = ProductionRun.objects.get()
+
+        response = self.client.get(self.sheet_url)
+
+        self.assertNotIn(oven_run, list(response.context["open_runs"]))
+
+    # --- filling the box --------------------------------------------------
+
+    def test_the_page_counts_trays_and_names_the_gap(self):
+        """One tray is one bath, so this is a row count. Two baths of the one
+        oven colorway leaves thirteen trays empty."""
+        response = self.client.get(self.sheet_url, {"baths": 15, "oven": "1"})
+
+        self.assertEqual(response.context["tray_gap"], production.OVEN_TRAYS - 2)
+        self.assertContains(response, f"2 of {production.OVEN_TRAYS} trays")
+
+    def test_a_short_sheet_still_prints(self):
+        """Stated, never enforced. A session with a reason to run short is a
+        session somebody has a reason for, and refusing would be the app
+        arguing with a person who can see the calendar."""
+        response = self.client.post(self.sheet_url, {"baths": 15, "oven": "1"})
+
+        run = ProductionRun.objects.get()
+        self.assertEqual(run.rows.count(), 2)
+        self.assertRedirects(response, reverse("production_run_detail", args=[run.pk]))
+
+    def test_top_ups_are_offered_when_the_box_is_short(self):
+        """The one place the app suggests making something not below par —
+        and it offers, it never adds."""
+        spare = make_recipe("Ash Bloom")
+        Recipe.objects.filter(pk=spare.pk).update(oven_dyed=True)
+        stocked = make_bathable(spare, "Ash Wool", on_hand=99, par=8, bath=4)
+
+        response = self.client.get(self.sheet_url, {"baths": 15, "oven": "1"})
+
+        offered = {product.pk for product, _ in response.context["top_ups"]}
+        self.assertIn(stocked.pk, offered)
+        # Offered, not added: the list is still just the shortage.
+        self.assertEqual(len(response.context["baths"]), 2)
+
+    def test_a_top_up_is_never_a_pot_colorway(self):
+        """Filling the oven with something that cannot go in it is the whole
+        failure this feature exists to prevent, arriving by the back door."""
+        make_bathable(self.pot, "Stormy Wool", on_hand=99, par=8, bath=4)
+
+        response = self.client.get(self.sheet_url, {"baths": 15, "oven": "1"})
+
+        for product, _ in response.context["top_ups"]:
+            self.assertTrue(product.recipe.oven_dyed)
+
+    def test_nothing_is_offered_once_the_box_is_full(self):
+        """The panel only ever answers a question the page is asking."""
+        self.assertEqual(production.top_ups([], 0), [])
+
+    def test_a_top_up_is_not_something_already_on_the_list(self):
+        response = self.client.get(self.sheet_url, {"baths": 15, "oven": "1"})
+
+        offered = {product.pk for product, _ in response.context["top_ups"]}
+        self.assertNotIn(self.oven_product.pk, offered)
+
+    # --- editing a printed oven sheet -------------------------------------
+
+    def test_a_pot_colorway_can_still_be_added_to_an_oven_run(self):
+        """**Advice, not enforcement.** `oven_dyed` is typed by a person from
+        a rule with exceptions nobody knows yet, so refusing on it would be
+        the app enforcing somebody's provisional data back at them — at the
+        exact moment they are saying it is wrong. It is said and allowed."""
+        self.client.post(self.sheet_url, {"baths": 15, "oven": "1"})
+        run = ProductionRun.objects.get()
+        before = run.rows.count()
+
+        response = self.client.post(
+            reverse("production_run_add_row", args=[run.pk]),
+            {"product": self.pot_product.pk},
+            follow=True,
+        )
+
+        self.assertEqual(run.rows.count(), before + 1)
+        self.assertContains(response, "made in a pot")
+
+    def test_an_oven_colorway_can_still_be_added_to_a_dye_room_sheet(self):
+        self.client.post(self.sheet_url, {"baths": 10})
+        run = ProductionRun.objects.get()
+        before = run.rows.count()
+
+        response = self.client.post(
+            reverse("production_run_add_row", args=[run.pk]),
+            {"product": self.oven_product.pk},
+            follow=True,
+        )
+
+        self.assertEqual(run.rows.count(), before + 1)
+        self.assertContains(response, "oven colorway")
+
+    def test_what_still_cannot_go_on_a_sheet(self):
+        """The line: how a thing comes into being is a fact, which stays
+        refused. An undyed skein is ordered, not dyed."""
+        plain = make_recipe("Plain")
+        passthrough = make_bathable(plain, "Undyed Skein", on_hand=0, par=8, bath=4)
+        FinishedProduct.objects.filter(pk=passthrough.pk).update(recipe=None)
+
+        self.client.post(self.sheet_url, {"baths": 15, "oven": "1"})
+        run = ProductionRun.objects.get()
+        before = run.rows.count()
+
+        self.client.post(
+            reverse("production_run_add_row", args=[run.pk]),
+            {"product": passthrough.pk},
+        )
+
+        self.assertEqual(run.rows.count(), before)
+
+    def test_a_sheet_can_be_an_oven_load_plus_pots_on_the_side(self):
+        """One session, one sheet. If the oven is running and two other
+        colours want a pot the same afternoon, two sheets for one afternoon is
+        overhead for overhead."""
+        response = self.client.post(
+            self.sheet_url,
+            {
+                "items": [
+                    f"{self.oven_product.pk}:2",
+                    f"{self.pot_product.pk}:2",
+                ],
+                "oven": "1",
+            },
+        )
+
+        run = ProductionRun.objects.get()
+        self.assertEqual(run.rows.count(), 4)
+        self.assertRedirects(response, reverse("production_run_detail", args=[run.pk]))
+
+    def test_the_pots_alongside_take_no_tray_space(self):
+        """The counting bug this arrangement creates. Fifteen trays plus two
+        pots is not seventeen trays — the pots were never in the box, and a
+        gauge reading `17 of 15` tells somebody to remove work the oven is not
+        holding."""
+        response = self.client.get(
+            self.sheet_url,
+            {
+                "items": [
+                    f"{self.oven_product.pk}:2",
+                    f"{self.pot_product.pk}:3",
+                ],
+                "oven": "1",
+            },
+        )
+
+        self.assertEqual(response.context["oven_bath_count"], 2)
+        self.assertEqual(response.context["pot_bath_count"], 3)
+        self.assertEqual(response.context["tray_gap"], production.OVEN_TRAYS - 2)
+        self.assertContains(response, f"2 of {production.OVEN_TRAYS} trays")
+        self.assertContains(response, "take no tray space")
+
+    def test_the_run_page_counts_trays_the_same_way(self):
+        self.client.post(
+            self.sheet_url,
+            {
+                "items": [
+                    f"{self.oven_product.pk}:2",
+                    f"{self.pot_product.pk}:3",
+                ],
+                "oven": "1",
+            },
+        )
+        run = ProductionRun.objects.get()
+
+        response = self.client.get(reverse("production_run_detail", args=[run.pk]))
+
+        self.assertEqual(response.context["live_trays"], 2)
+        self.assertEqual(response.context["alongside_baths"], 3)
+
+    def _over_full(self):
+        """More trays than the oven holds, across two colours.
+
+        Deliberately not sixteen baths of one colorway: `MAX_PER_ITEM` refuses
+        that as a typo, and a real over-full oven is several colours anyway.
+        """
+        second = make_recipe("Ash Bloom")
+        Recipe.objects.filter(pk=second.pk).update(oven_dyed=True)
+        other = make_bathable(second, "Ash Wool", on_hand=0, par=8, bath=4)
+        return {
+            "items": [f"{self.oven_product.pk}:8", f"{other.pk}:8"],
+            "oven": "1",
+        }
+
+    def test_a_batch_bigger_than_the_oven_still_prints(self):
+        """Sixteen trays is somebody deciding, and the app does not get a
+        vote — it says the box holds fifteen and prints what was asked for."""
+        response = self.client.post(self.sheet_url, self._over_full())
+
+        run = ProductionRun.objects.get()
+        self.assertEqual(run.rows.count(), 16)
+        self.assertRedirects(response, reverse("production_run_detail", args=[run.pk]))
+
+    def test_and_the_page_says_it_is_over(self):
+        response = self.client.get(self.sheet_url, self._over_full())
+
+        self.assertContains(response, "more than the oven holds")
+        self.assertContains(response, "Print this sheet")
+
+    def test_the_count_box_cannot_offer_more_than_the_server_takes(self):
+        """A client cap looser than the validating one is a number somebody
+        can type and then be refused for."""
+        response = self.client.get(self.sheet_url, {"baths": 15, "oven": "1"})
+
+        self.assertEqual(response.context["max_per_item"],
+                         PickedBathsField.MAX_PER_ITEM)
+        self.assertContains(response, f'max="{PickedBathsField.MAX_PER_ITEM}"')
+
+    def test_the_matching_kind_still_adds(self):
+        """The guard is narrow. Everything else about this box stays
+        permissive — a bath nobody needs is exactly what it is for."""
+        spare = make_recipe("Ash Bloom")
+        Recipe.objects.filter(pk=spare.pk).update(oven_dyed=True)
+        stocked = make_bathable(spare, "Ash Wool", on_hand=99, par=8, bath=4)
+
+        self.client.post(self.sheet_url, {"baths": 15, "oven": "1"})
+        run = ProductionRun.objects.get()
+
+        self.client.post(
+            reverse("production_run_add_row", args=[run.pk]),
+            {"product": stocked.pk},
+        )
+
+        self.assertIn(stocked.pk,
+                      {row.finished_product_id for row in run.rows.all()})
+
+    def test_a_struck_row_hands_its_tray_back(self):
+        self.client.post(self.sheet_url, {"baths": 15, "oven": "1"})
+        run = ProductionRun.objects.get()
+        row = run.rows.first()
+
+        self.client.post(
+            reverse("production_run_strike_row", args=[run.pk, row.pk])
+        )
+        response = self.client.get(reverse("production_run_detail", args=[run.pk]))
+
+        self.assertEqual(response.context["live_trays"], 1)
+
+    def test_an_oven_sheet_prints(self):
+        """Three documents, unchanged — the work sheet's stage boxes carry no
+        printed names, so oven stages already fit."""
+        self.client.post(self.sheet_url, {"baths": 15, "oven": "1"})
+        run = ProductionRun.objects.get()
+
+        response = self.client.get(reverse("production_sheet_pdf", args=[run.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.content.startswith(b"%PDF"))
+
+    # --- the pages that must not filter ------------------------------------
+
+    def test_production_needed_still_lists_an_oven_colorway(self):
+        """It reports what is below par, and an oven colorway being short is
+        a real fact. Filtering would leave a shortage nobody can see from
+        anywhere — the badge is what keeps the two pages from disagreeing
+        silently instead."""
+        response = self.client.get(reverse("production_needed"))
+
+        names = {group["recipe_name"] for group in response.context["groups"]}
+        self.assertIn("Speckled Ember", names)
+        self.assertContains(response, "oven")
+
+
+class RecipeRowActionTests(TestCase):
+    """The bulk editing list's two row actions: flag the oven, retire a colour.
+
+    Both live on `private/recipes/?edit=true` because that is the one pass
+    somebody makes down the whole catalogue — the person filling in a
+    colorway's dyes is the person who knows which box it is made in and
+    whether anybody still dyes it.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user("staff", password="pw")
+        self.client.force_login(self.user)
+        self.recipe = make_recipe("Cabernet")
+        self.product = make_bathable(self.recipe, "Cabernet Wool", on_hand=0,
+                                     par=8, bath=4)
+
+    def _dye_post(self, **extra):
+        """What the row's Save submits — every slot, whether or not it is set."""
+        data = {f"dye{i}": "" for i in range(1, 6)}
+        data.update(extra)
+        return data
+
+    # --- the oven flag ----------------------------------------------------
+
+    def test_the_row_saves_the_oven_flag(self):
+        self.client.post(
+            reverse("recipe_dyes_save", args=[self.recipe.pk]),
+            self._dye_post(oven_dyed="on"),
+        )
+
+        self.recipe.refresh_from_db()
+        self.assertTrue(self.recipe.oven_dyed)
+
+    def test_saving_a_flagged_row_does_not_silently_unflag_it(self):
+        """The trap in a checkbox: unticked posts nothing, so a row rendered
+        without its current value would clear the flag on the next Save of
+        anything else on that row."""
+        Recipe.objects.filter(pk=self.recipe.pk).update(oven_dyed=True)
+
+        response = self.client.get(reverse("recipe_showcase"), {"edit": "true"})
+
+        form = response.context["rows"][0]["form"]
+        self.assertTrue(form.initial["oven_dyed"])
+
+    def test_the_box_can_be_unticked(self):
+        Recipe.objects.filter(pk=self.recipe.pk).update(oven_dyed=True)
+
+        self.client.post(
+            reverse("recipe_dyes_save", args=[self.recipe.pk]),
+            self._dye_post(),
+        )
+
+        self.recipe.refresh_from_db()
+        self.assertFalse(self.recipe.oven_dyed)
+
+    def test_copying_dyes_does_not_carry_the_other_recipe_s_oven_flag(self):
+        """A palette says nothing about which box a colorway is made in."""
+        source = make_recipe("Ochre")
+        Recipe.objects.filter(pk=source.pk).update(oven_dyed=True)
+
+        response = self.client.get(
+            reverse("recipe_row", args=[self.recipe.pk]), {"source": source.pk}
+        )
+
+        self.assertFalse(response.context["form"].initial["oven_dyed"])
+
+    # --- retiring ---------------------------------------------------------
+
+    def test_retiring_deactivates_and_never_deletes(self):
+        """History points at this row — inventory logs, production rows,
+        resolved sales — and all of it stays readable."""
+        self.client.post(reverse("recipe_retire", args=[self.recipe.pk]))
+
+        self.recipe.refresh_from_db()
+        self.assertFalse(self.recipe.is_active)
+        self.assertTrue(Recipe.objects.filter(pk=self.recipe.pk).exists())
+
+    def test_the_row_collapses_to_a_strip_rather_than_vanishing(self):
+        """A row that disappeared is indistinguishable from a click that never
+        arrived, which on a list this long is the mistake made twice."""
+        response = self.client.post(reverse("recipe_retire", args=[self.recipe.pk]))
+
+        self.assertContains(response, f'id="recipe-row-{self.recipe.pk}"')
+        self.assertContains(response, "retired")
+        self.assertContains(response, "Undo")
+
+    def test_undo_puts_it_back_and_returns_the_whole_row(self):
+        self.client.post(reverse("recipe_retire", args=[self.recipe.pk]))
+
+        response = self.client.post(reverse("recipe_restore", args=[self.recipe.pk]))
+
+        self.recipe.refresh_from_db()
+        self.assertTrue(self.recipe.is_active)
+        self.assertContains(response, "Retire")
+
+    def test_a_retired_colorway_stops_being_planned(self):
+        """*Retire, don't delete* promises retirement takes something out of
+        production planning. That held for a retired product and not for a
+        retired recipe — its finished products stay active, so the colorway
+        kept being asked for with nothing to say why, and the dye room gets
+        sent to make a colour somebody decided to stop making."""
+        self.assertIn("Cabernet",
+                      {b.recipe_name for b in production.plan_baths(50)})
+
+        self.client.post(reverse("recipe_retire", args=[self.recipe.pk]))
+
+        self.assertNotIn("Cabernet",
+                         {b.recipe_name for b in production.plan_baths(50)})
+
+    def test_and_drops_off_the_production_needed_page(self):
+        """The two have to agree — one ranks what the other lists."""
+        self.client.post(reverse("recipe_retire", args=[self.recipe.pk]))
+
+        response = self.client.get(reverse("production_needed"))
+
+        self.assertNotIn(
+            "Cabernet",
+            {g["recipe_name"] for g in response.context["groups"]},
+        )
+
+    def test_retiring_needs_a_post(self):
+        response = self.client.get(reverse("recipe_retire", args=[self.recipe.pk]))
+
+        self.assertEqual(response.status_code, 405)
+        self.recipe.refresh_from_db()
+        self.assertTrue(self.recipe.is_active)
+
+
 class ProductionSheetViewTests(TestCase):
     """Planning and printing, from the office side."""
 
@@ -11408,8 +12074,8 @@ class HandPickedSheetTests(TestCase):
         self.assertEqual(ProductionRun.objects.count(), 0)
 
     def test_too_many_baths_of_one_colorway_is_refused(self):
-        """A typo guard, not a policy — twenty of one colour is already an
-        unusual day."""
+        """A typo guard, not a policy: two digits in that box is almost
+        always a number somebody meant to delete half of."""
         self.client.post(
             self.url,
             self._pick((self.stormy, PickedBathsField.MAX_PER_ITEM + 1)),
@@ -11419,14 +12085,22 @@ class HandPickedSheetTests(TestCase):
 
     def test_more_baths_than_a_session_holds_is_refused(self):
         """Distinct from the per-colorway cap: each of these is individually
-        fine and the sheet as a whole is not."""
-        picks = [(self.stormy, PickedBathsField.MAX_PER_ITEM),
-                 (self.ember, PickedBathsField.MAX_PER_ITEM)]
-        for name in ("Rosy", "Slate"):
+        fine and the sheet as a whole is not.
+
+        How many colorways that takes is derived rather than assumed — it used
+        to be a hardcoded four, which only reached the total cap while
+        `MAX_PER_ITEM` was 20 and silently stopped testing anything when it
+        moved.
+        """
+        per = PickedBathsField.MAX_PER_ITEM
+        needed = ProductionSheetForm.MAX_BATHS // per + 1
+        picks = [(self.stormy, per), (self.ember, per)]
+        for i in range(needed - len(picks)):
+            name = f"Filler {i}"
             picks.append((
                 make_bathable(make_recipe(name), f"{name} Silk",
                               on_hand=40, par=8, bath=4),
-                PickedBathsField.MAX_PER_ITEM,
+                per,
             ))
         total = sum(n for _, n in picks)
         self.assertGreater(total, ProductionSheetForm.MAX_BATHS)

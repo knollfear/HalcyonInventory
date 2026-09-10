@@ -20,6 +20,12 @@ by htmx stays findable — a row without it would vanish from every search.
     {% endcomment %}
     <strong><a href="{% url 'recipe_detail' recipe.pk %}">{{ recipe.name }}</a></strong>
     {% if saved %}<span class="savedtag">saved</span>{% endif %}
+    {% comment %}
+    Shown in both modes, because "which of these are oven colorways" is a
+    question somebody asks of the list without wanting to edit it — and in
+    read-only mode this badge is the only place the flag appears at all.
+    {% endcomment %}
+    {% if recipe.oven_dyed %}<span class="oventag">oven</span>{% endif %}
   </td>
 
   {# The scarf itself — the recipe name rarely says what the colorway was. #}
@@ -73,6 +79,21 @@ by htmx stays findable — a row without it would vanish from every search.
         {% for field in form %}{{ field }}{% endfor %}
       </div>
 
+      {% comment %}
+      Rides on the row's existing Save rather than saving itself, because
+      this is the same pass down the same list: whoever is filling in a
+      colorway's dyes is who knows which box it is made in, and a control
+      with its own button would be a second trip through every row.
+
+      `{{ form.oven_dyed }}` is inside the same `closest tr` the Save posts,
+      so it needs nothing of its own to be submitted.
+      {% endcomment %}
+      <label class="ovenbox">
+        {{ form.oven_dyed }}
+        <span>Oven</span>
+        <span class="muted">made in the oven, not a pot</span>
+      </label>
+
       <div class="rowactions">
         <button type="button" class="btn"
                 hx-post="{% url 'recipe_dyes_save' recipe.pk %}"
@@ -83,6 +104,19 @@ by htmx stays findable — a row without it would vanish from every search.
                 hx-get="{% url 'recipe_row' recipe.pk %}"
                 hx-target="#recipe-row-{{ recipe.pk }}"
                 hx-swap="outerHTML">Reset</button>
+        {% comment %}
+        Retire, don't delete: `is_active = False`, so every inventory log,
+        production row and resolved sale still points at it. Confirmed in
+        the browser because it sits beside Save on a very long list, and it
+        collapses to a strip with an Undo either way.
+        {% endcomment %}
+        <button type="button" class="btn-danger"
+                hx-post="{% url 'recipe_retire' recipe.pk %}"
+                hx-target="#recipe-row-{{ recipe.pk }}"
+                hx-swap="outerHTML"
+                hx-confirm="Retire {{ recipe.name }}? It comes off the production sheets, reference sheets and label runs. Its history is kept.">
+          Retire
+        </button>
       </div>
     </td>
   {% else %}
