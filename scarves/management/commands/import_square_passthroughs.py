@@ -119,15 +119,14 @@ class Command(BaseCommand):
         known_items = passthroughs.tracked_item_ids()
         known_variations = passthroughs.tracked_variation_ids()
 
-        unknown = []
-        for obj in items:
-            if obj["id"] in known_items:
-                continue
-            data = obj.get("item_data") or {}
-            unknown.append((self._category_name(data, categories), data, obj["id"]))
+        rows, archived = passthroughs.untracked(items, known_items)
+        unknown = [
+            (self._category_name(data, categories), data, item_id)
+            for data, item_id in rows
+        ]
 
         if options["list"]:
-            return self._list(unknown)
+            return self._list(unknown, archived)
 
         wanted = options["category"]
         if not wanted:
@@ -234,7 +233,7 @@ class Command(BaseCommand):
             )
         return category
 
-    def _list(self, unknown):
+    def _list(self, unknown, archived=0):
         by_category = {}
         for name, data, item_id in unknown:
             by_category.setdefault(name or "(no category)", []).append((data, item_id))
@@ -261,3 +260,12 @@ class Command(BaseCommand):
                     f"{money:24} {item_id}"
                 )
             self.stdout.write("")
+
+        if archived:
+            # Said out loud rather than silently dropped. An archived item is
+            # already retired at the till, so it is not work — but a list that
+            # quietly got shorter is one nobody can check.
+            self.stdout.write(
+                f"({archived} archived Square item(s) passed over — retired at "
+                f"the till, so not something to track.)"
+            )

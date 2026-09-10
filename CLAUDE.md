@@ -1939,6 +1939,40 @@ hand-keyed price, which carries no `catalog_object_id` at all — so every one
 landed in `private/unidentified-sales/` (or, before that existed, vanished).
 Selling them as real variations fixes that at the source.
 
+### Two `Undyed Yarn` items in Square, and why that is not a split to merge
+
+Square holds two items called `Undyed Yarn`, which reads like the split-shelf
+failure `CatalogGroup` exists to prevent. It is not one — it is a
+**succession**, and the difference decides what to do about it:
+
+| | `OP74Y24ZJYEJIBCDYWYRTE6H` | `5P34LJXSW6TTZCVYXNJX7MOF` |
+|---|---|---|
+| state | live, all locations | **archived already** |
+| variations | 11, real prices, SKUs | 10, all $0.00, no SKUs |
+| sale lines | 50, the 2026 season | 122, the 2025 season, ending 19 Oct |
+
+The archived one is last season's, retired when the yarns were re-created as
+real variations with SKUs. **Do not merge them.** Square has no merge, and
+doing it by hand means an ITEM upsert — which replaces the variation list
+outright, so the 2025 variations would be deleted and 122 sale lines would
+lose the only durable handle they have on what was sold. It would also put
+ten $0.00 variations under a live item, and free is the one price nobody
+notices until it has been charged.
+
+Nothing needs archiving either; it already is, so it cannot be rung up. What
+was actually wrong was **this app's own tooling listing it as untracked**,
+which is what invited the merge — so `passthroughs.untracked()` skips
+archived items and says how many it passed over rather than dropping them
+silently.
+
+The reporting half is real, and it is fixed by linking rather than merging:
+`relink_sale_lines --item "Undyed Yarn"` attaches the 2025 lines to the
+passthrough products by price point. One alias is needed, because Square
+spells it `Loop de Loop Caramel` where this app spells it `Lop de Loop
+caramel` — which is exactly why that command refuses to fuzzy-match. The
+near-miss is between two real yarns, and a guess would file one's revenue
+under the other.
+
 ### Notions: the other passthrough, and the marker that is *not* the fancy one
 
 The bits and bobs — yarn bowls, spindles, needle cases, stitch markers — are
@@ -3403,9 +3437,19 @@ it change how the numbers read:
   *blank* only. 2025 looks like an exception and is not: 2,348 of its 2,349
   lines carry a variation id, but its yarn price points are undyed varieties
   — `Baby Yak Cloud`, `Tibetan 3 ply`, `Egyptian Yak` — rather than colours,
-  so none of them matches a product today and **there is nothing to recover.**
-  Re-running the matcher over 2025 links zero lines; that has been measured,
-  so nobody needs to try it again.
+  so **no colorway is recoverable there.** Re-running the colorway matcher
+  over 2025 links zero lines; that has been measured, so nobody needs to try
+  it again.
+
+  **The undyed yarns themselves are a different story, and this paragraph
+  used to get it wrong.** It said there was nothing to recover, full stop.
+  What was actually true was that no *product* existed to match those price
+  points against — and then `create_passthrough_products` made one for every
+  undyed yarn, so the same 122 lines became matchable without a single one of
+  them changing. `relink_sale_lines --item "Undyed Yarn"` attaches them. The
+  lesson generalises past this case: **"nothing matches" is a fact about the
+  catalogue on the day it was measured, not a property of the season** — so
+  re-check it after anything that adds products.
 
   The trap this sets is specific and expensive: a colorway query over 2025
   returns **zero rather than an error**, so "it sold none last year" and "the

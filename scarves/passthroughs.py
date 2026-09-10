@@ -77,6 +77,39 @@ def tracked_item_ids():
     return ids
 
 
+def untracked(items, known_item_ids):
+    """Square items worth offering, out of everything `search` returned.
+
+    Two exclusions, and the second is the one worth writing down.
+
+    **Anything already tracked**, by item id — the ordinary case.
+
+    **Anything archived.** Square keeps an archived item out of the POS but
+    still returns it from a catalogue search, so it reads exactly like an
+    untracked item somebody has yet to deal with. It is the opposite: it is
+    one that has been dealt with, by being retired. Last season's `Undyed
+    Yarn` is the worked example — archived, ten variations at $0.00, 122 sale
+    lines that all stop in October 2025, sitting beside this season's live
+    item of the same name. Listing it invites somebody to "fix" a split that
+    is really a succession, and importing it would create products for ten
+    yarns at a price of nothing.
+
+    Returns `(rows, archived_count)` so a caller can say how many it passed
+    over. Counted rather than silent: a list that quietly shrinks is one
+    nobody can check.
+    """
+    rows, archived = [], 0
+    for obj in items:
+        if obj["id"] in known_item_ids:
+            continue
+        data = obj.get("item_data") or {}
+        if data.get("is_archived"):
+            archived += 1
+            continue
+        rows.append((data, obj["id"]))
+    return rows, archived
+
+
 def for_variation(variation_id):
     """The product already tracking this Square variation, or `None`.
 
