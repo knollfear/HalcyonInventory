@@ -65,20 +65,43 @@ class Command(BaseCommand):
             ),
         )
         parser.add_argument(
+            "--variation",
+            action="append",
+            default=[],
+            metavar="VARIATION_ID=PRODUCT",
+            help=(
+                "Map a Square variation id straight onto a blank name, for "
+                "lines whose price point cannot identify them. Beats --alias "
+                "whenever it applies, because the id is evidence and the name "
+                "is a coincidence: Square's `Regular` carries nine Angel "
+                "Delightful lines from the two days before that variation was "
+                "renamed. Repeatable."
+            ),
+        )
+        parser.add_argument(
             "--dry-run",
             action="store_true",
             help="Print what would be linked without linking it.",
         )
 
     def handle(self, *args, **options):
-        aliases = {}
-        for entry in options["alias"]:
-            if "=" not in entry:
-                raise CommandError(
-                    f"--alias wants PRICE_POINT=PRODUCT, got {entry!r}."
-                )
-            left, right = entry.split("=", 1)
-            aliases[left.strip().casefold()] = right.strip().casefold()
+        def pairs(entries, flag, shape):
+            out = {}
+            for entry in entries:
+                if "=" not in entry:
+                    raise CommandError(f"{flag} wants {shape}, got {entry!r}.")
+                left, right = entry.split("=", 1)
+                out[left.strip()] = right.strip().casefold()
+            return out
+
+        aliases = {
+            k.casefold(): v
+            for k, v in pairs(options["alias"], "--alias",
+                              "PRICE_POINT=PRODUCT").items()
+        }
+        # Not casefolded: a Square id is a token, not a name.
+        by_variation = pairs(options["variation"], "--variation",
+                             "VARIATION_ID=PRODUCT")
 
         # Passthroughs only — see the module docstring for why a colorway must
         # never be matched on its price point.
@@ -108,8 +131,13 @@ class Command(BaseCommand):
 
         matched, unmatched = {}, {}
         for line in lines.iterator():
-            key = (line.price_point or "").strip().casefold()
-            key = aliases.get(key, key)
+            # The variation id first, because it is evidence about which
+            # object sold, where the price point is only what it was called
+            # at the time — and a variation gets renamed mid-season.
+            key = by_variation.get(line.square_variation_id or "")
+            if key is None:
+                key = (line.price_point or "").strip().casefold()
+                key = aliases.get(key, key)
             product = products.get(key)
             if product is None:
                 bucket = unmatched.setdefault(
