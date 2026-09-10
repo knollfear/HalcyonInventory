@@ -19,7 +19,22 @@ than erroring.
   <td>{{ fp.name }}</td>
   <td>{{ fp.raw_product.category.name }}</td>
   <td>{{ fp.raw_product.name }}</td>
-  <td class="num">{{ fp.number_on_hand }}</td>
+  <td class="num">
+    {{ fp.number_on_hand }}
+    {% comment %}
+    What this blank sold, under what it holds. The group above ranks on the
+    **colorway's** pooled sales, which is the right unit for choosing a pot
+    and is blind to a blank that is already full — so a hot colour drags every
+    blank it is dyed on up the list, stocked or not. These two numbers are
+    what make that visible on the row somebody is looking at.
+
+    Never a filter. It sold none *here* over a handful of trading days, and
+    absence over a short window supports almost no inference — a rule built on
+    it could not survive a confidence bound on its own figures. Two counted
+    facts cannot be wrong that way, and the sheet is already editable.
+    {% endcomment %}
+    <div class="soldhere">{{ fp.sold_here }} sold here</div>
+  </td>
   {% comment %}
   `par`, not `par_level` — par_level is RawProduct's field name. This column
   rendered empty for as long as it existed: Django resolves a missing
@@ -28,6 +43,15 @@ than erroring.
   <td class="num">{{ fp.par }}</td>
   <td class="num shortage">
     {{ fp.net_shortage }}
+    {% if fp.stockout_bonus %}
+      {% comment %}
+      One bath, because it was counted at zero on a Sunday night — an observed
+      event rather than an estimate, which is what lets `n = 1` decide
+      anything. Said out loud rather than folded into the number above: a
+      shortage that grew has to say why, exactly as one that shrank does.
+      {% endcomment %}
+      <div class="soldout">+{{ fp.stockout_bonus }} — sold out at the close</div>
+    {% endif %}
     {% if fp.in_flight %}
       {% comment %}
       Said rather than silently subtracted. A shortage that dropped because

@@ -21473,3 +21473,204 @@ class SquarePriceDivergenceTests(TestCase):
         client = FakeSquareClient()
         with self.assertRaises(CommandError):
             self._run("compare_square_prices", client, pull=True, push=True)
+
+
+class StockoutAddsABathTests(TestCase):
+    """A Sunday-night zero asks for one more bath. Nothing else does.
+
+    **The one demand signal in the planner, and it is an event rather than an
+    estimate.** A `CloseRunRow` answered at zero is the record that a product
+    was sold out on a Sunday night — a physical count, on a named date — so
+    `n = 1` is allowed to decide something, because nothing is inferring a
+    rate from it.
+
+    The rule it replaced went the other way and could not survive its own
+    data: *skip a bath because this only sold one all season*. Measured on the
+    live catalogue, 76 products qualified and **none of them** survived a 95%
+    bound on their own sales figure, because long cover requires a low count
+    by construction. Absence of sales over a handful of trading days supports
+    almost no inference; a counted zero is not absence, it is a measurement.
+
+    It is also denominated in the only unit that exists. A bath is atomic —
+    there is no half bath, because the labour makes one not worth doing — and
+    adding exactly `bath_size` to the target adds exactly one bath, since
+    `ceil((n + b) / b) == ceil(n / b) + 1` for every n. A rule that had to be
+    rounded into baths would be claiming a precision with nowhere to land.
+    """
+
+    def setUp(self):
+        self.recipe = make_recipe("Cabernet")
+        # Sitting exactly at par. Nothing but a stockout can put this on a
+        # sheet, which is the case the rule exists for: par being adequate on
+        # paper is precisely what selling out disproves.
+        self.product = make_bathable(
+            self.recipe, "Heavenly", on_hand=8, par=8, bath=5
+        )
+
+    def _close(self, product, counted, day=None):
+        """One close carrying one answered row."""
+        run = CloseRun.objects.create(day=day or timezone.localdate())
+        CloseRunRow.objects.create(
+            run=run,
+            finished_product=product,
+            on_hand_before=product.number_on_hand,
+            display_slots=product.display_slots,
+            counted=counted,
+        )
+        return run
+
+    def _baths_for(self, product):
+        """How many baths of this the planner would put on a sheet."""
+        return sum(
+            1 for bath in production.plan_baths(50, include_overshoot=True)
+            if bath.product.pk == product.pk
+        )
+
+    # ---------------------------------------------------------------- fires
+
+    def test_a_counted_zero_puts_a_product_at_par_on_the_sheet(self):
+        """Par said it was fine. The shelf said otherwise, and the shelf wins.
+
+        This is the whole reason the SQL prefilter had to widen: a product at
+        or above par fails `number_on_hand < par` and would never reach the
+        arithmetic that adds the bath.
+        """
+        self._close(self.product, counted=0)
+
+        self.assertEqual(self._baths_for(self.product), 1)
+
+    def test_it_adds_exactly_one_bath_to_a_product_already_short(self):
+        short = make_bathable(
+            make_recipe("Lilac Garden"), "Homespun", on_hand=0, par=8, bath=4
+        )
+        before = self._baths_for(short)
+        self._close(short, counted=0)
+
+        self.assertEqual(self._baths_for(short), before + 1)
+
+    def test_the_bath_is_never_written_into_par(self):
+        """Par stays a deliberate human decision; the bonus rides the ask."""
+        self._close(self.product, counted=0)
+        production.plan_baths(50, include_overshoot=True)
+        self.product.refresh_from_db()
+
+        self.assertEqual(self.product.par, 8)
+
+    # ------------------------------------------------------------ stays out
+
+    def test_a_row_counted_at_one_proposes_nothing(self):
+        """One was sellable and nobody bought it — that is not unmet demand.
+
+        The sharpest line in the rule, and the reason it stayed quiet on the
+        shop's best-selling colorway the week it was written: all four blanks
+        of it counted 1, not 0.
+        """
+        self._close(self.product, counted=1)
+
+        self.assertEqual(self._baths_for(self.product), 0)
+
+    def test_a_pending_row_proposes_nothing(self):
+        """Nobody looked. That is never a zero.
+
+        The close is routinely worked in passes and left part-done, so
+        reading an unanswered row as a stockout would manufacture baths out
+        of the pile somebody did not get to.
+        """
+        self._close(self.product, counted=None)
+
+        self.assertEqual(self._baths_for(self.product), 0)
+
+    def test_only_the_latest_close_proposes(self):
+        """Each Sunday supersedes the last, which is what stops it compounding."""
+        self._close(self.product, counted=0,
+                    day=timezone.localdate() - timedelta(days=7))
+        self._close(self.product, counted=4)
+
+        self.assertEqual(self._baths_for(self.product), 0)
+
+    def test_a_bath_already_on_paper_is_not_asked_for_twice(self):
+        """`in_flight` nets it off, the same as any other claim on the plan."""
+        self._close(self.product, counted=0)
+        run = ProductionRun.objects.create()
+        ProductionRunRow.objects.create(
+            run=run, finished_product=self.product, order=1,
+            quantity=self.product.bath_size,
+        )
+
+        self.assertEqual(self._baths_for(self.product), 0)
+
+
+class SoldOnThisBlankIsOnTheRowTests(TestCase):
+    """Pooled ranking is right, and blind in one specific way.
+
+    A bath is planned in colorway units, so the sheet ranks on what the
+    *colorway* sold across every blank it is dyed on. That is correct and
+    stays. What it cannot see is a single blank of a hot colour sitting on a
+    full shelf with no sales of its own — it rides up the list on its
+    siblings.
+
+    Measured on the live catalogue that is one or two rows in the first
+    twenty: too few to justify a rule, too many to leave unsaid. So both
+    numbers ride on the row and a person strikes it, which the sheet has
+    always allowed. Nothing filters on them.
+    """
+
+    def setUp(self):
+        self.client.force_login(User.objects.create_user("staff2", password="pw"))
+        self.recipe = make_recipe("Forest Fire")
+        self.mover = make_bathable(self.recipe, "Homespun", on_hand=1, par=8, bath=4)
+        self.stocked = make_bathable(self.recipe, "Artisan", on_hand=7, par=8, bath=4)
+
+    def _sell(self, product, units):
+        sale = Sale.objects.create(
+            order_id=f"so{product.pk}", sold_at=timezone.now(),
+            source=Sale.SOURCE_SQUARE_API,
+        )
+        SaleLine.objects.create(
+            sale=sale, line_key=f"sk{product.pk}", sold_at=timezone.now(),
+            item_name=product.raw_product.name, price_point=product.recipe.name,
+            quantity=units, finished_product=product,
+            raw_product=product.raw_product, source=Sale.SOURCE_SQUARE_API,
+        )
+
+    def test_the_row_carries_what_that_blank_sold_not_the_colorway_total(self):
+        self._sell(self.mover, 13)
+
+        rows = {p.pk: p for group in
+                self.client.get(reverse("production_needed")).context["groups"]
+                for p in group["items"]}
+
+        self.assertEqual(rows[self.mover.pk].sold_here, 13)
+        # The number that makes a stocked blank visible: it rode up here on
+        # its colorway's 13, having sold none of its own.
+        self.assertEqual(rows[self.stocked.pk].sold_here, 0)
+
+    def test_the_sheet_picker_carries_it_too(self):
+        """The picker builds its rows by hand, so it needs its own pin.
+
+        The sheet's rows come from the posted list rather than from
+        `candidates()`, so nothing attaches `sold_here` for them on that path.
+        A key the view forgets renders as an empty cell rather than raising —
+        the failure mode this codebase keeps naming — and an empty `Sold`
+        column looks exactly like a blank that genuinely sold none.
+        """
+        self._sell(self.mover, 13)
+
+        response = self.client.get(
+            reverse("production_sheet_index"),
+            {"items": f"{self.stocked.pk}:1"},
+        )
+
+        self.assertEqual(
+            [row["sold_here"] for row in response.context["rows"]], [0]
+        )
+
+    def test_the_stocked_blank_is_still_listed(self):
+        """Printed, never filtered — the ✕ is a person's call, not the app's."""
+        self._sell(self.mover, 13)
+
+        rows = {p.pk for group in
+                self.client.get(reverse("production_needed")).context["groups"]
+                for p in group["items"]}
+
+        self.assertIn(self.stocked.pk, rows)

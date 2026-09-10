@@ -236,11 +236,16 @@ def candidates(category=None, include_overshoot=False, order=ORDER_SOLD,
     somebody to a sink to make a thing that is not made there — the failure
     `made_in_a_dye_bath` already exists to stop, one technique further in.
     """
+    # A Sunday-night zero adds a bath, and it has to widen the prefilter as
+    # well as the arithmetic. A product sitting *at* par that still sold out
+    # would fail `number_on_hand < par` and never reach the Python pass below
+    # — which is the case the rule exists for, since par being adequate on
+    # paper is exactly what a stockout disproves.
+    stockout = stockout_baths()
+
     qs = (
         FinishedProduct.objects.filter(
             is_active=True,
-            par__gt=0,
-            number_on_hand__lt=F("par"),
             # Undyed passthroughs are ordered, not dyed. Without this the
             # sheet would put "4 × " with no colorway on it and send somebody
             # to the dye room to make something that arrives in a box.
@@ -257,6 +262,9 @@ def candidates(category=None, include_overshoot=False, order=ORDER_SOLD,
             # they carry a colorway and slip past the test above. You cannot
             # answer a shortage of one by dyeing.
             raw_product__made_in_a_dye_bath=True,
+        )
+        .filter(
+            Q(par__gt=0, number_on_hand__lt=F("par")) | Q(pk__in=stockout)
         )
         .select_related("raw_product", "raw_product__category", "recipe")
         # The dye plan walks every recipe on the sheet; without this it is a
@@ -275,9 +283,9 @@ def candidates(category=None, include_overshoot=False, order=ORDER_SOLD,
         # expression — Greatest keeps a bath size of 0 from making it true
         # for everything, the same `or 1` the model property uses.
         qs = qs.filter(
-            par__gte=F("number_on_hand") + Greatest(
+            Q(par__gte=F("number_on_hand") + Greatest(
                 F("raw_product__number_per_dye_bath"), Value(1)
-            )
+            )) | Q(pk__in=stockout)
         )
 
     # Everything above is a prefilter, and it is deliberately loose: baths
@@ -286,12 +294,28 @@ def candidates(category=None, include_overshoot=False, order=ORDER_SOLD,
     # it. Doing it here rather than in a Subquery keeps one copy of the
     # arithmetic, which the sort and `plan_baths` both read.
     wanted = []
-    for product in annotate_flight(qs):
+    for product in annotate_flight(qs, stockout=stockout):
         if not product.net_shortage:
             continue
         if not include_overshoot and not product.behind_a_bath_net:
             continue
         wanted.append(product)
+
+    # What this *blank* sold, beside what the colorway sold. The ordering is
+    # pooled and must stay pooled — a bath is planned in colorway units — but
+    # pooling is also blind in one specific way: a hot colorway drags every
+    # blank it is dyed on up the list, including one with a full shelf and no
+    # sales of its own. Measured on the live catalogue that is one or two rows
+    # in the first twenty, which is too few for a rule and too many to leave
+    # unsaid, so the number rides on the row and a person strikes it.
+    #
+    # Deliberately not a filter. It sold none *here* over a handful of days,
+    # and absence over a short window supports almost no inference — the
+    # skip rule this replaced could not survive a confidence bound on its own
+    # numbers. Two counted facts on the row can't be wrong that way.
+    per_blank = sold_per_blank()
+    for product in wanted:
+        product.sold_here = per_blank.get(product.pk, 0)
 
     if order == ORDER_PAR:
         return sorted(wanted, key=_urgency)
@@ -309,7 +333,7 @@ def candidates(category=None, include_overshoot=False, order=ORDER_SOLD,
     )
 
 
-def annotate_flight(products, claimed=None):
+def annotate_flight(products, claimed=None, stockout=None):
     """Set `in_flight`, `net_shortage` and `behind_a_bath_net` on each product.
 
     **One definition of "what is still short", for every page that asks.**
@@ -323,25 +347,36 @@ def annotate_flight(products, claimed=None):
     (`sold_by_recipe` for what sold, `refill_plan` for what to carry). This is
     the same fix: the page reports exactly what the sheet would ask for.
 
-    `claimed` is passed in when the caller already has it, so a page rendering
-    one row doesn't re-query every live sheet.
+    `claimed` and `stockout` are passed in when the caller already has them,
+    so a page rendering one row doesn't re-query every live sheet or every
+    close.
     """
     if claimed is None:
         claimed = in_flight()
+    if stockout is None:
+        stockout = stockout_baths()
 
     annotated = []
     for product in products:
         product.in_flight = claimed.get(product.pk, 0)
+        # **The target, not par.** A Sunday-night zero adds one bath on top of
+        # whatever par asks for, and it is added to the *target* rather than
+        # written into `par` — par stays a deliberate human decision, and a
+        # number that moved on its own is the failure this app keeps naming.
+        #
+        # Adding exactly `bath_size` adds exactly one bath, always:
+        # `ceil((n + b) / b) == ceil(n / b) + 1` for any n. So the rule is
+        # denominated in the only unit that exists, with nothing to round.
+        product.stockout_bonus = stockout.get(product.pk, 0)
+        target = (product.par or 0) + product.stockout_bonus
         product.net_shortage = max(
-            (product.par or 0) - product.number_on_hand - product.in_flight, 0
+            target - product.number_on_hand - product.in_flight, 0
         )
         # `behind_a_bath` asked of what is left after the paper: a whole bath
         # still lands at or under par. The model property answers the same
         # question about the shelf alone, which double-counts a printed sheet.
         expected = product.number_on_hand + product.in_flight
-        product.behind_a_bath_net = (
-            (product.par or 0) >= expected + product.bath_size
-        )
+        product.behind_a_bath_net = target >= expected + product.bath_size
         annotated.append(product)
     return annotated
 
@@ -377,6 +412,73 @@ def in_flight():
         .annotate(units=Sum("quantity"))
     )
     return {row["finished_product"]: row["units"] or 0 for row in rows}
+
+
+def stockout_baths():
+    """`{finished_product_id: units}` a Sunday-night zero is asking for.
+
+    **A `CloseRunRow` answered at zero is the record that a product was sold
+    out on a Sunday night**, and this turns that into one more bath on the
+    next sheet. It is the whole of the demand response, and it is deliberately
+    the only part of this module that reacts to what sold.
+
+    Three things make it safe where a rate-based target was not:
+
+    - **It is denominated in baths.** A bath is atomic — there is no half
+      bath, because the labour makes one not worth doing — so any rule that
+      has to be *rounded* into baths is expressing a precision that has
+      nowhere to land. Measured on the live catalogue, a weekend of demand
+      crosses a bath boundary against par for four products out of 333, and
+      all four have no par set at all. One bath is the smallest thing this
+      question can be asked in, so it is what the rule is written in.
+    - **It fires on an observed event, not on inferred silence.** A physical
+      count of zero, on a named night, is a measurement; `n = 1` is fine
+      because nothing is estimating a rate. The mirror-image rule — skip a
+      bath because a product *only sold one* — dies on the same data: not one
+      of 76 such products survives a 95% bound on its own sales figure.
+    - **It cannot run away.** Only the latest close proposes, so each Sunday
+      supersedes the last, and `in_flight()` nets off a bath already claimed
+      by printed paper. The pressure is a steady +1 while the stockout
+      persists and it stops the week it does not.
+
+    **Answered rows only.** A pending row is "nobody looked", never a zero —
+    the close is routinely worked in passes and left part-done, and reading
+    an unanswered row as a stockout would manufacture baths out of the pile
+    somebody did not get to.
+
+    Par is untouched, and so is the close: `expected_products()` gates on
+    `display_slots`, so nothing here changes which rows come up to be counted.
+    The two are on separate circuits on purpose.
+    """
+    from .models import CloseRun, CloseRunRow
+
+    run = CloseRun.objects.order_by("-day").first()
+    if run is None:
+        return {}
+    rows = CloseRunRow.objects.filter(run=run, counted=0).select_related(
+        "finished_product__raw_product"
+    )
+    return {row.finished_product_id: row.finished_product.bath_size
+            for row in rows}
+
+
+def sold_per_blank():
+    """`{finished_product_id: units}` this season, per blank rather than pooled.
+
+    The companion to `slowsellers.sold_by_recipe`, which is what the *ordering*
+    reads. Both are needed and they answer different questions: a bath is
+    planned in colorway units, so pooling is right for deciding which colour
+    gets a pot — and pooling is blind to a colorway's individual blanks, so a
+    hot colour drags a fully-stocked blank onto the sheet with it.
+
+    Printed on the row rather than acted on. Same range and same function as
+    every other "what sold" figure in the app, because two answers to that
+    question is how the page that ranks on it comes to disagree with the page
+    that reports it.
+    """
+    from . import slowsellers
+
+    return slowsellers.sold_units(slowsellers.season_range({}))
 
 
 def _urgency(product):

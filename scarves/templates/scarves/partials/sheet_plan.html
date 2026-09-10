@@ -56,7 +56,15 @@ sends somebody to the shelf for the wrong things.
           <tr>
             <th>Colorway</th><th>Blank</th>
             <th class="num">Baths</th><th class="num">Makes</th>
-            <th class="num">On hand</th><th class="num">Par</th><th></th>
+            {% comment %}
+            `Sold` is what this *blank* sold this season, not the colorway.
+            The suggestion is ranked on the colorway's pooled total — right
+            for choosing a pot, blind to a blank that is already stocked — so
+            a row reading `7 on hand / 0 sold` is a colour riding up on its
+            siblings. Printed, never filtered: the ✕ is right there.
+            {% endcomment %}
+            <th class="num">On hand</th><th class="num">Sold</th>
+            <th class="num">Par</th><th></th>
           </tr>
         </thead>
         <tbody>
@@ -86,6 +94,7 @@ sends somebody to the shelf for the wrong things.
               </td>
               <td class="num">{{ row.makes }}</td>
               <td class="num">{{ row.product.number_on_hand }}</td>
+              <td class="num">{{ row.sold_here }}</td>
               <td class="num">{{ row.product.par }}</td>
               <td class="num">
                 {% comment %}

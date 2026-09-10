@@ -477,10 +477,16 @@ def record_dye_bath(request, pk):
             .select_related("raw_product", "raw_product__category", "recipe")
             .get(pk=finished_product.pk)
         )
-        # The row reads `net_shortage` and `behind_a_bath_net`, which only
-        # `annotate_flight` sets — and a missing attribute renders as an empty
-        # cell rather than raising, so forgetting this is silent.
+        # The row reads `net_shortage`, `behind_a_bath_net`, `stockout_bonus`
+        # and `sold_here`, none of which the model carries — and a missing
+        # attribute renders as an empty cell rather than raising, so
+        # forgetting one is silent. `annotate_flight` sets the first three;
+        # `sold_here` is attached by `candidates()` on the page path and has
+        # to be set by hand here, since this row never went through it.
         production.annotate_flight([finished_product])
+        finished_product.sold_here = production.sold_per_blank().get(
+            finished_product.pk, 0
+        )
         return TemplateResponse(
             request,
             "scarves/partials/production_needed_row.html",
@@ -4616,6 +4622,11 @@ def production_sheet_index(request):
         [True] * len(oven_baths) + [False] * max(tray_gap, 0) if oven else []
     )
 
+    # One lookup for the whole list rather than one per row, and the same
+    # function `candidates()` uses so the picker and the page that feeds it
+    # cannot report different sales for the same blank.
+    per_blank = production.sold_per_blank()
+
     return render(request, template, {
         "form": form,
         "oven": oven,
@@ -4657,6 +4668,12 @@ def production_sheet_index(request):
             {
                 "product": product,
                 "baths": n,
+                # What this blank sold, beside what it holds. The suggestion
+                # is ranked on the *colorway's* pooled sales, which is the
+                # right unit for choosing a pot and is blind to a blank that
+                # is already full — so the two numbers ride on the row and a
+                # person strikes it. Nothing here filters on them.
+                "sold_here": per_blank.get(product.pk, 0),
                 # What those baths actually make. Worked out here rather than
                 # left to a template filter: baths are the unit of work and
                 # scarves are the unit everybody thinks in, and the page has

@@ -1351,6 +1351,92 @@ permanent door, so losing one from a list costs nothing. It is truncated at
 `RUNS_LISTED`. The overdue list beside it is the opposite and is never
 truncated: those sheets are asking for something.
 
+### A Sunday-night zero adds a bath — the one demand signal in the planner
+
+`production.stockout_baths()` reads the **latest** close and adds one bath to
+every product answered at `counted == 0`. That is the whole of the planner's
+response to what sold, and everything about its shape was arrived at by
+killing better-looking versions of it first.
+
+**A bath is atomic, and that decides more than it looks like it does.** There
+is no half bath — you could, but the labour makes it not worth doing — so
+every target here is really a bath count, and a rule whose output has to be
+*rounded* into baths is claiming a precision with nowhere to land. Measured
+on the live catalogue: a weekend of demand, projected from season-to-date
+sales, crosses a bath boundary against par for **4 products out of 333**, and
+all four have no par set at all. Heavenly Cabernet at 6.4 units of cover and
+at 10 units availability-corrected both round to two baths, which is what par
+already said. So the obvious feature — derive a per-product target from the
+sales rate — is not weak here, it is *unrepresentable*, and the arithmetic
+that proves it is the reason this is a bath rule instead.
+
+Adding exactly `bath_size` adds exactly one bath, always, since
+`ceil((n + b) / b) == ceil(n / b) + 1`. Nothing rounds.
+
+**It fires on an observed event, never on inferred silence.** A `CloseRunRow`
+at zero is a physical count, on a named night — `n = 1` is allowed to decide
+something because nothing is estimating a rate from it. The mirror-image rule
+is the one to be careful about, because it looks equally sensible and is not:
+*skip a bath, this only sold one all season and the stock outlasts the
+season.* On the live catalogue that flagged 76 products and **35% of the
+baths being asked for** — and not one of the 76 survives a 95% bound on its
+own sales figure, because long cover requires a low count by construction, so
+the skip set is always made of products with nought to two observations. All
+76 had seven or fewer on hand, so one customer with an armful clears any of
+them. The sales ordering also already buries them: only **2 of the next 20
+baths** the planner prints are in that set. Absence of sales over a handful
+of trading days is not evidence of absence; a counted zero is not absence at
+all.
+
+**Par and the close are separate circuits, and this is the thing to check
+before touching either.** `closing.expected_products()` gates on
+`display_slots`, never on par — so changing par changes nothing about which
+rows come up to be counted or which come back zero. Dropping par to 4 would
+not make this fire more often; it would cut the ask by two-thirds and
+**silently delete every bath-5 product from the default sheet**, because
+`behind_a_bath` is `shortage >= bath_size` and par 4 caps the shortage at 4.
+Nothing would error. The sheet would just stop offering Artisan, Heavenly and
+Noble.
+
+**The bonus rides the ask and is never written into `par`.** Par stays a
+deliberate human decision; a number that moved on its own is the failure this
+codebase keeps naming. It is printed as its own line on the row — *+5 — sold
+out at the close* — for the same reason `in_flight` is: a shortage that grew
+has to say why as clearly as one that shrank.
+
+Four things keep it from running away. Only the **latest** close proposes, so
+each Sunday supersedes the last. `in_flight()` nets off a bath already
+claimed by printed paper. **Answered rows only** — a pending row is "nobody
+looked", never a zero, and the close is routinely worked in passes. And the
+SQL prefilter had to widen (`Q(par__gt=0, number_on_hand__lt=F("par")) |
+Q(pk__in=stockout)`), because a product sitting *at* par that still sold out
+would never have reached the arithmetic — which is exactly the case the rule
+exists for, since par being adequate on paper is what selling out disproves.
+
+**And par turns out to be better than "a uniform remnant".** Across all 333
+active dyed products there are nine distinct `(par, bath size)` pairs and
+every one lands between **1.0 and 2.0 baths**. That is not a number nobody
+chose — it is a MOQ floor with one bath of headroom, and it is the right
+instrument for a signal this thin: you hold 4 because 4 survives ordinary
+lumpiness, not because anyone computed twenty days of cover. The only
+outliers are the bath-5 yarns at par 8, sitting at 1.6 baths where everything
+else is at 2. Par still isn't dialled in *per product* — that is the
+off-season question, where the window is 19 trading days rather than 5 and
+the counts are large enough to mean something.
+
+**`sold_per_blank()` is on the row because pooled ranking is blind in one
+specific way.** A bath is planned in colorway units, so the sheet ranks on
+what the *colorway* sold across every blank — correct, and it stays. What it
+cannot see is one blank of a hot colour sitting on a full shelf having sold
+none of its own; it rides up the list on its siblings. That is one or two
+rows in the first twenty, which is too few for a rule and too many to leave
+unsaid, so **both counted facts ride on the row and a person strikes it** —
+which the sheet has always allowed. Nothing filters on them. It also keeps
+the Sash Belt problem visible rather than acting on it: that blank sells ~85
+units a season with **no colorway attribution at all**, so every one of its
+48 colorways reads zero, and a skip rule would have quietly cancelled pots
+for the colours that may actually be selling.
+
 ### The oven: a second session, planned to the box instead of to the work
 
 Some colorways are made in an oven rather than in a pot. The oven holds
