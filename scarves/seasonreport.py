@@ -19,6 +19,25 @@ dates:
   2021-2024 it ranks first or second by weekly total and sixth or eighth per
   day. A page offering only the weekly figure would be read, and acted on.
 
+**The style filter is the one axis that reaches every season.** `?blank=`
+narrows to one raw product — rectangle veils, sash belts — and it works back
+to 2021 where the colorway does not, because `SaleLine.raw_product` is matched
+off the item name while a colorway needs a SKU or a Square variation id and
+nothing before 2025 carries either. Dollars and units both answer under it,
+since the metric toggle was already there.
+
+**Narrowing breaks the "no lines" shorthand, and that is the thing to hold
+onto here.** Unfiltered, a weekend with nothing against it can only be a
+weekend nobody imported. Filtered, it is nearly always a weekend where that
+style simply did not sell — and the two must not render the same, because one
+is a hole in the data and the other is a measurement of zero. `has_data` is
+therefore read off an unfiltered count of the day's lines, kept beside the
+filtered total, so a quiet weekend still counts toward `traded_days` instead
+of dropping out of the denominator and inflating every per-day figure above
+it. The category pills could already reach the same fault — the wax hands
+left the till after 2024, so counting only them made 2025 and 2026 read as
+two seasons nobody had imported.
+
 **A weekend that has not happened is not a weekend with no sales**, and the
 difference decides whether a number may be projected. A weekend whose trading
 days are all still in the future is *to come* and can be projected from the
@@ -38,7 +57,7 @@ from django.db.models import Count, Sum
 from django.db.models.functions import TruncDate
 from django.utils import timezone
 
-from .models import Faire, FaireDay, SaleLine
+from .models import Faire, FaireDay, RawProduct, SaleLine
 
 #: How the y axis is measured.
 METRIC_NET = "net"
@@ -134,13 +153,18 @@ class Weekend:
     """One weekend of one season, and what is known about it."""
 
     def __init__(self, number, days, traded_days, value, units, lines, to_come,
-                 mean_f=None, wet_days=0, weather_days=0):
+                 mean_f=None, wet_days=0, weather_days=0, imported_lines=None):
         self.number = number
         self.days = days
         self.traded_days = traded_days
         self.value = value
         self.units = units
+        #: Lines under the filter in force — may legitimately be zero.
         self.lines = lines
+        #: Lines that weekend carries *before* any filter, which is a
+        #: different question and the one the gap machinery below asks. It
+        #: defaults to `lines` so an unfiltered reading is unchanged.
+        self.imported_lines = lines if imported_lines is None else imported_lines
         #: Every traded day of it is still in the future.
         self.to_come = to_come
         #: Projected rather than counted. Set by `project()`.
@@ -160,7 +184,28 @@ class Weekend:
 
     @property
     def has_data(self):
-        return self.lines > 0
+        """Whether this weekend's figure is a measurement.
+
+        **Read off the unfiltered count, not off `lines`.** The two agree
+        until somebody narrows to a category or a style, and then they come
+        apart in the direction that matters: a weekend where Rectangle Veil
+        sold none is a weekend that *was* imported and took zero, and every
+        caller below wants to count it — as a point on the chart at zero, as
+        a cell reading 0, and above all in `traded_days`, the denominator.
+        Reading `lines` here would drop exactly those weekends out of the
+        divisor and quietly inflate every per-day figure on the page.
+
+        The same confusion was already reachable through the category pills,
+        which is where it would have been found: the wax hands left the till
+        after 2024, so filtering to them makes 2025 and 2026 carry no lines
+        at all, and every weekend of both reads as an import nobody ran.
+        """
+        return self.imported_lines > 0
+
+    @property
+    def sold_nothing(self):
+        """Imported, and the filter in force found none of it."""
+        return self.has_data and self.lines == 0
 
     @property
     def is_gap(self):
@@ -307,7 +352,29 @@ def categories_on_file():
     )
 
 
-def build(slug, categories=None, today=None):
+def blanks_on_file():
+    """Blanks that appear in the ledger, for the style filter.
+
+    The blank is the one axis that spans every season. `SaleLine.raw_product`
+    is matched off the item name rather than off a SKU, and that is what makes
+    it answerable back to 2021 — nothing before 2025 carries a SKU or a Square
+    variation id at all, so the colorway is unreadable that far back and the
+    style is not.
+
+    Listed from the ledger rather than from the catalogue, so a blank that
+    never sold is not offered as a filter that can only return nothing.
+    `.order_by()` first, for the reason in `categories_on_file`.
+    """
+    ids = list(
+        SaleLine.objects.order_by()
+        .filter(raw_product__isnull=False)
+        .values_list("raw_product_id", flat=True)
+        .distinct()
+    )
+    return list(RawProduct.objects.filter(pk__in=ids).order_by("name"))
+
+
+def build(slug, categories=None, blank=None, today=None):
     """Every season of `slug`, weekend by weekend.
 
     One query for the calendar and one for the money, whatever the number of
@@ -325,7 +392,11 @@ def build(slug, categories=None, today=None):
         by_faire[day.faire_id][day.weekend].append(day)
 
     every_date = [day.date for day in days]
-    totals = _totals_by_date(every_date, categories)
+    totals = _totals_by_date(every_date, categories, blank)
+    # Asked separately and deliberately unfiltered: "did the import run" is
+    # not the same question as "did this style sell", and answering the first
+    # with the second is what turns a quiet weekend into a missing one.
+    imported = _imported_by_date(every_date)
 
     seasons = []
     for faire in faires:
@@ -336,6 +407,7 @@ def build(slug, categories=None, today=None):
             value = sum(totals[day.date]["value"] for day in group)
             units = sum(totals[day.date]["units"] for day in group)
             lines = sum(totals[day.date]["lines"] for day in group)
+            imported_lines = sum(imported[day.date] for day in group)
             readings = [
                 day.weather for day in group
                 if getattr(day, "weather", None) and day.weather.mean_f is not None
@@ -347,6 +419,7 @@ def build(slug, categories=None, today=None):
                 value=value,
                 units=units,
                 lines=lines,
+                imported_lines=imported_lines,
                 mean_f=(sum(r.mean_f for r in readings) / len(readings)) if readings else None,
                 wet_days=sum(1 for r in readings if r.was_wet),
                 weather_days=len(readings),
@@ -364,16 +437,18 @@ def build(slug, categories=None, today=None):
     return seasons
 
 
-def _totals_by_date(dates, categories):
+def _totals_by_date(dates, categories, blank_id=None):
     """Money and units per calendar day, zero-filled."""
-    blank = {"value": 0, "units": Decimal(0), "lines": 0}
-    totals = defaultdict(lambda: dict(blank))
+    empty = {"value": 0, "units": Decimal(0), "lines": 0}
+    totals = defaultdict(lambda: dict(empty))
     if not dates:
         return totals
 
     lines = SaleLine.objects.filter(sold_at__date__in=dates)
     if categories:
         lines = lines.filter(category__in=categories)
+    if blank_id:
+        lines = lines.filter(raw_product_id=blank_id)
     rows = (
         lines.annotate(day=TruncDate("sold_at"))
         .values("day")
@@ -386,6 +461,32 @@ def _totals_by_date(dates, categories):
             "lines": row["lines"] or 0,
         }
     return totals
+
+
+def _imported_by_date(dates):
+    """How many lines each day carries, before any filter is applied.
+
+    This is what `Weekend.has_data` is built on. It has to ignore the
+    category and the style, because the thing it decides — whether a blank
+    figure means "took nothing" or "nobody imported it" — is a fact about the
+    import and not about what somebody is currently looking at.
+
+    `values().annotate()` drops `SaleLine`'s default ordering, so this needs
+    no `.order_by()` of its own; see `categories_on_file` for the version of
+    that which does.
+    """
+    counts = defaultdict(int)
+    if not dates:
+        return counts
+    rows = (
+        SaleLine.objects.filter(sold_at__date__in=dates)
+        .annotate(day=TruncDate("sold_at"))
+        .values("day")
+        .annotate(lines=Count("id"))
+    )
+    for row in rows:
+        counts[row["day"]] = row["lines"] or 0
+    return counts
 
 
 def metric_of(season, metric):
@@ -434,6 +535,12 @@ def project(focus, priors):
         return None
 
     banked = Decimal(sum(w.value for w in focus.weekends if w.has_data))
+    # A filter can leave a season imported in full and banked at nothing —
+    # a yarn blank looked at across 2021, say. Projecting that draws a dashed
+    # tail along zero, which reads as a forecast rather than as the absence
+    # of one.
+    if not banked:
+        return None
     projected_total = banked / share
     focus.projection_weekends = len(banked_numbers)
     focus.projection_share = share * 100
@@ -478,7 +585,7 @@ def share_of_season(seasons):
     return shares
 
 
-def source_breakdown(slug, categories=None):
+def source_breakdown(slug, categories=None, blank=None):
     """Which pipeline supplied this faire's rows.
 
     Printed rather than filtered on, the same bargain `private/sales/` makes
@@ -490,6 +597,8 @@ def source_breakdown(slug, categories=None):
     lines = SaleLine.objects.filter(sold_at__date__in=dates)
     if categories:
         lines = lines.filter(category__in=categories)
+    if blank:
+        lines = lines.filter(raw_product_id=blank)
     return sorted(
         lines.values("source").annotate(lines=Count("id"), value=Sum("net_cents")),
         key=lambda row: -(row["value"] or 0),

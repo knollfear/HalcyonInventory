@@ -3495,6 +3495,59 @@ Season figures are scoped to the weekends actually reported: `Season.per_day`
 divides by the traded days of the weekends that have data, not by the whole
 run, or a half-imported season reads as a catastrophe.
 
+### `?blank=` — the style is the axis that reaches every season
+
+The question is "rectangle veils, year on year, in dollars and units", and the
+style is the only cut of the catalogue that can answer it. `SaleLine.raw_product`
+is matched off the **item name**, which every season carries; a colorway needs a
+SKU or a Square variation id and nothing before 2025 has either. So the filter
+reads back to 2021 where a colorway query would return zero and mean "the
+concept did not exist" — the trap already recorded above, here avoided by not
+offering the cut that springs it. Dollars and units both answer under it,
+because the metric toggle was already there.
+
+Deliberately **not on `private/sales/`**, which is where somebody will look
+first. That page reads `InventoryLog`, which begins when this app did — 678
+sale rows, all 2026 — so it has exactly one year and could not draw a second.
+Its money column is units × *today's* price and says so. Both halves of the
+ask therefore have to come off the ledger. `private/sales/` does have a blank
+filter, labelled **Style**, and the parameter here is named `blank` to match
+it.
+
+A select rather than pills: twenty-five blanks are a paragraph of pills, and
+the categories already have a row. Single-choice, because the question is
+about one style; the categories stay multi-select and the two compose.
+
+**Narrowing breaks the "no lines" shorthand, and that is the whole of the
+work.** Unfiltered, a weekend with nothing against it can only be a weekend
+nobody imported — which is what `has_data`, `is_gap`, `Season.total` and
+`traded_days` were all reading. Filtered, it is nearly always a weekend where
+that style did not sell, and the two must not render the same: one is a hole
+in the data and the other is a measurement of zero. The consequences ran
+deeper than the cell:
+
+- a quiet weekend would be named as a **missing import** in the warning, which
+  sends somebody to re-run an importer that has nothing to fetch;
+- it would **drop out of `traded_days`** — the denominator — so every per-day
+  figure on the page would read high, silently and in the flattering direction;
+- the chart would **break its line** across it rather than drawing zero, which
+  is the "season that traded nothing" failure `_segments` already exists to
+  avoid, arriving by a different door.
+
+So `Weekend` carries `imported_lines` beside `lines`: the first counted with no
+filter at all, the second under whatever is in force. `has_data` reads the
+first, `sold_nothing` is the pair, and the cell prints a grey `0`.
+
+**The category pills could already reach this**, which is where it would have
+been found eventually and at a worse moment. The wax hands left the till after
+2024, so counting only them makes 2025 and 2026 carry no lines whatever — two
+seasons reading as exports nobody loaded, on the filter that exists precisely
+to stop a discontinued product line being read as a decline.
+`test_a_category_absent_from_a_season_is_not_a_missing_import` is the pin.
+
+**Nothing is projected for a style that banked nothing.** A dashed tail drawn
+along zero reads as a forecast rather than as the absence of one.
+
 ## Weather: fetched once, from a free archive, and never at render time
 
 `scarves/weather.py` reads Open-Meteo's historical archive — no key, no

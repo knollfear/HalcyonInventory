@@ -90,6 +90,8 @@ rest of it.
                font-variant-numeric: tabular-nums; }
   .totals .n.est { color: var(--focus-ink); }
   .totals .what { font-size: .85rem; color: #556; max-width: 24ch; }
+  .scope { margin: -4px 0 12px; font-size: .85rem; color: #556; max-width: 70ch; }
+  td.none { color: #889; }
 
   .scroller { overflow-x: auto; margin: 0 -2px; padding: 0 2px; }
   table.grid-table { border-collapse: collapse; width: 100%; font-size: 14px; }
@@ -171,6 +173,30 @@ rest of it.
         <a class="pill {% if c.on %}on{% endif %}" href="{{ c.href }}">{{ c.name }}</a>
       {% endfor %}
     </div>
+  {% endif %}
+
+  {% if every_blank %}
+    <form class="toolbar" method="get" action="">
+      {% for k, v in blank_hidden %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}
+      <label class="what" for="blank">Style</label>
+      <select id="blank" name="blank">
+        <option value="">Every style</option>
+        {% for b in every_blank %}
+          <option value="{{ b.pk }}"{% if b.pk == blank_id %} selected{% endif %}>{{ b.name }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit">Show</button>
+      {% if blank %}<a class="pill" href="{{ clear_blank }}">Clear</a>{% endif %}
+    </form>
+    {% if blank %}
+      <p class="scope">
+        Counting <strong>{{ blank.name }}</strong> only. The style is matched off
+        the item name on each sale, which is why it reads back to the earliest
+        season on file where a colorway cannot &mdash; nothing before 2025
+        carries a SKU. A weekend this style sold none of counts as a zero, not
+        as a gap.
+      </p>
+    {% endif %}
   {% endif %}
 
   {% if focus %}
@@ -259,6 +285,7 @@ rest of it.
               {% if w.projected %}<td class="est">{% if is_money %}{{ w.value|money_cents }}{% else %}{{ w.value|plain }}{% endif %}</td>
               {% elif w.is_gap %}<td class="gap" title="Happened, nothing imported">gap</td>
               {% elif w.to_come %}<td class="void" title="Has not happened yet">—</td>
+              {% elif w.sold_nothing %}<td class="none" title="Imported, and this style sold none of it">0</td>
               {% elif not w.has_data %}<td class="void">—</td>
               {% else %}<td>{% if is_money %}{{ w.value|money_cents }}{% else %}{{ w.value|plain }}{% endif %}</td>{% endif %}
             {% endfor %}

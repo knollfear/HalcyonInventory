@@ -20405,7 +20405,7 @@ class ImportSalesHistoryTests(TestCase):
 
 
 def sale_line(day, cents, category="Silk Scarves", item="Rectangle Veil",
-              units=1, hour=13, order=None):
+              units=1, hour=13, order=None, blank=None):
     """One line on a given local date, for the season-report tests."""
     when = timezone.make_aware(datetime.combine(day, time(hour, 30)))
     order = order or f"T{day.isoformat()}-{cents}-{item}-{hour}"
@@ -20417,7 +20417,7 @@ def sale_line(day, cents, category="Silk Scarves", item="Rectangle Veil",
         sale=sale, line_key=f"{item}|x|{SaleLine.objects.count()}",
         sold_at=when, category=category, item_name=item,
         quantity=Decimal(units), gross_cents=cents, net_cents=cents,
-        source=Sale.SOURCE_SQUARE_CSV,
+        source=Sale.SOURCE_SQUARE_CSV, raw_product=blank,
     )
 
 
@@ -20434,12 +20434,13 @@ class SeasonReportTests(TestCase):
         self.y2021 = Faire.objects.get(year=2021)
         self.y2022 = Faire.objects.get(year=2022)
 
-    def _fill(self, faire, per_weekend, category="Silk Scarves"):
+    def _fill(self, faire, per_weekend, category="Silk Scarves", blank=None,
+              item="Rectangle Veil"):
         """One line on the first day of each weekend, worth `per_weekend` cents."""
         for number, cents in per_weekend.items():
             day = faire.days.filter(weekend=number).first()
-            sale_line(day.date, cents, category=category,
-                      order=f"{faire.year}-w{number}-{category}")
+            sale_line(day.date, cents, category=category, item=item, blank=blank,
+                      order=f"{faire.year}-w{number}-{category}-{item}")
 
     def test_totals_land_in_the_weekend_the_day_belongs_to(self):
         self._fill(self.y2021, {1: 100_000, 2: 250_000, 9: 400_000})
@@ -20518,6 +20519,129 @@ class SeasonReportTests(TestCase):
         )
         self.assertEqual(next(s for s in silk if s.year == 2021).total, 100_000)
 
+    # ---------------------------------------------------------- the style
+
+    def _blank(self, name):
+        category, _ = RawProductCategory.objects.get_or_create(name="Silk")
+        return RawProduct.objects.create(
+            name=name, category=category, price="5.00",
+        )
+
+    def _blanks(self):
+        return self._blank("Rectangle Veil"), self._blank("Sash Belt")
+
+    def test_a_style_filter_narrows_the_total_and_the_units(self):
+        """The whole ask: one style, year on year, in dollars or units."""
+        veil, belt = self._blanks()
+        self._fill(self.y2021, {1: 100_000}, blank=veil)
+        self._fill(self.y2021, {1: 40_000}, blank=belt, item="Sash Belt")
+
+        everything = seasonreport.build("labor-day-run", today=date(2026, 12, 31))
+        self.assertEqual(next(s for s in everything if s.year == 2021).total, 140_000)
+
+        veils = seasonreport.build(
+            "labor-day-run", blank=veil.pk, today=date(2026, 12, 31),
+        )
+        y2021 = next(s for s in veils if s.year == 2021)
+        self.assertEqual(y2021.total, 100_000)
+        self.assertEqual(y2021.units, Decimal(1))
+
+    def test_a_weekend_the_style_sold_none_of_is_a_zero_not_a_gap(self):
+        """The failure the filter would otherwise introduce.
+
+        Unfiltered, a weekend with no lines can only be one nobody imported.
+        Filtered, it is almost always one where that style did not sell — and
+        rendering the second as the first invents missing imports out of quiet
+        weekends and, worse, drops them out of the denominator below.
+        """
+        veil, belt = self._blanks()
+        self._fill(self.y2021, {1: 100_000, 2: 100_000}, blank=veil)
+        # Weekend 3 traded and was imported; it just sold no veils.
+        self._fill(self.y2021, {3: 40_000}, blank=belt, item="Sash Belt")
+
+        veils = seasonreport.build(
+            "labor-day-run", blank=veil.pk, today=date(2026, 12, 31),
+        )
+        y2021 = next(s for s in veils if s.year == 2021)
+        by_number = {w.number: w for w in y2021.weekends}
+
+        self.assertEqual(by_number[3].value, 0)
+        self.assertTrue(by_number[3].has_data, "the weekend was imported")
+        self.assertTrue(by_number[3].sold_nothing)
+        self.assertFalse(by_number[3].is_gap)
+        self.assertNotIn(3, y2021.gaps)
+
+    def test_a_quiet_weekend_stays_in_the_denominator(self):
+        """A zero weekend counts its trading days, or per-day reads high."""
+        veil, belt = self._blanks()
+        self._fill(self.y2021, {1: 100_000}, blank=veil)
+        self._fill(self.y2021, {3: 40_000}, blank=belt, item="Sash Belt")
+
+        veils = seasonreport.build(
+            "labor-day-run", blank=veil.pk, today=date(2026, 12, 31),
+        )
+        y2021 = next(s for s in veils if s.year == 2021)
+        # Weekend 1 and weekend 3 both traded two days, and both were
+        # imported — so the veil's takings are spread over four days, not two.
+        self.assertEqual(y2021.traded_days, 4)
+        self.assertEqual(y2021.per_day, Decimal(25_000))
+
+    def test_a_style_that_did_not_exist_yet_reads_zero_not_missing(self):
+        """The yarn case: real zeros, and they must not read as lost data."""
+        veil, belt = self._blanks()
+        yarn = self._blank("Heavenly")
+        self._fill(self.y2021, {n: 100_000 for n in range(1, 10)}, blank=veil)
+        self._fill(self.y2022, {n: 100_000 for n in range(1, 10)}, blank=yarn,
+                   item="Heavenly")
+
+        yarns = seasonreport.build(
+            "labor-day-run", blank=yarn.pk, today=date(2026, 12, 31),
+        )
+        y2021 = next(s for s in yarns if s.year == 2021)
+        self.assertEqual(y2021.total, 0)
+        self.assertEqual(y2021.gaps, [], "a season that sold none is not a gap")
+        self.assertTrue(y2021.has_any_data, "its weekends were imported")
+
+    def test_a_category_absent_from_a_season_is_not_a_missing_import(self):
+        """The same fault, reachable through the pills that were already here.
+
+        The wax hands left the till after 2024, so counting only them makes a
+        later season carry no lines at all — which is a discontinued product
+        line, not an export nobody loaded.
+        """
+        self._fill(self.y2021, {n: 100_000 for n in range(1, 10)}, category="Wax")
+        self._fill(self.y2022, {n: 100_000 for n in range(1, 10)},
+                   category="Silk Scarves")
+
+        wax = seasonreport.build(
+            "labor-day-run", categories=["Wax"], today=date(2026, 12, 31),
+        )
+        y2022 = next(s for s in wax if s.year == 2022)
+        self.assertEqual(y2022.gaps, [])
+        self.assertEqual(y2022.total, 0)
+
+    def test_nothing_is_projected_for_a_style_that_banked_nothing(self):
+        """A dashed tail along zero reads as a forecast. There isn't one."""
+        veil, belt = self._blanks()
+        self._fill(self.y2021, {n: 100_000 for n in range(1, 10)}, blank=veil)
+        self._fill(self.y2022, {1: 100_000, 2: 100_000}, blank=belt,
+                   item="Sash Belt")
+
+        veils = seasonreport.build(
+            "labor-day-run", blank=veil.pk, today=date(2022, 9, 12),
+        )
+        y2021 = next(s for s in veils if s.year == 2021)
+        y2022 = next(s for s in veils if s.year == 2022)
+        self.assertIsNone(seasonreport.project(y2022, [y2021]))
+
+    def test_only_blanks_with_sales_are_offered(self):
+        veil, belt = self._blanks()
+        self._blank("Never Sold")
+        self._fill(self.y2021, {1: 100_000}, blank=veil)
+
+        offered = [b.name for b in seasonreport.blanks_on_file()]
+        self.assertEqual(offered, ["Rectangle Veil"])
+
     def test_a_season_with_no_lines_is_absent_rather_than_zero(self):
         self._fill(self.y2021, {1: 100_000})
         seasons = seasonreport.build("labor-day-run", today=date(2026, 12, 31))
@@ -20565,6 +20689,42 @@ class SeasonReportPageTests(TestCase):
         self.assertIn("<svg", body)
         self.assertIn("2021", body)
         self.assertIn("2022", body)
+
+    def _veil(self):
+        category, _ = RawProductCategory.objects.get_or_create(name="Silk")
+        veil = RawProduct.objects.create(
+            name="Rectangle Veil", category=category, price="5.00",
+        )
+        SaleLine.objects.filter(item_name="Rectangle Veil").update(raw_product=veil)
+        return veil
+
+    def test_the_style_filter_narrows_the_page(self):
+        veil = self._veil()
+        self.client.force_login(self.user)
+        response = self.client.get(self.url, {"blank": veil.pk})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["blank"], veil)
+        self.assertIn("Rectangle Veil", response.content.decode())
+
+    def test_an_unknown_style_falls_back_rather_than_erroring(self):
+        """A filter is navigation; a stale link shows more, never breaks."""
+        self.client.force_login(self.user)
+        response = self.client.get(self.url, {"blank": "99999"})
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.context["blank"])
+
+    def test_every_control_carries_the_style(self):
+        veil = self._veil()
+        self.client.force_login(self.user)
+        response = self.client.get(self.url, {"blank": veil.pk, "metric": "units"})
+        for group in ("mode_links", "metric_links", "year_links",
+                      "category_links", "palette_links"):
+            for link in response.context[group]:
+                self.assertIn(f"blank={veil.pk}", link["href"], group)
+        # And the style form carries what the links carry, or choosing a
+        # style would silently reset the metric somebody had just picked.
+        carried = dict(response.context["blank_hidden"])
+        self.assertEqual(carried.get("metric"), "units")
 
     def test_every_control_keeps_the_rest_of_the_state(self):
         self.client.force_login(self.user)

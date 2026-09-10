@@ -7339,7 +7339,7 @@ def _seasons_href(base, **overrides):
                 "weekend of the run rather than the calendar date. Dollars or "
                 "units, cumulative, per weekend, or per trading day.",
     category="Reports",
-    note="?faire=&year=&mode=cum|weekend|day&metric=net|units&cat=",
+    note="?faire=&year=&mode=cum|weekend|day&metric=net|units&cat=&blank=",
 )
 @login_required
 def season_report(request):
@@ -7371,6 +7371,16 @@ def season_report(request):
     every_category = seasonreport.categories_on_file()
     categories = [c for c in request.GET.getlist("cat") if c in every_category]
 
+    # `?blank=` is the style, and it is named the same thing it is named on
+    # `private/sales/` so a habit formed on one page works on the other. An
+    # id that is not a blank with sales against it falls back to no filter
+    # rather than erroring — a filter is navigation, and a stale link should
+    # show more than was asked for rather than break.
+    every_blank = seasonreport.blanks_on_file()
+    blank_id = _int_or_none(request.GET.get("blank"))
+    blank = next((b for b in every_blank if b.pk == blank_id), None)
+    blank_id = blank.pk if blank else None
+
     # A palette is a mode: it follows you round the page the way `?photos=1`
     # follows a restock circuit, so every link carries it. Unknown values fall
     # back rather than erroring — it decides colours and nothing else.
@@ -7385,7 +7395,7 @@ def season_report(request):
     if mode not in seasonreport.MODE_KEYS:
         mode = seasonreport.DEFAULT_MODE
 
-    seasons = seasonreport.build(slug, categories or None)
+    seasons = seasonreport.build(slug, categories or None, blank_id)
     for season in seasons:
         seasonreport.metric_of(season, metric)
 
@@ -7420,6 +7430,7 @@ def season_report(request):
         "mode": mode,
         "metric": metric,
         "palette": palette,
+        "blank": blank_id,
         "cat": categories,
     }
 
@@ -7448,7 +7459,21 @@ def season_report(request):
         "metrics": seasonreport.METRICS,
         "every_category": every_category,
         "categories": categories,
-        "sources": seasonreport.source_breakdown(slug, categories or None),
+        "every_blank": every_blank,
+        "blank": blank,
+        "blank_id": blank_id,
+        # A select rather than a row of pills: there are twenty-five blanks
+        # in the ledger, which is a paragraph of pills and a page of them
+        # once the categories are there too. The form carries the rest of
+        # the reading as hidden fields so choosing a style keeps the faire,
+        # the focused year, the mode, the metric and the categories.
+        "blank_hidden": _hidden(
+            base, "faire", "year", "mode", "metric", "palette"
+        ) + [("cat", name) for name in categories],
+        "clear_blank": _seasons_href(base, blank=None),
+        "sources": seasonreport.source_breakdown(
+            slug, categories or None, blank_id
+        ),
         "is_money": metric == seasonreport.METRIC_NET,
         "href": {
             "base": base,
