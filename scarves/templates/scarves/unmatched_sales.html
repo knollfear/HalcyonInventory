@@ -19,6 +19,10 @@
   .shot .prefix { font-family: ui-monospace, Menlo, monospace; font-size: 13px; color: var(--ink); }
   .pick { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
   .pick select { max-width: 420px; }
+  /* Between the catalogue pick and the dismissal, because that is where it
+     sits in the reading: match it, or make it, or say it never was one. */
+  .track { margin-top: 10px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .track select { max-width: 200px; }
   .dismiss { margin-top: 10px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .dismiss input[type="text"] { width: 240px; }
   .note { font-size: 13px; color: #667; margin-top: 8px; }
@@ -124,6 +128,41 @@
             <input type="checkbox" name="file_photo" value="1">
             also file this photo against the product, so it's identifiable next time
           </label>
+        {% endif %}
+
+        {% comment %}
+        The third answer, beside "which scarf was it" and "it was never a
+        scarf": it is a real thing we sell and the app has simply never heard
+        of it. The bits and bobs are bought and sold as they arrive, so there
+        was no dye bath to create them and nothing ever made the row.
+
+        A full navigation, like Match and unlike Dismiss, because this moves
+        stock *and* creates two rows — the sentence saying what was made and
+        what it was priced at is worth a page.
+
+        The price is Square's, not ours: what the customer was actually
+        charged, divided by the quantity on the line. Nothing here guesses a
+        number that could reach a till.
+        {% endcomment %}
+        {% if row.can_track %}
+          <div class="track">
+            <select name="category_id">
+              <option value="">— which category? —</option>
+              {% for category in categories %}
+                <option value="{{ category.pk }}">{{ category.name }}</option>
+              {% endfor %}
+            </select>
+            <button class="btn-quiet" type="submit" name="create_product" value="1">
+              Track “{{ row.sale.name|default:row.sale.variation_name }}” at ${{ row.unit_price }}
+            </button>
+            <span class="stat">
+              {% if row.sale.square_variation_id %}
+                buy-and-sell item — future sales will match on their own
+              {% else %}
+                hand-keyed at the till, so it can't identify itself next time
+              {% endif %}
+            </span>
+          </div>
         {% endif %}
 
         {% comment %}

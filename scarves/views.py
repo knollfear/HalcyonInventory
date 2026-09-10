@@ -55,8 +55,9 @@ logger = logging.getLogger(__name__)
 from django.template.response import TemplateResponse
 
 from . import (
-    closing, colorbands, crew, fancy, labels, photowalk, production, restock,
-    sales, seasonreport, sheetscan, skus, slowsellers, timesheets,
+    closing, colorbands, crew, fancy, labels, passthroughs, photowalk,
+    production, restock, sales, seasonreport, sheetscan, skus, slowsellers,
+    timesheets,
 )
 from . import seasons as seasons_mod
 from .colorutils import hex_to_rgb, nearest_by_color, pick_color_cluster
@@ -5885,6 +5886,15 @@ def unmatched_sales(request):
             "reports": near,
             "options": options,
             "narrowed": narrowed,
+            # A line can only be turned into a product if Square told us what
+            # it was called. Offered off the name rather than off the presence
+            # of a variation id, because a hand-keyed notion is still a notion
+            # — it just won't identify itself next time, and the row says so.
+            "can_track": bool(sale.name or sale.variation_name),
+            "unit_price": (
+                Decimal(sale.amount_cents) / Decimal(100)
+                / max(sale.quantity, 1)
+            ).quantize(Decimal("0.01")),
             # Offered only when it stands for more than itself: a button
             # reading "dismiss all 1 like this" is the button beside it,
             # wearing a longer label.
@@ -5895,6 +5905,9 @@ def unmatched_sales(request):
     return render(request, "scarves/unmatched_sales.html", {
         "day": day,
         "rows": rows,
+        # Which table it sits on. Offered rather than guessed: the app cannot
+        # tell a yarn bowl from a silk square from the line Square sent.
+        "categories": RawProductCategory.objects.all(),
         "orphans": _orphan_reports(day, sales, reports),
         "open_total": _open_unmatched_total(),
         "window_minutes": int(UNMATCHED_WINDOW.total_seconds() // 60),
@@ -5960,12 +5973,65 @@ def resolve_unmatched_sale(request, pk):
             )
         return redirect(redirect_to)
 
-    product = get_object_or_404(FinishedProduct, pk=request.POST.get("product_id"))
+    if request.POST.get("create_product"):
+        # Nothing in the catalogue to match, because the thing was never in
+        # it: a bought-in notion that has been rung up at the till for as
+        # long as Square has known it. Making the product here rather than
+        # sending somebody to the admin is what keeps the queue workable —
+        # and the row it makes carries the Square variation id, so the *next*
+        # sale of the same thing identifies itself and never reaches this
+        # page at all.
+        # Parsed defensively rather than filtered on directly: the select's
+        # own placeholder posts an empty string, which is the likeliest thing
+        # to arrive here, and `filter(pk="")` raises. A 500 on the ordinary
+        # mis-click, where the message below is what was wanted.
+        category_id = (request.POST.get("category_id") or "").strip()
+        category = (
+            RawProductCategory.objects.filter(pk=category_id).first()
+            if category_id.isdigit() else None
+        )
+        if category is None:
+            messages.error(
+                request,
+                "Pick which category the new product belongs in before "
+                "tracking it — that is which table it sits on.",
+            )
+            return redirect(redirect_to)
+        try:
+            product, was_created = passthroughs.create_from_sale(sale, category)
+        except ValueError as exc:
+            messages.error(request, str(exc))
+            return redirect(redirect_to)
+        if was_created:
+            messages.success(
+                request,
+                f"Now tracking “{product.name}” at ${product.price} "
+                f"({product.sku}) — future sales of it will match on their own.",
+            )
+        else:
+            # Already made from an earlier line of the same item. Said out
+            # loud rather than silently reused: the reader asked to create
+            # something and did not, and a page that looks identical either
+            # way is how the same thing gets made twice by hand.
+            messages.info(
+                request,
+                f"“{product.name}” was already being tracked, so this sale "
+                f"went to the product that exists rather than a second one.",
+            )
+    else:
+        product = get_object_or_404(
+            FinishedProduct, pk=request.POST.get("product_id")
+        )
     report = BoothPhoto.objects.filter(pk=request.POST.get("report_id")).first()
 
     with transaction.atomic():
-        product.number_on_hand = max(product.number_on_hand - sale.quantity, 0)
-        product.save(update_fields=["number_on_hand"])
+        # `set_on_hand`, never a direct write. For anything dyed the two are
+        # the same thing, but a passthrough's count lives on the *raw* row and
+        # this one is a mirror of it — writing here means `save()` re-derives
+        # the number, it snaps back, and the sale reads as though it never
+        # happened. Which is reachable from this very view now that it can
+        # create passthroughs.
+        product.set_on_hand(product.number_on_hand - sale.quantity)
 
         log = InventoryLog.objects.create(
             finished_product=product,

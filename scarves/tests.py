@@ -21834,3 +21834,137 @@ class SoldOnThisBlankIsOnTheRowTests(TestCase):
                 for p in group["items"]}
 
         self.assertIn(self.stocked.pk, rows)
+
+
+class PassthroughFromUnidentifiedSaleTests(TestCase):
+    """Turning a bought-and-sold thing the app never knew into a product.
+
+    The bits and bobs are ordered and resold with no dye bath and no colorway,
+    so nothing ever created the row and every sale of one landed in the queue.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("owner", "o@example.test", "pw")
+        self.client.force_login(self.user)
+        self.notions, _ = RawProductCategory.objects.get_or_create(name="Notions")
+        self.sold_at = timezone.now() - timedelta(hours=2)
+        self.sale = UnmatchedSale.objects.create(
+            order_id="ORDER-N1", line_uid="L1", name="Yarn Bowl",
+            square_variation_id="SQVAR1", quantity=1, amount_cents=4500,
+            sold_at=self.sold_at,
+        )
+
+    def _resolve(self, sale, **extra):
+        payload = {"create_product": "1", "category_id": self.notions.pk}
+        payload.update(extra)
+        return self.client.post(
+            reverse("resolve_unmatched_sale", args=[sale.pk]), payload
+        )
+
+    def test_tracking_a_sale_creates_the_pile_and_the_sellable_row(self):
+        self._resolve(self.sale)
+
+        product = FinishedProduct.objects.get(square_variation_id="SQVAR1")
+        self.assertEqual(product.name, "Yarn Bowl")
+        self.assertIsNone(product.recipe_id)          # the passthrough marker
+        self.assertTrue(product.is_passthrough)
+        self.assertEqual(product.raw_product.category, self.notions)
+        self.assertTrue(product.sku)                  # printable straight away
+
+    def test_the_price_is_what_square_charged_per_unit_not_the_line_total(self):
+        sale = UnmatchedSale.objects.create(
+            order_id="ORDER-N2", line_uid="L1", name="Stitch Markers",
+            square_variation_id="SQVAR2", quantity=3, amount_cents=2100,
+            sold_at=self.sold_at,
+        )
+
+        self._resolve(sale)
+
+        product = FinishedProduct.objects.get(square_variation_id="SQVAR2")
+        self.assertEqual(product.price, Decimal("7.00"))
+
+    def test_a_notion_is_never_marked_as_the_fancy_veils_are(self):
+        """`made_in_a_dye_bath=False` is the *fancy* marker, not this one.
+
+        It reads like the right flag and is the wrong one: `fancy_blanks()`
+        filters on exactly it, so setting it here would offer a yarn bowl on
+        the conversion page as a thing a silk scarf could be turned into.
+        """
+        self._resolve(self.sale)
+
+        raw = RawProduct.objects.get(name="Yarn Bowl")
+        self.assertTrue(raw.made_in_a_dye_bath)
+        self.assertNotIn(raw, list(fancy.fancy_blanks()))
+
+    def test_it_never_reaches_the_dye_room(self):
+        """The null recipe is what does this, by construction rather than by
+        every production query remembering to exclude a notion."""
+        self._resolve(self.sale)
+
+        product = FinishedProduct.objects.get(square_variation_id="SQVAR1")
+        for oven in (False, True):
+            self.assertNotIn(
+                product.pk,
+                [c.pk for c in production.candidates(oven=oven)],
+            )
+
+    def test_the_sale_is_resolved_and_the_stock_actually_moves(self):
+        """A passthrough's count lives on the *raw* row and the finished row
+        mirrors it, so a direct write here would be re-derived on save and
+        snap back — the sale reading as though it never happened."""
+        self._resolve(self.sale)
+        self.sale.refresh_from_db()
+        product = FinishedProduct.objects.get(square_variation_id="SQVAR1")
+
+        self.assertEqual(self.sale.resolved_product_id, product.pk)
+        self.assertIsNotNone(self.sale.resolved_at)
+        # Started at zero, so a sale of one floors there rather than going
+        # negative — and crucially the raw row is what was written.
+        self.assertEqual(product.raw_product.number_on_hand, 0)
+        self.assertEqual(product.number_on_hand, 0)
+
+    def test_the_log_is_dated_when_it_sold_not_when_it_was_tidied_up(self):
+        self._resolve(self.sale)
+
+        log = InventoryLog.objects.get(log_type=InventoryLog.SALE)
+        self.assertEqual(log.sale_reference, "ORDER-N1")
+        self.assertEqual(log.created_at, self.sold_at)
+
+    def test_a_second_line_of_the_same_item_reuses_the_product(self):
+        """The queue holds one row per order line, so the same notion comes up
+        again and again. A second product would split the count with the
+        first, silently."""
+        self._resolve(self.sale)
+        again = UnmatchedSale.objects.create(
+            order_id="ORDER-N9", line_uid="L1", name="Yarn Bowl",
+            square_variation_id="SQVAR1", quantity=1, amount_cents=4500,
+            sold_at=self.sold_at,
+        )
+
+        self._resolve(again)
+
+        self.assertEqual(
+            FinishedProduct.objects.filter(square_variation_id="SQVAR1").count(), 1
+        )
+        again.refresh_from_db()
+        self.assertIsNotNone(again.resolved_at)
+
+    def test_without_a_category_nothing_is_created(self):
+        response = self._resolve(self.sale, category_id="")
+
+        self.assertEqual(FinishedProduct.objects.count(), 0)
+        self.sale.refresh_from_db()
+        self.assertIsNone(self.sale.resolved_at)
+        self.assertEqual(response.status_code, 302)
+
+    def test_the_variation_id_is_what_stops_it_coming_back(self):
+        """The whole payoff: `square_webhook` matches a line's
+        `catalog_object_id` against this field, so the next sale identifies
+        itself instead of landing in the queue."""
+        self._resolve(self.sale)
+
+        self.assertTrue(
+            FinishedProduct.objects.filter(
+                square_variation_id=self.sale.square_variation_id
+            ).exists()
+        )

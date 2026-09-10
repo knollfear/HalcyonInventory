@@ -1939,6 +1939,71 @@ hand-keyed price, which carries no `catalog_object_id` at all — so every one
 landed in `private/unidentified-sales/` (or, before that existed, vanished).
 Selling them as real variations fixes that at the source.
 
+### Notions: the other passthrough, and the marker that is *not* the fancy one
+
+The bits and bobs — yarn bowls, spindles, needle cases, stitch markers — are
+ordered and resold with no processing at all. They are passthroughs like the
+undyed yarns, arrived at from the other direction: an undyed yarn is a blank
+that skipped the dye bath, a notion never had one to skip.
+
+**The null `recipe` is the only marker one needs.** Do **not** reach for
+`RawProduct.made_in_a_dye_bath = False`, however exactly it seems to describe
+"no dye bath makes this". That is the *fancy veil* marker, and
+`fancy.fancy_blanks()` filters on precisely it — so setting it here puts a
+yarn bowl on `private/fancy/` as a thing a silk scarf can be converted into.
+The two flags answer different questions and this one already has its answer:
+a null recipe drops the row out of every dyed-only query by construction.
+`test_a_notion_is_never_marked_as_the_fancy_veils_are` is the pin.
+
+**The row is worth little; the Square ids are the point.** `square_webhook`
+matches a line's `catalog_object_id` against
+`FinishedProduct.square_variation_id`, so a tracked notion stops arriving in
+`private/unidentified-sales/` at all — the queue drains by the thing that
+filled it becoming identifiable, rather than by anyone working it. Carrying
+the parent `square_item_id` is what stops the next `sync_to_square` deciding
+the item is new and creating a second one beside it.
+
+So `scarves/passthroughs.py` **never creates anything in Square**. It writes
+down what Square already has.
+
+**Two triggers, one module**, the usual split. A *Track* control on each queue
+row makes one from the sale in front of you, taking the price from what the
+customer was actually charged divided by the line quantity. And
+`import_square_passthroughs` does a batch.
+
+**The batch never decides what is a product**, and this is the load-bearing
+refusal. Run over everything the app does not recognise, it would create
+`Women's Haircut`, `Shampoo Style`, `Shipping` and `$2 Refund` — all real
+items on this till — alongside the discontinued wax line and nineteen legacy
+silk blanks. So the population is a Square *category* somebody curated:
+assign the notions to `Notions` in the dashboard and the command imports
+exactly those. `--list` prints what is untracked, grouped by Square's own
+category, which is how you see what still needs assigning. The app follows a
+decision rather than making one — `colorbands` again, with the form filled in
+by the dashboard.
+
+**A multi-variation item becomes a `CatalogGroup` and one raw product per
+variation**, never one raw product carrying several passthrough rows.
+`mirror_passthrough_stock` keeps a passthrough's finished count in step with
+its raw one, and two finished rows on a single raw product would mirror the
+same pile and disagree about it silently. Same shape the undyed yarns already
+use, reached by the same argument.
+
+A new notion starts at `par = 0` and `display_slots = 0` — it is ordered
+rather than made, and it does not hang on a peg, so the close leaves it alone
+and the shortfall shows up on `private/raw-inventory/` where a bought-in thing
+belongs. Cost starts at zero because the sale cannot say what it cost, and
+zero is honest *there* in a way it never is on the selling side: a cost of
+nothing overstates margin on a report nobody reads yet, where a price of
+nothing rings up free at the till with a queue behind it.
+
+**Resolving a passthrough sale must go through `set_on_hand()`.** Writing
+`number_on_hand` directly is correct for anything dyed and wrong here — the
+finished row is a mirror, `save()` re-derives it, the number snaps back, and
+the sale reads as though it never happened. `resolve_unmatched_sale` did
+exactly that, harmlessly, right up until this feature made passthroughs
+reachable from it.
+
 ## Display capacity is not demand
 
 The northstar for everything below, and the thing most likely to be undone by
