@@ -66,6 +66,21 @@ rest of it.
   .pill.on { background: var(--accent); border-color: var(--accent); color: #fff; }
   .pill.focus.on { background: var(--focus-ink); border-color: var(--focus-ink); }
 
+  .toolbar select {
+      border: 1px solid #cbd6e2; border-radius: 999px; padding: 4px 10px;
+      font: inherit; font-size: 14px; background: #fff; color: inherit;
+      max-width: 100%;
+  }
+  .toolbar select:focus-visible, .toolbar button:focus-visible {
+      outline: 2px solid var(--accent); outline-offset: 1px;
+  }
+  button.pill { font: inherit; font-size: 14px; cursor: pointer; }
+  button.pill.go {
+      background: var(--accent); border-color: var(--accent); color: #fff;
+      font-weight: 600;
+  }
+  button.pill.go:hover { background: var(--accent-dark); border-color: var(--accent-dark); }
+
   .figure { margin: 18px 0 6px; }
   .figure svg { display: block; width: 100%; height: auto; overflow: visible; }
   .figure .grid { stroke: var(--grid); stroke-width: 1; }
@@ -185,7 +200,7 @@ rest of it.
           <option value="{{ b.pk }}"{% if b.pk == blank_id %} selected{% endif %}>{{ b.name }}</option>
         {% endfor %}
       </select>
-      <button type="submit">Show</button>
+      <button class="pill go" type="submit">Show</button>
       {% if blank %}<a class="pill" href="{{ clear_blank }}">Clear</a>{% endif %}
     </form>
     {% if blank %}
