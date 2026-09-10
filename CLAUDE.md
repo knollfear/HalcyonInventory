@@ -46,8 +46,8 @@ follows.
 **The dyeing is the value add.** Everything is dyed here — that is the
 business, and it is why the colorway rather than the style is the axis
 everything is organised around. (The one documented exception is the small
-amount of stock sold exactly as it arrives; see *Undyed stock* below, where a
-null `recipe` is what marks it.)
+amount of stock sold exactly as it arrives; see *Undyed stock* in
+`docs/claude/stock.md`, where a null `recipe` is what marks it.)
 
 Five styles cover about 99% of what gets made and sold, and **the scarves are
 silk**:
