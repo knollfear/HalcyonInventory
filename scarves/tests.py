@@ -1057,6 +1057,47 @@ class RealSheetPhotoTests(TestCase):
         self.assertFalse(self.scan.error)
 
 
+class ScreenshotSheetPhotoTests(TestCase):
+    """The other failure: a picture too small to hold a row barcode.
+
+    `screenshot_sheet_run5.jpg` is the same sheet as the camera file, taken as
+    a screenshot and exported through Preview — 1308px wide, where a 7.7 mil
+    module lands on 1.18 pixels against the two zbar needs. Thirteen decode
+    attempts read zero rows, 4x upscaling with unsharp masking included:
+    interpolation cannot invent a sample that was never taken.
+
+    It is a fixture because mistaking it for a camera photograph produced a
+    confident wrong conclusion about the whole pipeline, which stood until the
+    original turned up. The EXIF is the tell — no Make, no Model.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.photo = (
+            pathlib.Path(__file__).resolve().parent
+            / "testdata" / "screenshot_sheet_run5.jpg"
+        ).read_bytes()
+
+    def setUp(self):
+        self.scan = sheetscan.read_sheet(self.photo)
+
+    def test_it_still_names_the_sheet(self):
+        """Which is the whole job of the upload page. The boxes are the bonus,
+        and this photo cannot give them — but it lands you on the right run
+        with them ready to tap, which is the flow minus the shortcut."""
+        self.assertEqual(self.scan.qr_token, "18-tranquil-bobcat")
+        self.assertTrue(self.scan.named_but_unread)
+
+    def test_it_reads_no_rows_and_says_why(self):
+        """"Couldn't read that photo" and "that photo is too small to hold a
+        row barcode" send somebody to do completely different things — retake
+        it, or stop retaking it."""
+        self.assertEqual(self.scan.marks, [])
+        self.assertTrue(self.scan.too_small_for_rows)
+        self.assertFalse(self.scan.error)
+
+
 class SheetPhotoRescueTests(TestCase):
     """A photo too small for the rows can still name the sheet.
 
