@@ -1724,6 +1724,19 @@ rotated the first time that program stops running. **S3 has no per-object
 TTL**: expiry is a bucket rule matched on a prefix, which is why these have a
 prefix of their own.
 
+**The scanner is tested against a real photograph**, kept at
+`scarves/testdata/marked_sheet_run5.jpg`, because a synthetic one cannot stand
+in for what is being tested: every generated QR tried decoded on the first
+pass, where the real one needed an enlargement. Focus, curl, glare and the
+angle a page was lying at are not reproducible from a matrix.
+
+**Anything committed there has to have a dead token first.** This repository
+is public, and a production sheet photographs its own code — which opens a
+page that moves stock with no login — alongside a page of stock levels. Rotate
+or revoke it in the admin, then check it the way a stranger would: fetch the
+URL against a control that is known-bad, because a 404 nobody verified is a
+404 somebody assumed.
+
 **Marking is positive only.** Tick what you did; never cross out what you
 didn't. Pen through a Code128 sometimes still decodes and sometimes doesn't,
 so the signal that matters would ride on the unreliable mark, and an unmarked

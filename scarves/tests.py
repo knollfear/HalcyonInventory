@@ -993,6 +993,70 @@ class RecipeRowBandTests(TestCase):
         self.assertFalse(self.recipe.color_bands)
 
 
+class RealSheetPhotoTests(TestCase):
+    """The scanner against an actual photograph of an actual marked sheet.
+
+    Kept as a file because the thing under test is optics, and a synthetic
+    image cannot stand in for it: every generated QR tried here decoded on the
+    first pass, where the real one needed an enlargement. Focus, curl, glare
+    and the angle a page was lying at are not reproducible from a matrix.
+
+    `scarves/testdata/marked_sheet_run5.jpg` — iPhone 16 Pro, 3024×4032,
+    twelve rows all filled in. Its token was rotated in the admin before the
+    file was committed, because this repository is public and a sheet's code
+    opens a page that moves stock with no login.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        path = (
+            pathlib.Path(__file__).resolve().parent
+            / "testdata" / "marked_sheet_run5.jpg"
+        )
+        cls.photo = path.read_bytes()
+
+    def setUp(self):
+        self.scan = sheetscan.read_sheet(self.photo)
+
+    def test_it_names_the_sheet(self):
+        """The QR did **not** decode at native resolution — it sits on the
+        lifted corner of the page. Recovering it is the whole reason the
+        passes are pooled instead of stopping at the first that finds a row:
+        pass one reads rows and no QR, and a photo that names no sheet leaves
+        somebody typing a code off paper."""
+        self.assertEqual(self.scan.qr_token, "18-tranquil-bobcat")
+
+    def test_it_reads_the_rows(self):
+        """Eleven of twelve, measured. Asserted as a floor rather than an
+        equality so a better scanner does not fail its own test — what must
+        not happen is going backwards."""
+        self.assertGreaterEqual(len(self.scan.marks), 11)
+        self.assertGreaterEqual(len(self.scan.filled), 9)
+
+    def test_the_first_row_is_read(self):
+        """The sharp regression pin. `RECTAN-GOLDEN#1` decodes on a pass whose
+        geometry puts its box outside the frame, so claiming a code the moment
+        it decoded retired it before it produced a mark and the enlargement
+        that would have read it never got its turn."""
+        self.assertIn("RECTAN-GOLDEN#1", {m.code for m in self.scan.marks})
+
+    def test_the_marks_come_back_in_page_order(self):
+        """Pooling makes pixel coordinates ambiguous: a row found at 2x
+        reports a `top` twice the size of the same row at 1x, which sorted row
+        one into the middle of the page."""
+        numbers = [int(m.code.rsplit("#", 1)[1]) for m in self.scan.marks]
+
+        self.assertEqual(numbers, sorted(numbers))
+
+    def test_a_photo_this_size_is_not_blamed_for_the_rows_it_missed(self):
+        """2.74 pixels per module against the two zbar needs. A photo that
+        reads badly at this size was soft or badly lit and is worth retaking,
+        which is a different instruction from "that image can never work"."""
+        self.assertFalse(self.scan.too_small_for_rows)
+        self.assertFalse(self.scan.error)
+
+
 class SheetPhotoRescueTests(TestCase):
     """A photo too small for the rows can still name the sheet.
 
