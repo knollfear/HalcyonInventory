@@ -2053,6 +2053,14 @@ class RawDemandTests(TestCase):
         self.assertEqual(outlook.shortfall, 35)       # 500 - (165 + 300)
         self.assertEqual(outlook.finished_unsold, 176)
 
+    def test_a_passthrough_shortfall_carries_no_bath_count(self):
+        """An undyed yarn is sold exactly as it arrives. `number_per_dye_bath`
+        defaults to 4 on every blank regardless, so reading it unguarded
+        prints a bath count beside a thing no bath ever makes."""
+        outlook = self._outlook(remaining=247, is_dyed=False)
+        self.assertEqual(outlook.shortfall, 82)
+        self.assertEqual(outlook.baths, 0)
+
 
 class RawDemandIsReadOnlyTests(TestCase):
     """The module behind the ordering columns writes nothing at all."""

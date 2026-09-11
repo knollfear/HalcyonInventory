@@ -64,6 +64,10 @@ class Outlook:
     prior_seasons: int = 0
     finished_on_hand: int = 0
     finished_unsold: int = 0
+    #: Whether anything made from this blank is dyed at all. A passthrough —
+    #: an undyed yarn, a notion — is bought and resold as it arrives, so its
+    #: shortfall is real and its *bath* count is not a thing that exists.
+    is_dyed: bool = True
     dyed_recently: int = 0
     #: When the most recent production row for this blank was written, at any
     #: depth of history — `dyed_recently` only looks back `RECENT_WEEKS`.
@@ -100,8 +104,15 @@ class Outlook:
 
     @property
     def baths(self):
-        """The shortfall in the unit it will actually be dyed in."""
-        if not self.shortfall:
+        """The shortfall in the unit it will actually be dyed in.
+
+        Zero for a passthrough, which has no such unit. `number_per_dye_bath`
+        carries its default of 4 on every blank whether or not one is ever
+        dyed, so reading it unguarded prints "62 baths" beside a yarn that is
+        sold exactly as it arrives — an instruction to do something that does
+        not happen, on the page whose whole job is to say what to buy.
+        """
+        if not self.shortfall or not self.is_dyed:
             return 0
         return math.ceil(self.shortfall / (self.blank.number_per_dye_bath or 1))
 
@@ -207,16 +218,18 @@ def _finished_by_blank(blanks, sold_recipes):
     """
     on_hand = {blank.pk: 0 for blank in blanks}
     unsold = {blank.pk: 0 for blank in blanks}
+    dyed = set()
     products = (
         FinishedProduct.objects
         .filter(raw_product__in=blanks, is_active=True, recipe__isnull=False)
         .values_list("raw_product_id", "recipe_id", "number_on_hand")
     )
     for blank_id, recipe_id, number in products:
+        dyed.add(blank_id)
         on_hand[blank_id] = on_hand.get(blank_id, 0) + number
         if not sold_recipes.get(recipe_id):
             unsold[blank_id] = unsold.get(blank_id, 0) + number
-    return on_hand, unsold
+    return on_hand, unsold, dyed
 
 
 def _entered_production(blanks, since):
@@ -262,7 +275,7 @@ def rows(blanks, today=None):
     rng = slowsellers.season_range({})
     sold_recipes = slowsellers.sold_by_recipe(rng)
     outlooks = units_outlook(blanks, today=today)
-    finished, unsold = _finished_by_blank(blanks, sold_recipes)
+    finished, unsold, dyed = _finished_by_blank(blanks, sold_recipes)
     since = timezone.now() - timedelta(weeks=RECENT_WEEKS)
     entered, last_entry = _entered_production(blanks, since)
 
@@ -277,6 +290,7 @@ def rows(blanks, today=None):
             prior_seasons=priors,
             finished_on_hand=finished.get(blank.pk, 0),
             finished_unsold=unsold.get(blank.pk, 0),
+            is_dyed=blank.pk in dyed,
             dyed_recently=entered.get(blank.pk, 0),
             last_entry=last_entry.get(blank.pk),
         ))
