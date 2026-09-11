@@ -64,7 +64,7 @@ item's `variations` list. There is nothing to set. The only way to reorder is
 to send the whole ITEM back with the list in the order you want — which is
 what dragging the handles in the dashboard does.
 
-That makes `_reorder_variations` the most dangerous call in the file. **An
+That makes `_make_items_till_ready` the most dangerous call in the file. **An
 ITEM upsert replaces the variation list outright, so a variation missing from
 it is deleted**, taking its Square ID, its stock and the sale history's link
 to it. One rule keeps that safe, and it is worth stating plainly:
@@ -75,9 +75,10 @@ to it. One rule keeps that safe, and it is worth stating plainly:
 Everything else follows from it. An item that comes back with no variations is
 skipped rather than sent — an answer we didn't understand looks exactly like
 an item with nothing under it, and only one of those is safe to echo. A
-variation with no `name` is skipped too: it is named by an item option, whose
-values already decide the order, and sorting it on the empty string would
-bunch it at the top and fight whatever set that.
+variation with no `name` is left where it is: it is named by an item option,
+whose values already decide the order, and sorting it on the empty string
+would bunch it at the top and fight whatever set that. (The item may still be
+rewritten for the other reason below — the list simply goes back unpermuted.)
 
 Items already in order are not rewritten, because otherwise every scheduled
 run bumps every version to change nothing. The sort is `casefold` and stable,
@@ -109,6 +110,54 @@ Chunking counts *objects*, not items: variations ride inline, so a hundred
 items is closer to a thousand objects and the batch limit counts the children.
 
 Items themselves need nothing — the POS already lists those alphabetically.
+
+### An item may not choose a colourway for the cashier
+
+Square has a per-item setting, **"Automatically select first variation"**, and
+it does exactly that: the POS puts variation one straight into the cart and
+never shows the list. On a one-variation item that is a sensible shortcut,
+which is why it exists. On a style carrying forty colourways it is a wrong
+answer that nothing downstream can tell from a right one — the receipt, the
+stock count, the sales history and the season report all agree, and all of
+them are agreeing about a colour nobody bought.
+
+That is not hypothetical. It is why a season of sash belts rang up as
+`Amethyst`: first alphabetically under `Sash Belt`, and the only colourway the
+till ever offered. The tell was supposed to be an implausible top seller, and
+it wasn't one, because a plausible-looking number is exactly what this bug
+produces.
+
+The field is `item_data.skip_modifier_screen`, and the reasoning about it is
+the same shape as everything else here:
+
+- **The sync says no every run, rather than saying it once.** Nothing in this
+  app sets the flag — a person does, in two taps, on a phone, usually
+  believing they are speeding the queue up. Clearing it once fixes the
+  catalogue until the next time somebody has that thought, and there is no
+  event to notice it by. Same rule as the price guard: never add a step that
+  has to be remembered to be correct.
+- **It is cleared only on items with two or more variations.** One variation
+  means there is nothing to choose between, so the flag there means what its
+  name says about modifiers and is somebody's deliberate setting — the
+  notions and the one-off items are full of it.
+- **It rides the pass that was already reading every item.** The ordering
+  pass retrieves the whole ITEM and echoes it back, which is the one write
+  that can carry this, so `_reordered_item` became `_till_ready_item` and
+  returns a *list* of reasons: `resorted`, `positions`, `autoselect`. An item
+  needing only the flag cleared is written; an item needing nothing is still
+  left alone, so a run stops churning versions once the catalogue agrees.
+- **Refusing to sort is not a reason to leave it choosing.** A variation
+  named by an item option can't be ordered here, and such an item used to be
+  skipped outright. It now goes back with the flag cleared and the variation
+  list exactly as Square gave it — unsortable means unpermuted, not rebuilt.
+- **The repair is counted and named in the output**, not folded silently into
+  the reorder total. This is the one that was ringing up the wrong colourway;
+  a quiet fix leaves nobody knowing how long it had been doing it, and that
+  count is the only evidence there will ever be.
+
+New ITEM payloads carry `skip_modifier_screen: False` explicitly too, so a
+freshly created style is never briefly able to choose before the till-ready
+pass reaches it.
 
 ### A price has two authors, and only one of them writes it down
 
@@ -148,7 +197,8 @@ Four things in it are the same bargains the rest of the app makes:
 - **`--push` never *builds* a variation.** It takes the object as Square
   returned it, replaces the amount, and sends that back, so a field this app
   doesn't model can't be dropped by being absent from a payload assembled
-  here. The rule `_reorder_variations` already follows, for the same reason.
+  here. The rule `_make_items_till_ready` already follows, for the same
+  reason.
 - **Variable pricing is named, not pulled as zero.** It is the till asking
   the cashier, not a price of nothing, and a mistyped `--sku` stops the run
   rather than matching no rows — "nothing to do" reads on screen exactly like

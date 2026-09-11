@@ -100,10 +100,11 @@ class Command(BaseCommand):
             "--reorder",
             action="store_true",
             help=(
-                "Put every item's variations back into alphabetical order in "
-                "Square, then stop. The ordering pass runs at the end of a "
-                "normal sync too; this is how you fix a catalogue that "
-                "drifted before it did."
+                "Make every item read right at the till — variations back in "
+                "alphabetical order, and no item auto-selecting its first "
+                "variation — then stop. The pass runs at the end of a normal "
+                "sync too; this is how you fix a catalogue that drifted "
+                "before it did."
             ),
         )
 
@@ -236,6 +237,11 @@ class Command(BaseCommand):
 
             item_data = {
                 "name": group.name,
+                # A multi-variation item that auto-selects its first variation
+                # rings up one colourway for every colour on the rack. Say no
+                # here as well as in the till-ready pass, so a fresh item is
+                # never briefly wrong.
+                "skip_modifier_screen": False,
                 "variations": [
                     self._variation(fp, f"#cg_{group.pk}") for fp in active_fps
                 ],
@@ -312,12 +318,12 @@ class Command(BaseCommand):
             self._update_existing(client, force_prices=options["force_prices"])
             # A renamed recipe renames its variation, which is the other way
             # the till's ordering goes wrong.
-            self._reorder_variations(client)
+            self._make_items_till_ready(client)
             self._push_inventory(client)
             return
 
         if options["reorder"]:
-            self._reorder_variations(client)
+            self._make_items_till_ready(client)
             return
 
         if options["relink"]:
@@ -380,6 +386,7 @@ class Command(BaseCommand):
                 ]
                 item_data = {
                     "name": raw_product.name,
+                    "skip_modifier_screen": False,     # see `_grouped_objects`
                     "variations": variations,
                 }
                 if raw_product.category.square_category_id:
@@ -394,7 +401,7 @@ class Command(BaseCommand):
 
         if not all_objects:
             self.stdout.write("Nothing new to sync — all items and variations already linked.")
-            self._reorder_variations(client)
+            self._make_items_till_ready(client)
             self._push_inventory(client)
             return
 
@@ -407,7 +414,7 @@ class Command(BaseCommand):
             self._describe(all_objects)
             if options["verbosity"] >= 2:
                 self.stdout.write(json.dumps(all_objects, indent=2, default=str))
-            self._reorder_variations(client)
+            self._make_items_till_ready(client)
             self._push_inventory(client)
             return
 
@@ -448,7 +455,7 @@ class Command(BaseCommand):
         # creates one is the run that breaks the order. Fixing it here rather
         # than in a command someone has to remember is the same lesson as SKUs
         # being assigned on save: a step that only runs when recalled doesn't.
-        self._reorder_variations(client)
+        self._make_items_till_ready(client)
 
         self._push_inventory(client)
 
@@ -594,65 +601,93 @@ class Command(BaseCommand):
         )
         return list(dict.fromkeys(ids))     # dedupe, keep order
 
-    def _reordered_item(self, obj):
-        """`(payload, why)` for an item worth writing, or None to leave it be.
+    def _till_ready_item(self, obj):
+        """`(payload, whys)` for an item worth writing, or None to leave it be.
 
-        Returns None both when the order is already right and when the object
-        can't be safely rewritten — the caller can't tell those apart and
-        doesn't need to, because the action is the same. What it must never
-        get is a partial variation list.
+        Returns None both when the item already reads right at the till and
+        when the object can't be safely rewritten — the caller can't tell
+        those apart and doesn't need to, because the action is the same. What
+        it must never get is a partial variation list.
 
-        `why` is `resorted` when the names were out of order and `positions`
-        when they weren't but Square holds no ordinals to say so. Both need
-        the same write; only the second is invisible from the API's own
-        answer, so it is worth naming in the output.
+        Each `why` names a symptom somebody could have reported: `resorted`
+        when the names were out of order, `positions` when they weren't but
+        Square holds no ordinals to say so, and `autoselect` when the item
+        was picking a colourway for the cashier. They share one write, and
+        only the first is visible in the API's own answer, so the others are
+        worth naming in the output.
         """
         item_data = obj.get("item_data") or {}
         variations = item_data.get("variations") or []
 
         # An item retrieve inlines the variations, so an empty list here is
         # either an item with none or an answer we didn't understand. Sending
-        # it back would delete every variation the item has.
+        # it back would delete every variation the item has. One variation is
+        # left alone too: there is no order to fix and nothing to choose
+        # between, so `skip_modifier_screen` there means what it says about
+        # modifiers and is somebody's deliberate setting.
         if len(variations) < 2:
-            return None
-
-        # A variation named by an item option carries no `name` of its own and
-        # is ordered by the option's values instead. We don't create those,
-        # but the dashboard can, and sorting them by an empty string would
-        # bunch them at the top and fight whatever set that order.
-        if any(not v.get("item_variation_data", {}).get("name") for v in variations):
             return None
         if any(not v.get("id") for v in variations):
             return None
 
-        # Stable, so equal names keep the order Square already has and an
-        # already-sorted item is left alone rather than churned every run.
-        ordered = sorted(variations, key=self._variation_sort_key)
-        same_order = [v["id"] for v in ordered] == [v["id"] for v in variations]
+        whys = []
 
-        # ...except when the variations have no ordinal at all, which is the
-        # state most of this catalogue was found in. Square only assigns
-        # ordinals when a parent item's list is written, and a variation added
-        # on its own — the ITEM_VARIATION path, which is how every colourway
-        # after the first reached Square — is never part of such a write. The
-        # API still hands those back in name order, so the item reads as
-        # sorted here while the till, having no positions to read, shows them
-        # in the order they were created. That is the reported symptom, and a
-        # comparison of names alone would skip exactly the items that have it.
-        unpositioned = any(
-            v.get("item_variation_data", {}).get("ordinal") is None
-            for v in variations
-        )
-        if same_order and not unpositioned:
+        # A variation named by an item option carries no `name` of its own and
+        # is ordered by the option's values instead. We don't create those,
+        # but the dashboard can, and sorting them by an empty string would
+        # bunch them at the top and fight whatever set that order. The list
+        # still goes back as Square gave it — refusing to sort is not a
+        # reason to leave the item picking a colour.
+        ordered = variations
+        if all(v.get("item_variation_data", {}).get("name") for v in variations):
+            # Stable, so equal names keep the order Square already has and an
+            # already-sorted item is left alone rather than churned every run.
+            ordered = sorted(variations, key=self._variation_sort_key)
+            same_order = [v["id"] for v in ordered] == [v["id"] for v in variations]
+
+            # ...except when the variations have no ordinal at all, which is
+            # the state most of this catalogue was found in. Square only
+            # assigns ordinals when a parent item's list is written, and a
+            # variation added on its own — the ITEM_VARIATION path, which is
+            # how every colourway after the first reached Square — is never
+            # part of such a write. The API still hands those back in name
+            # order, so the item reads as sorted here while the till, having
+            # no positions to read, shows them in the order they were
+            # created. That is the reported symptom, and a comparison of
+            # names alone would skip exactly the items that have it.
+            unpositioned = any(
+                v.get("item_variation_data", {}).get("ordinal") is None
+                for v in variations
+            )
+            if not same_order:
+                whys.append("resorted")
+            elif unpositioned:
+                whys.append("positions")
+
+        # "Automatically select first variation" in the dashboard. On an item
+        # with forty colourways under it the POS then adds the first one to
+        # the cart without showing the list at all, so every sale of that
+        # style rings up as whatever sorts first — which is how a season of
+        # sash belts became Amethyst, with the receipt, the stock count and
+        # the sales history all agreeing on a colour nobody bought. Nothing
+        # here sets it; a person can, in two taps, on any device.
+        if item_data.get("skip_modifier_screen"):
+            whys.append("autoselect")
+
+        if not whys:
             return None
 
         payload = dict(obj)
         payload.pop("updated_at", None)
         payload["item_data"] = {
             **item_data,
+            # Asserted on every write, not only the ones that found it set:
+            # this is the pass that decides what the till shows, and an item
+            # it has just rewritten should not still be able to choose.
+            "skip_modifier_screen": False,
             "variations": [self._strip_ordinal(v) for v in ordered],
         }
-        return payload, ("positions" if same_order else "resorted")
+        return payload, whys
 
     @staticmethod
     def _strip_ordinal(variation):
@@ -669,15 +704,28 @@ class Command(BaseCommand):
         }
         return data
 
-    def _reorder_variations(self, client):
-        """Alphabetise the variations under every item, at the till.
+    def _make_items_till_ready(self, client):
+        """Put right the two ways an item misreads at the till.
 
-        The POS lists variations in the order the catalogue gives them, and a
-        new variation lands at the end — so a colourway added in week three
-        sits below the ones added in week one, forever. That is fine in a
-        dashboard you scroll at leisure and useless at a stall with a queue:
-        the person ringing up is looking for a colourway by name, and an
-        unsorted list means reading all of them.
+        **Order.** The POS lists variations in the order the catalogue gives
+        them, and a new variation lands at the end — so a colourway added in
+        week three sits below the ones added in week one, forever. That is
+        fine in a dashboard you scroll at leisure and useless at a stall with
+        a queue: the person ringing up is looking for a colourway by name,
+        and an unsorted list means reading all of them.
+
+        **Choice.** An item set to auto-select its first variation doesn't
+        show the list at all — it drops variation one into the cart and the
+        cashier, who is looking at a scarf and a queue, has no reason to
+        think a question was skipped. On a style with forty colourways that
+        is not a shortcut, it is a wrong answer that nothing downstream can
+        tell from a right one.
+
+        Both are the same write and the same read, so they are the same pass.
+        The rule that keeps it safe is unchanged and worth restating: this
+        **never builds a variation.** It takes the list Square returned,
+        permutes it, and sends it back — an ITEM upsert replaces the list
+        outright, so a variation missing from it is deleted.
         """
         item_ids = self._items_square_knows()
         if not item_ids:
@@ -708,28 +756,32 @@ class Command(BaseCommand):
             obj = objects.get(item_id)
             if obj is None:
                 continue
-            outcome = self._reordered_item(obj)
+            outcome = self._till_ready_item(obj)
             if outcome is not None:
-                payload, why = outcome
+                payload, whys = outcome
                 payloads.append(payload)
-                reasons.append(why)
+                reasons.append(whys)
 
         if not payloads:
-            self.stdout.write("Variation order: already alphabetical.")
+            self.stdout.write(
+                "Till display: already alphabetical, and nothing choosing a "
+                "colourway for the cashier."
+            )
             return
 
         if self.dry_run:
             self.stdout.write(self.style.WARNING(
                 f"DRY RUN — would reorder {len(payloads)} item(s):"
             ))
-            for payload, why in zip(payloads, reasons):
+            for payload, whys in zip(payloads, reasons):
                 item_data = payload["item_data"]
                 names = ", ".join(
-                    v["item_variation_data"]["name"]
+                    v["item_variation_data"].get("name") or "(unnamed)"
                     for v in item_data["variations"]
                 )
-                note = " (no positions recorded)" if why == "positions" else ""
-                self.stdout.write(f"  {item_data.get('name')}{note}: {names}")
+                self.stdout.write(
+                    f"  {item_data.get('name')}{self._why_note(whys)}: {names}"
+                )
             return
 
         # Chunked by objects rather than by items, because each item carries
@@ -745,15 +797,35 @@ class Command(BaseCommand):
                 self._fail("Variation reorder failed", result)
             reordered += len(chunk)
 
-        positions = reasons.count("positions")
-        detail = (
-            f" ({positions} of them already read alphabetically but had no "
-            f"positions at the till)"
-            if positions else ""
-        )
+        positions = sum("positions" in whys for whys in reasons)
+        autoselect = sum("autoselect" in whys for whys in reasons)
+        detail = []
+        if positions:
+            detail.append(
+                f"{positions} of them already read alphabetically but had no "
+                f"positions at the till"
+            )
+        if autoselect:
+            # Named rather than folded into the count, because this is the one
+            # that was ringing up the wrong colourway, and a silent repair
+            # leaves nobody knowing how long it had been doing that.
+            detail.append(
+                f"{autoselect} were choosing a colourway for the cashier"
+            )
+        suffix = f" ({'; '.join(detail)})" if detail else ""
         self.stdout.write(self.style.SUCCESS(
-            f"Variation order: {reordered} item(s) alphabetised{detail}."
+            f"Till display: {reordered} item(s) rewritten{suffix}."
         ))
+
+    @staticmethod
+    def _why_note(whys):
+        """The parenthetical a dry run puts after an item's name."""
+        notes = []
+        if "positions" in whys:
+            notes.append("no positions recorded")
+        if "autoselect" in whys:
+            notes.append("stops auto-selecting the first variation")
+        return f" ({', '.join(notes)})" if notes else ""
 
     @staticmethod
     def _chunk_by_object_count(payloads, limit):

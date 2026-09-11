@@ -234,21 +234,10 @@ class SyncToSquareTests(TestCase):
         self.assertEqual(sent["version"], 42)
         self.assertEqual(sent["item_variation_data"]["price_money"]["amount"], 3200)
         self.assertEqual(sent["item_variation_data"]["sku"], self.product.sku)
-@override_settings(
-    SQUARE_ACCESS_TOKEN="test-token",
-    SQUARE_LOCATION_ID="LOC123",
-    SQUARE_ENVIRONMENT="sandbox",
-)
-class SquareVariationOrderTests(TestCase):
-    """Variations come out of the till in catalogue order, not alphabetical.
 
-    A new colourway is appended, so the list at the stall ends up in the order
-    the dye baths happened — which is nobody's mental model of a colour. The
-    only lever Square offers is position in the parent item's `variations`
-    list, so the pass rewrites whole ITEMs, and an ITEM upsert deletes any
-    variation missing from that list. These tests are mostly about the second
-    sentence: what the pass refuses to touch matters more than what it sorts.
-    """
+
+class _TillItemFixture:
+    """One item Square already knows, and a way to answer a retrieve for it."""
 
     def setUp(self):
         recipe = make_recipe("Zinnia")
@@ -265,7 +254,7 @@ class SquareVariationOrderTests(TestCase):
             call_command("sync_to_square", stdout=out, stderr=err, **kwargs)
         return out.getvalue() + err.getvalue()
 
-    def _item(self, *names_and_ids, item_id="SQ_ITEM"):
+    def _item(self, *names_and_ids, item_id="SQ_ITEM", skip_modifier_screen=False):
         """A retrieve response shaped the way Square answers for an ITEM."""
         return FakeSquareResult({"objects": [{
             "type": "ITEM",
@@ -274,6 +263,7 @@ class SquareVariationOrderTests(TestCase):
             "updated_at": "2026-08-01T00:00:00Z",
             "item_data": {
                 "name": "Silk Scarf",
+                "skip_modifier_screen": skip_modifier_screen,
                 "variations": [
                     {
                         "type": "ITEM_VARIATION",
@@ -289,6 +279,140 @@ class SquareVariationOrderTests(TestCase):
                 ],
             },
         }]})
+
+
+@override_settings(
+    SQUARE_ACCESS_TOKEN="test-token",
+    SQUARE_LOCATION_ID="LOC123",
+    SQUARE_ENVIRONMENT="sandbox",
+)
+class SquareAutoSelectTests(_TillItemFixture, TestCase):
+    """An item may not choose a colourway for the cashier.
+
+    Square's "Automatically select first variation" puts variation one in the
+    cart without showing the list, so a style with forty colourways under it
+    rings up as whichever sorts first — a whole season of sash belts as
+    Amethyst, with the receipt, the stock count and the sales history all
+    agreeing on a colour nobody bought. Nothing in this app sets it and a
+    person can set it in two taps, so the sync has to keep saying no rather
+    than say it once.
+    """
+
+    def test_an_item_that_picks_a_colour_for_the_cashier_is_corrected(self):
+        """Already alphabetical, already positioned — and still wrong."""
+        client = FakeSquareClient(retrieve_results=[
+            self._item(("Amber", "SQ_VAR_A"), ("Zinnia", "SQ_VAR_Z"),
+                       skip_modifier_screen=True),
+        ])
+        output = self._run(client, reorder=True)
+
+        sent = client.upserts[0]["batches"][0]["objects"][0]
+        self.assertIs(sent["item_data"]["skip_modifier_screen"], False)
+        self.assertIn("choosing a colourway", output)
+
+    def test_the_whole_variation_list_still_goes_back(self):
+        """The flag is cleared by rewriting the ITEM, and an ITEM upsert
+        replaces its variation list — so this write costs stock if it is
+        assembled rather than echoed."""
+        client = FakeSquareClient(retrieve_results=[
+            self._item(("Amber", "SQ_VAR_A"), ("Moss", "SQ_VAR_UNKNOWN_TO_US"),
+                       ("Zinnia", "SQ_VAR_Z"), skip_modifier_screen=True),
+        ])
+        self._run(client, reorder=True)
+
+        sent = client.upserts[0]["batches"][0]["objects"][0]
+        self.assertEqual(
+            [v["id"] for v in sent["item_data"]["variations"]],
+            ["SQ_VAR_A", "SQ_VAR_UNKNOWN_TO_US", "SQ_VAR_Z"],
+        )
+        self.assertEqual(sent["version"], 7, "an update needs the version back")
+
+    def test_an_item_written_for_its_order_stops_choosing_too(self):
+        """One pass, one write: an item it has just rewritten should not be
+        left able to choose."""
+        client = FakeSquareClient(retrieve_results=[
+            self._item(("Zinnia", "SQ_VAR_Z"), ("Amber", "SQ_VAR_A")),
+        ])
+        self._run(client, reorder=True)
+
+        sent = client.upserts[0]["batches"][0]["objects"][0]
+        self.assertIs(sent["item_data"]["skip_modifier_screen"], False)
+
+    def test_an_item_that_is_not_choosing_is_not_rewritten(self):
+        """Otherwise every run bumps every version for nothing."""
+        client = FakeSquareClient(retrieve_results=[
+            self._item(("Amber", "SQ_VAR_A"), ("Zinnia", "SQ_VAR_Z")),
+        ])
+        self._run(client, reorder=True)
+        self.assertEqual(client.upserts, [])
+
+    def test_one_variation_keeps_the_setting_it_was_given(self):
+        """With nothing to choose between, the flag means what it says about
+        modifiers — and that is somebody's deliberate setting, not this
+        bug."""
+        client = FakeSquareClient(retrieve_results=[
+            self._item(("Zinnia", "SQ_VAR_Z"), skip_modifier_screen=True),
+        ])
+        self._run(client, reorder=True)
+        self.assertEqual(client.upserts, [])
+
+    def test_an_item_it_refuses_to_sort_still_stops_choosing(self):
+        """A variation named by an item option can't be sorted here — which
+        is no reason to leave the item ringing up one colour. The list goes
+        back exactly as Square gave it."""
+        response = self._item(("Zinnia", "SQ_VAR_Z"), ("Amber", "SQ_VAR_A"),
+                              skip_modifier_screen=True)
+        del response.body["objects"][0]["item_data"]["variations"][1] \
+            ["item_variation_data"]["name"]
+        client = FakeSquareClient(retrieve_results=[response])
+        self._run(client, reorder=True)
+
+        sent = client.upserts[0]["batches"][0]["objects"][0]
+        self.assertIs(sent["item_data"]["skip_modifier_screen"], False)
+        self.assertEqual(
+            [v["id"] for v in sent["item_data"]["variations"]],
+            ["SQ_VAR_Z", "SQ_VAR_A"],
+            "unsortable means unpermuted, not rebuilt",
+        )
+
+    def test_a_normal_sync_says_no_again(self):
+        """The flag can be set between runs, from a phone, by somebody who
+        thought it would speed the queue up. Nothing here depends on that
+        being remembered."""
+        client = FakeSquareClient(retrieve_results=[
+            self._item(("Amber", "SQ_VAR_A"), ("Zinnia", "SQ_VAR_Z"),
+                       skip_modifier_screen=True),
+        ])
+        self._run(client)
+
+        sent = client.upserts[-1]["batches"][0]["objects"][0]
+        self.assertIs(sent["item_data"]["skip_modifier_screen"], False)
+
+    def test_a_dry_run_clears_nothing_and_says_what_it_would_do(self):
+        client = FakeSquareClient(retrieve_results=[
+            self._item(("Amber", "SQ_VAR_A"), ("Zinnia", "SQ_VAR_Z"),
+                       skip_modifier_screen=True),
+        ])
+        output = self._run(client, reorder=True, dry_run=True)
+        self.assertEqual(client.upserts, [])
+        self.assertIn("auto-selecting", output)
+
+
+@override_settings(
+    SQUARE_ACCESS_TOKEN="test-token",
+    SQUARE_LOCATION_ID="LOC123",
+    SQUARE_ENVIRONMENT="sandbox",
+)
+class SquareVariationOrderTests(_TillItemFixture, TestCase):
+    """Variations come out of the till in catalogue order, not alphabetical.
+
+    A new colourway is appended, so the list at the stall ends up in the order
+    the dye baths happened — which is nobody's mental model of a colour. The
+    only lever Square offers is position in the parent item's `variations`
+    list, so the pass rewrites whole ITEMs, and an ITEM upsert deletes any
+    variation missing from that list. These tests are mostly about the second
+    sentence: what the pass refuses to touch matters more than what it sorts.
+    """
 
     def test_variations_go_back_alphabetised(self):
         client = FakeSquareClient(retrieve_results=[

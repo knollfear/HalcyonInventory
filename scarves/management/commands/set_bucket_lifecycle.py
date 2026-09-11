@@ -73,7 +73,7 @@ class Command(BaseCommand):
         }
         # Everything else on the bucket is kept. A lifecycle PUT replaces the
         # whole configuration, so sending only our rule would silently drop
-        # anybody else's — the same trap `_reorder_variations` records about
+        # anybody else's — the same trap `_make_items_till_ready` records about
         # an ITEM upsert replacing its variation list.
         keep = [r for r in existing if r.get("ID") != RULE_ID]
         rules = keep + [rule]
