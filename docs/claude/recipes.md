@@ -477,6 +477,27 @@ back-date disclosure again: one table, two meanings, and the losing one
 silent. In par mode the bath boxes are not rendered and the form's action is
 the par endpoint. One mode, one form, one meaning per button.
 
+**The switch is a pill pair, not a button, and `.chip` is what this page calls
+that class.** Modes and filters throughout the app are a set of alternatives
+with the one in force filled — the colour page's two axes, the showcase's
+table pills, and the history chips at the bottom of this very page. A mode
+switch is that, not an action, so it wears the same control.
+
+Both modes therefore stay on screen, which is the half a lone button could not
+do. `Edit par` on its own says nothing about there being two ways to read the
+table, and it needs a second control to leave by: a **Done** beside an unsaved
+form, which discards a retuned colorway on exactly the click that felt like
+keeping it — the failure this mode exists to prevent, reintroduced at the top
+of the page it was removed from the middle of. With a pair you leave by
+pressing the mode you are going back to, labelled with where it goes.
+
+Note the class names differ by page and that is the existing state, not a
+decision made here: seven templates define their own `.pill`, this page calls
+the same thing `.chip`. `.btn` / `.btn-quiet` in `base_internal.html` are the
+other family — a control that *acts* — and the showcase's `Edit dyes` is one
+of those (an `<a class="btn editlink">`, primary weight because it is the only
+action on a read-only row).
+
 The usual rules, each already made somewhere else in here:
 
 - **Absolute, never a delta.** "Par is 12" heals whatever the row said before;

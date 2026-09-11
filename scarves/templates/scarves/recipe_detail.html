@@ -80,14 +80,11 @@
   .par-col input { width: 4rem; text-align: right; }
   .cover { display: block; font-size: 12px; color: #888; margin-top: 3px; }
 
-  /* Which of the two jobs this table is doing. The mode in force is filled
-     rather than bolded, same as the history chips: on a page this dense a
-     weight change is not a state. */
-  .modebar { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin: 10px 0; }
-  .mode.on {
-      font-size: 12px; border-radius: 999px; padding: 3px 10px;
-      background: var(--accent); color: #fff;
-  }
+  /* Which of the two jobs this table is doing. Literally the history chips —
+     same class, same filled-means-in-force — because it is the same kind of
+     control and a second look for it would be a second thing to learn. Only
+     the margin differs: these sit tight above the table they govern. */
+  .modebar { margin: 10px 0 12px; }
 
   /* Direction is the fastest thing to read in a log, so it carries the
      colour and the sign rather than the type name. */
@@ -237,16 +234,33 @@
     production, lost with nothing said. One mode, one form, one meaning per
     button — the same reasoning that took the back-date off this form.
     {% endcomment %}
-    <div class="modebar">
+    {% comment %}
+    A pill pair, not a button, because this is a set and not an action: it is
+    what the table is *for* right now, with the one in force filled — the same
+    control every other mode and filter in this app uses, and the same one
+    sitting at the bottom of this very page over the history. `.chip` is what
+    that class is called here; `.pill` is the name it carries on the seven
+    pages that define their own.
+
+    Both modes are always on screen, which is the half a button could not do.
+    A lone "Edit par" says nothing about there being two ways to read this
+    table, and leaving the mode then needs a control of its own — one reading
+    Done beside an unsaved form, which would discard a retuned colorway on the
+    click that felt like keeping it. Here you leave by pressing the pill that
+    says what you are going back to.
+
+    Links with real hrefs, like every other pill: the state is `?par=1` in the
+    query string, so a reading is a link somebody can send.
+    {% endcomment %}
+    <div class="chips modebar">
+      <a class="chip {% if not par_mode %}on{% endif %}"
+         href="{% url 'recipe_detail' recipe.pk %}">Record baths</a>
+      <a class="chip {% if par_mode %}on{% endif %}"
+         href="{% url 'recipe_detail' recipe.pk %}?par=1">Edit par</a>
       {% if par_mode %}
-        <span class="mode on">Editing par</span>
-        <span class="small muted">
-          Production entry is off while you do. Par is a decision about demand
-          — nothing on this page proposes one.
+        <span class="chipnote">
+          Par is a decision about demand — nothing here proposes one.
         </span>
-        <a class="small" href="{% url 'recipe_detail' recipe.pk %}">Done</a>
-      {% else %}
-        <a class="small" href="{% url 'recipe_detail' recipe.pk %}?par=1">Edit par</a>
       {% endif %}
     </div>
     <form method="post" action="{% if par_mode %}{% url 'recipe_par_save' recipe.pk %}{% else %}{% url 'record_recipe_production' recipe.pk %}{% endif %}">

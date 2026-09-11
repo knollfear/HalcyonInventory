@@ -1442,6 +1442,39 @@ class RecipeParModeTests(TestCase):
         response = self.client.get(self.page)
         self.assertContains(response, f"{self.page}?par=1")
 
+    def test_the_switch_is_a_pill_pair_in_the_page_s_own_class(self):
+        """A set, not an action: what the table is for right now, with the one
+        in force filled. `.chip` is what this page calls that control — it is
+        already the history filter at the bottom of it — so the mode switch
+        wears the same one rather than a second look to learn."""
+        response = self.client.get(self.page)
+        self.assertContains(response, "chips modebar")
+        self.assertContains(response, "Record baths")
+        self.assertContains(response, "Edit par")
+
+    def test_both_modes_are_always_on_screen_with_the_one_in_force_filled(self):
+        """The half a lone button could not do. A single Edit par says nothing
+        about there being two ways to read this table, and it needs a control
+        of its own to leave by — one reading Done beside an unsaved form,
+        which discards a retuned colorway on the click that felt like keeping
+        it. Here you leave by pressing the mode you are going back to."""
+        default = self.client.get(self.page).content.decode()
+        par = self.client.get(self.page, {"par": "1"}).content.decode()
+
+        for body in (default, par):
+            self.assertIn("Record baths", body)
+            self.assertIn("Edit par", body)
+        # Exactly one pill filled in each, and not the same one.
+        self.assertIn('class="chip on"\n         href="' + self.page + '"', default)
+        self.assertIn('class="chip on"\n         href="' + self.page + '?par=1"', par)
+
+    def test_leaving_par_mode_needs_no_control_of_its_own(self):
+        """No Done and no Cancel: the other pill is the way out, and it is
+        labelled with where it goes."""
+        body = self.client.get(self.page, {"par": "1"}).content.decode()
+        self.assertNotIn(">Cancel</a>", body)
+        self.assertNotIn(">Done</a>", body)
+
     def test_par_mode_offers_the_boxes_and_posts_to_the_par_endpoint(self):
         response = self.client.get(self.page, {"par": "1"})
         self.assertContains(response, f'name="par_{self.product.pk}"')
