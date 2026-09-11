@@ -56,8 +56,8 @@ from django.template.response import TemplateResponse
 
 from . import (
     closing, colorbands, crew, fancy, labels, passthroughs, photowalk,
-    production, restock, sales, seasonreport, sheetscan, skus, slowsellers,
-    timesheets,
+    production, rawdemand, restock, sales, seasonreport, sheetscan, skus,
+    slowsellers, timesheets,
 )
 from . import seasons as seasons_mod
 from .colorutils import hex_to_rgb, nearest_by_color, pick_color_cluster
@@ -602,6 +602,23 @@ def raw_inventory_view(request, category_id):
         RawProduct.objects.filter(category=category, is_active=True).order_by("name")
     )
 
+    # Setting the floor is a mode, the same bargain the recipe page's par mode
+    # makes and for the same structural reason: par boxes and delivery boxes
+    # in one table means a par typed in and then abandoned by pressing **Save
+    # this bill**, written nowhere and said nothing about. One mode, one form,
+    # one meaning per button.
+    par_mode = request.GET.get("par") == "1"
+    if par_mode:
+        return render(request, "scarves/raw_inventory.html", {
+            "category": category,
+            "products": products,
+            "all_categories": RawProductCategory.objects.all().order_by("name"),
+            "par_mode": True,
+            "outlooks": rawdemand.rows(products),
+            "typed": {},
+            "errors": {},
+        })
+
     typed, errors = {}, {}
     if request.method == "POST":
         typed, errors = _read_raw_lines(request, products)
@@ -627,9 +644,82 @@ def raw_inventory_view(request, category_id):
         "category": category,
         "products": products,
         "all_categories": RawProductCategory.objects.all().order_by("name"),
+        "par_mode": False,
         "typed": typed,
         "errors": errors,
     })
+
+
+@require_POST
+@login_required
+def raw_par_save(request, category_id):
+    """Set the working floor on a category's blanks, one save for the lot.
+
+    **The floor is what has to stay on the shelf so the dye room never
+    stops** — a level you stay above, not a season's requirement, which is
+    derived beside it and never written here. `rawdemand` has the argument for
+    keeping the two apart.
+
+    Until this the only door was the Django admin, so `par_level` sat at 100
+    on every blank in the shop: a uniform remnant reading as a decision, which
+    is the failure this codebase has already had once with `FinishedProduct.par`
+    and named at length. The evidence to choose against is printed beside each
+    box and **nothing here proposes a number.**
+
+    The rules are the raw-inventory form's own, so one page keeps one
+    behaviour: absolute rather than a delta, the whole form read before any of
+    it is written, and a box that does not read changes nothing. A blank box
+    means untouched — which differs from the recipe page, where every product
+    renders a box every time and an empty one could only be a mistake. Here a
+    category runs to forty blanks and a visit usually means to change one.
+
+    Writes no `InventoryLog` and moves no stock. A floor is a target, not a
+    shelf.
+    """
+    category = get_object_or_404(RawProductCategory, pk=category_id)
+    products = list(
+        RawProduct.objects.filter(category=category, is_active=True).order_by("name")
+    )
+    back = f"{reverse('raw_inventory', args=[category.pk])}?par=1"
+
+    changes = []
+    for product in products:
+        raw_value = (request.POST.get(f"par_{product.pk}") or "").strip()
+        if not raw_value:
+            continue
+        if not raw_value.isdigit():
+            messages.error(
+                request,
+                f"“{raw_value}” isn't a par for {product.name} — nothing was "
+                "changed. Par is a whole number, and 0 means no par is set.",
+            )
+            return redirect(back)
+        par = int(raw_value)
+        if par != product.par_level:
+            changes.append((product, product.par_level, par))
+
+    if not changes:
+        messages.info(request, "Every par is already what the form says.")
+        return redirect(back)
+
+    with transaction.atomic():
+        for product, _old, par in changes:
+            product.par_level = par
+            # Not a bare `update()`: `mirror_passthrough_stock` hangs off this
+            # model's `post_save`, and one pile with two rows counting it is
+            # the failure the raw page's own save note describes.
+            product.save(update_fields=["par_level"])
+
+    # Named one by one with the number it moved from, like the recipe page's:
+    # nothing records a par change, so the message is the only confirmation
+    # that the row which moved is the row you meant.
+    messages.success(
+        request,
+        "Par updated: "
+        + ", ".join(f"{p.name} {old} → {new}" for p, old, new in changes)
+        + ".",
+    )
+    return redirect(back)
 
 
 def _read_raw_lines(request, products):
@@ -685,15 +775,26 @@ def _apply_raw_lines(typed):
     for entry in typed.values():
         product = entry["product"]
         before = product.number_on_hand
-        if "set_to" in entry:
-            after = entry["set_to"]
-        else:
-            after = max(before + entry["delta"], 0)
-        if after == before:
+        counted = "set_to" in entry
+        after = entry["set_to"] if counted else max(before + entry["delta"], 0)
+
+        # **A count that agrees is still a count.** The row is written anyway
+        # when somebody typed an absolute, because what has just been learned
+        # is that the shelf was looked at today — and that is the whole of
+        # what `counted_at` records. Skipping it would date the count to
+        # whenever the number last happened to change, which on a blank that
+        # has held steady is a date from another season.
+        if after == before and not counted:
             continue
+
         product.number_on_hand = after
+        if counted:
+            product.counted_at = timezone.now()
         product.save()
-        applied.append(f"{product.name} {before}→{after}")
+        if after == before:
+            applied.append(f"{product.name} counted {after}, unchanged")
+        else:
+            applied.append(f"{product.name} {before}→{after}")
     return applied
 
 

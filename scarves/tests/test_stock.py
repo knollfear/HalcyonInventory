@@ -20,9 +20,9 @@ from django.db.models import ProtectedError
 from django.test import TestCase, override_settings
 from django.urls import NoReverseMatch, reverse
 from .. import (
-    closing, colorbands, crew, fancy, nav, photowalk, production, restock,
-    sales, seasonreport, seasons, sheetscan, skus, slowsellers, timesheets,
-    weather,
+    closing, colorbands, crew, fancy, nav, photowalk, production, rawdemand,
+    restock, sales, seasonreport, seasons, sheetscan, skus, slowsellers,
+    timesheets, weather,
 )
 from .. import labels as labelmod
 from .. import views as viewsmod
@@ -1833,3 +1833,237 @@ class PassthroughFromUnidentifiedSaleTests(TestCase):
                 square_variation_id=self.sale.square_variation_id
             ).exists()
         )
+
+
+class RawParAndOutlookTests(TestCase):
+    """The floor, the season's requirement, and why they are two columns.
+
+    `par_level` sat at 100 on every blank in the shop because the only door to
+    it was the Django admin — the same uniform remnant `FinishedProduct.par`
+    was before it got one, and the same failure: a number nobody chose, read
+    off a page as though somebody had.
+    """
+
+    def setUp(self):
+        self.category = RawProductCategory.objects.create(name="Yarn")
+        self.blank = RawProduct.objects.create(
+            name="Homespun", category=self.category, price=Decimal("6.71"),
+            number_on_hand=165, par_level=100, number_per_dye_bath=4,
+        )
+        self.other = RawProduct.objects.create(
+            name="Noble", category=self.category, price=Decimal("9.14"),
+            number_on_hand=240, par_level=100, number_per_dye_bath=5,
+        )
+        User.objects.create_user("staff", "s@example.test", "pw")
+        self.client.login(username="staff", password="pw")
+        self.url = reverse("raw_inventory", args=[self.category.pk])
+        self.par_url = reverse("raw_par_save", args=[self.category.pk])
+
+    def test_the_par_form_writes_the_floor(self):
+        self.client.post(self.par_url, {f"par_{self.blank.pk}": "80"})
+
+        self.blank.refresh_from_db()
+        self.assertEqual(self.blank.par_level, 80)
+
+    def test_a_blank_box_leaves_the_row_alone(self):
+        """A category runs to forty blanks and a visit means to change one."""
+        self.client.post(self.par_url, {
+            f"par_{self.blank.pk}": "80", f"par_{self.other.pk}": "",
+        })
+
+        self.other.refresh_from_db()
+        self.assertEqual(self.other.par_level, 100)
+
+    def test_zero_is_a_real_answer(self):
+        """0 is how you say there is no par, and `raw_shortage` reads it."""
+        self.client.post(self.par_url, {f"par_{self.blank.pk}": "0"})
+
+        self.blank.refresh_from_db()
+        self.assertEqual(self.blank.par_level, 0)
+        self.assertEqual(self.blank.raw_shortage, 0)
+
+    def test_one_bad_box_changes_nothing(self):
+        self.client.post(self.par_url, {
+            f"par_{self.blank.pk}": "80", f"par_{self.other.pk}": "lots",
+        })
+
+        self.blank.refresh_from_db()
+        self.other.refresh_from_db()
+        self.assertEqual(self.blank.par_level, 100)
+        self.assertEqual(self.other.par_level, 100)
+
+    def test_writing_par_moves_no_stock_and_logs_nothing(self):
+        self.client.post(self.par_url, {f"par_{self.blank.pk}": "80"})
+
+        self.blank.refresh_from_db()
+        self.assertEqual(self.blank.number_on_hand, 165)
+        self.assertEqual(InventoryLog.objects.count(), 0)
+
+    def test_posting_a_par_to_the_bill_form_does_nothing(self):
+        """The two forms share a table, and that is only safe while neither
+        endpoint reads the other's fields."""
+        self.client.post(self.url, {f"par_{self.blank.pk}": "80"})
+
+        self.blank.refresh_from_db()
+        self.assertEqual(self.blank.par_level, 100)
+
+    def test_posting_a_delivery_to_the_par_form_does_nothing(self):
+        self.client.post(self.par_url, {f"received_{self.blank.pk}": "12"})
+
+        self.blank.refresh_from_db()
+        self.assertEqual(self.blank.number_on_hand, 165)
+
+    def test_par_mode_renders_the_evidence_and_not_the_bill(self):
+        page = self.client.get(self.url, {"par": "1"}).content.decode()
+        self.assertIn("On pace for", page)
+        self.assertIn(f'name="par_{self.blank.pk}"', page)
+        self.assertNotIn(f'name="received_{self.blank.pk}"', page)
+
+    def test_the_default_mode_is_still_the_bill(self):
+        page = self.client.get(self.url).content.decode()
+        self.assertIn(f'name="received_{self.blank.pk}"', page)
+        self.assertNotIn(f'name="par_{self.blank.pk}"', page)
+
+
+class RawCountFreshnessTests(TestCase):
+    """When the shelf was last actually looked at.
+
+    Raw stock is the one pile in the app nothing recounts on its own. The
+    finished side heals — a restock walk and the Sunday close both put an
+    absolute count against what the app believed — and undyed yarn has no
+    equivalent: it only ever falls when somebody *records* a dye bath. So a
+    week of dyeing that has not been typed up leaves the count reading high,
+    and ordering against it under-buys exactly when the dye room was busiest.
+    """
+
+    def setUp(self):
+        self.category = RawProductCategory.objects.create(name="Yarn")
+        self.blank = RawProduct.objects.create(
+            name="Homespun", category=self.category, price=Decimal("6.71"),
+            number_on_hand=165,
+        )
+        User.objects.create_user("staff", "s@example.test", "pw")
+        self.client.login(username="staff", password="pw")
+        self.url = reverse("raw_inventory", args=[self.category.pk])
+
+    def test_a_count_stamps_the_shelf_as_looked_at(self):
+        self.client.post(self.url, {f"counted_{self.blank.pk}": "140"})
+
+        self.blank.refresh_from_db()
+        self.assertIsNotNone(self.blank.counted_at)
+
+    def test_a_count_that_agrees_still_counts(self):
+        """What was learned is that somebody looked today. Dating the count
+        to whenever the number last happened to move would put a steady
+        blank's count in another season."""
+        self.client.post(self.url, {f"counted_{self.blank.pk}": "165"})
+
+        self.blank.refresh_from_db()
+        self.assertIsNotNone(self.blank.counted_at)
+        self.assertEqual(self.blank.number_on_hand, 165)
+
+    def test_a_delivery_is_not_a_count(self):
+        """A count is a measurement and a delivery note is a claim about a
+        change — the distinction the page already draws, with a date on it."""
+        self.client.post(self.url, {f"received_{self.blank.pk}": "12"})
+
+        self.blank.refresh_from_db()
+        self.assertEqual(self.blank.number_on_hand, 177)
+        self.assertIsNone(self.blank.counted_at)
+
+    def test_an_uncounted_shelf_reads_as_stale(self):
+        outlook = rawdemand.rows([self.blank])[0]
+        self.assertTrue(outlook.count_is_stale)
+
+    def test_a_bath_entered_after_the_count_makes_it_stale(self):
+        recipe = make_recipe("Lilac Garden")
+        product = FinishedProduct.objects.create(
+            name="Homespun — Lilac Garden", raw_product=self.blank,
+            recipe=recipe, price=Decimal("34.00"),
+        )
+        self.blank.counted_at = timezone.now() - timedelta(days=2)
+        self.blank.save(update_fields=["counted_at"])
+        InventoryLog.objects.create(
+            finished_product=product, raw_product=self.blank,
+            log_type=InventoryLog.PRODUCTION, quantity=4,
+        )
+
+        outlook = rawdemand.rows([self.blank])[0]
+        self.assertTrue(outlook.count_is_stale)
+
+    def test_a_fresh_count_with_no_baths_since_is_not_stale(self):
+        self.blank.counted_at = timezone.now()
+        self.blank.save(update_fields=["counted_at"])
+
+        outlook = rawdemand.rows([self.blank])[0]
+        self.assertFalse(outlook.count_is_stale)
+
+
+class RawDemandTests(TestCase):
+    """What the rest of the season asks, against what is already owned."""
+
+    def setUp(self):
+        self.category = RawProductCategory.objects.create(name="Yarn")
+        self.blank = RawProduct.objects.create(
+            name="Homespun", category=self.category, price=Decimal("6.71"),
+            number_on_hand=165, number_per_dye_bath=4,
+        )
+
+    def _outlook(self, **kwargs):
+        return rawdemand.Outlook(blank=self.blank, **kwargs)
+
+    def test_dyed_and_undyed_stock_both_offset_the_buy(self):
+        """Selling 400 more does not mean buying 400. Both piles are already
+        paid for and both can meet the demand."""
+        outlook = self._outlook(remaining=821, finished_on_hand=174)
+        self.assertEqual(outlook.owned, 339)
+        self.assertEqual(outlook.shortfall, 482)
+
+    def test_the_shortfall_comes_back_in_baths_and_money(self):
+        outlook = self._outlook(remaining=821, finished_on_hand=174)
+        self.assertEqual(outlook.baths, 121)
+        self.assertEqual(round(outlook.cost), 3234)
+
+    def test_owning_more_than_the_forecast_asks_buys_nothing(self):
+        outlook = self._outlook(remaining=217, finished_on_hand=221)
+        self.assertEqual(outlook.shortfall, 0)
+
+    def test_no_forecast_is_not_a_forecast_of_zero(self):
+        """"Nothing more will sell" and "nothing here can say" are different
+        answers, and only one of them is a reason not to order."""
+        outlook = self._outlook(remaining=None, finished_on_hand=10)
+        self.assertIsNone(outlook.shortfall)
+        self.assertEqual(outlook.baths, 0)
+
+    def test_the_floor_is_not_the_season(self):
+        """Two numbers that both get called par. Adding them is a number that
+        means nothing and would be ordered against."""
+        self.blank.par_level = 100
+        outlook = self._outlook(remaining=821, finished_on_hand=174)
+        self.assertEqual(outlook.floor_short, 0)      # 165 on the shelf
+        self.assertEqual(outlook.shortfall, 482)      # and still short
+
+    def test_unsold_colorways_are_reported_and_never_deducted(self):
+        """Undyed stock is fungible and dyed stock is not — but a colorway
+        reads as unsold both when it did not sell and when the line carried no
+        colorway at all, which is most of a Sash Belt's season."""
+        outlook = self._outlook(
+            remaining=500, finished_on_hand=300, finished_unsold=176,
+        )
+        self.assertEqual(outlook.shortfall, 35)       # 500 - (165 + 300)
+        self.assertEqual(outlook.finished_unsold, 176)
+
+
+class RawDemandIsReadOnlyTests(TestCase):
+    """The module behind the ordering columns writes nothing at all."""
+
+    def test_it_contains_no_writes(self):
+        import ast, inspect
+        tree = ast.parse(inspect.getsource(rawdemand))
+        called = {
+            node.func.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        }
+        for forbidden in ("save", "create", "update", "delete", "bulk_create"):
+            self.assertNotIn(forbidden, called)

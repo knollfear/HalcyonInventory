@@ -61,6 +61,14 @@ urlpatterns = [
     # No per-row adjust endpoint any more: the page is one form with one
     # Save, because what gets typed into it is a supplier's bill and a bill
     # is one document. `raw_inventory` itself takes the POST.
+    #
+    # Par has its own, because it is the page's other mode and the two forms
+    # must not share a button: one endpoint per meaning.
+    path(
+        "private/raw-inventory/<int:category_id>/par/",
+        views.raw_par_save,
+        name="raw_par_save",
+    ),
     path(
         "private/bulk-inventory/",
         views.bulk_inventory_update,

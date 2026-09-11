@@ -333,6 +333,27 @@ class RawProduct(models.Model):
         ),
     )
 
+    counted_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        editable=False,
+        help_text=(
+            "When somebody last physically counted this shelf.\n\n"
+            "Only an absolute count sets it. A delivery received does not: "
+            "the raw-inventory page already draws that line — a count is a "
+            "measurement and a delivery note is a claim about a change — and "
+            "this is the same distinction with a date on it.\n\n"
+            "It exists because raw stock is the one pile nothing recounts on "
+            "its own. The finished side heals: a restock walk and the Sunday "
+            "close both put an absolute count against what the app believed. "
+            "Undyed yarn has no equivalent, and it only ever goes down when "
+            "somebody records a dye bath — so a week of dyeing that has not "
+            "been entered yet leaves this number too high, with nothing "
+            "anywhere saying so. Ordering against a stale count under-buys "
+            "exactly when the dye room has been busiest."
+        ),
+    )
+
     class Meta:
         ordering = ["category__name", "name"]
 

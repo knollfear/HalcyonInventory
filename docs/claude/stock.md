@@ -43,6 +43,104 @@ No `InventoryLog` is written here, which is unchanged rather than an omission
 introduced with the form. Raw stock is an opening balance that gets counted
 and topped up; the finished side is where provenance is tracked.
 
+## Par on a blank is two numbers, and only one of them is stored
+
+`private/raw-inventory/<category>/?par=1` is the second mode of the page — a
+box per blank that writes `par_level`, beside the evidence for choosing what
+to type. Until it existed the only door was the Django admin, and the number
+showed it: **`par_level` was 100 on all 26 blanks**, a uniform remnant reading
+off the page as though somebody had decided it. Exactly what
+`FinishedProduct.par` was before it got `?par=1` on the recipe page, and the
+same fix, for the same reason — see *The app advises, a person decides* in
+`CLAUDE.md`.
+
+The mode is a mode for the structural reason the recipe page's is: par boxes
+and delivery boxes in one table means a par typed in and then abandoned by
+pressing **Save this bill**, written nowhere and said nothing about. Separate
+endpoints, and both directions are pinned — posting `par_` to the bill form
+does nothing, and posting `received_` to the par form does nothing.
+
+**The two numbers.** Both get called par and they are not the same:
+
+- The **floor** (`par_level`) is what stays on the shelf so the dye room never
+  stops. A level you stay above, checked weekly; what `raw_shortage` and the
+  category page's below-par count already mean.
+- The **season requirement** is what the rest of the run will consume. A
+  number you fill to once, not a level you hold. `scarves/rawdemand.py`
+  derives it and **nothing stores it**: it moves every weekend the ledger
+  grows, and a copy in a column would go stale silently and then be read as a
+  decision.
+
+They sit in separate columns and **are never added**. A floor plus a
+requirement is a number that means nothing and would be ordered against.
+
+**A blank box is untouched, not zero** — which differs from the recipe page,
+where every product renders a box each visit so an empty one could only be a
+slip. Here a category runs to forty blanks and a visit means to change one.
+`0` is still a real answer, and it is how you say there is no par.
+
+### What the forecast is, and the two soft spots printed beside it
+
+The reorder question for anything dyed is not "how many will we sell" but
+"how many will we **dye**", and those differ by everything already on a peg.
+So the season column is `forecast − (raw on hand + finished on hand)`, in
+baths and dollars as well as units.
+
+**Dyed and undyed stock both offset the buy, and they are not equally good at
+it.** Undyed is fungible — a skein becomes whatever sells — and dyed is not,
+so netting a blank's finished count against a blank's forecast quietly assumes
+every colorway is as good as every other. The unsold-colorway figure is
+printed for that reason and **never deducted**: the reading is unreliable in a
+known direction, because a colorway shows as unsold both when it did not sell
+and when the line carried no colorway at all, which is most of a Sash Belt's
+season. Deducting on that basis orders yarn against a gap in the data.
+
+**The forecast is in units, never dollars.** `seasonreport` projects money
+because that is what a season is judged on; yarn is bought by the skein. The
+two came apart for real in 2025, when a mid-season reprice lifted takings
+while silk lost about a fifth of its unit velocity — a dollar-shaped forecast
+would have ordered against the price change.
+
+**A blank with no complete prior season gets a dash, not a zero.** "Nothing
+more will sell" and "nothing here can say" are different answers and only one
+is a reason not to order. The count of prior seasons prints with the figure,
+because yarn has one behind it and silk has five.
+
+### `counted_at`: raw is the one pile nothing recounts on its own
+
+The finished side heals. A restock walk and the Sunday close both put an
+absolute count against what the app believed, and the *Self-healing* section
+of `CLAUDE.md` is about exactly that. **Undyed stock has no equivalent.** It
+falls only when somebody *records* a dye bath — so a week of dyeing that has
+not been typed up yet leaves the count reading high, and ordering against it
+under-buys precisely when the dye room has been busiest. That is not a
+hypothetical: entry runs in bursts, days or weeks behind the work.
+
+So `RawProduct.counted_at` records when the shelf was last actually looked at,
+and the par page prints it on the row. **Only an absolute count sets it** —
+the page already draws that line, a count is a measurement and a delivery note
+is a claim, and this is the same distinction with a date on it. **A count that
+agrees still counts**: what was learned is that somebody looked today, and
+dating the count to whenever the number last happened to *move* would put a
+steady blank's count in another season.
+
+`count_is_stale` is the cheap version of a question with no good answer — the
+baths nobody entered are exactly the ones nothing knows about, so what can be
+said is whether the count predates the dyeing the app *does* know about. Enough
+to stop the number being read as a measurement of today.
+
+The column that looks like a dyeing rate is labelled **entered** for the same
+reason. These rows are written when a session is typed up, not when the dye
+was mixed, so a quiet fortnight there is a fortnight nobody entered — which is
+never a reason to order less.
+
+**The order must not wait on the backlog.** The buying decision needs one
+fresh number and it is cheap to get: count the shelf, type it in the Counted
+column, then read the season figure. Four yarn blanks is a five-minute job,
+and it is deliberately not the same job as catching up on production entry.
+A flow that only works once somebody is caught up is a flow that fails
+silently, which is the rule the whole *Self-healing* section is built on.
+
 ## Undyed stock: one pile, two rows, and the axes swapped
 
 A few yarns are sold exactly as they arrive — no dye step, straight from

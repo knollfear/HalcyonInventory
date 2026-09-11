@@ -13,6 +13,17 @@
   th.entry, td.entry { text-align: right; white-space: nowrap; }
   tr.bad { background: #fdf3f2; }
   td.bad-why { font-size: 13px; color: #8a2f2a; }
+  /* A mode switch is a set of alternatives with the one in force filled, not
+     an action — the same control the recipe page's par pills wear. */
+  .modes { display: flex; gap: 6px; margin: 14px 0; }
+  .chip {
+      font-size: 13px; padding: 4px 12px; border-radius: 999px;
+      border: 1px solid #d5dae1; text-decoration: none; color: var(--ink);
+  }
+  .chip.on { background: var(--accent, #2f5d8a); border-color: transparent; color: #fff; }
+  td.num, th.num { text-align: right; white-space: nowrap; }
+  .stale { color: #8a5a2a; }
+  .sub { font-size: 12px; color: #667; }
   /* Sticky, because the table is as long as the category and the whole point
      of the change is that one save covers all of it — a button below forty
      rows is one somebody scrolls to find after every line. */
@@ -25,13 +36,35 @@
 
 {% block content %}
   <p class="lead">
-    Review par levels and book stock in. This page is only for the
-    {{ category.name }} supplier.
+    {% if par_mode %}
+      Par is the floor — what stays on the shelf so the dye room never stops.
+      It is not the season's requirement, which is the
+      <strong>rest of season</strong> column beside it. Don't add them.
+    {% else %}
+      Review par levels and book stock in. This page is only for the
+      {{ category.name }} supplier.
+    {% endif %}
   </p>
   {% comment %}
   Two questions, said plainly, because the column headings are the only thing
   telling somebody which one they are answering.
   {% endcomment %}
+  {% if par_mode %}
+    {% comment %}
+    The basis, printed, because advice you cannot inspect is a decision in
+    disguise — and the two soft spots in this particular basis are worth
+    naming out loud rather than discovering later.
+    {% endcomment %}
+    <p class="note">
+      <strong>Nothing here proposes a par.</strong> The columns are what there
+      is to judge by. <em>On pace</em> projects units from the share of a
+      season the weekends already banked took in earlier years — so it is only
+      as good as the seasons behind it, and the count of those is printed with
+      it. <em>Entered</em> is production somebody typed up, not production that
+      happened: a quiet week there is a week nobody entered, and never a reason
+      to order less.
+    </p>
+  {% else %}
   <p class="note">
     <strong>Received</strong> is what a delivery note says arrived — it gets
     added on, so nobody has to do the sum. <strong>Counted</strong> is what is
@@ -39,6 +72,19 @@
     blank and it isn't touched, and <strong>one Save books the lot</strong>: a
     bill is one document.
   </p>
+  {% endif %}
+
+  <div class="modes">
+    {% comment %}
+    Both modes stay on screen. A lone "Edit par" says nothing about there
+    being two ways to read the table, and leaving by a Done beside an unsaved
+    form discards a retuned row on the click that felt like keeping it.
+    {% endcomment %}
+    <a class="chip {% if not par_mode %}on{% endif %}"
+       href="{% url 'raw_inventory' category.id %}">Receive stock</a>
+    <a class="chip {% if par_mode %}on{% endif %}"
+       href="{% url 'raw_inventory' category.id %}?par=1">Set par</a>
+  </div>
 
   <div class="category-nav">
     {% for cat in all_categories %}
@@ -47,7 +93,108 @@
     {% endfor %}
   </div>
 
-  {% if products %}
+  {% if not products %}
+    <p class="empty">No raw products found for this category.</p>
+  {% elif par_mode %}
+    <form method="post" action="{% url 'raw_par_save' category.id %}">
+    {% csrf_token %}
+    <div class="card">
+      <table>
+        <thead>
+          <tr>
+            <th>Raw Product</th>
+            <th class="num">On hand</th>
+            <th class="entry">Par</th>
+            <th class="num">Entered, 8wk</th>
+            <th class="num">Sold this season</th>
+            <th class="num">On pace for</th>
+            <th class="num">Already dyed</th>
+            <th class="num">Rest of season</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for o in outlooks %}
+            <tr>
+              <td>{{ o.blank.name }}</td>
+              <td class="num">
+                {{ o.raw_on_hand }}
+                {% comment %}
+                How old the count is, said on the row, because this is the
+                one pile in the app nothing recounts on its own — it falls
+                only when a bath is *entered*, so a week of dyeing nobody has
+                typed up yet leaves it reading high.
+                {% endcomment %}
+                {% if o.count_is_stale %}
+                  <div class="sub stale">
+                    {% if o.blank.counted_at %}
+                      counted {{ o.blank.counted_at|timesince }} ago, baths since
+                    {% else %}
+                      never counted
+                    {% endif %}
+                  </div>
+                {% else %}
+                  <div class="sub">counted {{ o.blank.counted_at|timesince }} ago</div>
+                {% endif %}
+              </td>
+              <td class="entry">
+                <input type="number" name="par_{{ o.blank.pk }}" min="0" step="1"
+                       placeholder="{{ o.blank.par_level }}"
+                       aria-label="Par for {{ o.blank.name }}"
+                       class="count-input">
+                {% if o.floor_short %}
+                  <div class="sub short">{{ o.floor_short }} below</div>
+                {% endif %}
+              </td>
+              <td class="num">{{ o.dyed_recently }}</td>
+              <td class="num">{{ o.sold }}</td>
+              <td class="num">
+                {% comment %}
+                A blank with no complete prior season gets a dash, never a
+                zero: "nothing more will sell" and "nothing here can say" are
+                different answers and only one is a reason not to order.
+                {% endcomment %}
+                {% if o.remaining is None %}
+                  —
+                  <div class="sub">no season to project from</div>
+                {% else %}
+                  {{ o.remaining }}
+                  <div class="sub">
+                    from {{ o.prior_seasons }} prior season{{ o.prior_seasons|pluralize }}
+                  </div>
+                {% endif %}
+              </td>
+              <td class="num">
+                {{ o.finished_on_hand }}
+                {% if o.finished_unsold %}
+                  <div class="sub">{{ o.finished_unsold }} in colorways that haven't sold</div>
+                {% endif %}
+              </td>
+              <td class="num">
+                {% if o.shortfall is None %}
+                  —
+                {% elif o.shortfall %}
+                  <span class="short">{{ o.shortfall }} short</span>
+                  <div class="sub">{{ o.baths }} bath{{ o.baths|pluralize }} · ${{ o.cost|floatformat:0 }}</div>
+                {% else %}
+                  <span class="ok">covered</span>
+                  <div class="sub">{{ o.owned }} owned</div>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="savebar">
+      <button class="btn" type="submit">Save par</button>
+      <span class="note">
+        Blank rows are left alone. 0 means no par is set.
+        <strong>Rest of season</strong> is what the forecast wants less
+        everything already owned, dyed or not — it is not added to par.
+      </span>
+    </div>
+    </form>
+  {% else %}
     <form method="post">
     {% csrf_token %}
     <div class="card">
@@ -125,7 +272,5 @@
       <span class="note">Blank rows are left alone. Counted wins if you fill in both.</span>
     </div>
     </form>
-  {% else %}
-    <p class="empty">No raw products found for this category.</p>
   {% endif %}
 {% endblock %}
