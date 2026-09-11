@@ -19,12 +19,75 @@ one of these keys is required:
 
 from __future__ import annotations
 
+import re
 from collections import Counter, defaultdict
 
 from django.db import transaction
 
-from . import skus
 from .models import FinishedProduct, RawProduct, Sale, SaleLine
+
+
+def words(name):
+    """A name as its uppercase alphanumeric words.
+
+    The unit of comparison between a Square item name and a blank's name,
+    because the two are written to different audiences. Square's item is what
+    the till shows a customer — `Noble` — and the blank carries the supplier's
+    full description of the same yarn — `Noble - Diamond Extra`. Splitting on
+    the punctuation is what lets one be recognised as the head of the other
+    without matching on a character count.
+    """
+    return tuple(word for word in re.split(r"[^A-Z0-9]+", (name or "").upper())
+                 if word)
+
+
+class BlankIndex:
+    """Item name to blank: the whole name, or the words it opens with.
+
+    This used to key on `skus.slug`, which is six characters because that is
+    what fits on a barcode label — a width borrowed from a place it meant
+    something into a place it meant nothing. It turned "is this the same
+    name" into "do the first six characters agree", and the answer was right
+    for three of the four base yarns by luck of spelling: `Heavenly - Angel`,
+    `Homespun - Single & Stunning` and `Artisan - Ethereal Fingering` all
+    survive the truncation with their first word intact. **`Noble` is five
+    letters**, so `Noble - Diamond Extra` truncated to `NOBLED` and the 179
+    lines Square rang up under `Noble` in 2025 — $9,759 of yarn — matched no
+    blank at all. They imported unattached and read as a season in which
+    Noble sold nothing, which is the failure this ledger is least able to
+    show you: `raw_product` is null and a blank filter returns zero rather
+    than an error.
+
+    So a match is now the full name, or the blank's opening words. An item
+    name that opens two blanks is **refused, not guessed** — `Fancy` is the
+    head of both `Fancy Veil` and `Fancy Half Circle Veil`, and filing a
+    season's fancy work under whichever row was created first is worse than
+    leaving it unmatched, where the report names it and somebody can look.
+    """
+
+    def __init__(self, blanks):
+        self.exact, self.heads = {}, {}
+        ambiguous = set()
+        for blank in blanks:
+            spelling = words(blank.name)
+            self.exact.setdefault(spelling, blank)
+            # Every leading run of words short of the whole name. The whole
+            # name is an exact match and outranks any other blank's head:
+            # a blank called `Shawl` owns the item `Shawl` even if some later
+            # `Shawl Extra Long` starts the same way.
+            for size in range(1, len(spelling)):
+                head = spelling[:size]
+                if self.heads.get(head, blank) != blank:
+                    ambiguous.add(head)
+                self.heads.setdefault(head, blank)
+        for head in ambiguous:
+            self.heads.pop(head, None)
+
+    def get(self, item_name):
+        spelling = words(item_name)
+        if not spelling:
+            return None
+        return self.exact.get(spelling) or self.heads.get(spelling)
 
 
 class Matcher:
@@ -38,9 +101,10 @@ class Matcher:
        export does not, which is the single biggest reason to prefer the API.
     2. **The SKU**, when the export bothered to print one. Twenty of the
        thirty-six lines in a 2026 CSV carry none.
-    3. **The item name against a blank.** Coarser — it gets the style, not
-       the colorway — but it is present on every line of every season, which
-       is what makes the old years readable at all.
+    3. **The item name against a blank**, whole or by its opening words —
+       see `BlankIndex`. Coarser — it gets the style, not the colorway — but
+       it is present on every line of every season, which is what makes the
+       old years readable at all.
 
     All three lookups are built once. Matching a hundred thousand lines a
     query at a time is the mistake the unidentified-sales page already made.
@@ -53,9 +117,7 @@ class Matcher:
             for product in products if product.square_variation_id
         }
         self.by_sku = {product.sku: product for product in products if product.sku}
-        self.blanks = {}
-        for blank in RawProduct.objects.all():
-            self.blanks.setdefault(skus.slug(blank.name), blank)
+        self.blanks = BlankIndex(RawProduct.objects.all())
 
         self.hits = Counter()
         self.unmatched = Counter()
@@ -72,7 +134,7 @@ class Matcher:
                       else "sku"] += 1
             return
 
-        blank = self.blanks.get(skus.slug(line["item_name"]))
+        blank = self.blanks.get(line["item_name"])
         line["finished_product"] = None
         line["raw_product"] = blank
         if blank is not None:

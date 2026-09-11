@@ -18,8 +18,8 @@ from django.utils import timezone
 from django.test import TestCase, override_settings
 from .. import (
     closing, colorbands, crew, fancy, nav, photowalk, production, restock,
-    sales, seasonreport, seasons, sheetscan, skus, slowsellers, timesheets,
-    weather,
+    sales, salesimport, seasonreport, seasons, sheetscan, skus, slowsellers,
+    timesheets, weather,
 )
 from ..models import (
     UNCATEGORIZED_BRAND,
@@ -688,3 +688,139 @@ class WorkIsSeparableFromItsTriggerTests(TestCase):
     def test_a_square_failure_is_not_a_command_error(self):
         from scarves import squareorders
         self.assertFalse(issubclass(squareorders.SquareUnavailable, CommandError))
+
+
+class ItemNameToBlankTests(TestCase):
+    """Which blank an item name reaches.
+
+    The failure being pinned is silent in both directions. A blank that never
+    matches makes a season read as one in which that style sold nothing —
+    `raw_product` is null, so the style filter returns zero rather than an
+    error. A blank that matches the *wrong* item is worse, because the total
+    still adds up and only the attribution is wrong.
+    """
+
+    def setUp(self):
+        self.category = RawProductCategory.objects.create(name="Yarn")
+
+    def _blank(self, name):
+        return RawProduct.objects.create(
+            name=name, category=self.category, price=Decimal("9.14"),
+        )
+
+    def test_an_item_name_matches_the_blank_it_opens(self):
+        """Square rang the yarn up as `Noble` for the whole of 2025 and this
+        app calls it `Noble - Diamond Extra`. Keyed on six characters the two
+        were `NOBLE` and `NOBLED`, and 179 lines matched nothing."""
+        noble = self._blank("Noble - Diamond Extra")
+        self.assertEqual(salesimport.BlankIndex([noble]).get("Noble"), noble)
+
+    def test_the_other_three_yarns_still_match(self):
+        """They matched before only by luck of spelling — each survives a
+        six-character truncation with its first word intact. The rule that
+        rescues Noble has to keep them."""
+        blanks = [self._blank(name) for name in (
+            "Heavenly - Angel",
+            "Homespun - Single & Stunning",
+            "Artisan - Ethereal Fingering",
+            "Hearth - (Yarn Base)",
+        )]
+        index = salesimport.BlankIndex(blanks)
+        for blank, item in zip(blanks, ("Heavenly", "Homespun", "Artisan", "Hearth")):
+            with self.subTest(item=item):
+                self.assertEqual(index.get(item), blank)
+                self.assertEqual(index.get(blank.name), blank)
+
+    def test_an_item_name_that_opens_two_blanks_matches_neither(self):
+        """`Fancy` heads both. Filing a season's fancy work under whichever
+        row happened to be created first is worse than leaving it unmatched,
+        where the reconciliation print names it."""
+        veil = self._blank("Fancy Veil")
+        half = self._blank("Fancy Half Circle Veil")
+        index = salesimport.BlankIndex([veil, half])
+        self.assertIsNone(index.get("Fancy"))
+        self.assertEqual(index.get("Fancy Veil"), veil)
+        self.assertEqual(index.get("Fancy Half Circle"), half)
+
+    def test_a_whole_name_beats_another_blanks_opening(self):
+        shawl = self._blank("Shawl")
+        longer = self._blank("Shawl Extra Long")
+        index = salesimport.BlankIndex([shawl, longer])
+        self.assertEqual(index.get("Shawl"), shawl)
+
+    def test_a_longer_item_name_does_not_reach_a_shorter_blank(self):
+        """The prefix runs one way. `Large Satin` is not a Large Hand-woven
+        Rayon, and a rule loose enough to say it was would put one style's
+        revenue on another."""
+        rayon = self._blank("Large Hand-woven Rayon")
+        index = salesimport.BlankIndex([rayon])
+        self.assertIsNone(index.get("Large Satin"))
+
+
+class RelinkByItemTests(TestCase):
+    """Re-running the item tier over lines that imported without a blank."""
+
+    def setUp(self):
+        category = RawProductCategory.objects.create(name="Yarn")
+        self.noble = RawProduct.objects.create(
+            name="Noble - Diamond Extra", category=category, price=Decimal("9.14"),
+        )
+        self.sale = Sale.objects.create(
+            order_id="T1", sold_at=timezone.now(), source=Sale.SOURCE_SQUARE_API,
+        )
+
+    def _line(self, key, item_name, **kwargs):
+        return SaleLine.objects.create(
+            sale=self.sale, line_key=key, sold_at=self.sale.sold_at,
+            item_name=item_name, price_point="Regular", quantity=Decimal("1"),
+            gross_cents=5400, net_cents=5400, source=Sale.SOURCE_SQUARE_API,
+            **kwargs,
+        )
+
+    def test_it_attaches_the_blank_and_no_colorway(self):
+        """2025 sold yarn with no colorway on the line at all, so a product
+        link here would be inventing one."""
+        line = self._line("a", "Noble")
+        call_command("relink_sale_lines", "--by-item", stdout=StringIO())
+
+        line.refresh_from_db()
+        self.assertEqual(line.raw_product, self.noble)
+        self.assertIsNone(line.finished_product)
+
+    def test_it_leaves_a_line_that_already_has_a_blank_alone(self):
+        """A line filed by its SKU or by Square's variation id is better
+        evidence than an item name, and re-matching it would let a renamed
+        item move last season's revenue onto another style."""
+        other = RawProduct.objects.create(
+            name="Homespun - Single & Stunning",
+            category=self.noble.category, price=Decimal("6.71"),
+        )
+        line = self._line("a", "Noble", raw_product=other)
+        call_command("relink_sale_lines", "--by-item", stdout=StringIO())
+
+        line.refresh_from_db()
+        self.assertEqual(line.raw_product, other)
+
+    def test_it_names_what_it_could_not_place(self):
+        self._line("a", "Wax Hand")
+        out = StringIO()
+        call_command("relink_sale_lines", "--by-item", stdout=out)
+        self.assertIn("Wax Hand", out.getvalue())
+
+    def test_a_dry_run_writes_nothing(self):
+        line = self._line("a", "Noble")
+        out = StringIO()
+        call_command("relink_sale_lines", "--by-item", "--dry-run", stdout=out)
+
+        line.refresh_from_db()
+        self.assertIsNone(line.raw_product)
+        self.assertIn("DRY RUN", out.getvalue())
+
+    def test_it_moves_no_stock_and_writes_no_inventory_log(self):
+        self._line("a", "Noble")
+        before = self.noble.number_on_hand
+        call_command("relink_sale_lines", "--by-item", stdout=StringIO())
+
+        self.noble.refresh_from_db()
+        self.assertEqual(self.noble.number_on_hand, before)
+        self.assertEqual(InventoryLog.objects.count(), 0)

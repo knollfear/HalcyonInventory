@@ -56,11 +56,28 @@ token; keying on it collapses them into a single line and the revenue goes
 missing with nothing to show for it.
 `test_a_repeated_token_is_three_sales_not_one` is the pin.
 
-Matching to the catalogue is SKU first, then `skus.slug(item_name)` against
+Matching to the catalogue is SKU first, then the item name against
 `RawProduct.name` — which works because `sync_to_square` built the Square item
-from that name, so `Noble - Diamond Extra` slugs to `NOBLED` at both ends.
-Unmatched lines are kept in full and **named and counted in the report**, since
-a shorter total is exactly the kind of quiet wrong this ledger exists to avoid.
+from that name. Unmatched lines are kept in full and **named and counted in the
+report**, since a shorter total is exactly the kind of quiet wrong this ledger
+exists to avoid.
+
+**The item name is matched whole, or by the words it opens with** — the blank
+carries the supplier's full description and Square's item is what the till
+shows a customer, so `Noble` has to reach `Noble - Diamond Extra`. That
+comparison used to be `skus.slug`, which truncates to six characters because
+that is what fits on a barcode label, and the width came along with the
+function into a place it meant nothing: the question stopped being "is this
+the same name" and became "do the first six characters agree". Three of the
+four base yarns passed by luck of spelling. **`Noble` is five letters**, so it
+truncated to `NOBLE` against the blank's `NOBLED` and matched nothing — 179
+lines and $9,759 of 2025 yarn imported with a null `raw_product`, which the
+style filter on `private/seasons/` renders as a season in which Noble sold
+none. `BlankIndex` is the fix and `ItemNameToBlankTests` pins it, including
+the refusal: an item name that opens *two* blanks (`Fancy`, which heads both
+`Fancy Veil` and `Fancy Half Circle Veil`) matches neither, because filing a
+season's fancy work under whichever row was created first is worse than
+leaving it in the report's unmatched list where somebody can read it.
 
 **Keep `Category`.** The wax hands were on this till through 2024 and are
 gone. A season-over-season total that cannot name the categories it counts
@@ -214,6 +231,13 @@ it change how the numbers read:
   lesson generalises past this case: **"nothing matches" is a fact about the
   catalogue on the day it was measured, not a property of the season** — so
   re-check it after anything that adds products.
+
+  `relink_sale_lines --by-item` is the same re-check one level up, for lines
+  carrying no *blank* at all. It fills a null `raw_product` from the item name
+  and never a `finished_product`, because an item name reaches the style and
+  stops there. Run it after anything that adds a blank, renames one, or
+  changes how one is matched — the 2025 `Noble` lines were linked by exactly
+  that pass.
 
   The trap this sets is specific and expensive: a colorway query over 2025
   returns **zero rather than an error**, so "it sold none last year" and "the

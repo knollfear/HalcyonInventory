@@ -27,6 +27,20 @@ Square's `Loop de Loop Caramel` against this app's `Lop de Loop caramel` is a
 spelling nobody can derive. Fuzzy matching here would quietly attribute one
 yarn's revenue to another.
 
+**`--by-item` is the other half of the same staleness**, and it attaches the
+*blank* rather than a product. A line whose item name the matcher could not
+place at import has `raw_product` null, which is the one kind of gap this
+ledger cannot show you: the style filter on `private/seasons/` returns zero
+for that blank, and zero reads as "it sold none that year" rather than as
+"nobody matched it". The worked case is `Noble`, whose 179 lines and $9,759
+of 2025 yarn matched nothing for as long as blanks were keyed on six
+characters. Re-running the match is what links them, so this pass is worth
+running after anything that adds a blank or changes how one is spelled.
+
+It sets `raw_product` and never `finished_product`: an item name reaches the
+style and stops there, and a line that arrived without a colorway must not
+acquire one from a report.
+
 Nothing in this command moves stock or writes an `InventoryLog`. The sales
 ledger is reporting only.
 """
@@ -34,7 +48,8 @@ ledger is reporting only.
 from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Count, Sum
 
-from scarves.models import FinishedProduct, SaleLine
+from scarves.models import FinishedProduct, RawProduct, SaleLine
+from scarves.salesimport import BlankIndex
 
 
 class Command(BaseCommand):
@@ -79,12 +94,23 @@ class Command(BaseCommand):
             ),
         )
         parser.add_argument(
+            "--by-item",
+            action="store_true",
+            help=(
+                "Attach the blank instead, by matching the Square item name "
+                "against a RawProduct — for lines that carry no blank at all."
+            ),
+        )
+        parser.add_argument(
             "--dry-run",
             action="store_true",
             help="Print what would be linked without linking it.",
         )
 
     def handle(self, *args, **options):
+        if options["by_item"]:
+            return self.by_item(options)
+
         def pairs(entries, flag, shape):
             out = {}
             for entry in entries:
@@ -174,6 +200,65 @@ class Command(BaseCommand):
             for name, (n, cents) in sorted(unmatched.items()):
                 self.stdout.write(
                     f"  {name or '(no price point)':36} {n:>4} line(s)  "
+                    f"${cents / 100:,.2f}"
+                )
+
+        if options["dry_run"]:
+            self.stdout.write(self.style.WARNING("\nDRY RUN — nothing was written."))
+
+    def by_item(self, options):
+        """Attach the blank to lines that never got one.
+
+        Deliberately narrower than the passthrough pass above: it only ever
+        fills a `raw_product` that is null, so a line already filed under a
+        blank — by its SKU, by Square's variation id, or by an earlier run of
+        this — is left exactly as it is. Re-matching those would let a
+        renamed item quietly move last season's revenue onto a different
+        style, which is the kind of edit nothing downstream would question.
+        """
+        index = BlankIndex(RawProduct.objects.all())
+
+        lines = SaleLine.objects.filter(raw_product__isnull=True)
+        if options["item"]:
+            lines = lines.filter(item_name=options["item"])
+        if options["year"]:
+            lines = lines.filter(sold_at__year=options["year"])
+        if not lines.exists():
+            self.stdout.write("No unattached lines match that scope.")
+            return
+
+        matched, unmatched = {}, {}
+        for line in lines.iterator():
+            blank = index.get(line.item_name)
+            if blank is None:
+                bucket = unmatched.setdefault((line.item_name or "").strip(), [0, 0])
+                bucket[0] += 1
+                bucket[1] += line.gross_cents or 0
+                continue
+            matched.setdefault(blank, []).append(line.pk)
+
+        total = sum(len(pks) for pks in matched.values())
+        verb = "Would link" if options["dry_run"] else "Linked"
+
+        for blank, pks in sorted(matched.items(), key=lambda kv: kv[0].name):
+            if not options["dry_run"]:
+                SaleLine.objects.filter(pk__in=pks).update(raw_product=blank)
+            self.stdout.write(f"  {blank.name:36} {len(pks):>4} line(s)")
+
+        self.stdout.write(self.style.SUCCESS(f"\n{verb} {total} line(s) to a blank."))
+
+        if unmatched:
+            # Named and valued, because most of these are supposed to match
+            # nothing — wax hands, refunds, the discount bin — and the only
+            # way to tell those from a blank nobody has made yet is to read
+            # the list.
+            self.stdout.write(self.style.WARNING(
+                f"\n{sum(v[0] for v in unmatched.values())} line(s) matched no "
+                f"blank — these are item names this app has no RawProduct for:"
+            ))
+            for name, (n, cents) in sorted(unmatched.items(), key=lambda kv: -kv[1][1]):
+                self.stdout.write(
+                    f"  {name or '(no item name)':36} {n:>4} line(s)  "
                     f"${cents / 100:,.2f}"
                 )
 
