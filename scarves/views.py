@@ -55,9 +55,9 @@ logger = logging.getLogger(__name__)
 from django.template.response import TemplateResponse
 
 from . import (
-    closing, colorbands, crew, fancy, labels, passthroughs, photowalk,
-    production, rawdemand, restock, sales, seasonreport, sheetscan, skus,
-    slowsellers, timesheets,
+    closeplan, closing, colorbands, crew, fancy, labels, passthroughs,
+    photowalk, producedsince, production, rawdemand, restock, sales,
+    seasonreport, sheetscan, skus, slowsellers, timesheets,
 )
 from . import seasons as seasons_mod
 from .colorutils import hex_to_rgb, nearest_by_color, pick_color_cluster
@@ -71,6 +71,7 @@ from .forms import (
     LabelRunForm,
     NewDyeForm,
     PickedBathsField,
+    ProducedSinceForm,
     ProductionSheetForm,
     QuickRecipeRowForm,
     RecipeDyesForm,
@@ -4704,6 +4705,116 @@ def slow_sellers(request):
     })
 
 
+# ---------------------------------------------------------------------------
+# From a Sunday close to a production list.
+#
+# The shop's own loop, which the app spent a long time not modelling: the crew
+# walk the display on Sunday night and end the evening holding a stack of
+# kanban cards, and that stack is the week's work order. `closeplan.py` has
+# the whole argument, including why par and the close can both propose without
+# competing — one claim, matched on finished product, whoever wrote it.
+# ---------------------------------------------------------------------------
+
+
+@page_meta(
+    title="Production From a Close",
+    description="Turn Sunday night's stack of kanban cards into a list of "
+                "baths to dye. Empty pegs and last-one-hanging first, then "
+                "best sellers. Cards already on a list drop off, so several "
+                "lists off one close can't plan the same thing twice.",
+    category="Production",
+    note="Plans from the latest close. Optional ?close=<id> for an older one.",
+)
+@login_required
+@require_http_methods(["GET", "POST"])
+def production_from_close(request):
+    """Her page, and the one the whole close was secretly for.
+
+    **Preview by GET, create by POST**, the same bargain the sheet picker
+    makes: browsing leaves nothing behind, and the moment a list exists so
+    does the claim on every card in it.
+
+    **Which close is query-string state** (`?close=`), defaulting to the
+    latest, so there is one route and no picker to invent — and an older
+    close is still plannable, because a card that never got made does not
+    stop being a card on Monday.
+
+    The choice of paper or no paper is asked *here*, once, and stored on the
+    run. That is the one thing about a list that cannot be both, and asking
+    it at creation is what keeps the run page from offering two doors every
+    time it is opened.
+    """
+    close = None
+    asked = (request.GET.get("close") or request.POST.get("close") or "").strip()
+    if asked.isdigit():
+        close = CloseRun.objects.filter(pk=int(asked)).first()
+    if close is None:
+        close = closeplan.latest_close()
+
+    if close is None:
+        return render(request, "scarves/production_from_close.html", {
+            "close": None,
+            "closes": [],
+        })
+
+    stack = closeplan.cards(close)
+    pool, listed = closeplan.partition(stack)
+
+    if request.method == "POST":
+        picks, problems = closeplan.parse_picks(request.POST, pool)
+        for problem in problems:
+            messages.error(request, problem)
+        if problems:
+            # Nothing recorded, and said out loud — a list that came back one
+            # row short with no explanation is worse than one refused.
+            messages.info(request, "Nothing was made into a list — fix those.")
+        elif not picks:
+            messages.info(
+                request,
+                "No baths entered, so no list was made. Put a number beside "
+                "the cards you are going to dye.",
+            )
+        else:
+            reporting = (
+                ProductionRun.DIRECT
+                if request.POST.get("reporting") == ProductionRun.DIRECT
+                else ProductionRun.PAPER
+            )
+            run = closeplan.make_list(close, picks, reporting=reporting)
+            baths = run.rows.count()
+            messages.success(
+                request,
+                f"List #{run.pk}: {baths} bath{'' if baths == 1 else 's'} "
+                f"across {len(picks)} "
+                f"colorway{'' if len(picks) == 1 else 's'}. "
+                + (
+                    "Print it when you are ready."
+                    if run.is_on_paper else
+                    "Say what you made on this page when the week is done."
+                ),
+            )
+            return redirect("production_run_detail", pk=run.pk)
+
+        return redirect(f"{reverse('production_from_close')}?close={close.pk}")
+
+    return render(request, "scarves/production_from_close.html", {
+        "close": close,
+        # Every close, so an older one is one click away. Short list by
+        # nature — one per weekend — so it needs no paging and no picker.
+        "closes": CloseRun.objects.order_by("-day")[:12],
+        "pool": pool,
+        "listed": listed,
+        "critical_count": sum(1 for card in pool if card.is_critical),
+        "lists": closeplan.lists_for(close),
+        "max_baths": closeplan.MAX_BATHS_PER_CARD,
+        "still_to_count": close.rows.filter(
+            outcome=CloseRunRow.PENDING
+        ).count(),
+        "paper": ProductionRun.PAPER,
+        "direct": ProductionRun.DIRECT,
+    })
+
+
 @page_meta(
     title="Production Sheet",
     description="Print a dye-room worksheet: the next N baths to run, most "
@@ -4926,7 +5037,7 @@ def production_run_detail(request, pk):
     it, which is all the way back it needs to be found.
     """
     run = get_object_or_404(
-        ProductionRun.objects.prefetch_related(
+        ProductionRun.objects.select_related("close_run").prefetch_related(
             "rows__finished_product__recipe",
             "rows__finished_product__raw_product",
             "rows__finished_product__recipe__recipe_dyes__dye__brand",
@@ -4955,6 +5066,13 @@ def production_run_detail(request, pk):
 
     return render(request, "scarves/production_run_detail.html", {
         "run": run,
+        # Still built for both modes. A direct list has a token and a page
+        # like any other — the crew page *is* the reporting flow, and the
+        # only difference between the modes is whether anybody reaches it by
+        # scanning paper. What `reporting` decides is which door the page
+        # offers, not whether the other one exists: a list started without
+        # paper that turns into a dye-room session still has to be printable,
+        # and a printed one still has to be reportable at a desk.
         "crew_url": _crew_run_url(request, run),
         "plan": production.dye_plan_for_run(run),
         "bath_count": run.rows.count(),
@@ -5041,6 +5159,32 @@ def production_run_add_row(request, pk):
         messages.warning(request, f"{added} {mismatch} — added anyway.")
     else:
         messages.success(request, added)
+    return redirect("production_run_detail", pk=run.pk)
+
+
+@require_POST
+@login_required
+def production_run_add_bath(request, pk, row_id):
+    """One more bath of a colorway already on this list.
+
+    **"If I made more, let me say so."** The list said one bath and the pot
+    ran twice — an ordinary thing, and the only way to say it used to be the
+    catalogue search, which is the right tool for a colour that was never on
+    the list and a poor one for a row already on screen with its name on it.
+
+    Takes a row rather than a product, because that is what the button is
+    next to; the bath goes on the end of the list, as its own row, for the
+    reason every row is one bath — see `closeplan.add_bath`.
+    """
+    run = get_object_or_404(ProductionRun, pk=pk)
+    row = get_object_or_404(run.rows.select_related("finished_product"), pk=row_id)
+
+    added = closeplan.add_bath(run, row.finished_product)
+    messages.success(
+        request,
+        f"Another bath of {row.finished_product.name} — "
+        f"{added.quantity} more, on the end of the list.",
+    )
     return redirect("production_run_detail", pk=run.pk)
 
 
@@ -5559,6 +5703,170 @@ def production_run(request, token):
 
 
 # ---------------------------------------------------------------------------
+# Produced since: the receipt for everything the production flow writes.
+#
+# Every other page that reads these rows consumes them — the label sheet turns
+# them into stickers, the raw shelf into a reorder date, the planner subtracts
+# them from a shortage — and none of them showed the rows. What that produced
+# was not a missing feature but an unused one: recording a dye bath wrote
+# something nobody could read back and nobody could take back, so every click
+# was a commitment with no receipt, and the safe move was not to click.
+# ---------------------------------------------------------------------------
+
+
+#: Windows the page offers as one click. Keyed on what somebody actually asks
+#: — the last session, the last month, the season — rather than on round
+#: numbers for their own sake.
+PRODUCED_SINCE_PRESETS = (
+    ("Last 7 days", 7),
+    ("Last 30 days", 30),
+    ("Last 90 days", 90),
+    ("Last year", 365),
+)
+
+
+@page_meta(
+    title="Produced Since",
+    description="Every dye bath the app has recorded since a date, grouped by "
+                "day, with what it believes is on hand now. Take an entry "
+                "back if it didn't happen — nothing is deleted, the "
+                "correction is written beside it.",
+    category="Production",
+    note="Reads production entries only, not recounts. Optional ?since= and "
+         "?category=.",
+)
+@login_required
+def produced_since_view(request):
+    """The record, and the one button that can change it.
+
+    **Not a Report**, even though it is mostly a list: the pages in that
+    category are the ones that cannot change the numbers they show you, and
+    this one can. Filed under Production with the pages that write the rows
+    it reads.
+
+    Everything is in the query string, so the view somebody is looking at is
+    a URL — which matters more here than usual, since the answer to "what
+    does it think I made" is a thing she will want to send to somebody.
+    """
+    form = ProducedSinceForm(request.GET or None)
+    # An unparseable `?since=` should not blank the page — fall back to the
+    # default window and let the field show its own error.
+    since = (
+        form.cleaned_data.get("since")
+        if form.is_valid()
+        else timezone.localdate() - timedelta(days=ProducedSinceForm.DEFAULT_DAYS)
+    )
+    category = form.cleaned_data.get("category") if form.is_valid() else None
+
+    today = timezone.localdate()
+    presets = [
+        {
+            "label": label,
+            "days": days,
+            "url": "?" + urlencode(
+                {
+                    "since": (today - timedelta(days=days)).isoformat(),
+                    **({"category": category.pk} if category else {}),
+                }
+            ),
+            "is_current": since == today - timedelta(days=days),
+        }
+        for label, days in PRODUCED_SINCE_PRESETS
+    ]
+
+    return render(request, "scarves/produced_since.html", {
+        "form": form,
+        "record": producedsince.build(since, category=category),
+        "since": since,
+        "category": category,
+        "presets": presets,
+        # The sheet that consumes these rows, with the same cutoff already
+        # filled in. The two answers have to agree, and the way somebody
+        # checks that they do is by opening both.
+        "labels_url": (
+            f"{reverse('label_index')}?"
+            + urlencode(
+                {
+                    "dataset": LabelRunForm.SINCE,
+                    "since": since.isoformat(),
+                    "start_at": 1,
+                    **({"category": category.pk} if category else {}),
+                }
+            )
+        ),
+    })
+
+
+@require_POST
+@login_required
+def produced_since_retract(request, log_id):
+    """Say one entry didn't happen. POST only, so no `@page_meta`.
+
+    The reasoning for the mechanism is in `producedsince.retract`. The
+    reasoning for the *button* is the Sunday close's Undo, and it is not
+    really about inventory: a mistake somebody cannot fix themselves is a
+    mistake they have to go and confess, and that cost is exactly what gets
+    one left unmentioned instead. An unreported wrong number does more damage
+    than any number of corrections, so there is no confirmation step in front
+    of this and nothing counts how often it is used.
+    """
+    log = get_object_or_404(
+        InventoryLog.objects.select_related(
+            "finished_product", "finished_product__raw_product", "raw_product"
+        ),
+        pk=log_id,
+        log_type=InventoryLog.PRODUCTION,
+    )
+    reversal = producedsince.retract(log, note=request.POST.get("reason", ""))
+
+    product = log.finished_product
+    # The window comes back as a query string rather than a `next` URL, so
+    # this can only ever land on its own page. Taking one entry back must not
+    # reset the page to the default month and lose her place; it also must not
+    # be a field that decides where a staff session gets sent.
+    window = (request.POST.get("window") or "").lstrip("?")
+    back = reverse("produced_since") + (f"?{window}" if window else "")
+
+    if reversal is None:
+        # Already taken back, which is what a second click usually is —
+        # somebody not sure the first one landed. Says so rather than
+        # pretending to act, since the row is gone from the list either way
+        # and silence would read as the button being broken.
+        messages.info(
+            request,
+            f"That entry for {product.name} was already taken back — "
+            f"nothing changed.",
+        )
+        return redirect(back)
+
+    # The flash is the only place a retraction is ever narrated, and it is
+    # narrated to the person who just asked for it and then gone. Nothing
+    # persists it, nothing counts it, and the entry is simply no longer on
+    # the list — which is the confirmation that it worked.
+    if not producedsince.moved_stock(log):
+        messages.success(
+            request,
+            f"Took the {log.quantity} recorded for {product.name} on "
+            f"{log.when} off the record. That entry was history only, so no "
+            f"stock moved.",
+        )
+        return redirect(back)
+
+    product.refresh_from_db()
+    said = f"Took back {log.quantity} × {product.name} — now {product.number_on_hand} on hand"
+    returned = producedsince.blanks_consumed(log)
+    if returned:
+        raw = log.raw_product
+        raw.refresh_from_db()
+        said += (
+            f", and {returned} {raw.name} back on the raw shelf "
+            f"(now {raw.number_on_hand})"
+        )
+    messages.success(request, said + ".")
+    return redirect(back)
+
+
+# ---------------------------------------------------------------------------
 # Barcode labels: pick a dataset, see exactly what it will use up, print.
 #
 # The picker and the preview are one page on purpose. Labels cost a sheet at a
@@ -5594,7 +5902,17 @@ def _label_run_from(form):
     if data["dataset"] == LabelRunForm.ITEMS:
         return labels.specific_items(data["items"], style=style)
     if data["dataset"] == LabelRunForm.SINCE:
-        return labels.produced_since(data["since"], extra=data["extra"], style=style)
+        # Same two narrowing controls as the on-hand run, because a weekly
+        # run is usually one pile of one kind of thing — a yarn session, or
+        # the silk off one weekend — and printing the other half's stickers
+        # is a sheet somebody has to sort through afterwards.
+        return labels.produced_since(
+            data["since"],
+            extra=data["extra"],
+            style=style,
+            category=data.get("category"),
+            raw_products=data.get("raw_products"),
+        )
     return labels.inventory_run(
         extra=data["extra"],
         category=data.get("category"),

@@ -5,7 +5,7 @@ Part of the project guidance in `CLAUDE.md`, which carries the rules that apply 
 ## Barcode labels: the sheet is the state
 
 `private/labels/` prints Code128 stickers for stock going onto the shelf —
-"everything produced since a date" (the weekly job) or "everything on hand"
+"everything dyed since a date" (the weekly job) or "everything on hand"
 (bulk re-label). `scarves/labels.py` picks the items and draws the PDF;
 `LabelStock` holds the paper.
 
@@ -141,6 +141,58 @@ sheet (what a transposed pitch digit looks like), `LabelStockGeometryTests`
 re-checks every seeded stock, and the calibration route prints outlines plus a
 one-inch ruler on plain paper to catch printer registration and a print dialog
 left on "fit to page".
+
+## A since-run counts dyeing, and a recount is not dyeing
+
+`LABELLED_LOG_TYPES` is `(PRODUCTION,)`. ADJUSTMENT was in there once and the
+paragraph that used to sit here argued for it, from a real hole: stock counted
+in through `bulk_inventory_update` — a bag found in a cupboard, a rack folded
+back into inventory, anything predating this app — got no labels at all and
+nothing said so, and the symptom is a scarf that won't scan at the till with a
+queue behind it. **Right problem, wrong door**, and the cost only became
+legible once somebody tried to read the sheet as a *record* of what she had
+dyed.
+
+An adjustment is a **recount**, not an arrival. The Sunday close writes one
+for every product it found more of than the app believed, the restock walk
+writes more, a fancy conversion writes two, and a retraction on
+`private/produced-since/` writes one as well. Almost every one of them is
+already-labelled stock whose number moved. So the widening did not print "a
+few spares" — it printed a second sheet's worth of stickers for scarves that
+already had one, every single week, and it turned "everything produced since
+Sunday" into a list that matched nothing anybody had made. **A list that
+cannot be checked is worse than a short one**, because it is the reason the
+person who does the dyeing stops believing the page.
+
+The legitimate case keeps its own two doors and they are better at it:
+**everything on hand**, narrowed by category and blank, *is* the bulk
+re-label this was reaching for, and **specific items I pick** covers the bag
+in the cupboard exactly. Erring toward printing is still the right bargain
+where the counts are derived; it stopped being a bargain when what it printed
+was a different question's answer.
+
+SALE stays out for the original reason, unchanged: a sold scarf left wearing
+its sticker, so netting sales in would subtract labels already stuck to
+things.
+
+**A retracted bath asks for no stickers**, and that needs saying explicitly —
+the compensating row is an ADJUSTMENT this query no longer reads, so without
+`reversals__isnull=True` an entry somebody has taken back would go on printing
+forever.
+
+**Category and blank narrow a since-run too**, not just the on-hand one. A
+weekly run is usually one pile of one kind of thing — a yarn session, or the
+silk off one weekend — and the other half's stickers are a sheet somebody then
+has to sort through. Both controls are the same `data-when` mechanism and the
+same "empty means every blank, never none" rule. `_labelled_logs` is the one
+place that filter lives, because `month_precision_ambiguity` describes rows
+*this run* might be missing and has to be scoped identically or the warning
+starts describing rows the run was never going to print.
+
+The page links to `private/produced-since/`, which lists the very rows it
+counts. The two halves of the fix belong together: read production only, and
+give the set somewhere to be read.
+
 
 ## Photographing stock: the barcode misses, and the pile doesn't
 

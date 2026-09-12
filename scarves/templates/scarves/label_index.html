@@ -127,6 +127,15 @@ labels get used, and what the marker sticker will say.
           <label for="{{ form.since.id_for_label }}">{{ form.since.label }}</label>
           {{ form.since }}
           <div class="help" id="since-help">{{ form.since.help_text }}</div>
+          <div class="help">
+            {% comment %}
+            The same rows, listed. This run used to be unreadable — it
+            counted recounts as well as dyeing, so the number it printed
+            matched nothing anybody had made — and the fix was both halves:
+            read production only, and give the set a page of its own.
+            {% endcomment %}
+            <a href="{% url 'produced_since' %}">See what's been recorded →</a>
+          </div>
           {{ form.since.errors }}
         </div>
         <div class="field" data-when="items">
@@ -162,11 +171,17 @@ labels get used, and what the marker sticker will say.
           <div id="picked-empty" class="empty">Nothing picked yet.</div>
         </div>
 
-        <div class="field" data-when="inventory">
+        {% comment %}
+        Both narrowing controls serve the since-run as well as the on-hand
+        one. A weekly run is usually one pile of one kind of thing — a yarn
+        session, or the silk off one weekend — and the other half's stickers
+        are a sheet somebody then has to sort through.
+        {% endcomment %}
+        <div class="field" data-when="since inventory">
           <label for="{{ form.category.id_for_label }}">Category</label>
           {{ form.category }}
         </div>
-        <div class="field" data-when="inventory">
+        <div class="field" data-when="since inventory">
           <label>{{ form.raw_products.label }}</label>
           <div class="checklist">{{ form.raw_products }}</div>
           <div class="help">{{ form.raw_products.help_text }}</div>

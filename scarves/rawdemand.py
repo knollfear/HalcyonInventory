@@ -241,12 +241,19 @@ def _entered_production(blanks, since):
     fortnight here is a fortnight nobody entered, which is not the same claim
     as a fortnight nobody dyed. The column is labelled *entered* on the page
     for that reason, and a week of zeroes is never a reason to order less.
+
+    **An entry taken back is not an entry.** A retraction on
+    `private/produced-since/` writes an ADJUSTMENT, which this query never
+    reads, so without the exclusion an undone bath would go on reporting
+    itself here as dyed — and the date of the last one is what decides when
+    to reorder.
     """
     units = {blank.pk: 0 for blank in blanks}
     last = {blank.pk: None for blank in blanks}
     rows = (
         InventoryLog.objects
         .filter(log_type=InventoryLog.PRODUCTION,
+                reversals__isnull=True,
                 finished_product__raw_product__in=blanks)
         .values_list("finished_product__raw_product_id", "quantity", "created_at")
     )

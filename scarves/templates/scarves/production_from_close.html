@@ -1,0 +1,351 @@
+{% extends "scarves/base_internal.html" %}
+{% comment %}
+Sunday night's cards into a list of baths.
+
+The shop's own loop, and the one the app kept not modelling: the crew walk the
+display, count what is there, and the evening ends with a stack of kanban
+cards. That stack is the week's work order. `closeplan.py` carries the whole
+argument, including why this and the par-based sheet can both exist without
+competing — one claim, matched on finished product, whoever wrote it.
+
+Three decisions show up in this markup:
+
+**The order is the shelf's, not par's.** Empty pegs and last-one-hanging
+lead, then what the colorway sold this season. Both numbers print on the row,
+because a ranking somebody cannot check by looking is a ranking they have to
+trust.
+
+**Claimed cards are listed, not hidden.** They sit in their own section under
+the pool, naming the list they are on. "Those five are gone" has to be
+visible, or a card missing from the pool is indistinguishable from a card that
+was never there.
+
+**Paper or not is asked once, here.** It is the one thing about a list that
+cannot be both, and asking at creation is what stops the run page offering two
+doors every time it opens.
+{% endcomment %}
+
+{% block title %}Production From a Close{% endblock %}
+{% block heading %}What Sunday said to make{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 1000px; }
+
+  .lead { font-size: .95rem; color: #556; max-width: 74ch; }
+  .lead + .lead { margin-top: 8px; }
+
+  .whichclose { display: flex; gap: 8px; flex-wrap: wrap; margin: 18px 0 6px; }
+  .whichclose a {
+      font-size: .85rem; text-decoration: none; color: var(--ink);
+      border: 1px solid #cfd6de; border-radius: 999px; padding: 4px 12px;
+      background: #fff;
+  }
+  .whichclose a:hover { border-color: var(--accent); background: #eef2f7; }
+  .whichclose a.on {
+      border-color: var(--accent); background: var(--accent); color: #fff;
+  }
+
+  .totals { display: flex; gap: 28px; flex-wrap: wrap; margin: 20px 0 24px; }
+  .totals .n { font-size: 2.2rem; font-weight: 700; line-height: 1.05; }
+  .totals .what { font-size: .9rem; color: #556; max-width: 22ch; }
+  .totals .urgent .n { color: #8a2f2a; }
+
+  table.cards-table { border-collapse: collapse; width: 100%; }
+  table.cards-table th, table.cards-table td {
+      text-align: left; padding: 8px 10px; border-bottom: 1px solid #e2e6ec;
+  }
+  table.cards-table th {
+      font-size: .8rem; text-transform: uppercase; letter-spacing: .04em;
+      color: #667; white-space: nowrap;
+  }
+  table.cards-table td.n { text-align: right; font-variant-numeric: tabular-nums; }
+  .what-it-is { font-weight: 600; }
+  .detail { font-size: .82rem; color: #78808c; }
+
+  /* The two facts the order is built on, printed rather than implied. */
+  .gone, .lastone {
+      display: inline-block; font-size: 11px; border-radius: 999px;
+      padding: 2px 9px; white-space: nowrap;
+  }
+  .gone { color: #8a2f2a; background: #fdf2f1; border: 1px solid #f0c8c4; }
+  .lastone { color: #8a5a1f; background: #fdf7ee; border: 1px solid #eedcc0; }
+  .soldcount { font-size: .82rem; color: #556; }
+  .soldcount.none { color: #99a; }
+
+  /* The bath box. Wide enough for two digits and no wider — the number is
+     almost always 1, and a box that looks like it wants an essay reads as a
+     question rather than a default. */
+  input.baths {
+      font: inherit; width: 4.2rem; padding: 6px 8px;
+      border: 1px solid #cfd6de; border-radius: 7px; text-align: right;
+  }
+  .makes { font-size: .82rem; color: #78808c; }
+
+  /* Paper or not. A pill pair rather than a checkbox, because it is a set of
+     two states and not an action — the same call the recipe page's par mode
+     makes. */
+  .modes { display: flex; gap: 0; margin: 6px 0 0; }
+  .modes label {
+      font-size: .9rem; padding: 8px 14px; border: 1px solid #cfd6de;
+      background: #fff; cursor: pointer;
+  }
+  .modes label:first-child { border-radius: 8px 0 0 8px; }
+  .modes label:last-child { border-radius: 0 8px 8px 0; border-left: none; }
+  .modes input { position: absolute; opacity: 0; pointer-events: none; }
+  .modes input:checked + span { font-weight: 700; }
+  .modes label:has(input:checked) {
+      border-color: var(--accent); background: #eef2f7; color: var(--accent);
+  }
+  .modehelp { font-size: .82rem; color: #667; margin-top: 8px; max-width: 62ch; }
+
+  .makebar {
+      position: sticky; bottom: 0; background: var(--page-bg);
+      border-top: 1px solid #e1e5ea; padding: 14px 0 4px; margin-top: 8px;
+  }
+
+  .claimed { color: #667; }
+  .claimed .what-it-is { font-weight: 500; }
+  .onlist { font-size: .82rem; }
+{% endblock %}
+
+{% block content %}
+
+  {% if not close %}
+    <p class="empty">
+      No close has been done yet, so there are no cards to plan from. The
+      stack comes out of <a href="{% url 'close_index' %}">the Sunday
+      close</a> — walk the display, count what is there, and this page has
+      something to say the next morning.
+    </p>
+  {% else %}
+
+    <p class="lead">
+      The cards the close of <strong>{{ close.day|date:"D d M Y" }}</strong>
+      left in somebody's hand: every product counted at or under what its pegs
+      hold, which is the app's way of saying the bag behind it is empty. Put a
+      number of baths beside the ones you are going to dye and make a list.
+    </p>
+    <p class="lead">
+      <strong>A card on a list is accounted for.</strong> Make a list of five
+      and those five come off the pool, so a second and a third list off this
+      same close can't ask for the same colorway twice — and neither can a
+      sheet planned from <a href="{% url 'production_sheet_index' %}">par</a>.
+      Add one back deliberately and nothing stops you.
+    </p>
+
+    {% if closes|length > 1 %}
+      <div class="whichclose">
+        {% for option in closes %}
+          <a href="?close={{ option.pk }}"
+             class="{% if option.pk == close.pk %}on{% endif %}">
+            {{ option.day|date:"d M" }}
+          </a>
+        {% endfor %}
+      </div>
+    {% endif %}
+
+    <div class="totals">
+      <div class="urgent">
+        <div class="n">{{ critical_count }}</div>
+        <div class="what">gone, or down to the last one hanging</div>
+      </div>
+      <div>
+        <div class="n">{{ pool|length }}</div>
+        <div class="what">cards still to plan</div>
+      </div>
+      <div>
+        <div class="n">{{ listed|length }}</div>
+        <div class="what">already on a list</div>
+      </div>
+    </div>
+
+    {% if still_to_count %}
+      {% comment %}
+      A pending row is "nobody looked", never a zero — so a part-walked close
+      has cards that were never asked about, and a plan built off it is short
+      by however many pegs got skipped. Said out loud, because a list that
+      reads as complete when a table's worth of rows was never counted is the
+      silence the close itself exists to break.
+      {% endcomment %}
+      <p class="lead">
+        <strong>{{ still_to_count }} row{{ still_to_count|pluralize }} on that
+        close was never counted</strong>, so any card among them is missing
+        from this page. <a href="{% url 'close_run' close.token %}?mode=count">Finish
+        the count</a> if the evening was left part-done.
+      </p>
+    {% endif %}
+
+    {% if pool %}
+      <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="close" value="{{ close.pk }}">
+
+        <table class="cards-table">
+          <thead>
+            <tr>
+              <th>Card</th>
+              <th class="n">Counted</th>
+              <th class="n">Sold this season</th>
+              <th class="n">Baths</th>
+              <th>Makes</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for card in pool %}
+              <tr>
+                <td>
+                  <div class="what-it-is">{{ card.product.name }}</div>
+                  <div class="detail">
+                    {{ card.product.raw_product.name }}
+                    {% if card.product.raw_product.category %}
+                      · {{ card.product.raw_product.category.name }}
+                    {% endif %}
+                  </div>
+                </td>
+                <td class="n">
+                  {% if card.counted == 0 %}
+                    <span class="gone">none left</span>
+                  {% elif card.is_critical %}
+                    <span class="lastone">{{ card.counted }} hanging</span>
+                  {% else %}
+                    {{ card.counted }}
+                  {% endif %}
+                </td>
+                <td class="n">
+                  <span class="soldcount {% if not card.sold %}none{% endif %}">
+                    {{ card.sold }}
+                  </span>
+                </td>
+                <td class="n">
+                  <input class="baths" type="number" inputmode="numeric"
+                         name="baths_{{ card.product.pk }}"
+                         min="0" max="{{ max_baths }}" step="1"
+                         placeholder="0"
+                         aria-label="Baths of {{ card.product.name }}">
+                </td>
+                <td class="makes">{{ card.bath_size }} per bath</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+
+        <div class="makebar">
+          {% comment %}
+          Asked once, stored on the run. Paper is the dye-room sheet — three
+          printed documents, a pencil, one QR scanned afterwards. Direct skips
+          the printing and reports on screen. The reporting flow is the same
+          either way; this only decides which door the list's own page offers.
+          {% endcomment %}
+          <div class="modes">
+            <label>
+              <input type="radio" name="reporting" value="{{ paper }}" checked>
+              <span>Print a dye-room sheet</span>
+            </label>
+            <label>
+              <input type="radio" name="reporting" value="{{ direct }}">
+              <span>No paper — I'll report on screen</span>
+            </label>
+          </div>
+          <p class="modehelp">
+            Both end at the same page with the same question on it: which of
+            these did you make. Paper is worth it when the session runs over
+            days at a sink; skip it when you already know what you are dyeing
+            and would rather tick it off here.
+          </p>
+          <div class="actions">
+            <button class="btn" type="submit">Make this list</button>
+            <span class="small muted">
+              One bath makes the number in the last column. Leave a box empty
+              to leave that card for another list.
+            </span>
+          </div>
+        </div>
+      </form>
+    {% else %}
+      <p class="empty">
+        Every card off this close is on a list already. Nothing left to plan
+        here — the lists are below.
+      </p>
+    {% endif %}
+
+    {% if lists %}
+      <h2>Lists made from this close</h2>
+      <table class="cards-table">
+        <thead>
+          <tr>
+            <th>List</th>
+            <th class="n">Baths</th>
+            <th class="n">Made</th>
+            <th>How it comes back</th>
+            <th>State</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for run in lists %}
+            <tr>
+              <td>
+                <a href="{% url 'production_run_detail' run.pk %}">List #{{ run.pk }}</a>
+                <div class="detail">made {{ run.created_at|date:"D d M, H:i" }}</div>
+              </td>
+              <td class="n">{{ run.rows.count }}</td>
+              <td class="n">{{ run.accepted_count }}</td>
+              <td>{{ run.get_reporting_display }}</td>
+              <td>
+                {% if run.is_closed %}
+                  <span class="ok">finished</span>
+                {% elif run.is_overdue %}
+                  <span class="short">open {{ run.created_at|timesince }}</span>
+                {% else %}
+                  <span class="stat">{{ run.pending_count }} still to make</span>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+
+    {% if listed %}
+      <h2>Already accounted for</h2>
+      <p class="lead">
+        These cards are on a list, so they are off the pool above. Listed
+        rather than dropped — a card missing with nothing said reads exactly
+        like a card that was never in the stack.
+      </p>
+      <table class="cards-table claimed">
+        <thead>
+          <tr>
+            <th>Card</th>
+            <th class="n">Counted</th>
+            <th>On</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for card in listed %}
+            <tr>
+              <td>
+                <div class="what-it-is">{{ card.product.name }}</div>
+                <div class="detail">{{ card.product.raw_product.name }}</div>
+              </td>
+              <td class="n">{{ card.counted }}</td>
+              <td class="onlist">
+                {% for row in card.claimed_by %}
+                  <a href="{% url 'production_run_detail' row.run_id %}">#{{ row.run_id }}</a>{% if not forloop.last %}, {% endif %}
+                {% endfor %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+
+    <p class="lead" style="margin-top:26px">
+      Everything a list records lands on
+      <a href="{% url 'produced_since' %}">Produced since</a>, which lists it
+      and takes it back if it didn't happen.
+    </p>
+
+  {% endif %}
+
+{% endblock %}

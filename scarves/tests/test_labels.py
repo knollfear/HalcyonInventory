@@ -726,20 +726,23 @@ class LabelFormFieldVisibilityTests(TestCase):
     def test_each_dataset_only_field_is_tagged(self):
         html = self.client.get(reverse("label_index")).content.decode()
 
-        for field, dataset in (
-            ("since", "since"),
-            ("category", "inventory"),
-            ("raw_products", "inventory"),
-            ("include_zero", "inventory"),
+        for field, datasets in (
+            ("since", {"since"}),
+            # The two narrowing controls serve both bulk datasets: one pile
+            # of one kind of thing is what a weekly run usually is, whether
+            # it's counted from a date or off the shelf.
+            ("category", {"since", "inventory"}),
+            ("raw_products", {"since", "inventory"}),
+            ("include_zero", {"inventory"}),
         ):
             with self.subTest(field=field):
                 block = re.search(
-                    r'<div class="field" data-when="(\w+)">(?:(?!</div>).)*?'
+                    r'<div class="field" data-when="([\w ]+)">(?:(?!</div>).)*?'
                     r'id_' + field,
                     html, re.S,
                 )
                 self.assertIsNotNone(block, f"{field} is not tagged data-when")
-                self.assertEqual(block.group(1), dataset)
+                self.assertEqual(set(block.group(1).split()), datasets)
 
     def test_fields_every_dataset_reads_are_not_tagged(self):
         """stock and start_at apply to any run and must always show."""
@@ -1149,17 +1152,29 @@ class FixtureSkuTests(TestCase):
 
         product.refresh_from_db()
         self.assertEqual(product.sku, "", "loaddata must not generate one")
-class LabelsIncludeAddedStockTests(TestCase):
-    """Stock counted in gets barcodes too.
+class LabelsCountDyeingOnlyTests(TestCase):
+    """A since-run counts dye baths, and a recount is not a dye bath.
 
-    `produced_since` filtered on PRODUCTION, so anything entering through
-    `bulk_inventory_update` — a bag found in a cupboard, a display rack folded
-    back into inventory, stock that predates this app — got no labels at all.
-    Nothing said so. The symptom arrives later and elsewhere: a scarf that
-    won't scan at the till, in front of a customer, with the queue waiting.
+    ADJUSTMENT was folded in here once, to close a real hole: stock counted in
+    through `bulk_inventory_update` has never been labelled, and an unlabelled
+    scarf is discovered at the till with a queue behind it. Right problem,
+    wrong door — and the cost only became legible once somebody tried to read
+    the sheet as a *record* of what she had dyed.
 
-    The fix errs toward printing, which is the cheap direction. A spare
-    sticker sits in a drawer; a missing one costs the sale.
+    An adjustment is a recount. The Sunday close writes one for every product
+    it found more of than the app believed, the restock walk writes more, and
+    a retraction writes one too. Almost every one of them is already-labelled
+    stock whose number moved, so the widening did not print "a few spares" —
+    it printed a second sheet's worth of stickers for scarves that already had
+    one, every week, and "everything produced since Sunday" stopped matching
+    anything anybody had made. A list that cannot be checked is worse than a
+    short one, because it is why the person dyeing things stops believing the
+    page.
+
+    The legitimate case keeps its own two doors, which are better at it:
+    `inventory_run` (everything on hand, narrowed by category and blank) is
+    the bulk re-label, and `specific_items` covers the bag in the cupboard
+    exactly.
     """
 
     def setUp(self):
@@ -1167,12 +1182,13 @@ class LabelsIncludeAddedStockTests(TestCase):
         self.product = make_product(self.recipe, "Stormy Silk", with_image=False)
         self.cutoff = timezone.localdate() - timedelta(days=7)
 
-    def _log(self, log_type, quantity):
+    def _log(self, log_type, quantity, **kwargs):
         return InventoryLog.objects.create(
             finished_product=self.product,
             raw_product=self.product.raw_product,
             log_type=log_type,
             quantity=quantity,
+            **kwargs,
         )
 
     def _quantity(self):
@@ -1180,16 +1196,18 @@ class LabelsIncludeAddedStockTests(TestCase):
         rows = [r for r in run.rows if r.product.pk == self.product.pk]
         return sum(r.quantity for r in rows)
 
-    def test_a_bulk_adjustment_gets_labels(self):
+    def test_a_bulk_adjustment_asks_for_no_stickers(self):
         self._log(InventoryLog.ADJUSTMENT, 12)
 
-        self.assertEqual(self._quantity(), 12)
+        self.assertEqual(self._quantity(), 0)
 
-    def test_dyeing_and_added_stock_add_up(self):
+    def test_a_recount_beside_a_bath_does_not_inflate_it(self):
+        """The failure this was actually costing: a close that found twelve
+        extra turned a bath of four into sixteen stickers."""
         self._log(InventoryLog.PRODUCTION, 4)
-        self._log(InventoryLog.ADJUSTMENT, 12)
+        self._log(InventoryLog.ADJUSTMENT, 12, source=InventoryLog.SOURCE_SUNDAY_CLOSE)
 
-        self.assertEqual(self._quantity(), 16)
+        self.assertEqual(self._quantity(), 4)
 
     def test_stock_leaving_asks_for_no_labels(self):
         """A barcode answers 'what is this thing in my hand'. Nothing is in
@@ -1214,13 +1232,84 @@ class LabelsIncludeAddedStockTests(TestCase):
 
         self.assertEqual(self._quantity(), 5)
 
-    def test_an_old_adjustment_is_outside_the_cutoff(self):
-        log = self._log(InventoryLog.ADJUSTMENT, 9)
+    def test_a_retracted_bath_asks_for_no_stickers(self):
+        """Somebody saying the bath didn't happen is saying there is nothing
+        to stick a barcode to. The compensating row is an ADJUSTMENT this
+        query never reads, so the exclusion has to be explicit or an undone
+        bath goes on printing forever."""
+        from scarves import producedsince
+
+        log = self._log(InventoryLog.PRODUCTION, 5)
+        self.assertEqual(self._quantity(), 5)
+
+        producedsince.retract(log)
+
+        self.assertEqual(self._quantity(), 0)
+
+    def test_an_old_bath_is_outside_the_cutoff(self):
+        log = self._log(InventoryLog.PRODUCTION, 9)
         InventoryLog.objects.filter(pk=log.pk).update(
             created_at=timezone.now() - timedelta(days=60)
         )
 
         self.assertEqual(self._quantity(), 0)
+
+    def _yarn_product(self):
+        """A product of the other kind, so a category filter has work to do."""
+        from scarves.models import RawProduct, RawProductCategory
+
+        yarn, _ = RawProductCategory.objects.get_or_create(name="Yarn")
+        raw = RawProduct.objects.create(
+            name="Heavenly", category=yarn, price="9.00",
+        )
+        return FinishedProduct.objects.create(
+            name="Heavenly — Stormy Sea", raw_product=raw,
+            recipe=self.recipe, price="24.00",
+        )
+
+    def test_narrowing_by_category_keeps_only_that_kind(self):
+        """One pile of one kind of thing is what a weekly run usually is, and
+        the other half's stickers are a sheet somebody has to sort."""
+        yarn = self._yarn_product()
+        self._log(InventoryLog.PRODUCTION, 4)
+        InventoryLog.objects.create(
+            finished_product=yarn, raw_product=yarn.raw_product,
+            log_type=InventoryLog.PRODUCTION, quantity=7,
+        )
+
+        run = labelmod.produced_since(self.cutoff)
+        self.assertEqual(run.total, 11, "unfiltered, both kinds print")
+
+        run = labelmod.produced_since(
+            self.cutoff, category=yarn.raw_product.category,
+        )
+        self.assertEqual({r.product.pk for r in run.rows}, {yarn.pk})
+
+        run = labelmod.produced_since(
+            self.cutoff, category=self.product.raw_product.category,
+        )
+        self.assertEqual({r.product.pk for r in run.rows}, {self.product.pk})
+
+    def test_narrowing_by_blank_keeps_only_that_blank(self):
+        yarn = self._yarn_product()
+        self._log(InventoryLog.PRODUCTION, 4)
+        InventoryLog.objects.create(
+            finished_product=yarn, raw_product=yarn.raw_product,
+            log_type=InventoryLog.PRODUCTION, quantity=7,
+        )
+
+        run = labelmod.produced_since(
+            self.cutoff, raw_products=[self.product.raw_product],
+        )
+        self.assertEqual({r.product.pk for r in run.rows}, {self.product.pk})
+
+    def test_no_filter_means_every_blank_never_none(self):
+        """The rule the on-hand run follows: an empty filter is not a filter
+        that prints nothing, which would be a wasted trip to the copy shop."""
+        self._log(InventoryLog.PRODUCTION, 4)
+
+        run = labelmod.produced_since(self.cutoff, category=None, raw_products=[])
+        self.assertEqual(run.total, 4)
 class LabelStyleTests(TestCase):
     """Three flavours of one sticker, off one pipeline.
 

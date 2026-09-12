@@ -33,6 +33,16 @@ actionable one stops being read.
 
 {% block content %}
 
+  {% comment %}
+  The other thing a close produces, and for years the more important one: the
+  stack of kanban cards is the week's work order. This page counts what the
+  close put right; that page turns what it found into baths to dye.
+  {% endcomment %}
+  <p class="why">
+    <a href="{% url 'production_from_close' %}">Plan production from a close →</a>
+    Sunday night's cards, ordered empty-pegs-first, made into a list of baths.
+  </p>
+
   <div class="totals">
     <div>
       <div class="n">{{ found_total }}</div>

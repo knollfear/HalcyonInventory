@@ -834,6 +834,7 @@ class InventoryLog(models.Model):
     SOURCE_SQUARE_WEBHOOK = "square_webhook"
     SOURCE_SQUARE_IMPORT = "square_import"
     SOURCE_UNMATCHED_SALE = "unmatched_sale"
+    SOURCE_PRODUCTION_UNDO = "production_undo"
     SOURCE_TEST = "test"
     SOURCE_CHOICES = [
         (SOURCE_PRODUCTION_SHEET, "Production sheet"),
@@ -847,6 +848,7 @@ class InventoryLog(models.Model):
         (SOURCE_SQUARE_WEBHOOK, "Square webhook"),
         (SOURCE_SQUARE_IMPORT, "Square sales import"),
         (SOURCE_UNMATCHED_SALE, "Unidentified sale, resolved"),
+        (SOURCE_PRODUCTION_UNDO, "Production, taken back"),
         (SOURCE_TEST, "Simulated (fake_sale)"),
     ]
     source = models.CharField(
@@ -870,6 +872,31 @@ class InventoryLog(models.Model):
         (DAY, "Day only"),
         (MONTH, "Month only"),
     ]
+
+    #: The row this one takes back, set on the *compensating* entry.
+    #:
+    #: Nothing here is ever edited or deleted — a production row that turned
+    #: out not to have happened gets a negative row written beside it, so the
+    #: ledger says a thing was recorded and then retracted, which is what
+    #: actually occurred. Same bargain `closing.undo` already makes, and the
+    #: reason `private/produced-since/` can show a retraction rather than a
+    #: gap where a row used to be.
+    #:
+    #: It is also the single answer to "has this been taken back": a button
+    #: gets double-tapped and a page gets reopened, so the guard has to be a
+    #: row in the table and not a flag somebody remembers to set. PROTECT,
+    #: because deleting the original would leave a reversal of nothing.
+    reverses = models.ForeignKey(
+        "self",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="reversals",
+        help_text=(
+            "Set on a compensating entry: the earlier row this one takes "
+            "back. Blank on everything that happened on its own account."
+        ),
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
     date_precision = models.CharField(
@@ -904,6 +931,34 @@ class InventoryLog(models.Model):
         if self.date_precision == self.DAY:
             return local.strftime("%d %b %Y")
         return local.strftime("%d %b %Y, %H:%M")
+
+    @property
+    def day(self) -> str:
+        """The date without the clock, at the precision actually known.
+
+        What `private/produced-since/` groups on. A `month` row says only its
+        month, so an old kanban entry heads its own group rather than being
+        filed under a day nobody ever wrote down.
+        """
+        local = timezone.localtime(self.created_at)
+        if self.date_precision == self.MONTH:
+            return local.strftime("%b %Y")
+        return local.strftime("%a %d %b %Y")
+
+    @property
+    def is_retracted(self) -> bool:
+        """Whether a compensating entry has already taken this row back.
+
+        Read off the table rather than off a flag, so a double-tapped Undo
+        and a reopened page are the same no-op — the same reason
+        `ProductionRunRow.is_accepted` keys on its log.
+
+        Asked of one row at a time, on the way into a retraction. The pages
+        that list these rows filter retracted ones out in the query instead,
+        which is both cheaper and the only way to be sure a template can't
+        render one by accident.
+        """
+        return bool(self.reversals.all())
 
 
 class ProductImageUpload(models.Model):
@@ -1667,6 +1722,52 @@ class ProductionRun(models.Model):
             "bath that cannot be run where the paper says to run it."
         ),
     )
+    #: The Sunday close this list came out of, when that is where it came
+    #: from. Blank for a list planned off par on `private/production-sheet/`.
+    #:
+    #: **Two signals, one claim.** The planner reads par and asks "what is
+    #: short"; the close reads a physical walk of the display and hands back a
+    #: stack of kanban cards. Those compete only if both can plan the same
+    #: colorway, and what stops them is not a rule about which signal wins —
+    #: it is that a `ProductionRunRow` is the single claim, keyed on finished
+    #: product, whichever page wrote it. See `closeplan.claims`.
+    #:
+    #: Recorded rather than derived because it is the provenance of a work
+    #: order and the close's own page reads it back: "these five are on list
+    #: A" is answered by looking here.
+    close_run = models.ForeignKey(
+        "CloseRun",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="production_runs",
+        help_text=(
+            "The Sunday close whose cards this list was built from. Blank "
+            "means it was planned from par shortages instead."
+        ),
+    )
+
+    PAPER = "paper"
+    DIRECT = "direct"
+    REPORTING_CHOICES = [
+        (PAPER, "Printed sheet, reported by QR"),
+        (DIRECT, "No paper — reported on screen"),
+    ]
+    reporting = models.CharField(
+        max_length=10,
+        choices=REPORTING_CHOICES,
+        default=PAPER,
+        help_text=(
+            "How this list comes back. Paper is the dye-room sheet: three "
+            "printed documents, a pencil, and one QR scanned afterwards. "
+            "Direct skips the printing — the same list, reported on screen.\n\n"
+            "Asked once, when the list is made, because it is the one thing "
+            "about a list that cannot be both. A page offering a printout "
+            "*and* an on-screen report is a page asking somebody to decide "
+            "again every time they open it, and the reporting flow is "
+            "identical either way — only the door differs."
+        ),
+    )
     note = models.CharField(max_length=200, blank=True)
 
     class Meta:
@@ -1675,6 +1776,10 @@ class ProductionRun(models.Model):
     def __str__(self):
         kind = "Oven run" if self.oven else "Production run"
         return f"{kind} #{self.pk} ({self.rows.count()} baths)"
+
+    @property
+    def is_on_paper(self) -> bool:
+        return self.reporting == self.PAPER
 
     # --- what state this sheet is in ---------------------------------------
     #

@@ -92,8 +92,24 @@ and the link to hand over if the QR won't scan.
 
   <p>
     {{ run.rows.count }} bath{{ run.rows.count|pluralize }},
-    printed {{ run.created_at|date:"d M Y, H:i" }}.
+    {% comment %}
+    "Made" rather than "printed", because a direct list is never printed and
+    a page that says it was is a page contradicting the only thing that
+    distinguishes the two modes.
+    {% endcomment %}
+    made {{ run.created_at|date:"d M Y, H:i" }}.
     {% if run.included_overshoot %}Included products a bath takes past par.{% endif %}
+    {% comment %}
+    Where the list came from. Two signals feed this machinery — par
+    shortages, and Sunday night's stack of kanban cards — and the rows look
+    identical once they are here, so the provenance has to be said or the
+    only account of which walk this answers is a null column in the database.
+    {% endcomment %}
+    {% if run.close_run %}
+      From the cards of the
+      <a href="{% url 'production_from_close' %}?close={{ run.close_run.pk }}">close
+      of {{ run.close_run.day|date:"D d M Y" }}</a>.
+    {% endif %}
   </p>
 
   {% comment %}
@@ -169,9 +185,36 @@ and the link to hand over if the QR won't scan.
     </div>
   {% endif %}
 
-  <p>
-    <a class="btn" href="{% url 'production_sheet_pdf' run.pk %}">Print the sheet</a>
-  </p>
+  {% comment %}
+  One door, decided when the list was made and stored on the run. The
+  reporting flow is identical either way — the same rows, the same end
+  states, the same `accept_line` — so what `reporting` picks is which way in
+  leads, not what exists. The other way is still offered, quietly, below the
+  first: a paperless list that turns into a three-day session at a sink still
+  has to be printable, and a printed sheet whose paper got lost still has to
+  be reportable at a desk. What is not offered is *two equal buttons*, which
+  is the thing that makes somebody decide again every time they open the page.
+  {% endcomment %}
+  {% if run.is_on_paper %}
+    <p>
+      <a class="btn" href="{% url 'production_sheet_pdf' run.pk %}">Print the sheet</a>
+    </p>
+    <p class="muted">
+      Three documents in the order the job happens: the shelf list, the
+      working copy for the dye room, and the page that comes back. Or
+      <a href="{{ crew_url }}">say what you made without printing</a>.
+    </p>
+  {% else %}
+    <p>
+      <a class="btn" href="{{ crew_url }}">Say what you made</a>
+    </p>
+    <p class="muted">
+      No paper on this one. Tick the colorways that got dyed and say how many
+      came out — the same page the printed sheet's QR code opens. Changed your
+      mind and want it on paper after all?
+      <a href="{% url 'production_sheet_pdf' run.pk %}">Print the sheet</a>.
+    </p>
+  {% endif %}
 
   {% if run.is_open %}
     {% comment %}
@@ -197,10 +240,12 @@ and the link to hand over if the QR won't scan.
   {% endif %}
 
 
-  <p class="muted">
-    The crew's link, if the QR won't scan:<br>
-    <span class="crewlink">{{ crew_url }}</span>
-  </p>
+  {% if run.is_on_paper %}
+    <p class="muted">
+      The crew's link, if the QR won't scan:<br>
+      <span class="crewlink">{{ crew_url }}</span>
+    </p>
+  {% endif %}
 
   {% include "scarves/partials/dye_plan.html" %}
 
@@ -238,6 +283,20 @@ and the link to hand over if the QR won't scan.
             {% endif %}
           </td>
           <td class="strike">
+            {% comment %}
+            "I made more of that one." Offered on every row, accepted or not,
+            because the case it is for is a session that ran a second pot —
+            which is something you find out *after* reporting the first as
+            often as before. The catalogue search below is the tool for a
+            colour that was never on the list; this is the one for a row
+            already on screen with its name on it.
+            {% endcomment %}
+            <form method="post"
+                  action="{% url 'production_run_add_bath' run.pk row.pk %}">
+              {% csrf_token %}
+              <button type="submit" class="linkish"
+                      title="Put another bath of this on the list">another</button>
+            </form>
             {% if row.is_pending %}
               {% comment %}
               Striking a row cancels it rather than deleting it. The run is a

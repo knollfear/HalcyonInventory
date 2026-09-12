@@ -115,6 +115,32 @@ outcome records is the **direction** — the app was under, the
 stock-arrived-unrecorded end of the pipeline — and the direction is what is
 being counted.
 
+### The close is also the production signal
+
+The stack of cards the evening ends with is the week's work order, and has
+been for years — everything gets dyed against it and the week ends with *which
+of those did I make*. `private/production-from-close/` is that loop, and it is
+documented in `docs/claude/production.md` under *Two signals propose, one claim
+decides*. Read that before touching either end of it.
+
+Two things about the close itself are load-bearing for it and are easy to
+break from this side:
+
+- **`CloseRunRow.counted` and the row's frozen `display_slots` are what the
+  pool is built from**, not the live `number_on_hand` that `card_status()`
+  reads. Two questions, two tests — see the table in the production doc. The
+  planner's pool has to stay still while a plan is half made.
+- **A pending row is not a zero**, so a part-walked close plans short and the
+  planning page says so out loud. That is the same rule the counting list and
+  `stockout_baths` follow, and it is the reason the "still to count" figure
+  matters beyond the evening it was counted in.
+
+`production.stockout_baths` is the *other* thing built on these rows and it is
+a separate circuit: it turns a count of zero on the **latest** close into one
+more bath on a par-based sheet. Both read the same rows and neither knows about
+the other, because the only shared state that matters is the claim — a
+`ProductionRunRow`, matched on finished product.
+
 ### The close is also the stockout measure
 
 A `CloseRunRow` answered at **`counted == 0`** is the record that a product

@@ -775,14 +775,27 @@ class InventoryLogAdmin(admin.ModelAdmin):
     going up or down, and how they compare with the ways stock is supposed
     to move. The notes still say it in English for whoever is reading one
     row; the field is what makes counting them possible.
+
+    **This is the only place a retraction is visible**, and it needs to be.
+    An entry taken back on `private/produced-since/` drops off that page
+    completely — both rows, on purpose, because a correction that leaves a
+    struck-through row on a page somebody opens every week is a correction
+    with a price on it. Nothing is hidden from the table: `reverses` points a
+    compensating row at the one it undoes, and filtering `source` to
+    *Production, taken back* lists every one of them. Read it as data, which
+    is what it is; designing anything to discourage these is designing for
+    the corrections not to be made.
     """
     list_display = (
         "finished_product", "log_type", "source", "quantity", "raw_product",
-        "sale_reference", "created_at",
+        "sale_reference", "reverses", "created_at",
     )
     list_filter = ("log_type", "source", "raw_product__category", "created_at")
     search_fields = ("finished_product__name", "raw_product__name", "sale_reference")
     ordering = ("-created_at",)
+    # A few hundred thousand rows eventually; a dropdown of every log row is
+    # not a picker anybody can use.
+    raw_id_fields = ("reverses",)
 
 
 class CloseRunRowInline(admin.TabularInline):

@@ -15,7 +15,7 @@ were about to make.
 |---|---|
 | the pinned nav, `scarves/nav.py`, `?nav=` | `docs/claude/nav.md` |
 | dye entry, the dye picker, colour bands, `private/recipes/`, a recipe page | `docs/claude/recipes.md` |
-| the planner, production sheets, the oven, `sheetscan`, `secret/production/` | `docs/claude/production.md` |
+| the planner, production sheets, the oven, `sheetscan`, `secret/production/`, `private/produced-since/`, taking an entry back, planning from a close (`closeplan.py`) | `docs/claude/production.md` |
 | raw inventory, undyed yarn, notions, passthroughs, fancy veils | `docs/claude/stock.md` |
 | the display map, `DisplayFixture`, `secret/restock/` | `docs/claude/restock.md` |
 | `secret/close/`, `closing.py`, kanban tags | `docs/claude/close.md` |
@@ -23,7 +23,7 @@ were about to make.
 | `Sale`/`SaleLine`, importing history from Square | `docs/claude/sales-ledger.md` |
 | `sync_to_square`, variation order, prices, catalogue images | `docs/claude/square.md` |
 | hours, `secret/booth/`, unidentified sales, the handbook, the crew PIN | `docs/claude/crew.md` |
-| barcode labels, `LabelStock`, photographing stock | `docs/claude/labels.md` |
+| barcode labels, `LabelStock`, `LABELLED_LOG_TYPES`, photographing stock | `docs/claude/labels.md` |
 
 ## Running & testing
 
@@ -275,6 +275,21 @@ the ledger records what entered inventory, so a cancelled bath and a bath
 nobody printed leave the same trace there, which is none. Retiring a sheet is
 cancelling what is left on it; see the production-sheet section.
 
+**An `InventoryLog` row is never edited or deleted either, and a mistake in one
+is undone by a second row.** `private/produced-since/` has a *take it back*
+button for a dye bath that turns out not to have happened; it writes a
+compensating entry pointing at the original through `reverses`, moves the
+stock the other way, and leaves the first row exactly as written — the same
+bargain `closing.undo` makes. Two consequences worth knowing before touching
+anything that reads these rows. **The question is never "was a production row
+written", it is "does one still stand"** (`reversals__isnull=True`), and
+`labels.produced_since` and `rawdemand._entered_production` both had to learn
+that. And **the retraction is invisible on the page that offers it** — both
+rows drop out of the list rather than one showing struck through, which
+inverts the usual rule about vanishing rows on purpose; the argument is in
+`docs/claude/production.md` and it is about what a correction costs the person
+making it.
+
 ## Inventory log dates: print `log.when`, never `log.created_at`
 
 `InventoryLog.created_at` is always a full timestamp, but it is not always
@@ -369,6 +384,43 @@ expected sales plus a desired buffer is a real question and today's answer
 works. And stock will eventually be **geographically scattered** — a storage
 locker, online fulfilment — so don't bake in the assumption that one number
 describes one place.
+
+## Two signals propose a dye bath; one claim decides
+
+There are two answers in this app to "what should we dye", both are right, and
+what stops them fighting is **not** a rule about which one wins.
+
+- **Par shortages** — `private/production-needed/`, `private/production-sheet/`.
+- **Sunday night's cards** — `private/production-from-close/`, the stack of
+  kanban tags the close leaves in somebody's hand (`scarves/closeplan.py`).
+
+The close is the shop's own loop and it predates the app: the crew walk the
+display, count, and the week's work is whatever has an empty bag. The par
+machinery was the app proposing a *different* loop off a number nobody chose,
+and the correction ran the other way — the close had already been built for the
+stock count and turned out to be the model for how the work happens.
+
+**Neither signal is the claim. A `ProductionRunRow` is** — one row, one bath,
+matched on finished product, whoever wrote it. So a card on any list drops off
+the close's pool, a colorway on a live sheet never enters it, and
+`in_flight()` subtracts a close list's baths from the planner without knowing
+where they came from. *However it got onto a list, it is accounted for.*
+
+Three rules follow:
+
+- **Anything that plans a bath writes a `ProductionRunRow`.** A third planner
+  keeping its own book will quietly plan what somebody else already planned,
+  and the failure is silent and lands in the dye room.
+- **Don't make the two signals into modes.** Both pages link to the other and
+  say what the shared claim does. A mode asks somebody to pick a loop before
+  they know which suits the week, and the honest answer is both — par at a
+  desk off season, cards during the nine weeks the stall is open.
+- **A row is one bath, always.** "I made two" appends a second row rather than
+  doubling a quantity, because every end state is per bath: three baths where
+  one pot failed is `5, 5, 0`.
+
+The one stored choice is **paper or not**, per list, asked once when the list
+is made — see *A list is paper or it isn't* in `docs/claude/production.md`.
 
 ## The app advises, a person decides — and the tell is a number that looks like a fact
 

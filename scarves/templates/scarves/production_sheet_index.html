@@ -159,6 +159,22 @@ the preview is deliberately a GET and the print button is the only POST.
     </p>
   {% endif %}
 
+  {% comment %}
+  The other signal, named here rather than left to be discovered. This page
+  plans from par; that one plans from Sunday night's physical walk. They do
+  not compete, because a `ProductionRunRow` is one claim matched on finished
+  product whoever wrote it — a card on a list never reaches this page's
+  suggestions, and a colorway suggested here drops off that page's pool.
+  Saying so is the point: two planning pages with no word between them is how
+  somebody assumes they have to pick one and then avoids both.
+  {% endcomment %}
+  <p class="lead">
+    Planning off the Sunday close instead?
+    <a href="{% url 'production_from_close' %}">Production from a close →</a>
+    Whatever lands on a list there is off the suggestions here, and the other
+    way round — nothing gets planned twice unless you add it.
+  </p>
+
   {% if overdue_runs %}
     {% comment %}
     The one list on this page that is asking for something, so it is first

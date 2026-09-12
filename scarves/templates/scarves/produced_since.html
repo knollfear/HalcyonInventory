@@ -1,0 +1,245 @@
+{% extends "scarves/base_internal.html" %}
+{% comment %}
+The receipt for the production flow.
+
+Two jobs, and the second one is why the first matters: show what the app
+believes was dyed, and let somebody take an entry back. Every other page in
+the app consumes these rows — the label sheet, the raw shelf forecast, the
+planner — and none of them ever showed the rows themselves, so recording a
+dye bath was a commitment with no receipt and no way out. The safe move was
+not to record it.
+
+**A retracted entry leaves no mark here.** Both rows drop out of the list —
+see `producedsince.entries` for the argument. A struck-through row reading
+"taken back" is a standing note about a mistake on a page somebody opens every
+week, and a correction that leaves one behind is a correction with a price on
+it. Nothing is hidden from the record: both rows stay in `InventoryLog`, and
+the admin shows them like it shows everything else.
+
+No confirmation dialog in front of Take back, deliberately. Friction there is
+friction on being honest, and the thing this page is trying to prevent is a
+wrong number nobody mentions.
+{% endcomment %}
+
+{% block title %}Produced Since{% endblock %}
+{% block heading %}What the app thinks was dyed{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 1000px; }
+
+  .lead { font-size: .95rem; color: #556; max-width: 72ch; }
+  .lead + .lead { margin-top: 8px; }
+
+  /* The window picker. A GET form, so the page you are looking at is a URL. */
+  .window {
+      display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-end;
+      margin: 18px 0 6px;
+  }
+  .window .field { display: grid; gap: 5px; }
+  .window label {
+      font-size: .78rem; text-transform: uppercase; letter-spacing: .04em;
+      color: #667;
+  }
+  .window input[type="date"], .window select {
+      font: inherit; padding: 7px 9px;
+      border: 1px solid #cfd6de; border-radius: 7px; background: #fff;
+  }
+  .presets { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0 24px; }
+  .presets a {
+      font-size: .85rem; text-decoration: none; color: var(--ink);
+      border: 1px solid #cfd6de; border-radius: 999px; padding: 4px 12px;
+      background: #fff;
+  }
+  .presets a:hover { border-color: var(--accent); background: #eef2f7; }
+  .presets a.on {
+      border-color: var(--accent); background: var(--accent); color: #fff;
+  }
+
+  .totals { display: flex; gap: 28px; flex-wrap: wrap; margin: 4px 0 26px; }
+  .totals .n { font-size: 2.2rem; font-weight: 700; line-height: 1.05; }
+  .totals .what { font-size: .9rem; color: #556; max-width: 24ch; }
+
+  .breakdown { font-size: .9rem; color: #556; margin: -14px 0 26px; }
+  .breakdown span + span::before { content: " · "; color: #aab; }
+
+  h2 .day-units {
+      float: right; font-size: .82rem; font-weight: 400;
+      text-transform: none; letter-spacing: 0; color: #667;
+      border-bottom: none;
+  }
+
+  table { border-collapse: collapse; width: 100%; margin-bottom: 6px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e2e6ec; }
+  th {
+      font-size: .8rem; text-transform: uppercase; letter-spacing: .04em;
+      color: #667; white-space: nowrap;
+  }
+  td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.act { text-align: right; }
+  .made { font-weight: 700; color: #2e7d52; }
+  .what-it-is { font-weight: 600; }
+  .detail { font-size: .82rem; color: #78808c; }
+  .from { font-size: .82rem; color: #556; }
+  .note { font-size: .82rem; color: #78808c; max-width: 46ch; }
+  .history-only {
+      display: inline-block; font-size: 11px; border-radius: 999px;
+      padding: 2px 9px; color: #665; background: #f6f4ee;
+      border: 1px solid #e3ddc9; white-space: nowrap;
+  }
+
+  /* Narrow screens: the notes column is the first thing to go, since it is
+     the one whose absence costs the least. */
+  @media (max-width: 720px) {
+      th.note-col, td.note { display: none; }
+  }
+
+  .table-wrap { overflow-x: auto; margin-bottom: 26px; }
+{% endblock %}
+
+{% block content %}
+
+  <p class="lead">
+    Every dye bath the app has a record of, newest first, with what it thinks
+    is on hand now. This is the same set of entries the barcode sheet prints
+    stickers from and the raw shelf reads to work out when to reorder — so if
+    something here is wrong, those are wrong too.
+  </p>
+  <p class="lead">
+    <strong>If an entry didn't happen, take it back.</strong> Stock goes back
+    to what it was, the blanks go back on the raw shelf, and the entry comes
+    off this list. Nobody needs to be asked and nothing needs explaining.
+  </p>
+
+  <form method="get" class="window">
+    <div class="field">
+      <label for="{{ form.since.id_for_label }}">{{ form.since.label }}</label>
+      {{ form.since }}
+    </div>
+    <div class="field">
+      <label for="{{ form.category.id_for_label }}">{{ form.category.label }}</label>
+      {{ form.category }}
+    </div>
+    <div class="field">
+      <button class="btn" type="submit">Show</button>
+    </div>
+  </form>
+  {{ form.since.errors }}
+  {{ form.category.errors }}
+
+  <div class="presets">
+    {% for preset in presets %}
+      <a href="{{ preset.url }}" class="{% if preset.is_current %}on{% endif %}">{{ preset.label }}</a>
+    {% endfor %}
+  </div>
+
+  <div class="totals">
+    <div>
+      <div class="n made">{{ record.units }}</div>
+      <div class="what">
+        units recorded since {{ since|date:"d M Y" }}{% if category %}, {{ category.name }} only{% endif %}
+      </div>
+    </div>
+    <div>
+      <div class="n">{{ record.count }}</div>
+      <div class="what">entries, across {{ record.groups|length }} day{{ record.groups|length|pluralize }}</div>
+    </div>
+  </div>
+
+  {% if record.by_category or record.by_source %}
+    <p class="breakdown">
+      {% for name, units in record.by_category %}<span>{{ name }}: {{ units }}</span>{% endfor %}
+      {% for name, units in record.by_source %}<span>{{ name }}: {{ units }}</span>{% endfor %}
+    </p>
+  {% endif %}
+
+  {% if record.is_empty %}
+    <p class="empty">
+      Nothing recorded in that window. Either nothing was dyed, or it hasn't
+      been typed up yet — the entries are written when somebody records a
+      session, which is usually a while after the pots came off.
+    </p>
+  {% endif %}
+
+  {% for group in record.groups %}
+    <h2>
+      {{ group.label }}
+      <span class="day-units">{{ group.units }} unit{{ group.units|pluralize }}</span>
+    </h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>What</th>
+            <th class="n">Recorded</th>
+            <th class="n">On hand now</th>
+            <th>Recorded from</th>
+            <th class="note-col">Note</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for log in group.rows %}
+            <tr>
+              <td>
+                <div class="what-it-is">{{ log.finished_product.name }}</div>
+                <div class="detail">
+                  {{ log.finished_product.sku|default:"no SKU" }}
+                  {% if log.finished_product.raw_product.category %}
+                    · {{ log.finished_product.raw_product.category.name }}
+                  {% endif %}
+                </div>
+              </td>
+              <td class="n made">+{{ log.quantity }}</td>
+              <td class="n">
+                {% if log.moved_stock %}
+                  {{ log.finished_product.number_on_hand }}
+                {% else %}
+                  <span class="history-only">history only</span>
+                {% endif %}
+              </td>
+              <td class="from">
+                {{ log.get_source_display|default:"not recorded" }}
+                {% comment %}
+                `when` and never `created_at`: a month-precision row from an
+                old kanban card knows only its month, and printing a day
+                nobody wrote down is the thing that rule exists to stop.
+                {% endcomment %}
+                <div class="detail">{{ log.when }}</div>
+              </td>
+              <td class="note">{{ log.notes }}</td>
+              <td class="act">
+                <form method="post"
+                      action="{% url 'produced_since_retract' log.pk %}">
+                  {% csrf_token %}
+                  {% comment %}
+                  Carries the window back, so taking one entry back doesn't
+                  reset the page to the default month and lose her place. The
+                  query string rather than a whole URL — the view rebuilds its
+                  own path around it, so this field can't decide where a staff
+                  session gets sent.
+                  {% endcomment %}
+                  <input type="hidden" name="window" value="{{ request.GET.urlencode }}">
+                  <button class="btn-quiet" type="submit">Didn't make this</button>
+                </form>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endfor %}
+
+  <p class="lead">
+    <a href="{{ labels_url }}">Print barcodes for this window →</a>
+    The label sheet counts exactly these entries, so the two pages agree by
+    construction — whatever is not on this list asks for no stickers there.
+  </p>
+  <p class="lead">
+    Typing up an old kanban card belongs on
+    <a href="{% url 'card_backfill_index' %}">the cards page</a>, which writes
+    history and never moves current stock — those entries show up here marked
+    <span class="history-only">history only</span>.
+  </p>
+
+{% endblock %}

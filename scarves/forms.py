@@ -844,7 +844,10 @@ class LabelRunForm(forms.Form):
     INVENTORY = "inventory"
     ITEMS = "items"
     DATASET_CHOICES = [
-        (SINCE, "Added to stock since a date"),
+        # Named for what it counts. "Added to stock" was the label while this
+        # also read recounts, and it is exactly the wording that made the
+        # widening look reasonable.
+        (SINCE, "Dyed since a date"),
         (INVENTORY, "Everything on hand"),
         (ITEMS, "Specific items I pick"),
     ]
@@ -869,10 +872,13 @@ class LabelRunForm(forms.Form):
     since = forms.DateField(
         required=False,
         widget=forms.DateInput(attrs={"type": "date"}),
-        label="Added on or after",
-        help_text="Covers dyeing and stock counted in through a bulk inventory "
-                  "update — anything that arrived needs a barcode. Defaults to "
-                  "the last time you printed from this browser.",
+        label="Dyed on or after",
+        help_text="Counts dye baths and nothing else — a recount at the "
+                  "Sunday close or on the restock walk is stock that already "
+                  "has stickers, and it used to be counted here. Stock "
+                  "counted in for the first time is a job for "
+                  "‘everything on hand’ or a picked list. Defaults "
+                  "to the last time you printed from this browser.",
     )
     category = forms.ModelChoiceField(
         queryset=None, required=False, empty_label="All categories",
@@ -989,6 +995,61 @@ class LabelRunForm(forms.Form):
             )
 
         return cleaned
+
+
+class ProducedSinceForm(forms.Form):
+    """A date and, optionally, a kind of thing. That is the whole page.
+
+    A GET form, so the view somebody is looking at is a URL she can bookmark
+    or paste into a message — and the parameters are named after the fields
+    they fill in, which is the rule the rest of the app's query-string state
+    follows.
+
+    `since` has a default rather than being required. A page that refuses to
+    render until somebody picks a date is a page that answers "what does the
+    app think I made" with a form, and the entire reason it exists is that
+    the answer was not visible anywhere.
+    """
+
+    #: Long enough to cover a dye session plus the week or two before it gets
+    #: typed up, short enough that the page opens on something readable. It
+    #: is a starting view and not a claim about anything — the presets and the
+    #: box are both right there.
+    DEFAULT_DAYS = 30
+
+    since = forms.DateField(
+        required=False,
+        widget=forms.DateInput(attrs={"type": "date"}),
+        label="Recorded on or after",
+        help_text="Dates are the date recorded against the entry, which for "
+                  "a kanban card typed up later is the date on the card.",
+    )
+    category = forms.ModelChoiceField(
+        queryset=None, required=False, empty_label="Yarn and silk",
+        label="Kind",
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["category"].queryset = RawProductCategory.objects.order_by("name")
+        # So the box shows the window the page is actually using. An empty
+        # box beside a month of entries is the form disagreeing with the
+        # list, and the way that gets discovered is somebody pressing Show
+        # on a blank field and wondering why nothing changed. Only affects
+        # the unbound form — submitted data always wins.
+        self.fields["since"].initial = self.default_since()
+
+    @classmethod
+    def default_since(cls):
+        return timezone.localdate() - timedelta(days=cls.DEFAULT_DAYS)
+
+    def clean_since(self):
+        """Blank means the default window, never "everything ever".
+
+        An unbounded page would pull in every kanban card back to 2024 and
+        bury this season's dozen entries under them.
+        """
+        return self.cleaned_data.get("since") or self.default_since()
 
 
 class BoothPhotoForm(forms.Form):

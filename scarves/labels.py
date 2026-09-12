@@ -296,22 +296,39 @@ def specific_items(pairs, style=BARCODE):
 
 #: Log types that mean "an item arrived on the shelf and needs a sticker".
 #:
-#: PRODUCTION is the obvious one. ADJUSTMENT is the other door, and leaving it
-#: out was a hole: stock counted in through `bulk_inventory_update` — a bag
-#: found in a cupboard, a display rack folded back into inventory, anything
-#: that existed before this app did — got no labels at all, and nothing said
-#: so. The only symptom is a scarf that won't scan at the till with a queue
-#: behind it, which is the failure the whole of this module is arranged to
-#: prevent.
+#: **Production, and nothing else.** ADJUSTMENT used to be in here and the
+#: reasoning was about a real hole — stock counted in through
+#: `bulk_inventory_update` has never been labelled, and an unlabelled scarf is
+#: discovered at the till with a queue behind it. That was the right problem
+#: and the wrong door, and the cost only became legible once somebody read the
+#: sheet as a *record*.
 #:
-#: SALE stays out deliberately. A sale doesn't reduce the need for a sticker;
-#: the item exists and left wearing one. Netting sales in would subtract
-#: labels for scarves that already have them.
-LABELLED_LOG_TYPES = (InventoryLog.PRODUCTION, InventoryLog.ADJUSTMENT)
+#: An adjustment is a **recount**, not an arrival. The Sunday close writes one
+#: for every product it found more of than the app believed, the restock walk
+#: writes more, and a retraction on `private/produced-since/` writes one too.
+#: None of those is a scarf that has just come out of a pot needing a sticker;
+#: almost all of them are already-labelled stock whose number moved. So the
+#: widening did not print "some spares" — it printed a second sheet's worth of
+#: stickers for scarves that already had one, every single week, and it made
+#: "everything produced since Sunday" into a list that did not match what
+#: anybody had dyed. A list you cannot check is worse than a short one,
+#: because it is the reason the person who dyes things stops believing the
+#: page.
+#:
+#: The legitimate case keeps both of its own doors, and they are better at it:
+#: **everything on hand**, narrowed by category and blank, is the bulk
+#: re-label this was reaching for, and **specific items I pick** covers the
+#: bag found in the cupboard exactly.
+#:
+#: SALE stays out for the original reason. A sale doesn't reduce the need for
+#: a sticker; the item exists and left wearing one. Netting sales in would
+#: subtract labels for scarves that already have them.
+LABELLED_LOG_TYPES = (InventoryLog.PRODUCTION,)
 
 
-def produced_since(cutoff, extra=0, style=BARCODE):
-    """One sticker per unit that arrived at or after `cutoff`.
+def produced_since(cutoff, extra=0, style=BARCODE, category=None,
+                   raw_products=None):
+    """One sticker per unit dyed at or after `cutoff`.
 
     Sums log quantities rather than reading `number_on_hand`, so what already
     sold still gets a sticker — the items exist, they just aren't on the shelf
@@ -323,29 +340,23 @@ def produced_since(cutoff, extra=0, style=BARCODE):
     also stops a correction in one week silently eating the stickers owed to a
     bath in the same week.
 
-    Counts both dyeing and stock counted in — see `LABELLED_LOG_TYPES`. That
-    widening prints some spares: an upward recount of items that were already
-    labelled asks for stickers they already have. It is the right side of the
-    trade by a wide margin. A spare sticker costs a fraction of a cent and
-    sits in a drawer; a missing one is discovered at the till, in front of a
-    customer, with no way to sell the thing in hand. Erring toward printing is
-    the same bargain `UnmatchedSale` makes about capture.
+    **A retracted entry asks for no stickers.** Somebody saying on
+    `private/produced-since/` that a bath did not happen is saying there is
+    nothing to put a barcode on, and the compensating row is an ADJUSTMENT
+    this query does not read — so the exclusion has to be explicit or an
+    undone bath would go on printing forever.
+
+    Narrowing by category or by blank is the same filter `inventory_run` takes
+    and means the same thing: the weekly run is often one pile of one kind of
+    thing, and an empty filter is every blank rather than none.
 
     Back-dated entries take care of themselves: a kanban backfill carries
     `created_at` set to the date on the card, not the day it was typed, so a
     2024 card entered this morning correctly does not ask for stickers.
     """
     cutoff_dt = _as_datetime(cutoff)
-    totals = (
-        InventoryLog.objects.filter(
-            log_type__in=LABELLED_LOG_TYPES,
-            quantity__gt=0,
-            created_at__gte=cutoff_dt,
-            finished_product__is_active=True,
-        )
-        .values("finished_product")
-        .annotate(n=Sum("quantity"))
-    )
+    logs = _labelled_logs(cutoff_dt, category, raw_products)
+    totals = logs.values("finished_product").annotate(n=Sum("quantity"))
     counts = {t["finished_product"]: t["n"] or 0 for t in totals}
     products = (
         FinishedProduct.objects.filter(pk__in=counts)
@@ -357,8 +368,32 @@ def produced_since(cutoff, extra=0, style=BARCODE):
         style=style,
         rows=rows,
         skipped_no_sku=skipped,
-        ambiguous_month_logs=month_precision_ambiguity(cutoff_dt),
+        ambiguous_month_logs=month_precision_ambiguity(
+            cutoff_dt, category, raw_products
+        ),
     )
+
+
+def _labelled_logs(cutoff_dt, category=None, raw_products=None):
+    """The rows a since-run counts. One place, so the warning can't drift.
+
+    `month_precision_ambiguity` describes rows *this* run might be missing, so
+    it has to be scoped identically — same log types, same positive-only rule,
+    same narrowing. Two copies of that filter is how the warning ends up
+    describing rows the run was never going to print.
+    """
+    qs = InventoryLog.objects.filter(
+        log_type__in=LABELLED_LOG_TYPES,
+        quantity__gt=0,
+        created_at__gte=cutoff_dt,
+        finished_product__is_active=True,
+        reversals__isnull=True,
+    )
+    if category:
+        qs = qs.filter(finished_product__raw_product__category=category)
+    if raw_products:
+        qs = qs.filter(finished_product__raw_product__in=raw_products)
+    return qs
 
 
 def _as_datetime(value):
@@ -368,17 +403,18 @@ def _as_datetime(value):
     return timezone.make_aware(datetime.combine(value, time.min))
 
 
-def month_precision_ambiguity(cutoff_dt) -> int:
+def month_precision_ambiguity(cutoff_dt, category=None,
+                              raw_products=None) -> int:
     """How many production rows the cutoff might be wrongly excluding.
 
     A `month`-precision log is stored on the 1st so that it sorts — that day
     is padding, not a record (see `InventoryLog.when`). So a cutoff mid-month
     excludes a same-month row whose real date could have been either side of
-    it. Scoped to exactly the rows the run itself counts — same log types,
-    same positive-only rule — so the warning can never describe rows the run
-    was never going to print anyway. The page reports the count instead of silently dropping them, which is
-    the same bargain the rest of the app makes with these rows: say only what
-    is actually known.
+    it. Scoped through `_labelled_logs` to exactly the rows the run itself
+    counts, narrowing included, so the warning can never describe rows the run
+    was never going to print anyway. The page reports the count instead of
+    silently dropping them, which is the same bargain the rest of the app
+    makes with these rows: say only what is actually known.
 
     Realistic cutoffs are recent and old backfills are irrelevant, so this is
     almost always zero — it just shouldn't be *silently* nonzero.
@@ -386,13 +422,11 @@ def month_precision_ambiguity(cutoff_dt) -> int:
     month_start = cutoff_dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     if month_start == cutoff_dt:
         return 0
-    return InventoryLog.objects.filter(
-        log_type__in=LABELLED_LOG_TYPES,
-        quantity__gt=0,
-        date_precision=InventoryLog.MONTH,
-        created_at__gte=month_start,
-        created_at__lt=cutoff_dt,
-    ).count()
+    return (
+        _labelled_logs(month_start, category, raw_products)
+        .filter(date_precision=InventoryLog.MONTH, created_at__lt=cutoff_dt)
+        .count()
+    )
 
 
 # ---------------------------------------------------------------------------

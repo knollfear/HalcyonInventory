@@ -113,6 +113,20 @@
     </p>
   {% endif %}
 
+  {% comment %}
+  Every button on this page writes an inventory entry, and until there was a
+  page listing them the buttons wrote into the dark — which is a good reason
+  not to press one. Named up here rather than beside each button: it is the
+  same destination for all of them, and one line at the top is a promise
+  about the page rather than a caveat repeated two hundred times.
+  {% endcomment %}
+  <p class="netnote">
+    Everything recorded here lands on
+    <a href="{% url 'produced_since' %}">Produced since</a>, which lists it
+    and takes it back if it didn't happen.
+  </p>
+
+
   {% if groups %}
     {% for g in groups %}
       <div class="card">

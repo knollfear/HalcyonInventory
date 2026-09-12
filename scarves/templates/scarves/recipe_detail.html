@@ -404,6 +404,18 @@
           that yarn was counted or sold long ago, so those entries record
           history without touching current stock.
         </p>
+        {% comment %}
+        The way out, named beside the way in. Recording a bath used to be a
+        commitment with nothing to read back and no way to undo it, and the
+        rational response to that is not to record anything — so the button
+        that writes an entry has to say, right here, where the entry goes and
+        how it comes off again.
+        {% endcomment %}
+        <p class="small muted">
+          Recorded something by mistake?
+          <a href="{% url 'produced_since' %}">Produced since</a> lists every
+          entry the app has and takes one back if it didn't happen.
+        </p>
       {% endif %}
     </form>
   {% else %}

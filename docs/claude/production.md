@@ -2,6 +2,185 @@
 
 Part of the project guidance in `CLAUDE.md`, which carries the rules that apply everywhere. Read this file before touching anything it covers.
 
+## Two signals propose, one claim decides
+
+**Read this before adding anything that plans a dye bath.** There are two
+answers in this app to "what should we dye", they are both right, and the
+thing that stops them fighting is not a rule about which one wins.
+
+- **Par shortages.** `private/production-needed/` and
+  `private/production-sheet/` — what is below par, ranked on season sales,
+  printed as a dye-room worksheet. The sections below are all about this one.
+- **Sunday night's cards.** `private/production-from-close/` — the stack of
+  kanban tags the close leaves in somebody's hand, made into a list of baths.
+  `scarves/closeplan.py`.
+
+**The close is the shop's own signal and it predates the app.** The crew walk
+the display on Sunday night, count what is there, and the evening ends holding
+a card for every product whose bag is empty. That stack is the week's work
+order; everything gets dyed against it and the week ends with *which of those
+did I make*. The par machinery was the app proposing a different loop — and
+par was never dialled in, so it asks somebody to trust a number she did not
+choose about a shelf she walked past twelve hours ago. It went unused. The
+close had already been built for the stock count, and it turned out to be the
+model for how the work actually happens rather than one more report.
+
+So both exist, and **the reason they don't compete is that neither of them is
+the claim.** A `ProductionRunRow` is: one row, one bath, matched on finished
+product, whoever wrote it. A card that lands on any list is accounted for and
+drops off the pool; a colorway already out on a par-based sheet never enters
+it; `production.in_flight` subtracts a close list's pending baths from the
+sheet picker without knowing where they came from. **However it got onto a
+list, it is accounted for** — and that sentence is the whole division.
+
+Two consequences to hold onto:
+
+- **Don't add a third planner that keeps its own book.** Anything that plans a
+  bath writes a `ProductionRunRow`, or it will quietly plan what somebody else
+  already planned. The failure is silent and lands in the dye room.
+- **Don't make the two signals into modes.** Neither page hides the other and
+  neither one switches the app into a state; both link to the other and say
+  what the shared claim does. A mode would make somebody pick a loop before
+  knowing which one suits the week, and the answer is genuinely both — par at
+  a desk in the off season, cards in the nine weeks when the stall is open.
+
+The one thing that *is* a stored choice is **paper or not**, and it is per
+list rather than per person — see *A list is paper or it isn't* below.
+
+## `private/production-from-close/`: Sunday night's cards into baths
+
+`closeplan.cards(close)` is the stack; the page puts a number box beside each
+and makes a `ProductionRun` out of what gets typed.
+
+**The pool is frozen at the close.** A card is an answered `CloseRunRow` whose
+`counted` came in at or below the `display_slots` that row froze that night —
+the app's own words for an empty bag, asked of a number somebody physically
+counted.
+
+This is deliberately **not** `closing.card_status()`, which asks the same
+question of the **live** `number_on_hand`. Two questions:
+
+| Function | Asks | Reads |
+|---|---|---|
+| `closing.card_status` | what should be in the stack *now* | live `number_on_hand` |
+| `closeplan.cards` | what did Sunday *find* | the row's `counted` |
+
+The live test is right for somebody holding the cards at the end of the
+evening. It is wrong here: dye a bath on Wednesday and it flips, so a live
+pool would drop rows out from under a half-made plan with nothing anywhere to
+say whether a missing card was made, claimed, or never in the stack. Anybody
+"fixing" one of these to match the other has broken the other one.
+
+**Pending rows are not cards.** A walk that covered 23 of 40 pegs leaves the
+rest unanswered, and an unanswered row is "nobody looked" — never a zero. The
+page says how many were never counted and links back into counting, because a
+plan off a half-worked close is short by however many pegs got skipped and a
+list that reads complete is the silence the close exists to break. Same
+refusal `production.stockout_baths` makes.
+
+**Three kinds of card can't go on a dye list**, and they are the same three
+`candidates()` refuses: an undyed passthrough (ordered, not made), a fancy
+veil (line work on a scarf that already exists), and a retired colorway
+(nobody dyes it any more). Those are real cards — the thing genuinely ran out
+and the tag is genuinely in a hand — they just cannot be answered by heating
+anything. A passthrough only reaches a close through the unpredicted-tag
+search, since `expected_products()` already excludes a null recipe, and that
+path stays open on purpose.
+
+### The order is the shelf's, not par's
+
+**Empty pegs and last-one-hanging first, then what the colorway sold this
+season.** `CRITICAL_AT = 1`, so a count of 0 or 1 leads whatever anything
+sold; everything else is ordered on `slowsellers.sold_by_recipe`, the same
+function `production-needed` reports from and `candidates()` ranks on.
+
+The band is about the **shelf**, not a fraction of it: `counted` is the total,
+display plus bag, so 1 means the last one is hanging there and 0 means it has
+gone. Two on a four-peg hook is an empty bag and is *not* critical. A third
+value would start being a judgement about how much stock is enough, which is
+par's job and par is the number this page exists to route around.
+
+Both numbers print on the card, because a ranking nobody can check by looking
+is a ranking they have to trust — the same call `production-needed` makes with
+its sold count.
+
+### One close, several lists
+
+Take five cards onto list A and those five are gone. Ten more onto list B, the
+balance onto C. `closeplan.claims` is what does it, and it differs from
+`production.in_flight` in one deliberate way:
+
+- **`in_flight` counts pending rows only.** Its question is "how much is still
+  out being dyed", and an accepted bath has already landed in
+  `number_on_hand`, so counting it would subtract it twice.
+- **`claims` counts accepted rows too.** Its question is "is this card dealt
+  with", and a card she made and reported on Friday is the most dealt-with a
+  card gets. Counting pending only would put every finished bath back on the
+  pool the moment it was reported, which is the opposite of what reporting
+  means.
+
+**Cancelled rows release the claim** in both, which is the same promise the
+crew's *not coming* button relies on: the bath never ran, so the card goes
+back in the pool.
+
+**The window starts at the close's own day.** A list made last Tuesday was
+answering last week's walk, and a card that came up again on Sunday came up
+again for a reason — the shelf was counted and it was still empty. The
+boundary is the day rather than a timestamp because a close *is* a day
+(`CloseRun.day` is unique and locks at midnight), so a list planned that same
+evening has to count.
+
+**A claimed card is listed, never hidden.** It sits in its own section under
+the pool naming the list it is on, because a card missing with nothing said
+reads exactly like a card that was never in the stack. And **adding one back
+deliberately is allowed** — *nothing gets planned twice unless she added it*
+is a statement about the default, not a refusal, and `make_list` checks
+nothing.
+
+### A list is paper or it isn't, and that is asked once
+
+`ProductionRun.reporting` is `paper` or `direct`, chosen when the list is made
+and stored on the run.
+
+**The reporting flow is identical either way** — the same rows, the same three
+end states, the same `accept_line`, the same page at
+`secret/production/<token>/`. What the mode decides is which door the run page
+*leads with*: paper offers the printout first, direct offers "say what you
+made" first. The other door stays available underneath, because a paperless
+list that turns into a three-day session at a sink still has to be printable,
+and a printed sheet whose paper got lost still has to be reportable at a desk.
+
+What is not offered is **two equal buttons**, and that is the whole point of
+storing it. A page presenting a printout and an on-screen report side by side
+asks somebody to decide again every time they open it, and the decision was
+already made when the list was created. Default is `paper`, because every
+sheet made before this existed was one.
+
+### "If I made more, let me say so"
+
+Two ways, and they are for different things:
+
+- **`another`, beside each row** (`production_run_add_bath`) — the list said
+  one bath and the pot ran twice. One click, on a row already on screen with
+  its name on it. Offered on accepted rows as well as pending ones, because
+  finding out you ran a second pot happens after reporting the first as often
+  as before.
+- **The catalogue search** — a colour that was never on the list at all.
+
+Both **append a row of one bath** rather than growing an existing row's
+quantity, for the reason every row is one bath: three baths where one pot
+failed is `5, 5, 0`, and a single row of fifteen cannot say it.
+`production.lines_for` folds them back into one question, so the reporting
+side sees one colorway with two baths on it — which is what somebody is
+standing in front of.
+
+**Reporting still cannot claim more than the list asked for.** `apply_row`
+clamps `yielded` to the row's quantity and that stays: a number above the
+bath size is somebody answering a different question, and at a sink it is a
+typo. "I made more" is a change to the *plan*, made with one of the two
+buttons above, and then reported — which is why neither of them is a bigger
+number in the yield box.
+
 ## `private/production-needed/`: ranked on sales, because par is the broken number
 
 The list of what is below par, grouped by colorway, with a button that books
@@ -42,6 +221,124 @@ by looking rather than trusted.
 A colorway that sold nothing is ranked last, never hidden. It may simply be
 new — 2026 is year one for colorway data — and this page is not where that
 gets decided.
+
+## `private/produced-since/`: the receipt, and the one way out
+
+Everything above writes `InventoryLog` rows. Every page that reads them
+*consumes* them — the label sheet turns them into stickers, the raw shelf
+forecast into a reorder date, `candidates()` subtracts them from a shortage —
+and until this page existed **not one of them ever showed the rows.**
+
+What that produced was not a missing feature. It was an unused one. Recording
+a dye bath wrote something nobody could read back and nobody could take back,
+so every click was a commitment with no receipt, and the rational move was not
+to click. The page is two things and the second is why the first matters:
+
+- **The list.** One row per entry since a date, grouped by the day it is
+  recorded against, saying what the app believes and where the belief came
+  from, with what it thinks is on hand now beside it. Same argument the rest
+  of this codebase makes about par and `colorbands`, turned on the app's own
+  history: *advice you cannot inspect is a decision in disguise*, and a
+  production number nobody could see was the last one still hiding.
+- **Take it back.** A retraction writes a compensating `InventoryLog` and
+  touches nothing already recorded. Finished stock goes down, the blanks go
+  back on the raw shelf, and the entry comes off the list.
+
+**It reads production and nothing else.** An adjustment is a recount — the
+Sunday close alone writes dozens every weekend — and a page meant to answer
+"did I dye this" must not also be answering "did somebody find a bag of it in
+a cupboard". That was the fault `labels.produced_since` had in the same query;
+see *A since-run counts dyeing* in `docs/claude/labels.md`.
+
+### The retraction leaves no mark on the page, and that is the feature
+
+Both rows drop out of the list. Reading the page tells you what the app
+currently believes and nothing whatever about what anybody got wrong.
+
+This inverts a rule that holds nearly everywhere else in here — the Retire
+button collapses a recipe row to a strip rather than letting it vanish,
+because *a row that disappeared is indistinguishable from a click that never
+arrived*. That rule is about a person not being sure their own action landed.
+It does not apply here, because the entry leaving the list **is** the
+confirmation, and the flash message says what moved.
+
+What applies instead is the argument the Sunday close's Undo is built on: a
+mistake somebody cannot fix themselves is a mistake they have to go and
+confess, and that cost is exactly the pressure that gets one left unmentioned.
+A struck-through row reading *taken back* pays that cost a different way — it
+is a standing note about a mistake, on a page that gets opened every week, and
+a correction that leaves one behind is a correction with a price on it. **The
+whole point of the button is that using it should be cheaper than saying
+nothing.** So there is no confirmation dialog in front of it, no reason field
+required, and nowhere in the app that counts how often it is used —
+`producedsince.py` says out loud that `retracted_total()` is the obvious
+function not to write.
+
+Nothing is hidden from the *record*. Both rows are in `InventoryLog` for good,
+linked by `reverses`, and the admin shows them the way it shows everything
+else. The claim is narrow and it is the one that matters: reading this page
+does not tell you what anybody got wrong.
+
+### What the compensating row does and doesn't move
+
+`producedsince.retract` is the whole of it.
+
+**The finished side is reversed as a delta, never as a restored absolute**,
+because a sale can land between the mistake and the Undo. `set_on_hand`
+clamps at zero, so the arithmetic degrades the right way, and it writes to the
+raw row for a passthrough — one pile, one number.
+
+**The raw side goes back too**, which the close's Undo has no equivalent of
+and deliberately shouldn't: there the entry is a recount of a shelf and
+implies nothing about blanks. Here it is a claim that a pot was run, so
+retracting it claims the blanks were never wet — and raw stock in this shop is
+an opening balance counted about once a year (see *Raw stock is an opening
+balance* in `docs/claude/stock.md`), so leaving it short would stay wrong
+until somebody reached for skeins that had been on the shelf all along.
+
+**How many blanks go back is read off rows, never guessed.** Two cases are not
+simply the entry's own quantity:
+
+- **A short bath.** `apply_row` takes the full bath off raw and puts only
+  `yielded` onto finished, because the blanks are gone whatever happened in
+  the pot. So where a `ProductionRunRow` points at this log, the row's
+  `quantity` is what left the shelf — five, not the three that survived.
+- **A fancy veil out of a plain bath.** That writes a second entry, for a
+  second product, against the *same* pot — and the log's `raw_product` is the
+  plain blank rather than the fancy one. Restoring on both would put the bath
+  back twice, so a log whose product's blank is not the blank it consumed
+  restores nothing and the sibling accounts for the pot.
+
+**A history-only entry moves nothing in either direction.** `private/cards/`
+writes log rows and never touches `number_on_hand`, so an Undo on a 2024
+kanban card must not quietly take ten scarves off today's shelf.
+`HISTORY_ONLY_SOURCES` names that exception rather than the rule, so a new
+flow that actually dyes something is covered by default. It **still writes its
+compensating row**, at a quantity of zero, for the same reason `apply_row`
+writes a log at a yield of zero: `reversals` has to be the single answer to
+"has this been taken back", and two guards is how one of them goes stale.
+
+**The `ProductionRunRow` is left alone.** Its `applied_log` is what stops a
+re-scanned sheet dyeing the same bath twice on paper, and handing that guard
+back to get a tidier-looking row would trade a silent double-count for a
+cosmetic one. The sheet goes on saying what the session reported; the ledger
+says what was done about it afterwards. The colorway comes back on the next
+sheet regardless, because the planner reads `number_on_hand` and the
+retraction just reduced it.
+
+**And the guard is checked under a lock.** `is_retracted` read outside the
+transaction lets a double-tapped button through twice — five real scarves off
+the shelf, silently, for one bath. Same failure as a redelivered Square order,
+same fix.
+
+### `rawdemand` had to learn about it too
+
+`_entered_production` counts PRODUCTION rows, and a retraction is an
+ADJUSTMENT it never reads — so without an exclusion an undone bath would go on
+reporting itself as dyed on the raw shelf's forecast, where the date of the
+last one is what decides when to reorder. Anything new that reads these rows
+inherits the same obligation: **the question is never "was a production row
+written", it is "does one still stand".**
 
 ## Production sheets: paper to the dye room, one scan back
 

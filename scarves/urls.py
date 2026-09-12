@@ -204,6 +204,14 @@ urlpatterns = [
     # they have no accounts. So the return path is secret/ and its way in is
     # a token printed on the paper — scoped to one sheet rather than a
     # standing URL, and expiring in practice when the run is reported.
+    # Her door into the same machinery. The signal is Sunday night's stack of
+    # kanban cards rather than a par shortage; which close is query-string
+    # state, so there is one route and no picker to invent.
+    path(
+        "private/production-from-close/",
+        views.production_from_close,
+        name="production_from_close",
+    ),
     path(
         "private/production-sheet/",
         views.production_sheet_index,
@@ -239,6 +247,13 @@ urlpatterns = [
         "private/production-sheet/<int:pk>/strike/<int:row_id>/",
         views.production_run_strike_row,
         name="production_run_strike_row",
+    ),
+    # "I made more of that one" — one click beside the row, where the
+    # catalogue search is the tool for a colour that was never on the list.
+    path(
+        "private/production-sheet/<int:pk>/another/<int:row_id>/",
+        views.production_run_add_bath,
+        name="production_run_add_bath",
     ),
     path(
         "secret/production/",
@@ -383,6 +398,24 @@ urlpatterns = [
         "public/reference-sheet/<int:category_id>/by-color/",
         views.reference_sheet_by_color_pdf,
         name="reference_sheet_by_color_pdf",
+    ),
+
+    # --- Produced since ---
+    # The receipt for the production flow: what the app thinks was dyed, and
+    # the one button that takes an entry back. Staff, because the retraction
+    # moves stock — and the window lives in the query string rather than the
+    # path, so the page stays one route with no picker to invent.
+    path(
+        "private/produced-since/",
+        views.produced_since_view,
+        name="produced_since",
+    ),
+    path(
+        # POST only, so it carries no `@page_meta` and the picker convention
+        # doesn't reach it.
+        "private/produced-since/<int:log_id>/take-back/",
+        views.produced_since_retract,
+        name="produced_since_retract",
     ),
 
     # --- Barcode labels ---
