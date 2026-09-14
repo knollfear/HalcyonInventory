@@ -248,6 +248,28 @@ class RawProduct(models.Model):
             "dyed at all, a fancy veil was dyed and then worked on."
         ),
     )
+    fancying_cost = models.DecimalField(
+        max_digits=8,
+        decimal_places=2,
+        validators=[MinValueValidator(0)],
+        null=True,
+        blank=True,
+        help_text=(
+            "What it costs to turn one plain blank into this fancy one — the "
+            "line work, and nothing else. Set this on the *fancy* blank; "
+            "leave it empty on everything you buy.\n\n"
+            "It exists so a fancy blank's cost has exactly one home. `price` "
+            "is what a supplier charges, and a fancy veil has no supplier: it "
+            "is a plain veil somebody worked on. Storing its whole cost in "
+            "`price` meant the same silk was priced in two rows, so a "
+            "supplier increase landed on the plain one and the fancy one "
+            "quietly kept last year's number — which is how the three fancy "
+            "blanks drifted $8.96, $13.78 and $17.30 away from plain-plus-"
+            "fancying, each by a different amount and none of them wrong "
+            "anywhere you could see it.\n\n"
+            "Read `blank_cost`, never `price`, for what a blank costs."
+        ),
+    )
     fancy_counterpart = models.ForeignKey(
         "self",
         on_delete=models.SET_NULL,
@@ -368,6 +390,38 @@ class RawProduct(models.Model):
         if self.par_level is None or self.par_level == 0:
             return 0
         return max(self.par_level - self.number_on_hand, 0)
+
+    @property
+    def is_bought_in(self) -> bool:
+        """Whether this blank arrives from a supplier at all.
+
+        A fancy blank does not: it is a plain blank somebody added line work
+        to, so nothing orders one and no reorder page should price one. The
+        test is whether some other blank points here as its
+        `fancy_counterpart`, rather than `made_in_a_dye_bath`, because that
+        flag answers a different question — "can a bath produce this" — and a
+        thing can fail it for reasons that have nothing to do with where it
+        came from.
+        """
+        return not self.plain_counterparts.exists()
+
+    @property
+    def blank_cost(self):
+        """What one of these costs, from wherever the cost actually lives.
+
+        For anything bought, that is `price`. For a fancy blank it is the
+        plain blank's cost plus `fancying_cost` — derived on every read, so
+        the silk is priced in exactly one row and a supplier increase reaches
+        the fancy version the moment it is typed.
+
+        **Read this, not `price`.** `price` on a fancy blank is the supplier
+        cost of a thing with no supplier, and is 0.
+        """
+        plain = self.plain_counterparts.first()
+        if plain is None:
+            return self.price or Decimal("0")
+        return (plain.blank_cost or Decimal("0")) + (self.fancying_cost or Decimal("0"))
+
 
 class Recipe(models.Model):
     """

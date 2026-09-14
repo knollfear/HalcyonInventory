@@ -2075,3 +2075,65 @@ class RawDemandIsReadOnlyTests(TestCase):
         }
         for forbidden in ("save", "create", "update", "delete", "bulk_create"):
             self.assertNotIn(forbidden, called)
+
+
+class FancyBlankCostHasOneHomeTests(TestCase):
+    """A fancy blank's cost is derived, because two copies of it drifted.
+
+    `price` used to carry the whole thing — the silk *and* the line work — so
+    the same scarf was priced in two rows. A supplier increase landed on the
+    plain one, nothing said the fancy one was now wrong, and the three real
+    blanks ended up $8.96, $13.78 and $17.30 away from plain-plus-fancying,
+    each by a different amount. That is the failure these pin.
+    """
+
+    def setUp(self):
+        self.category, _ = RawProductCategory.objects.get_or_create(name="Silk")
+        self.plain = RawProduct.objects.create(
+            name="Rectangle Veil", category=self.category, price=Decimal("33.03"),
+        )
+        self.fancy = RawProduct.objects.create(
+            name="Fancy Veil", category=self.category, price=Decimal("0"),
+            made_in_a_dye_bath=False, fancying_cost=Decimal("25.00"),
+        )
+        self.plain.fancy_counterpart = self.fancy
+        self.plain.save(update_fields=["fancy_counterpart"])
+
+    def test_a_bought_blank_costs_what_the_supplier_charges(self):
+        self.assertEqual(self.plain.blank_cost, Decimal("33.03"))
+        self.assertTrue(self.plain.is_bought_in)
+
+    def test_a_fancy_blank_costs_the_plain_one_plus_the_line_work(self):
+        self.assertEqual(self.fancy.blank_cost, Decimal("58.03"))
+        self.assertFalse(self.fancy.is_bought_in)
+
+    def test_raising_the_supplier_price_reaches_the_fancy_blank(self):
+        """The whole point: one edit, not two, and no chance to forget."""
+        self.plain.price = Decimal("40.00")
+        self.plain.save(update_fields=["price"])
+        self.fancy.refresh_from_db()
+        self.assertEqual(self.fancy.blank_cost, Decimal("65.00"))
+
+    def test_nothing_prices_a_reorder_for_something_you_never_order(self):
+        """A fancy veil is made from a plain one, so there is no bill."""
+        outlook = rawdemand.Outlook(
+            blank=self.fancy, is_bought=False, remaining=40, finished_on_hand=0,
+        )
+        self.assertEqual(outlook.shortfall, 40)
+        self.assertEqual(outlook.cost, Decimal(0))
+
+    def test_the_plain_blank_still_gets_a_bill(self):
+        outlook = rawdemand.Outlook(
+            blank=self.plain, is_bought=True, remaining=10, finished_on_hand=0,
+        )
+        self.assertEqual(outlook.cost, Decimal("330.30"))
+
+    def test_rows_marks_the_fancy_blank_as_made_here(self):
+        by_name = {o.blank.name: o for o in rawdemand.rows([self.plain, self.fancy])}
+        self.assertTrue(by_name["Rectangle Veil"].is_bought)
+        self.assertFalse(by_name["Fancy Veil"].is_bought)
+
+    def test_a_fancy_blank_alone_is_still_known_to_be_made_here(self):
+        """The plain half need not be on the page for the answer to hold."""
+        outlook = rawdemand.rows([self.fancy])[0]
+        self.assertFalse(outlook.is_bought)

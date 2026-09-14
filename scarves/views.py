@@ -2101,7 +2101,9 @@ def _default_finished_name(raw_product_name: str, recipe_name: str) -> str:
 def _default_price_for_raw(raw_product: RawProduct) -> Decimal:
     if raw_product.suggested_price is not None:
         return raw_product.suggested_price
-    return (raw_product.price or Decimal("0")) * Decimal("3.0")
+    # blank_cost, not price: a fancy blank's price is 0 and its real cost is
+    # the plain blank plus the line work.
+    return (raw_product.blank_cost or Decimal("0")) * Decimal("3.0")
 
 
 def build_recipe_matrix_form_class(raw_products: list[RawProduct]):

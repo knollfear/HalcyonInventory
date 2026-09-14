@@ -222,7 +222,12 @@
                   —
                 {% elif o.shortfall %}
                   <span class="short">{{ o.shortfall }} short</span>
-                  <div class="sub">{{ o.baths }} bath{{ o.baths|pluralize }} · ${{ o.cost|floatformat:0 }}</div>
+                  {% if o.is_bought %}
+                    <div class="sub">{{ o.baths }} bath{{ o.baths|pluralize }} · ${{ o.cost|floatformat:0 }}</div>
+                  {% else %}
+                    {# Nothing to order: a fancy blank is a plain one worked on. #}
+                    <div class="sub">made here, not ordered</div>
+                  {% endif %}
                 {% else %}
                   <span class="ok">covered</span>
                   <div class="sub">{{ o.owned }} owned</div>

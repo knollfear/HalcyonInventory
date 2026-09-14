@@ -68,6 +68,12 @@ class Outlook:
     #: an undyed yarn, a notion — is bought and resold as it arrives, so its
     #: shortfall is real and its *bath* count is not a thing that exists.
     is_dyed: bool = True
+    #: Whether this blank is bought from a supplier at all. A fancy blank is
+    #: not — it is a plain blank with line work added — so there is no
+    #: reorder to price, the same way `is_dyed` says there is no bath to
+    #: count. Both exist because a shortfall is a real number in each case
+    #: and the *answer* to it is not the one this page otherwise prints.
+    is_bought: bool = True
     #: Units of this blank held by baths that are planned but not yet
     #: reported. Already subtracted from `raw_on_hand`, and printed beside it
     #: so a count that fell without a delivery has its reason on the row.
@@ -138,9 +144,17 @@ class Outlook:
 
     @property
     def cost(self):
-        if not self.shortfall:
+        """What filling the shortfall would cost, when it is a thing you buy.
+
+        Zero for a fancy blank, because there is no order to place: you make
+        one from a plain veil. Pricing it anyway printed a supplier cost for a
+        blank with no supplier, off a `price` nobody maintained — the figure
+        was stale by $8.96 to $17.30 and nothing on the page could show it.
+        `blank_cost` is what the maintained number is now called.
+        """
+        if not self.shortfall or not self.is_bought:
             return Decimal(0)
-        return Decimal(self.shortfall) * (self.blank.price or Decimal(0))
+        return Decimal(self.shortfall) * (self.blank.blank_cost or Decimal(0))
 
     @property
     def floor_short(self):
@@ -317,6 +331,13 @@ def rows(blanks, today=None):
     since = timezone.now() - timedelta(weeks=RECENT_WEEKS)
     entered, last_entry = _entered_production(blanks, since)
     claimed = _claimed(blanks)
+    # One query for the whole page rather than `is_bought_in` per blank —
+    # this runs over a whole category.
+    made_here = set(
+        RawProduct.objects
+        .filter(pk__in=[b.pk for b in blanks], plain_counterparts__isnull=False)
+        .values_list("pk", flat=True)
+    )
 
     out = []
     for blank in blanks:
@@ -330,6 +351,7 @@ def rows(blanks, today=None):
             finished_on_hand=finished.get(blank.pk, 0),
             finished_unsold=unsold.get(blank.pk, 0),
             is_dyed=blank.pk in dyed,
+            is_bought=blank.pk not in made_here,
             claimed=claimed.get(blank.pk, 0),
             dyed_recently=entered.get(blank.pk, 0),
             last_entry=last_entry.get(blank.pk),
