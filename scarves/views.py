@@ -4866,15 +4866,13 @@ def production_sheet_index(request):
                     # may be added to this sheet later.
                     oven=form.is_oven_run,
                 )
-                ProductionRunRow.objects.bulk_create([
-                    ProductionRunRow(
-                        run=run,
-                        finished_product=bath.product,
-                        order=index,
-                        quantity=bath.quantity,
-                    )
-                    for index, bath in enumerate(baths, start=1)
-                ])
+                # Through `open_rows` rather than straight to `bulk_create`,
+                # because creating the run is what claims its yarn — see the
+                # note there. A sheet planned on Monday has to have moved the
+                # shelf before the next list is planned against it on Tuesday.
+                production.open_rows(
+                    run, [(bath.product, bath.quantity) for bath in baths]
+                )
                 # Nothing is retired here any more. Printing a sixth sheet
                 # used to close the oldest, which quietly decided that a
                 # session nobody had answered for never happened — and the
@@ -5140,15 +5138,11 @@ def production_run_add_row(request, pk):
         )
     )
 
-    last = run.rows.order_by("-order").first()
-    row = ProductionRunRow.objects.create(
-        run=run,
-        finished_product=product,
-        order=(last.order + 1) if last else 1,
-        # A bath is a fixed size, so this is the only honest quantity — the
-        # same number the planner would have frozen onto the row.
-        quantity=product.bath_size,
-    )
+    # A bath is a fixed size, so `open_row` freezing `bath_size` onto the row
+    # is the only honest quantity — the same number the planner would have.
+    # It claims the blanks too: a bath added by hand is as much an intent to
+    # make something as one the planner proposed.
+    row = production.open_row(run, product)
     added = (
         f"Added {row.quantity} × {product.name} to run {run.pk}. "
         f"Reprint the sheet, or write it on the bottom."

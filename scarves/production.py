@@ -41,6 +41,7 @@ from datetime import timedelta
 from io import BytesIO
 from math import ceil
 
+from django.db import transaction
 from django.db.models import Count, F, Q, Sum, Value
 from django.db.models.functions import Greatest
 from django.utils import timezone
@@ -662,6 +663,19 @@ def blank_demand(rows):
     it off the list would turn a stale count into a bath that doesn't get
     dyed. The belief is printed beside the requirement so a real shortage is
     still visible, but the instruction is what to fetch.
+
+    **The belief is the count as it stands, and this run's own claim is not
+    added back into it.** That was tried: a sheet whose blanks were claimed at
+    planning reads `fetch 20 · we think 0`, and printing `20` instead looks
+    friendlier. It destroys the signal the number exists for. The count is
+    clamped at zero, so a shelf that could not cover the sheet and a shelf
+    that covered it exactly both sit at 0 — and adding the requirement back
+    turns the first one into a shelf that looks full. `12 (we think 2 on
+    hand)` is the case `CLAUDE.md` cites, and a version that renders it as
+    `12 (we think 14)` is worse than no figure at all.
+
+    A shortage is caught before this: `short_blanks` runs on the picker,
+    before the claim, where the arithmetic is still unclamped.
     """
     totals = {}
     for row in rows:
@@ -880,6 +894,118 @@ def counted_runs(queryset=None):
     )
 
 
+def claimed_units(blanks):
+    """`{blank_pk: units}` held by baths that are planned but not reported.
+
+    The raw-side twin of `in_flight`, and answered the same way — from
+    `ProductionRunRow`, because that is the one claim either signal makes,
+    whichever list the bath came from.
+
+    **Already subtracted from `number_on_hand`**, which is what makes this a
+    display and a reconciliation figure rather than an input to any decision:
+    the count is the number to plan and order against, and this says how far
+    it is from what somebody standing at the shelf would count.
+
+    Overdue sheets are included. They stop claiming against the *planner*
+    after `OVERDUE_AFTER` so a forgotten colorway is asked for again, which is
+    a judgement about what to dye next. The yarn is a physical question with a
+    different answer — those skeins are either dyed or still there — and it is
+    settled by reporting the sheet or striking it, not by a clock.
+    """
+    from .models import ProductionRunRow
+
+    claimed = {}
+    rows = (
+        ProductionRunRow.objects
+        .filter(accepted_at__isnull=True, cancelled_at__isnull=True,
+                finished_product__raw_product__in=blanks)
+        .values_list("finished_product__raw_product_id", "quantity")
+    )
+    for blank_id, quantity in rows:
+        claimed[blank_id] = claimed.get(blank_id, 0) + (quantity or 0)
+    return claimed
+
+
+def _move_blanks(rows, sign):
+    """Take `rows`' blanks off the shelf (`sign` -1) or put them back (+1).
+
+    Aggregated per blank and applied in pk order, so a run whose rows share a
+    blank touches it once and two of these can never take each other's rows in
+    opposite orders. Locked and re-read immediately before the write, for the
+    reason spelled out in `apply_row`: `select_related` hands every row its own
+    copy of the same blank, and a read-modify-write across those copies loses
+    all but the last silently.
+    """
+    from .models import RawProduct
+
+    totals = {}
+    for row in rows:
+        blank_id = row.finished_product.raw_product_id
+        totals[blank_id] = totals.get(blank_id, 0) + row.quantity
+
+    for blank_id in sorted(totals):
+        raw = RawProduct.objects.select_for_update().get(pk=blank_id)
+        raw.number_on_hand = max(raw.number_on_hand + sign * totals[blank_id], 0)
+        raw.save(update_fields=["number_on_hand"])
+
+
+@transaction.atomic
+def open_rows(run, plan):
+    """Put `plan` on `run` as one row per bath, and claim the blanks. Returns them.
+
+    `plan` is `[(finished_product, quantity), ...]` in sheet order.
+
+    **This is the only door, and that is the point.** The blanks come off the
+    shelf when the run is *created*, not when the dyeing is reported, because
+    a run is an intent to make something and the yarn it needs is spoken for
+    from that moment. Two things depend on it and neither survives a claim
+    that lands at the end:
+
+    - **Planning happens in passes.** Half a week goes on a list, the shelf is
+      read again, and the rest is planned against what is left. If the first
+      list has not moved the count, the second one plans the same skeins twice.
+    - **Ordering has a lead time.** A run created Monday and finished Friday
+      that takes a blank under its floor has to say so on Monday — by Friday
+      the window to order and have it on hand has gone. `raw_shortage` reads
+      `number_on_hand`, so the claim is what makes the reorder signal fire in
+      time.
+
+    So `number_on_hand` now means **unclaimed yarn**, not skeins on the shelf.
+    The two differ by whatever is on open sheets, and the difference is real
+    but bounded — the gap between planning a bath and dyeing it is never more
+    than about a week. `private/raw-inventory/` prints the claimed figure
+    beside the count so the person reading it can see both, and so somebody
+    standing at the shelf knows what they should find there.
+
+    Creation and release are the *same* pair of doors on purpose: this, and
+    `cancel_row`. Nothing else creates a `ProductionRunRow` and nothing else
+    destroys one — a third site that made rows its own way would claim nothing
+    and the shelf would drift down by exactly the yarn it forgot, which is the
+    silent failure this whole file is arranged against.
+    """
+    from .models import ProductionRunRow
+
+    start = 1 + max((row.order for row in run.rows.all()), default=0)
+    rows = ProductionRunRow.objects.bulk_create([
+        ProductionRunRow(
+            run=run, finished_product=product, order=order, quantity=quantity,
+        )
+        for order, (product, quantity) in enumerate(plan, start=start)
+    ])
+    # `bulk_create` sends no `post_save`, which is why claiming is written here
+    # rather than in a signal: a signal would be silently skipped by exactly
+    # the two sites that create the most rows.
+    _move_blanks(rows, -1)
+    return rows
+
+
+def open_row(run, product, quantity=None):
+    """One more bath on a run. The single-row form of `open_rows`."""
+    quantity = product.bath_size if quantity is None else quantity
+    return open_rows(run, [(product, quantity)])[0]
+
+
+@transaction.atomic
 def apply_row(row, yielded=None, fancy=0):
     """Accept one bath into inventory, once. Returns the `InventoryLog`.
 
@@ -890,12 +1016,14 @@ def apply_row(row, yielded=None, fancy=0):
     a bath got counted into stock twice — the same shape as the Square
     webhook and redelivered orders.
 
-    **`yielded` is what actually came out, and the raw side does not use it.**
-    A bath consumes its blanks whatever happens in the pot: dye four scarves,
-    ruin one, and there are still four blanks gone off the shelf. So raw goes
-    down by the full `quantity` and finished goes up by `yielded`, and the
-    difference is a loss rather than a discrepancy. `None` means the full
-    bath, which is what a plain tick claims.
+    **`yielded` is what actually came out, and only the finished side moves.**
+    The blanks came off the shelf when the run was created — see `open_rows` —
+    so reporting a bath adds `yielded` to the product and touches raw not at
+    all. A bath consumes its blanks whatever happens in the pot: dye four
+    scarves, ruin one, and there are still four gone. That is already paid
+    for, which is why a short bath needs no correction here and the shortfall
+    is a loss rather than a discrepancy. `None` means the full bath, which is
+    what a plain tick claims.
 
     **The log is written even at a yield of zero**, so `applied_log` stays the
     single answer to "has this row moved anything". A short-circuit that
@@ -948,12 +1076,26 @@ def apply_row(row, yielded=None, fancy=0):
     fancied = 0 if target is None else min(max(int(fancy or 0), 0), made)
     plain = made - fancied
 
-    # The full bath, never the yield. The blanks left the shelf regardless of
-    # what came back out of the pot — and a fancy veil is a plain scarf with
-    # line work on it, so routing one changes nothing on the raw side.
-    raw.number_on_hand = max(raw.number_on_hand - row.quantity, 0)
-    raw.save(update_fields=["number_on_hand"])
+    # **Locked and re-read immediately before each write**, the same way
+    # `record_recipe_production` does it, and for the reason written there:
+    # two products of one recipe often share a blank, and a read-modify-write
+    # on stale copies silently loses all but the last of the writes.
+    #
+    # `lines_for_run` fetches the rows with `select_related`, which hands every
+    # row its own copy of the finished product and — via `fancy_target` — of
+    # the fancy product. Rows applied in one pass each read the count as it
+    # stood before any of them ran, add their own figure and save the total.
+    # Last write wins, a bath's worth of stock vanishes, and nothing is
+    # raised: the logs are all written and every row reads accepted. That is
+    # how sheet #2 left a shelf of 150 reading 135 instead of 130, back when
+    # the blanks were taken here.
+    #
+    # The lock rather than a plain re-read because the sheet is reported from
+    # phones at a stall, so the same collision also arrives as two requests.
+    # Consistent order — product, then fancy product — so two of these can't
+    # take each other's rows in opposite orders.
 
+    product = FinishedProduct.objects.select_for_update().get(pk=product.pk)
     product.number_on_hand += plain
     product.save(update_fields=["number_on_hand"])
 
@@ -962,7 +1104,7 @@ def apply_row(row, yielded=None, fancy=0):
     if lost:
         notes += (
             f" {lost} of {row.quantity} did not make it —"
-            f" the blanks were used either way."
+            f" the blanks were claimed when the run was planned either way."
         )
     if fancied:
         notes += (
@@ -985,6 +1127,7 @@ def apply_row(row, yielded=None, fancy=0):
         # is per product, the same shape the conversion page writes. It is
         # PRODUCTION rather than a conversion because nothing was converted:
         # this scarf was never plain.
+        target = FinishedProduct.objects.select_for_update().get(pk=target.pk)
         target.number_on_hand += fancied
         target.save(update_fields=["number_on_hand"])
         InventoryLog.objects.create(
@@ -1011,29 +1154,36 @@ def apply_row(row, yielded=None, fancy=0):
     return log
 
 
+@transaction.atomic
 def cancel_row(row):
-    """Call a bath off. Nothing moves, and the colorway is asked for again.
+    """Call a bath off: the blanks go back on the shelf and it is asked for again.
 
     **Cancelled and binned are different, and both are needed.** Cancelled
-    means the bath never ran: no blanks were consumed, because nothing was
-    ever decremented, and the claim this row had on the planner is released
-    so the colorway comes back on the next sheet. A bath that ran and lost
-    the whole lot is the other thing entirely — the blanks are gone — and it
-    goes through `apply_row` at a yield of zero.
+    means the bath never ran, so the yarn it claimed at planning was never
+    wet and is still there — this is the release half of `open_rows`, and the
+    only one. A bath that ran and lost the whole lot is the other thing
+    entirely: those blanks really are gone, so it goes through `apply_row` at
+    a yield of zero and the claim stands.
+
+    The claim on the *planner* is released at the same moment, so the colorway
+    comes back on the next sheet. One row, one bath, one claim — released on
+    both sides together or the two answers drift apart.
 
     A row that has already moved stock is left alone. Taking that back is an
-    inventory adjustment with a reason attached, which is the same refusal
-    the crew's tick boxes make.
+    inventory adjustment with a reason attached — `producedsince.retract` —
+    which is the same refusal the crew's tick boxes make.
     """
     if row.applied_log_id is not None or row.cancelled_at is not None:
         return False
     row.cancelled_at = timezone.now()
     row.save(update_fields=["cancelled_at"])
+    _move_blanks([row], +1)
     return True
 
 
+@transaction.atomic
 def uncancel_row(row):
-    """Put a called-off bath back to pending. Nothing moved, so nothing undoes.
+    """Put a called-off bath back to pending, and claim its blanks again.
 
     **This exists for the same reason the Sunday close has an Undo button.**
     Cancelling is reachable with nothing but the code printed on the paper,
@@ -1043,14 +1193,17 @@ def uncancel_row(row):
     that gets one left unmentioned instead.
 
     It is free to offer here in a way undoing an *acceptance* is not: a
-    cancelled row moved no stock, so putting it back is a row going from one
-    unreported state to another. Nothing is erased and nothing is
-    compensated, because nothing happened.
+    cancelled row produced nothing, so putting it back is a row going from one
+    unreported state to another. Nothing is erased and nothing is compensated
+    — the blanks are simply claimed again, exactly as they were when the run
+    was created, because an un-cancelled bath is a bath that is going to
+    happen after all.
     """
     if row.applied_log_id is not None or row.cancelled_at is None:
         return False
     row.cancelled_at = None
     row.save(update_fields=["cancelled_at"])
+    _move_blanks([row], -1)
     return True
 
 
@@ -1248,16 +1401,17 @@ def accept_line(line, yielded=None, fancy=0):
     if line.fancy_target is None:
         fancied = 0
 
-    # **One product instance across the whole line.** Every row here points
-    # at the same colorway, and `select_related` hands each of them its own
-    # copy of it — so two rows applied in one pass would each read
-    # `number_on_hand` as it was before either ran, add their own yield, and
-    # save. Last write wins and a bath vanishes. That never bit while a tick
-    # was one bath and one request; it bites the moment a line banks three.
+    # **One product instance across the whole line**, which saves a query per
+    # bath — `select_related` has already handed every row its own copy.
     #
-    # Sharing the instance makes the increments accumulate in memory and each
-    # save write the running total. The raw product comes along with it, so
-    # the blanks are consumed once per bath rather than once per line.
+    # It is no longer what makes the arithmetic right, and it never could have
+    # been. It was the guard against two rows of a line each reading
+    # `number_on_hand` as it stood before either ran and saving its own total,
+    # and two *lines* on the same blank have no instance to share — which is
+    # any sheet carrying two colorways of one yarn. `apply_row` locks and
+    # re-reads each count immediately before writing it, so the guarantee sits
+    # at the write instead of in each caller, and holds across requests as
+    # well as within one.
     product = line.product
     logs = []
     for row in pending:

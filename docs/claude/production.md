@@ -437,17 +437,58 @@ retiring a sheet *is* cancelling its remainder — so closed has one meaning
 and cannot disagree with its own rows.
 
 **Cancelled and binned are different, and both are needed.** Cancelled means
-the bath never ran: nothing was decremented, so no blanks were consumed, and
-the claim on the planner is released so the colorway comes back on the next
-sheet. Checked with an actual of 0 means the bath ran and the lot was binned,
-so the blanks really are gone. Same code path, `yielded` at 0.
+the bath never ran, so the blanks it was holding go back on the shelf and the
+claim on the planner is released — the colorway comes back on the next sheet.
+Checked with an actual of 0 means the bath ran and the lot was binned, so the
+blanks really are gone and the claim stands. Same code path, `yielded` at 0.
 
 **Yield asks one number: how many came out.** The bath consumes its blanks in
 full whatever happened in the pot — dye four, ruin one, four blanks are still
-gone — so `apply_row` takes `quantity` off raw and puts `yielded` onto
-finished, and the difference is a loss rather than a discrepancy. Raw is
-allowed to heal at the next booth count; only raw speeds a reorder, while
-finished reaches the peg, the close and Square.
+gone — and they were already paid for when the run was created, so `apply_row`
+puts `yielded` onto finished and touches raw not at all. The difference is a
+loss rather than a discrepancy, and needs no correction on the raw side.
+
+### The blanks come off when the run is made, not when the bath is reported
+
+**A run is an intent to make something, and the yarn it needs is spoken for
+from that moment.** `production.open_rows` is the only door that creates a
+`ProductionRunRow`, and it takes the rows' blanks off `number_on_hand` as it
+creates them. `cancel_row` is the only door that releases one, and it puts
+them back. Nothing else creates or destroys a row — a third site would claim
+nothing, and the shelf would drift down by exactly the yarn it forgot.
+
+Two things depend on the claim landing at the start, and neither survives one
+that lands at the end:
+
+- **Planning happens in passes.** Half a week goes on a list, the shelf is
+  read again, and the rest is planned against what is left. A list that has
+  not moved the count lets the next one plan the same skeins twice, and the
+  shortage is discovered in the dye room.
+- **Ordering has a lead time.** A run planned Monday and finished Friday that
+  takes a blank under its floor has to say so on Monday. By Friday the window
+  to order and have the yarn on hand has gone. `raw_shortage` reads
+  `number_on_hand`, so the claim is what makes the reorder fire in time.
+
+**So `number_on_hand` means unclaimed yarn, not skeins on the shelf.** The two
+differ by whatever is on open sheets, and the gap between planning a bath and
+dyeing it is never more than about a week. `private/raw-inventory/?par=1`
+prints the claimed figure beside the count, so a number that fell without a
+delivery or a recount has its reason on the row. The shelf total is not
+printed: nobody acts on it, and a blank reading empty is far more likely to be
+a stale number than a bare shelf. The collection list deliberately does **not** add a sheet's own
+claim back into the belief it prints: the count is clamped at zero, so doing
+so would turn `fetch 12 · we think 2` into `we think 14` and make an empty
+shelf look full. A shortage is caught on the picker by `short_blanks`, before
+the claim, where the arithmetic is still unclamped.
+
+The worked example, end to end: **150 on the shelf, plan 50, and it reads 100.
+Deliver 40 to inventory and it still reads 100, because those blanks were
+paid for at planning. Call off two baths and their 10 go back: 110.**
+
+Counting the shelf while baths are in flight would read high by the claim, and
+that is left alone deliberately rather than reconciled: a stock count does not
+happen with dyeing in progress, and the most that goes in mid-week is a
+delivery — which is a *delta*, and correct whatever is claimed.
 
 **Always write the `InventoryLog`, even at a yield of zero.** That keeps
 `applied_log` the single answer to "has this row moved anything", and two

@@ -83,8 +83,15 @@ slip. Here a category runs to forty blanks and a visit means to change one.
 
 The reorder question for anything dyed is not "how many will we sell" but
 "how many will we **dye**", and those differ by everything already on a peg.
-So the season column is `forecast − (raw on hand + finished on hand)`, in
-baths and dollars as well as units.
+So the season column is `forecast − (raw on hand + claimed + finished on
+hand)`, in baths and dollars as well as units.
+
+**Claimed yarn is added back here and nowhere else.** A blank on an open sheet
+has left `raw on hand` — see *The blanks come off when the run is made* in
+`docs/claude/production.md` — and has not yet reached the finished side, so it
+falls between the two and the season would ask for skeins that are already in
+the building. The *floor* is the opposite question and deliberately reads the
+claimed-out number: yarn spoken for cannot keep the dye room going next week.
 
 **Dyed and undyed stock both offset the buy, and they are not equally good at
 it.** Undyed is fungible — a skein becomes whatever sells — and dyed is not,
@@ -111,10 +118,11 @@ because yarn has one behind it and silk has five.
 The finished side heals. A restock walk and the Sunday close both put an
 absolute count against what the app believed, and the *Self-healing* section
 of `CLAUDE.md` is about exactly that. **Undyed stock has no equivalent.** It
-falls only when somebody *records* a dye bath — so a week of dyeing that has
-not been typed up yet leaves the count reading high, and ordering against it
-under-buys precisely when the dye room has been busiest. That is not a
-hypothetical: entry runs in bursts, days or weeks behind the work.
+falls when a run is planned, so dyeing that went through a sheet is already
+off the count — but a bath nobody planned through one is not, and a week of
+that leaves the count reading high. Ordering against it then under-buys
+precisely when the dye room has been busiest. That is not a hypothetical:
+entry runs in bursts, days or weeks behind the work.
 
 So `RawProduct.counted_at` records when the shelf was last actually looked at,
 and the par page prints it on the row. **Only an absolute count sets it** —

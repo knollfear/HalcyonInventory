@@ -10,7 +10,11 @@
   .category-nav .current { font-weight: 600; color: var(--ink); text-decoration: none; }
   .count-input { width: 5.5em; padding: 4px 6px; font: inherit; }
   .order-link { font-size: 13px; }
-  th.entry, td.entry { text-align: right; white-space: nowrap; }
+  /* Left, unlike the figure columns, because this column holds a *control*
+     and a row with no "below" badge is narrower than one with it — right
+     alignment slid those inputs sideways, so a column of forty boxes came out
+     ragged and the one row you were aiming at moved as you scrolled to it. */
+  th.entry, td.entry { text-align: left; white-space: nowrap; }
   tr.bad { background: #fdf3f2; }
   td.bad-why { font-size: 13px; color: #8a2f2a; }
   /* A mode switch is a set of alternatives with the one in force filled, not
@@ -22,7 +26,34 @@
   }
   .chip.on { background: var(--accent, #2f5d8a); border-color: transparent; color: #fff; }
   td.num, th.num { text-align: right; white-space: nowrap; }
+  /* **`nowrap` belongs to the figure, never to the caption under it.** Every
+     one of these columns carries a `.sub` sentence, and a sentence that
+     cannot break sets a floor under its column's width: "265 in colorways
+     that haven't sold" alone claimed 214px. Eight of them pushed the table to
+     1168px inside an 850px card — it painted over the card border and past
+     the page — while the product names, the one column with nothing to pin
+     it, were squeezed to 99px and broke across three lines. Wrapping the
+     captions hands that space straight back to the names. */
+  td.num .sub { white-space: normal; min-width: 8.5em; max-width: 15em; margin-left: auto; }
+  /* Scoped to the figure columns on purpose: `.short` is an inline-block
+     pill, so a min-width meant to stop a caption stacking four lines deep
+     would quietly stretch every "100 below" badge to match. */
+  td.entry .sub { white-space: normal; }
+  /* The names take the slack, and are the one column worth a floor of its
+     own: "Artisan - Ethereal Fingering" on one line is what makes the table
+     scannable. */
+  th:first-child, td:first-child { white-space: normal; min-width: 12em; }
+  /* Eight columns of figures is not the 900px reading measure the house
+     style sets for prose. Re-pointed rather than restated, and only as wide
+     as this table actually needs. */
+  :root { --column: 1220px; }
+  /* Below that, the *table* scrolls and the page does not — a body that
+     scrolls sideways takes the heading and the save bar with it. */
+  .card { overflow-x: auto; }
   .stale { color: #8a5a2a; }
+  /* Not a warning: a claim is the system working. Tinted to read as a
+     second fact about the row rather than a problem with it. */
+  .claimed { color: #4a6a8a; }
   .sub { font-size: 12px; color: #667; }
   /* Sticky, because the table is as long as the category and the whole point
      of the change is that one save covers all of it — a button below forty
@@ -119,10 +150,27 @@
               <td class="num">
                 {{ o.raw_on_hand }}
                 {% comment %}
+                Claimed yarn has already left the number above, because a
+                production run takes its blanks when it is *created* — that
+                is what lets the next list be planned against what the last
+                one left, and what makes a blank cross its floor early enough
+                to order against. Said on the row so a count that dropped
+                without a delivery or a recount has a reason printed beside
+                it, rather than reading as yarn going missing.
+
+                What is *not* printed is the shelf total. It was, and it
+                earns nothing: nobody acts on it, and a blank reading empty is
+                far more likely to be a number nobody has updated than a bare
+                shelf — the same judgement `blank_demand` makes about not
+                filtering a collection list on stock.
+                {% endcomment %}
+                {% if o.claimed %}
+                  <div class="sub claimed">{{ o.claimed }} claimed by open sheets</div>
+                {% endif %}
+                {% comment %}
                 How old the count is, said on the row, because this is the
-                one pile in the app nothing recounts on its own — it falls
-                only when a bath is *entered*, so a week of dyeing nobody has
-                typed up yet leaves it reading high.
+                one pile in the app nothing recounts on its own — a week of
+                dyeing nobody planned through a sheet leaves it reading high.
                 {% endcomment %}
                 {% if o.count_is_stale %}
                   <div class="sub stale">

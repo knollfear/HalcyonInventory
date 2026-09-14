@@ -969,15 +969,13 @@ class ProductionReturnTests(TestCase):
         # Two baths of one colorway — which is now **one line of eight**, one
         # box, one answer — plus a second colorway so there is something for a
         # partial report to leave behind.
-        self.rows = [
-            ProductionRunRow.objects.create(
-                run=self.run, finished_product=self.product, order=i, quantity=4
-            )
-            for i in (1, 2)
-        ]
-        self.other_row = ProductionRunRow.objects.create(
-            run=self.run, finished_product=self.other, order=3, quantity=4
+        # Through the real door, because creating the rows is what claims the
+        # blanks — a run built by hand here would leave the shelf saying
+        # something the app can no longer produce.
+        self.rows = production.open_rows(
+            self.run, [(self.product, 4), (self.product, 4)]
         )
+        self.other_row = production.open_rows(self.run, [(self.other, 4)])[0]
         self.line, self.other_line = production.lines_for_run(self.run)
         self.url = reverse("production_run", args=[self.run.token])
 
@@ -1096,9 +1094,7 @@ class ProductionReturnTests(TestCase):
         It could never happen while a tick was one bath in one request, which
         is exactly why it arrived with the grouping.
         """
-        third = ProductionRunRow.objects.create(
-            run=self.run, finished_product=self.product, order=4, quantity=4
-        )
+        third = production.open_rows(self.run, [(self.product, 4)])[0]
         line = production.lines_for_run(self.run)[0]
         self.assertEqual(line.rows, [self.rows[0], self.rows[1], third])
 
@@ -1106,9 +1102,128 @@ class ProductionReturnTests(TestCase):
 
         self.product.refresh_from_db()
         self.assertEqual(self.product.number_on_hand, 12)
-        # And the blanks go once per bath, not once per line.
+        # The blanks went once per bath when the baths were planned, and
+        # reporting them does not touch the shelf again.
         self.product.raw_product.refresh_from_db()
         self.assertEqual(self.product.raw_product.number_on_hand, 88)
+
+    def test_two_colorways_of_one_blank_both_come_off_the_shelf(self):
+        """**One shelf read twice at 150, and it was live.** Sheet #2 was one
+        bath of Ethereal Babs and three of Ethereal Baby — two colorways of
+        one yarn, so two lines — and the shelf read 135 afterwards instead of
+        130. Four logs were written and every row said accepted; only the
+        blank was wrong.
+
+        The claim now lands when the run is created, so this is the arithmetic
+        `open_rows` does in one pass over the whole plan. The failure it is
+        built against is the same one either way: each line reading the blank
+        from its own copy and saving its own total.
+        """
+        blank = self.product.raw_product
+        babs = FinishedProduct.objects.create(
+            name="Ethereal Babs", raw_product=blank,
+            recipe=make_recipe("Babs"), price="30.00",
+        )
+        baby = FinishedProduct.objects.create(
+            name="Ethereal Baby", raw_product=blank,
+            recipe=make_recipe("Baby"), price="30.00",
+        )
+        RawProduct.objects.filter(pk=blank.pk).update(number_on_hand=150)
+        run = ProductionRun.objects.create()
+
+        production.open_rows(
+            run, [(babs, 5), (baby, 5), (baby, 5), (baby, 5)]
+        )
+
+        # Four baths of five, off one shelf, claimed as the run was made.
+        blank.refresh_from_db()
+        self.assertEqual(blank.number_on_hand, 130)
+
+        lines = production.lines_for_run(run)
+        self.assertEqual([line.baths for line in lines], [1, 3])
+        self.client.post(
+            reverse("production_run", args=[run.token]),
+            {"done": [str(line.key) for line in lines]},
+        )
+
+        # Reporting moves the finished side and leaves the shelf alone.
+        blank.refresh_from_db()
+        self.assertEqual(blank.number_on_hand, 130)
+        babs.refresh_from_db()
+        baby.refresh_from_db()
+        self.assertEqual(babs.number_on_hand, 5)
+        self.assertEqual(baby.number_on_hand, 15)
+
+    def test_the_worked_example(self):
+        """**150 on the shelf, plan 50, deliver 40, call off 10, and it reads 110.**
+
+        Her account of what the numbers should do, start to finish, in one
+        test. Every step is a different rule and together they are the whole
+        model:
+
+        - planning 50 claims 50, so the shelf reads 100 while the dyeing is
+          still to happen — which is what makes the *next* list plan against
+          what is left, and what makes a blank drop under its floor early
+          enough to order against;
+        - delivering 40 to inventory moves the finished side only, because
+          those blanks were paid for at planning;
+        - calling off two baths says they never ran, so their 10 go back.
+        """
+        blank = self.product.raw_product
+        RawProduct.objects.filter(pk=blank.pk).update(number_on_hand=150)
+        run = ProductionRun.objects.create()
+
+        # Ten baths of five: fifty skeins spoken for.
+        rows = production.open_rows(run, [(self.product, 5)] * 10)
+        blank.refresh_from_db()
+        self.assertEqual(blank.number_on_hand, 100)
+
+        # Eight of them run and deliver forty.
+        for row in rows[:8]:
+            production.apply_row(row)
+        blank.refresh_from_db()
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.number_on_hand, 40)
+        self.assertEqual(blank.number_on_hand, 100)
+
+        # The last two never happen.
+        for row in rows[8:]:
+            production.cancel_row(row)
+        blank.refresh_from_db()
+        self.assertEqual(blank.number_on_hand, 110)
+
+    def test_planning_again_sees_what_the_first_list_left(self):
+        """**Half a week, read the shelf, plan the rest.** The claim has to be
+        on the count by the time the second list is made, or both lists plan
+        the same skeins and the shortage only shows up in the dye room."""
+        blank = self.product.raw_product
+        RawProduct.objects.filter(pk=blank.pk).update(number_on_hand=30)
+
+        production.open_rows(ProductionRun.objects.create(), [(self.product, 4)] * 3)
+        blank.refresh_from_db()
+        self.assertEqual(blank.number_on_hand, 18)
+
+        production.open_rows(ProductionRun.objects.create(), [(self.product, 4)] * 2)
+        blank.refresh_from_db()
+        self.assertEqual(blank.number_on_hand, 10)
+
+    def test_planning_can_drop_a_blank_under_its_floor(self):
+        """**The reorder signal has to fire on Monday, not Friday.** A run
+        planned now and dyed this week is yarn that is already gone; if the
+        floor is only crossed when the last pot is reported, the window to
+        order and have it on hand has closed."""
+        blank = self.product.raw_product
+        RawProduct.objects.filter(pk=blank.pk).update(
+            number_on_hand=30, par_level=25
+        )
+        blank.refresh_from_db()
+        self.assertEqual(blank.raw_shortage, 0)
+
+        production.open_rows(ProductionRun.objects.create(), [(self.product, 4)] * 3)
+
+        blank.refresh_from_db()
+        self.assertEqual(blank.number_on_hand, 18)
+        self.assertEqual(blank.raw_shortage, 7)
 
     def test_a_short_line_loses_whole_baths_first(self):
         """**Four of eight means one pot failed, not that both came up
@@ -1152,15 +1267,36 @@ class ProductionReturnTests(TestCase):
         self.rows[1].refresh_from_db()
         self.assertEqual([self.rows[0].yielded, self.rows[1].yielded], [4, 4])
 
-    def test_a_cancelled_bath_moves_nothing_and_writes_no_log(self):
+    def test_a_cancelled_bath_gives_its_blanks_back_and_writes_no_log(self):
+        """**Cancelled means the bath never ran, so the yarn is still there.**
+
+        The claim landed when the run was created, so calling a bath off is
+        the release half of it — the only one. Nothing reaches the finished
+        side and no `InventoryLog` is written, because the ledger records what
+        entered inventory and nothing did.
+        """
+        blank = self.product.raw_product
+        blank.refresh_from_db()
+        self.assertEqual(blank.number_on_hand, 92)   # two baths claimed
+
         production.cancel_row(self.rows[0])
 
         self.rows[0].refresh_from_db()
         self.product.refresh_from_db()
-        self.product.raw_product.refresh_from_db()
+        blank.refresh_from_db()
         self.assertTrue(self.rows[0].is_cancelled)
         self.assertEqual(self.product.number_on_hand, 0)
-        self.assertEqual(self.product.raw_product.number_on_hand, 100)
+        self.assertEqual(blank.number_on_hand, 96)   # one bath handed back
+        self.assertEqual(InventoryLog.objects.count(), 0)
+
+    def test_un_cancelling_claims_the_blanks_again(self):
+        """A bath that is going to happen after all is spoken for again."""
+        blank = self.product.raw_product
+        production.cancel_row(self.rows[0])
+        production.uncancel_row(self.rows[0])
+
+        blank.refresh_from_db()
+        self.assertEqual(blank.number_on_hand, 92)
         self.assertEqual(InventoryLog.objects.count(), 0)
 
     def test_cancelling_is_not_the_same_as_binning_a_bath(self):
@@ -1768,12 +1904,9 @@ class WorkSheetAndReportingSheetTests(TestCase):
             make_recipe("Stormy Sea"), "Stormy Silk", on_hand=0, par=8, bath=4
         )
         self.run = ProductionRun.objects.create()
-        self.rows = [
-            ProductionRunRow.objects.create(
-                run=self.run, finished_product=self.product, order=i, quantity=4
-            )
-            for i in (1, 2)
-        ]
+        self.rows = production.open_rows(
+            self.run, [(self.product, 4), (self.product, 4)]
+        )
 
     def _pdf(self):
         return production.render_sheet(
@@ -1899,15 +2032,10 @@ class CrewCanSayTheRestIsNotComingTests(TestCase):
         self.run = ProductionRun.objects.create()
         # Two baths of one colorway and one of another: two lines, so
         # banking the first still leaves something for "the rest".
-        self.rows = [
-            ProductionRunRow.objects.create(
-                run=self.run, finished_product=self.product, order=i, quantity=4
-            )
-            for i in (1, 2)
-        ]
-        self.rows.append(ProductionRunRow.objects.create(
-            run=self.run, finished_product=self.other, order=3, quantity=4
-        ))
+        self.rows = production.open_rows(
+            self.run, [(self.product, 4), (self.product, 4)]
+        )
+        self.rows.extend(production.open_rows(self.run, [(self.other, 4)]))
         self.lines = production.lines_for_run(self.run)
         self.url = reverse("production_run", args=[self.run.token])
 
@@ -2065,9 +2193,7 @@ class FancyAtProductionTests(TestCase):
         self.plain_blank.save(update_fields=["fancy_counterpart"])
 
         self.run = ProductionRun.objects.create()
-        self.row = ProductionRunRow.objects.create(
-            run=self.run, finished_product=self.product, order=1, quantity=5
-        )
+        self.row = production.open_rows(self.run, [(self.product, 5)])[0]
         self.url = reverse("production_run", args=[self.run.token])
 
     def _report(self, **extra):
@@ -2867,9 +2993,7 @@ class SheetEditorTests(TestCase):
             make_recipe("Ember"), "Ember Silk", on_hand=20, par=8, bath=5
         )
         self.run = ProductionRun.objects.create()
-        self.row = ProductionRunRow.objects.create(
-            run=self.run, finished_product=self.product, order=1, quantity=4
-        )
+        self.row = production.open_rows(self.run, [(self.product, 4)])[0]
 
     def test_a_bath_can_be_added_that_the_planner_would_never_pick(self):
         """`self.other` is above par, so no shortage query would offer it."""
@@ -2998,12 +3122,9 @@ class CancelAllButNeverAcceptAllTests(TestCase):
             self.recipe, "Stormy Silk", on_hand=0, par=8, bath=4
         )
         self.run = ProductionRun.objects.create()
-        self.rows = [
-            ProductionRunRow.objects.create(
-                run=self.run, finished_product=self.product, order=i, quantity=4
-            )
-            for i in (1, 2)
-        ]
+        self.rows = production.open_rows(
+            self.run, [(self.product, 4), (self.product, 4)]
+        )
         self.url = reverse("production_run_cancel_remaining", args=[self.run.pk])
 
     def test_it_cancels_what_nobody_answered_for(self):
@@ -3013,7 +3134,13 @@ class CancelAllButNeverAcceptAllTests(TestCase):
         self.assertEqual(self.run.cancelled_count, 2)
         self.assertTrue(self.run.is_closed)
 
-    def test_it_moves_no_stock(self):
+    def test_it_makes_nothing_and_hands_the_blanks_back(self):
+        """Calling the rest off produces nothing, so the finished side does
+        not move and no `InventoryLog` is written. The yarn those baths were
+        holding does go back on the shelf — they are not going to be dyed."""
+        self.product.raw_product.refresh_from_db()
+        self.assertEqual(self.product.raw_product.number_on_hand, 92)
+
         self.client.post(self.url)
 
         self.product.refresh_from_db()

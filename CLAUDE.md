@@ -308,7 +308,8 @@ wrote down. Always use `{{ log.when }}`, which says no more than is known.
 The same rule governs input: `parse_card_date()` refuses anything it can't
 read rather than guessing, and never promotes a month to a day.
 
-**Back-dated entries never move stock.** The card-backfill flow writes log
+**Raw stock falls when a bath is planned, not when it is recorded** — see the
+claim rule above. **Back-dated entries never move stock.** The card-backfill flow writes log
 rows only — that yarn was counted or sold long ago, and adding it to
 `number_on_hand` would inflate current inventory by however far back the
 records go.
@@ -410,7 +411,14 @@ Three rules follow:
 
 - **Anything that plans a bath writes a `ProductionRunRow`.** A third planner
   keeping its own book will quietly plan what somebody else already planned,
-  and the failure is silent and lands in the dye room.
+  and the failure is silent and lands in the dye room. It goes through
+  `production.open_rows`, which is also what takes the bath's blanks off the
+  shelf — **the claim is on the yarn as well as on the planner, and it lands
+  when the run is created, not when the dyeing is reported.** A run is an
+  intent to make something; planning in passes and ordering with a lead time
+  both need the shelf to know that on Monday. `number_on_hand` therefore means
+  *unclaimed* yarn. See *The blanks come off when the run is made* in
+  `docs/claude/production.md`.
 - **Don't make the two signals into modes.** Both pages link to the other and
   say what the shared claim does. A mode asks somebody to pick a loop before
   they know which suits the week, and the honest answer is both — par at a

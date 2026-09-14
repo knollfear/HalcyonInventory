@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 
 from django.db import transaction
 
+from . import production
 from .models import CloseRun, CloseRunRow, ProductionRun, ProductionRunRow
 
 
@@ -279,15 +280,13 @@ def make_list(close, picks, reporting=ProductionRun.PAPER, category=None):
         included_overshoot=False,
         oven=False,
     )
-    ProductionRunRow.objects.bulk_create([
-        ProductionRunRow(
-            run=run,
-            finished_product=product,
-            order=order,
-            quantity=product.bath_size,
-        )
-        for order, (product, baths) in enumerate(_expand(picks), start=1)
-    ])
+    # The close's list claims its yarn exactly as the planner's does. The two
+    # signals differ in where the cards came from and in nothing else — a
+    # `ProductionRunRow` is the claim whoever wrote it, and that has to be as
+    # true of the shelf as it is of the planner.
+    production.open_rows(
+        run, [(product, product.bath_size) for product, baths in _expand(picks)]
+    )
     return run
 
 
@@ -355,10 +354,4 @@ def add_bath(run, product):
     into one question to answer, so the reporting side sees one colorway with
     two baths on it, which is what somebody is standing in front of.
     """
-    order = 1 + max((row.order for row in run.rows.all()), default=0)
-    return ProductionRunRow.objects.create(
-        run=run,
-        finished_product=product,
-        order=order,
-        quantity=product.bath_size,
-    )
+    return production.open_row(run, product)

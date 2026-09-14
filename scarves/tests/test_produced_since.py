@@ -487,14 +487,14 @@ class BlanksGoBackTests(TestCase):
         )
         self.raw = self.product.raw_product
         self.run = ProductionRun.objects.create()
-        self.row = ProductionRunRow.objects.create(
-            run=self.run, finished_product=self.product, order=1, quantity=5
-        )
+        from .. import production
+        # The blanks come off the shelf here, when the run is made.
+        self.row = production.open_rows(self.run, [(self.product, 5)])[0]
 
     def test_a_short_bath_returns_the_whole_bath_s_blanks(self):
-        """`apply_row` takes the full bath off raw and puts only the yield on
-        finished, because the blanks are gone whatever happened in the pot. So
-        undoing it has to put five back, not the three that survived."""
+        """The whole bath's blanks were claimed when the run was planned, and
+        only the yield ever reached the finished side. So undoing it has to
+        put five back, not the three that survived."""
         from .. import production
 
         log = production.apply_row(self.row, yielded=3)

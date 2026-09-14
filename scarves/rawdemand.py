@@ -68,6 +68,10 @@ class Outlook:
     #: an undyed yarn, a notion — is bought and resold as it arrives, so its
     #: shortfall is real and its *bath* count is not a thing that exists.
     is_dyed: bool = True
+    #: Units of this blank held by baths that are planned but not yet
+    #: reported. Already subtracted from `raw_on_hand`, and printed beside it
+    #: so a count that fell without a delivery has its reason on the row.
+    claimed: int = 0
     dyed_recently: int = 0
     #: When the most recent production row for this blank was written, at any
     #: depth of history — `dyed_recently` only looks back `RECENT_WEEKS`.
@@ -75,6 +79,13 @@ class Outlook:
 
     @property
     def raw_on_hand(self):
+        """Unclaimed yarn. Not the same as skeins on the shelf.
+
+        `production.open_rows` takes a run's blanks off this count when the
+        run is created, so anything on an open sheet has already left it —
+        see `claimed`, which is the difference between this and what somebody
+        standing at the shelf would count.
+        """
         return self.blank.number_on_hand
 
     @property
@@ -87,8 +98,17 @@ class Outlook:
         winter. They are printed apart as well as together, because they are
         *not* interchangeable the moment the question narrows to a colorway —
         see `finished_unsold`.
+
+        **Claimed yarn counts too, and forgetting it would order it twice.**
+        A blank on an open sheet has left `raw_on_hand` and has not yet
+        arrived on the finished side, so it falls between the two — and the
+        season shortfall is `remaining - owned`, which would then ask for
+        skeins that are already in the building, about to be dyed. This is
+        the one place the claim has to be added back: the *floor* check is
+        the opposite question and deliberately reads the claimed-out number,
+        because yarn that is spoken for cannot cover the dye room next week.
         """
-        return self.raw_on_hand + self.finished_on_hand
+        return self.raw_on_hand + self.claimed + self.finished_on_hand
 
     @property
     def shortfall(self):
@@ -131,13 +151,12 @@ class Outlook:
     def count_is_stale(self):
         """Has a bath been recorded since anybody counted this shelf?
 
-        The cheap version of a question with no good answer: raw stock only
-        goes down when a dye bath is *entered*, so the count is wrong by
-        however much has been dyed since — which is unknowable, because the
-        baths that have not been entered are exactly the ones nothing knows
-        about. What can be said is whether the count predates the dyeing the
-        app does know about, and that is enough to stop the number being read
-        as a measurement of today.
+        The cheap version of a question with no good answer: the count is
+        wrong by however much has been dyed without being planned through a
+        sheet — which is unknowable, because the baths nobody entered are
+        exactly the ones nothing knows about. What can be said is whether the
+        count predates the dyeing the app does know about, and that is enough
+        to stop the number being read as a measurement of today.
         """
         if self.blank.counted_at is None:
             return True
@@ -265,6 +284,18 @@ def _entered_production(blanks, since):
     return units, last
 
 
+def _claimed(blanks):
+    """Claimed units per blank, zero-filled for every blank asked about.
+
+    `production.claimed_units` is the one query; this only guarantees a key
+    per blank so the page never renders a missing figure as blank.
+    """
+    from . import production
+
+    claimed = production.claimed_units(blanks)
+    return {blank.pk: claimed.get(blank.pk, 0) for blank in blanks}
+
+
 #: How far back the *entered* column looks. Long enough to span the gap
 #: between dyeing something and typing it up, which is the thing being
 #: measured whether anybody means it to be or not.
@@ -285,6 +316,7 @@ def rows(blanks, today=None):
     finished, unsold, dyed = _finished_by_blank(blanks, sold_recipes)
     since = timezone.now() - timedelta(weeks=RECENT_WEEKS)
     entered, last_entry = _entered_production(blanks, since)
+    claimed = _claimed(blanks)
 
     out = []
     for blank in blanks:
@@ -298,6 +330,7 @@ def rows(blanks, today=None):
             finished_on_hand=finished.get(blank.pk, 0),
             finished_unsold=unsold.get(blank.pk, 0),
             is_dyed=blank.pk in dyed,
+            claimed=claimed.get(blank.pk, 0),
             dyed_recently=entered.get(blank.pk, 0),
             last_entry=last_entry.get(blank.pk),
         ))
