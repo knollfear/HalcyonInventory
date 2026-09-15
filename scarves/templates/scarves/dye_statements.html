@@ -1,0 +1,138 @@
+{% extends "scarves/base_internal.html" %}
+{% comment %}
+One statement per closed session. The figures are the ones frozen when each
+bath was accepted, so a reprint next spring says what the session was worth
+then — a bill is against the prices at the time. No labour line, because no
+rate has been agreed and a number in a column reads as a decision.
+{% endcomment %}
+
+{% block title %}Dye Statements{% endblock %}
+{% block heading %}Dye Statements{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 1060px; }
+
+  .headline { display: flex; flex-wrap: wrap; gap: 28px; margin: 4px 0 18px;
+              padding: 16px 18px; border: 1px solid #dde3ea; border-radius: 10px;
+              background: #f8fafc; }
+  .headline .fig .n { font-size: 28px; font-weight: 700; color: var(--accent);
+                      font-variant-numeric: tabular-nums; }
+  .headline .fig .n.quiet { font-size: 23px; color: #4b5563; }
+  .headline .fig .what { font-size: 12px; color: #667; }
+
+  table.rows td.num, table.rows th.num { text-align: right;
+      font-variant-numeric: tabular-nums; }
+  table.rows tr.total td { font-weight: 700; border-top: 2px solid #cfd6de; }
+  .when { font-size: 12px; color: #78808c; }
+  .note { font-size: 11px; color: #8a919c; }
+  .none { color: #8a919c; }
+  .caveat { font-size: 12px; color: #667; margin-top: 22px; line-height: 1.6; }
+  .pending { font-size: 13px; color: #556; margin: 0 0 14px; }
+{% endblock %}
+
+{% block content %}
+
+  <p class="lead">
+    What each closed session was worth. Priced when it closed, not re-read from
+    today's price list — the figures on a session are fixed the moment its
+    baths are accepted.
+  </p>
+
+  <div class="headline">
+    <div class="fig">
+      <div class="n">${{ totals.retail|floatformat:0 }}</div>
+      <div class="what">made, at the asking price</div>
+    </div>
+    <div class="fig">
+      <div class="n quiet">${{ totals.cost|floatformat:0 }}</div>
+      <div class="what">blanks it went through</div>
+    </div>
+    <div class="fig">
+      <div class="n quiet">${{ totals.value_added|floatformat:0 }}</div>
+      <div class="what">added by the dyeing, before any rate is applied</div>
+    </div>
+    <div class="fig">
+      <div class="n quiet">{{ totals.baths }}</div>
+      <div class="what">baths over {{ totals.runs }} session{{ totals.runs|pluralize }}, {{ totals.yielded }} units</div>
+    </div>
+  </div>
+
+  {% if totals.unpriced %}
+    <p class="pending">
+      {{ totals.unpriced }} bath{{ totals.unpriced|pluralize }} closed before
+      these figures were kept, so they carry no money. They are in the bath and
+      unit counts and out of the dollars — today's prices are not the prices
+      that applied then, and filling them in would invent the number this page
+      exists to pin down.
+    </p>
+  {% endif %}
+
+  {% if statements %}
+    <table class="rows">
+      <thead>
+        <tr>
+          <th>Session</th>
+          <th class="num">Baths</th>
+          <th class="num">Units</th>
+          <th class="num">Blanks</th>
+          <th class="num">At retail</th>
+          <th class="num">Added</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for statement in statements %}
+          <tr>
+            <td>
+              <a href="{% url 'production_run_detail' statement.run.pk %}">
+                Run {{ statement.run.pk }}</a>
+              <span class="when">{{ statement.run.token }}</span>
+              {% if statement.closed %}
+                <span class="when">closed {{ statement.closed|date:"d M Y" }}</span>
+              {% endif %}
+              {% if statement.unpriced %}
+                <span class="note">{{ statement.unpriced }} unpriced</span>
+              {% endif %}
+              {% if statement.retracted %}
+                <span class="note">{{ statement.retracted }} taken back</span>
+              {% endif %}
+            </td>
+            <td class="num">{{ statement.baths }}</td>
+            <td class="num">
+              {{ statement.yielded }}
+              {% if statement.fancy %}<span class="note">{{ statement.fancy }} fancy</span>{% endif %}
+            </td>
+            <td class="num">${{ statement.cost|floatformat:2 }}</td>
+            <td class="num">${{ statement.retail|floatformat:2 }}</td>
+            <td class="num">${{ statement.value_added|floatformat:2 }}</td>
+          </tr>
+        {% endfor %}
+        <tr class="total">
+          <td>{{ totals.runs }} session{{ totals.runs|pluralize }}</td>
+          <td class="num">{{ totals.baths }}</td>
+          <td class="num">{{ totals.yielded }}</td>
+          <td class="num">${{ totals.cost|floatformat:2 }}</td>
+          <td class="num">${{ totals.retail|floatformat:2 }}</td>
+          <td class="num">${{ totals.value_added|floatformat:2 }}</td>
+        </tr>
+      </tbody>
+    </table>
+  {% else %}
+    <p class="note">No session has had a bath accepted yet.</p>
+  {% endif %}
+
+  <p class="caveat">
+    <strong>A bath that was taken back is not on here.</strong> An entry undone
+    on <a href="{% url 'produced_since' %}">Produced Since</a> leaves the
+    original row exactly as written and adds a compensating one, so the question
+    is whether an entry still stands rather than whether one was ever made.
+    Those baths are named on the session and out of every figure.
+    <br>
+    <strong>Added is not profit and not yet a wage.</strong> It is the asking
+    price of what came out less what the blanks cost — the dye, the labour and
+    the stall are all still inside it, and some of the retail will go at a
+    discount. A rate for the dyeing would be paid out of this column; there is
+    no rate here because none has been agreed.
+  </p>
+
+{% endblock %}

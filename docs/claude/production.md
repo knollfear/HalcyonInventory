@@ -448,6 +448,50 @@ gone — and they were already paid for when the run was created, so `apply_row`
 puts `yielded` onto finished and touches raw not at all. The difference is a
 loss rather than a discrepancy, and needs no correction on the raw side.
 
+### The money is frozen when the bath is accepted, because a bill is as-of
+
+Accepting a bath is already the load-bearing step — the sheet is checked in,
+stock moves — and it is the intended payment handoff: a closed run carries its
+rows, their yields and a date, so nothing new has to be recorded to pay off
+it. `apply_row` therefore writes two more figures onto the row as it accepts
+it, and `scarves/dyebill.py` only adds them up.
+
+- `unit_blank_cost` — what one blank cost, then.
+- `output_retail` — the whole bath's output at the prices then: plain units at
+  theirs and any fancy ones at theirs.
+
+**This is the one place in the app that stores what it could derive**, and the
+exception is deliberate. Everything else answers "what is true now", where a
+live read is right and a stored copy goes stale. A statement answers *what was
+this session worth when it happened*, and a derived answer to that is wrong in
+a way nobody could see — a supplier increase or a spring reprice would rewrite
+what every past week earned, silently, including weeks already paid for. Same
+bargain `quantity` already makes with the printed sheet, one step further: the
+paper says how big the bath was, and these say what it cost and what it made.
+
+The asymmetry between the two is real. Cost is **per unit** and multiplied by
+`quantity`, because a bath eats its blanks whether or not the pot came good and
+however its output was finished. Retail is a **total**, because a split bath's
+output sells at two prices and no single unit price describes it.
+
+Nothing backfills. Rows accepted before this land null, and null is not zero:
+`dyebill` counts those baths, names them on the session and leaves them out of
+the money.
+
+**A retracted bath is off the statement.** *Take it back* leaves the row and
+its `applied_log` exactly as written, so the question is whether an entry still
+stands, not whether one was made — `dyebill` reads the reversal. Getting that
+wrong stops being an inventory error the moment a statement is a bill: it pays
+for a bath somebody has already said did not happen.
+
+**No rate lives anywhere.** A statement says what the blanks cost and what the
+output is priced at, and the labour line is absent because no rate has been
+agreed — a number in a column reads as a decision. The planner carries the
+same two figures for a list being built (`dyebill.estimate`, derived from
+today's prices, and blind to yield on purpose), so the size of a session is
+readable before anybody lights a pot. That is where a rate would eventually
+say what the work pays before it starts.
+
 ### The blanks come off when the run is made, not when the bath is reported
 
 **A run is an intent to make something, and the yarn it needs is spoken for

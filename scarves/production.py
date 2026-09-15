@@ -38,6 +38,7 @@ stops meaning anything definite.
 
 from dataclasses import dataclass
 from datetime import timedelta
+from decimal import Decimal
 from io import BytesIO
 from math import ceil
 
@@ -1139,6 +1140,25 @@ def apply_row(row, yielded=None, fancy=0):
             notes=notes,
         )
 
+    # **The money is frozen here, at the one event that is the payment
+    # handoff.** Accepting a bath is what enters the stock and what a bill for
+    # the dyeing is drawn from, so this row has to keep saying what the
+    # session was worth when it happened — a supplier increase or a reprice
+    # next spring must not rewrite what a past week earned. Same bargain
+    # `quantity` already makes with the printed sheet, one step further: the
+    # paper says how big the bath was, and this says what it cost and what it
+    # made.
+    #
+    # Cost is per unit and retail is a total, and the asymmetry is real: a
+    # bath eats `quantity` of one blank at one cost however its output was
+    # finished, while a split bath's output sells at two prices, so no single
+    # unit price describes it. A lost bath still consumed its blanks, which
+    # is why the cost basis is `quantity` and not `made`.
+    row.unit_blank_cost = raw.blank_cost
+    row.output_retail = (
+        Decimal(plain) * (product.price or Decimal("0"))
+        + Decimal(fancied) * ((target.price if fancied else None) or Decimal("0"))
+    )
     row.fancy_yield = fancied
     row.yielded = made
     row.accepted_at = timezone.now()
@@ -1150,6 +1170,7 @@ def apply_row(row, yielded=None, fancy=0):
     row.applied_log = log
     row.save(update_fields=[
         "yielded", "fancy_yield", "accepted_at", "cancelled_at", "applied_log",
+        "unit_blank_cost", "output_retail",
     ])
     return log
 

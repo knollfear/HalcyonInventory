@@ -172,6 +172,29 @@ sends somebody to the shelf for the wrong things.
       <p class="headline">{{ baths|length }} bath{{ baths|length|pluralize }}</p>
     {% endif %}
 
+    {% comment %}
+    **What the session is worth, before it starts.** The same two figures a
+    statement reports when it closes — the blanks it will go through and what
+    its output is priced at — so the size of an afternoon's work is readable
+    at the point somebody decides to do it rather than only afterwards. A rate
+    for the dyeing would land here, and then this line says what the session
+    pays before anybody lights a pot.
+
+    Derived from today's prices, unlike a statement's: nothing has happened
+    yet, and the freeze is for what did. And blind to yield on purpose — a
+    plan is what is being asked for, and discounting it by a failure rate
+    would price in a loss nobody has agreed happens, printed beside somebody's
+    work.
+    {% endcomment %}
+    <p class="money">
+      <b>${{ estimate.cost|floatformat:2 }}</b> of blanks
+      → <b>${{ estimate.retail|floatformat:2 }}</b> at the asking price
+      <span class="muted">
+        ({{ estimate.units }} unit{{ estimate.units|pluralize }},
+        ${{ estimate.value_added|floatformat:2 }} added by the dyeing)
+      </span>
+    </p>
+
     {% if short_blanks %}
       <div class="panel warn">
         <strong>Not enough blanks for all of this.</strong>

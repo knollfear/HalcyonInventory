@@ -2005,6 +2005,41 @@ class ProductionRunRow(models.Model):
             "orders, and the same fix."
         ),
     )
+    unit_blank_cost = models.DecimalField(
+        max_digits=8,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        editable=False,
+        help_text=(
+            "What one blank cost when this bath was accepted. Frozen at that "
+            "moment, like `quantity` is frozen when the sheet prints, and for "
+            "a stronger version of the same reason: this is what a bill for "
+            "the session is drawn from, and a bill has to be against the "
+            "prices at the time. Derived on read, a supplier increase would "
+            "silently rewrite what every past session was worth.\n\n"
+            "Null means the row was accepted before the figures were kept, "
+            "which is not zero — a statement reports those rows as unpriced "
+            "rather than free."
+        ),
+    )
+    output_retail = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        editable=False,
+        help_text=(
+            "The whole bath's output at the asking price when it was "
+            "accepted — plain units at their price and any fancy ones at "
+            "theirs, which is why this is a total where the cost beside it is "
+            "a unit price.\n\n"
+            "A total because the two halves of a split bath sell for "
+            "different money, so no single unit price describes what came "
+            "out. Blanks are the other way round: a bath eats `quantity` of "
+            "one blank at one cost, however its output was finished."
+        ),
+    )
 
     class Meta:
         ordering = ["run", "order", "pk"]

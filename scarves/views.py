@@ -55,7 +55,7 @@ logger = logging.getLogger(__name__)
 from django.template.response import TemplateResponse
 
 from . import (
-    closeplan, closing, colorbands, crew, fancy, labels, passthroughs,
+    closeplan, closing, colorbands, crew, dyebill, fancy, labels, passthroughs,
     photowalk, producedsince, production, rawdemand, restock, sales,
     seasonreport, sheetscan, skus, slowsellers, stockvalue, timesheets,
 )
@@ -4734,6 +4734,33 @@ def stock_value(request):
     })
 
 
+@page_meta(
+    title="Dye Statements",
+    description="What each closed dye session was worth — baths, units, the "
+                "blanks at what they cost and the output at what it is priced "
+                "at, frozen when the session closed rather than re-read from "
+                "today's prices.",
+    category="Reports",
+)
+@login_required
+def dye_statements(request):
+    """One statement per run, priced as it was when it closed.
+
+    The figures are read off the rows, not recomputed: `apply_row` freezes a
+    bath's cost and retail when it is accepted, because this is what a bill
+    for the dyeing is drawn from and a bill is against the prices at the time.
+
+    A bath whose entry was taken back afterwards is off the statement — the
+    question is whether an entry still stands — and a bath accepted before the
+    figures were kept is counted and left unvalued rather than valued at zero.
+    """
+    found = dyebill.statements()
+    return render(request, "scarves/dye_statements.html", {
+        "statements": found,
+        "totals": dyebill.totals(found),
+    })
+
+
 # ---------------------------------------------------------------------------
 # From a Sunday close to a production list.
 #
@@ -4993,6 +5020,12 @@ def production_sheet_index(request):
         "baths": baths,
         "plan": production.dye_plan_for_baths(baths),
         "bath_count": len(baths),
+        # What this session is worth before it starts — the same two figures a
+        # statement reports when it closes, so the size of the work is
+        # readable at the point somebody decides to do it. Derived here,
+        # frozen there: nothing has happened yet, and it is deliberately
+        # blind to yield.
+        "estimate": dyebill.estimate(baths),
         # Only a form that actually asked a question gets an answer below.
         # Keyed on validity rather than "was anything submitted", or a typo in
         # the bath count reads back as "nothing needs dyeing" — which is a

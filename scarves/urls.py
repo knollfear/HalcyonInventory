@@ -90,6 +90,10 @@ urlpatterns = [
     # not a signal: nothing plans against it — see `scarves/stockvalue.py`.
     path("private/stock-value/", views.stock_value, name="stock_value"),
 
+    # What each closed session was worth, priced when it closed. The shape a
+    # bill for the dyeing takes — `scarves/dyebill.py`.
+    path("private/dye-statements/", views.dye_statements, name="dye_statements"),
+
     # --- Recipes ---
     # POST-only, from the type-ahead in any dye picker. No @page_meta: there
     # is no page here, only the "add this dye" the picker offers.

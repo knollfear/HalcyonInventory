@@ -33,6 +33,12 @@ the preview is deliberately a GET and the print button is the only POST.
   table.rows th { font-size: 11px; text-transform: uppercase; color: #667; }
   table.rows td.num { text-align: right; font-variant-numeric: tabular-nums; }
   .headline { font-size: 26px; font-weight: 700; color: var(--accent); }
+  /* What the session is worth before it starts. Quieter than the bath
+     count on purpose: the money is context for a decision about work, not
+     the thing being decided. */
+  .money { font-size: 14px; color: var(--ink); margin: 2px 0 12px;
+           font-variant-numeric: tabular-nums; }
+  .money .muted { font-size: 12px; color: #78808c; }
 
   /* The tray gauge. One cell per tray, because the whole question on an oven
      run is how much of the box is spoken for — a bar somebody reads at a
