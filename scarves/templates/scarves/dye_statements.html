@@ -26,6 +26,12 @@ rate has been agreed and a number in a column reads as a decision.
   table.rows tr.total td { font-weight: 700; border-top: 2px solid #cfd6de; }
   .when { font-size: 12px; color: #78808c; }
   .note { font-size: 11px; color: #8a919c; }
+  /* An estimate has to be tellable from a record at a glance, everywhere it
+     appears — a number that reads as a measurement and isn't is the `par`
+     mistake. */
+  .est { font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+         color: #8a5a00; background: #fff6e0; border: 1px solid #f0e0b0;
+         border-radius: 999px; padding: 1px 7px; font-weight: 700; }
   .none { color: #8a919c; }
   .caveat { font-size: 12px; color: #667; margin-top: 22px; line-height: 1.6; }
   .pending { font-size: 13px; color: #556; margin: 0 0 14px; }
@@ -61,10 +67,12 @@ rate has been agreed and a number in a column reads as a decision.
   {% if totals.unpriced %}
     <p class="pending">
       {{ totals.unpriced }} bath{{ totals.unpriced|pluralize }} closed before
-      these figures were kept, so they carry no money. They are in the bath and
-      unit counts and out of the dollars — today's prices are not the prices
-      that applied then, and filling them in would invent the number this page
-      exists to pin down.
+      these figures were kept, and ${{ totals.estimated_retail|floatformat:2 }}
+      of the retail above is those baths priced at <em>today's</em> list rather
+      than at what applied then. Marked <span class="est">est</span> on every
+      session it affects. Nothing is written back: those rows still hold no
+      figures of their own, so an estimate can never be mistaken for a record
+      later — and unlike a record, it moves whenever the price list does.
     </p>
   {% endif %}
 
@@ -90,8 +98,9 @@ rate has been agreed and a number in a column reads as a decision.
               {% if statement.closed %}
                 <span class="when">closed {{ statement.closed|date:"d M Y" }}</span>
               {% endif %}
-              {% if statement.unpriced %}
-                <span class="note">{{ statement.unpriced }} unpriced</span>
+              {% if statement.is_estimated %}
+                <span class="est" title="Closed before the figures were kept; priced at today's list">
+                  est {{ statement.unpriced }} of {{ statement.baths }}</span>
               {% endif %}
               {% if statement.retracted %}
                 <span class="note">{{ statement.retracted }} taken back</span>
@@ -127,6 +136,12 @@ rate has been agreed and a number in a column reads as a decision.
     original row exactly as written and adds a compensating one, so the question
     is whether an entry still stands rather than whether one was ever made.
     Those baths are named on the session and out of every figure.
+    <br>
+    <strong>An estimate is offered, never recorded.</strong> A session that
+    closed before the figures were kept is valued at today's prices so a page
+    of real work does not read as though it earned nothing — but the row itself
+    still carries no money, and the estimate is marked wherever it is printed.
+    Everything unmarked is what that session was actually worth on the day.
     <br>
     <strong>Added is not profit and not yet a wage.</strong> It is the asking
     price of what came out less what the blanks cost — the dye, the labour and

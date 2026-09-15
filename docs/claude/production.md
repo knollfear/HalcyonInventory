@@ -474,9 +474,15 @@ The asymmetry between the two is real. Cost is **per unit** and multiplied by
 however its output was finished. Retail is a **total**, because a split bath's
 output sells at two prices and no single unit price describes it.
 
-Nothing backfills. Rows accepted before this land null, and null is not zero:
-`dyebill` counts those baths, names them on the session and leaves them out of
-the money.
+**Rows accepted before this land null, and null is not zero** — but they are
+not left blank either. 133 baths of real work closed before the columns
+existed, and a page that showed them earning nothing would be wrong in a more
+misleading way than an estimate is. So `dyebill` values them at *today's*
+prices, under two rules: **nothing is written back** — the columns stay null,
+so a guess can never be mistaken for a record afterwards — and **the estimate
+is marked wherever it prints**, per session and in the totals. It moves when
+the price list moves, which is right for an estimate and would be a bug in a
+record; that is exactly why the two live in different fields.
 
 **A retracted bath is off the statement.** *Take it back* leaves the row and
 its `applied_log` exactly as written, so the question is whether an entry still

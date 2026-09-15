@@ -177,15 +177,50 @@ class StatementTests(TestCase):
         self.assertEqual(statement.cost, Decimal("64.45"))
         self.assertEqual(statement.retail, Decimal("195.00"))
 
-    def test_a_bath_from_before_the_freeze_is_counted_and_not_valued(self):
+    def test_a_bath_from_before_the_freeze_is_estimated_at_todays_prices(self):
+        """Left blank, a page of real sessions reads as though it earned
+        nothing. Valued, it has to be tellable from a record."""
         run = self._closed_run(baths=1)
         run.rows.update(unit_blank_cost=None, output_retail=None)
 
         statement = dyebill.statements()[0]
         self.assertEqual(statement.baths, 1)
         self.assertEqual(statement.unpriced, 1)
-        self.assertEqual(statement.cost, Decimal("0.00"))
-        self.assertEqual(dyebill.totals([statement]).unpriced, 1)
+        self.assertTrue(statement.is_estimated)
+        # Nothing frozen, everything estimated, and the two add up to the
+        # figure the page prints.
+        self.assertEqual(statement.frozen_cost, Decimal("0.00"))
+        self.assertEqual(statement.estimated_cost, Decimal("64.45"))
+        self.assertEqual(statement.estimated_retail, Decimal("195.00"))
+        self.assertEqual(statement.cost, Decimal("64.45"))
+        self.assertEqual(statement.retail, Decimal("195.00"))
+        self.assertEqual(
+            dyebill.totals([statement]).estimated_retail, Decimal("195.00")
+        )
+
+    def test_an_estimate_is_never_written_back(self):
+        """The null columns stay null. A guess that is stored is
+        indistinguishable from a record the moment after it is written."""
+        run = self._closed_run(baths=1)
+        run.rows.update(unit_blank_cost=None, output_retail=None)
+
+        dyebill.statements()[0].retail
+
+        row = run.rows.get()
+        self.assertIsNone(row.unit_blank_cost)
+        self.assertIsNone(row.output_retail)
+
+    def test_an_estimate_moves_with_the_price_list_and_a_record_does_not(self):
+        priced = self._closed_run(baths=1)
+        stale = self._closed_run(baths=1)
+        stale.rows.update(unit_blank_cost=None, output_retail=None)
+
+        self.product.price = Decimal("50.00")
+        self.product.save()
+
+        by_run = {s.run.pk: s for s in dyebill.statements()}
+        self.assertEqual(by_run[priced.pk].retail, Decimal("195.00"))
+        self.assertEqual(by_run[stale.pk].retail, Decimal("250.00"))
 
     def test_a_pending_sheet_is_not_a_statement(self):
         production.open_rows(

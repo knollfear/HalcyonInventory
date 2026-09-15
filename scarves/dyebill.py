@@ -36,14 +36,28 @@ production row written" but **"does one still stand"** — see
 Getting that wrong stops being an inventory error the moment a statement is a
 bill: it pays for a bath somebody has already said did not happen.
 
-## Unpriced rows are counted and never valued
+## Rows from before the freeze are estimated, and the estimate is marked
 
-Rows accepted before the figures were kept have no cost and no retail. They
-are real work and they cannot be priced now — today's prices are not the
-prices then, and putting them in would be inventing the number this whole
-module exists to pin down. So they are counted, named on the run's row, and
-left out of the money. A statement that silently valued them at zero would
-read as a session that earned nothing.
+Baths accepted before the figures were kept have no frozen cost or retail, and
+they are real work — 133 baths of it. Leaving them blank makes a page of
+genuine sessions read as though they earned nothing, so they are valued at
+**today's** prices instead.
+
+Two rules keep that from quietly becoming a lie:
+
+- **Nothing is written back.** The estimate is computed on read and the null
+  columns stay null, so a row either carries what it was worth then or carries
+  nothing at all. Backfilling the columns would make a guess and a record
+  indistinguishable from the moment after it ran, which is the one thing the
+  freeze exists to prevent.
+- **It is marked everywhere it appears.** Each statement says how many of its
+  baths are estimated and how much of its money is, and the totals do too.
+  A number that cannot be told from a measurement is the `par` failure — see
+  *The app advises, a person decides* in `CLAUDE.md`.
+
+The estimate moves whenever the price list does, which is correct for an
+estimate and would be a bug in a record. That difference is the whole reason
+the two are kept in separate fields rather than merged into one column.
 """
 
 from __future__ import annotations
@@ -69,6 +83,31 @@ def _dec(value):
 
 def _money(value):
     return (value or ZERO).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def _is_unpriced(row):
+    """A row accepted before the figures were kept.
+
+    Both columns, because a row carrying one and not the other would be a
+    half-written record, and there is no way for `apply_row` to produce one —
+    it writes them together or not at all.
+    """
+    return row.unit_blank_cost is None and row.output_retail is None
+
+
+def _today_retail(row):
+    """What this bath's output would be worth at today's prices."""
+    fancied = row.fancy_yield or 0
+    plain = (row.yielded or 0) - fancied
+    total = Decimal(plain) * _dec(row.finished_product.price)
+    if fancied:
+        target = row.fancy_target
+        # No counterpart any more — the blank stopped having a fancy version
+        # since. Those units exist and were sold as something, so they are
+        # valued as plain rather than dropped.
+        price = target.price if target is not None else row.finished_product.price
+        total += Decimal(fancied) * _dec(price)
+    return total
 
 
 @dataclass
@@ -118,7 +157,7 @@ class Statement:
         return sum(row.quantity - (row.yielded or 0) for row in self.rows)
 
     @property
-    def cost(self):
+    def frozen_cost(self):
         """The blanks, at what they cost then.
 
         `quantity` and not `yielded`: a bath eats its blanks whether or not
@@ -131,12 +170,48 @@ class Statement:
         ))
 
     @property
-    def retail(self):
+    def frozen_retail(self):
         return _money(sum(
             (row.output_retail for row in self.rows
              if row.output_retail is not None),
             ZERO,
         ))
+
+    @property
+    def estimated_cost(self):
+        """Pre-freeze baths, valued at today's blank cost."""
+        return _money(sum(
+            (Decimal(row.quantity) * _dec(row.finished_product.raw_product.blank_cost)
+             for row in self.rows if _is_unpriced(row)),
+            ZERO,
+        ))
+
+    @property
+    def estimated_retail(self):
+        """Pre-freeze baths, valued at today's asking prices.
+
+        The fancy split is honoured here as it is in the freeze: those units
+        left as a different product at a different price, and valuing them as
+        plain would understate a session for having made the better thing.
+        """
+        return _money(sum(
+            (_today_retail(row) for row in self.rows if _is_unpriced(row)),
+            ZERO,
+        ))
+
+    @property
+    def cost(self):
+        return _money(self.frozen_cost + self.estimated_cost)
+
+    @property
+    def retail(self):
+        return _money(self.frozen_retail + self.estimated_retail)
+
+    @property
+    def is_estimated(self):
+        """Whether any of this session's money is an estimate rather than a
+        record. What the page marks the row with."""
+        return self.unpriced > 0
 
     @property
     def value_added(self):
@@ -173,7 +248,7 @@ def statements(limit=None):
         if row.applied_log.reversals.all():
             statement.retracted += 1
             continue
-        if row.unit_blank_cost is None and row.output_retail is None:
+        if _is_unpriced(row):
             statement.unpriced += 1
         statement.rows.append(row)
 
@@ -185,13 +260,17 @@ def statements(limit=None):
 
 @dataclass
 class Totals:
-    """Every statement added up."""
+    """Every statement added up, with the estimated part kept visible."""
 
     runs: int = 0
     baths: int = 0
     yielded: int = 0
     cost: Decimal = ZERO
     retail: Decimal = ZERO
+    #: How much of `retail` above is an estimate at today's prices rather
+    #: than a record of what the session was worth. Printed, always: money
+    #: that cannot be told from a measurement is the `par` failure.
+    estimated_retail: Decimal = ZERO
     unpriced: int = 0
 
     @property
@@ -206,6 +285,7 @@ def totals(found):
         yielded=sum(s.yielded for s in found),
         cost=_money(sum((s.cost for s in found), ZERO)),
         retail=_money(sum((s.retail for s in found), ZERO)),
+        estimated_retail=_money(sum((s.estimated_retail for s in found), ZERO)),
         unpriced=sum(s.unpriced for s in found),
     )
 
