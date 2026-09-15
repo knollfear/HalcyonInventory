@@ -86,6 +86,10 @@ urlpatterns = [
     path("private/slow-sellers/", views.slow_sellers, name="slow_sellers"),
     path("private/seasons/", views.season_report, name="season_report"),
 
+    # What the shelves are worth, at cost and at asking price. A valuation,
+    # not a signal: nothing plans against it — see `scarves/stockvalue.py`.
+    path("private/stock-value/", views.stock_value, name="stock_value"),
+
     # --- Recipes ---
     # POST-only, from the type-ahead in any dye picker. No @page_meta: there
     # is no page here, only the "add this dye" the picker offers.

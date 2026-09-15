@@ -1,0 +1,151 @@
+{% extends "scarves/base_internal.html" %}
+{% comment %}
+The shelves as a balance. Cost and asking price side by side, because cost
+alone understates a shelf whose whole value add is the dyeing and retail
+alone reads as money already earned. Baths only where a bath is a thing that
+happens to the pile — and nothing plans against that column.
+{% endcomment %}
+
+{% block title %}Stock Value{% endblock %}
+{% block heading %}Stock Value{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 1000px; }
+
+  .headline { display: flex; flex-wrap: wrap; gap: 28px; margin: 4px 0 18px;
+              padding: 16px 18px; border: 1px solid #dde3ea; border-radius: 10px;
+              background: #f8fafc; }
+  .headline .fig .n { font-size: 30px; font-weight: 700; color: var(--accent);
+                      font-variant-numeric: tabular-nums; }
+  .headline .fig .n.quiet { font-size: 24px; color: #4b5563; }
+  .headline .fig .what { font-size: 12px; color: #667; }
+
+  h2.section { font-size: 17px; margin: 26px 0 4px; }
+  p.blurb { font-size: 13px; color: #556; margin: 0 0 10px; line-height: 1.5; }
+
+  table.rows td.num, table.rows th.num { text-align: right;
+      font-variant-numeric: tabular-nums; }
+  table.rows tr.total td { font-weight: 700; border-top: 2px solid #cfd6de; }
+  .cat { font-size: 12px; color: #78808c; }
+  .basis { font-size: 11px; color: #8a919c; }
+  .none { color: #8a919c; }
+  .claimed { font-size: 11px; color: #1558a0; }
+  .caveat { font-size: 12px; color: #667; margin-top: 22px; line-height: 1.6; }
+{% endblock %}
+
+{% block content %}
+
+  <p class="lead">
+    What is sitting in the building, in dollars. Stock is money moved out of an
+    account and onto a shelf, and this is the shelf's side of that.
+  </p>
+
+  <div class="headline">
+    <div class="fig">
+      <div class="n">${{ totals.retail|floatformat:0 }}</div>
+      <div class="what">at the asking price</div>
+    </div>
+    <div class="fig">
+      <div class="n quiet">${{ totals.cost|floatformat:0 }}</div>
+      <div class="what">what it cost to buy</div>
+    </div>
+    <div class="fig">
+      <div class="n quiet">${{ totals.margin|floatformat:0 }}</div>
+      <div class="what">the difference, before dye, labour and the stall</div>
+    </div>
+    <div class="fig">
+      <div class="n quiet">{{ totals.units }}</div>
+      <div class="what">units, of which {{ totals.baths }} bath{{ totals.baths|pluralize }} still to dye</div>
+    </div>
+  </div>
+
+  {% for section in sections %}
+    <h2 class="section">{{ section.title }}</h2>
+    <p class="blurb">{{ section.blurb }}</p>
+
+    {% if section.rows %}
+      <table class="rows">
+        <thead>
+          <tr>
+            <th>Blank</th>
+            <th class="num">Units</th>
+            {% if section.shows_baths %}<th class="num">Baths</th>{% endif %}
+            <th class="num">Cost each</th>
+            <th class="num">At cost</th>
+            <th class="num">Each</th>
+            <th class="num">At retail</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in section.rows %}
+            <tr>
+              <td>
+                {{ row.name }}
+                <span class="cat">{{ row.category }}</span>
+                {% if row.claimed %}
+                  <span class="claimed">{{ row.claimed }} on an open sheet</span>
+                {% endif %}
+              </td>
+              <td class="num">{{ row.units }}</td>
+              {% if section.shows_baths %}
+                <td class="num">
+                  {% if row.baths is None %}<span class="none">—</span>
+                  {% else %}{{ row.baths }}{% endif %}
+                </td>
+              {% endif %}
+              <td class="num">${{ row.unit_cost|floatformat:2 }}</td>
+              <td class="num">${{ row.cost|floatformat:2 }}</td>
+              <td class="num">
+                {% if row.unit_retail is None %}
+                  <span class="none">—</span>
+                {% else %}
+                  ${{ row.unit_retail|floatformat:2 }}
+                  <span class="basis">{{ row.retail_basis }}</span>
+                {% endif %}
+              </td>
+              <td class="num">
+                {% if row.retail is None %}
+                  <span class="none">not priced</span>
+                {% else %}${{ row.retail|floatformat:2 }}{% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+          <tr class="total">
+            <td>{{ section.rows|length }} row{{ section.rows|length|pluralize }}</td>
+            <td class="num">{{ section.units }}</td>
+            {% if section.shows_baths %}<td class="num">{{ section.baths }}</td>{% endif %}
+            <td></td>
+            <td class="num">${{ section.cost|floatformat:2 }}</td>
+            <td></td>
+            <td class="num">${{ section.retail|floatformat:2 }}</td>
+          </tr>
+        </tbody>
+      </table>
+      {% if section.unpriced_units %}
+        <p class="blurb">
+          {{ section.unpriced_units }} unit{{ section.unpriced_units|pluralize }}
+          here have no price anywhere, so they are in the unit count and out of
+          the retail figure — a dash rather than a zero, because nothing priced
+          and worth nothing are different answers.
+        </p>
+      {% endif %}
+    {% else %}
+      <p class="blurb">Nothing on hand.</p>
+    {% endif %}
+  {% endfor %}
+
+  <p class="caveat">
+    <strong>Retail is the asking price, not the price.</strong> Some of it goes
+    at a discount, at the end of a season or years later, and a write-down is an
+    ordinary thing. It is printed because it is the only honest upper bound —
+    cost alone understates a shelf whose value add is the dyeing, none of which
+    is priced in the cost column.
+    <br>
+    <strong>Nothing plans against this page.</strong> The bath column is a size
+    a person can hold rather than a work order: dyeing is planned off par and
+    off the Sunday close, and a bath count derived from what is on the shelf
+    would be capacity asking for production.
+  </p>
+
+{% endblock %}

@@ -57,7 +57,7 @@ from django.template.response import TemplateResponse
 from . import (
     closeplan, closing, colorbands, crew, fancy, labels, passthroughs,
     photowalk, producedsince, production, rawdemand, restock, sales,
-    seasonreport, sheetscan, skus, slowsellers, timesheets,
+    seasonreport, sheetscan, skus, slowsellers, stockvalue, timesheets,
 )
 from . import seasons as seasons_mod
 from .colorutils import hex_to_rgb, nearest_by_color, pick_color_cluster
@@ -4704,6 +4704,33 @@ def slow_sellers(request):
         # colorway at all, and sales that all landed on one.
         "unattributed": slowsellers.unattributed(rng, category=category),
         "lopsided": slowsellers.lopsided(rng, category=category),
+    })
+
+
+@page_meta(
+    title="Stock Value",
+    description="What is on the shelves in dollars — undyed, dyed and "
+                "bought-in — at what it cost and at what it is priced to "
+                "sell for, with undyed yarn counted in dye baths as well as "
+                "skeins.",
+    category="Reports",
+)
+@login_required
+def stock_value(request):
+    """The shelves as a balance rather than a count.
+
+    Reads three piles that do not overlap, so the totals add up: undyed
+    blanks waiting for a bath, dyed colorways, and the passthroughs whose one
+    physical pile is valued on its finished row only.
+
+    **Nothing here is a signal.** A bath count off what is on the shelf is
+    capacity proposing production, which is the one coupling this app works
+    hardest to keep broken, so it is printed and read by nothing.
+    """
+    found = stockvalue.sections()
+    return render(request, "scarves/stock_value.html", {
+        "sections": found,
+        "totals": stockvalue.totals(found),
     })
 
 

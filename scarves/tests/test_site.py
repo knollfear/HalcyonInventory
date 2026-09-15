@@ -1060,7 +1060,8 @@ class ReportsAreTheirOwnCategoryTests(TestCase):
     page is how a site map stops being readable.
     """
 
-    REPORTS = ["Top Sellers", "Slow Sellers", "Season Pace", "Close History"]
+    REPORTS = ["Top Sellers", "Slow Sellers", "Season Pace", "Close History",
+               "Stock Value"]
 
     def setUp(self):
         self.client.force_login(User.objects.create_user("staff", password="pw"))
@@ -1091,8 +1092,9 @@ class ReportsAreTheirOwnCategoryTests(TestCase):
         the operational pages they used to sit with move stock."""
         import scarves.sales as sales
         import scarves.slowsellers as slow
+        import scarves.stockvalue as value
 
-        for module in (sales, slow):
+        for module in (sales, slow, value):
             source = pathlib.Path(module.__file__).read_text()
             for forbidden in (".save(", ".create(", ".update(", ".delete("):
                 self.assertNotIn(

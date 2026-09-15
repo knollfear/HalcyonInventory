@@ -476,3 +476,53 @@ in price, add a **tier** as another blank (Extra Fancy Veil) — finite, and
 chosen. `FinishedProduct.is_fancy` was dropped in migration 0029 for this
 reason: a boolean cannot carry a price, and it was one well-meaning afternoon
 away from becoming the design dimension.
+
+## `private/stock-value/`: the shelves as a balance, and the three piles
+
+The app could say how many of a thing were on hand and never what any of it
+was worth, so the only number a year of dyeing had attached to it was the
+supplier invoices going out. Stock is the other side of that ledger, and over
+twenty years nearly all of it has left the shelf again as takings — which is
+the reading the page exists for, and why it leads with a dollar figure rather
+than a table.
+
+**Three sections, disjoint by construction, so the totals add up.** Undyed
+blanks waiting for a bath, dyed colorways pooled by blank, and the
+passthroughs. The third is not a nicety: a passthrough is **one physical pile
+with two rows**, and valuing the raw row and its mirroring finished row would
+double it. So the pile is valued on the finished row, which is the one
+carrying a selling price, and those blanks are held out of the undyed
+section — which leaves that section meaning *yarn waiting for a dye bath*,
+the only thing a bath count means anything for anyway.
+
+**Claimed yarn is counted here, and this is the only page that adds it back to
+a shelf reading.** `number_on_hand` means unclaimed — see *The blanks come off
+when the run is made* in `docs/claude/production.md` — and that is right for
+ordering and wrong for a valuation: skeins on an open sheet are in the
+building and nothing has been spent. The claim prints on the row, so the
+count reconciles with what somebody standing at the shelf would find.
+
+**Retail is the asking price and the page says so.** Some of it goes at a
+discount, seasons late, and a write-down is an ordinary thing rather than a
+failure — but cost alone understates a shelf whose entire value add is the
+dyeing, and none of the dye or the labour is in the cost column. Both are
+printed for that reason, with the difference labelled as what it is: before
+dye, labour and the stall, not profit.
+
+**Undyed yarn has no retail price of its own**, so the figure on those rows is
+what the colour sells for once dyed: `suggested_price` when somebody set one,
+otherwise the stock-weighted average of what that blank's colorways actually
+ring at, and **the row says which**. A derived number with no visible basis is
+the `par` failure again — see *The app advises, a person decides* in
+`CLAUDE.md`. A blank with neither gets a dash and its units are reported
+under the table: nothing is priced and it is worth nothing are different
+answers, and only one of them belongs in a total.
+
+**Nothing plans against this page, and the bath column is the thing to watch.**
+`units / number_per_dye_bath` is here because "126 baths of undyed" is a size
+a person can hold where 565 skeins is not. It is not a work order: dyeing is
+planned off par and off the Sunday close, and a bath count derived from what
+is sitting on a shelf is capacity proposing production, which is the coupling
+*Display capacity is not demand* exists to keep broken. A blank no bath can
+produce — a fancy blank — gets a dash rather than a zero in that column, for
+the same reason it drops off every production list.
