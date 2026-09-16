@@ -287,9 +287,9 @@ def candidates(category=None, include_overshoot=False, order=ORDER_SOLD,
         .prefetch_related("recipe__recipe_dyes__dye__brand")
     )
     if oven is not None:
-        # The pot and the oven are two sessions, never one sheet. `None` is
-        # the reporting case, which wants both.
-        qs = qs.filter(recipe__oven_dyed=oven)
+        # The microwave and the oven are two sessions, never one sheet.
+        # `None` is the reporting case, which wants both.
+        qs = qs.filter(oven_dyed=oven)
     if category is not None:
         qs = qs.filter(raw_product__category=category)
 
@@ -626,7 +626,7 @@ def top_ups(current, gap, category=None, oven=True):
             is_active=True,
             recipe__isnull=False,
             recipe__is_active=True,
-            recipe__oven_dyed=oven,
+            oven_dyed=oven,
             raw_product__made_in_a_dye_bath=True,
         )
         .select_related("raw_product", "recipe")

@@ -699,8 +699,8 @@ doesn't have to be reconstructed.
 ### The sheet is editable, and prints as two documents
 
 The planner only sees shortages against par, and there are real reasons to dye
-something that isn't one — an order taken at the stall, room left in a pot
-already being heated. A plan nobody can edit gets worked around on paper, and
+something that isn't one — an order taken at the stall, room left in a
+session already under way. A plan nobody can edit gets worked around on paper, and
 then the paper and the app disagree about what the session was. So the run
 page has a type-ahead to add a bath and a `strike` beside each pending row.
 Adding **appends**, because `order` is the position on a printed sheet and
@@ -978,7 +978,24 @@ for the colours that may actually be selling.
 
 ### The oven: a second session, planned to the box instead of to the work
 
-Some colorways are made in an oven rather than in a pot. The oven holds
+**What actually happens, because the word "bath" invites the wrong picture.**
+Nothing is dunked in a vat of dye. A yarn skein is zip-tied so it cannot
+tangle, rinsed until it soaks, laid in a pan or a box, and the dye is applied
+as it goes in — then the **oven or the microwave**, then dried and finished.
+Silk is the same without the zip ties and **always the microwave**, then washed
+in Synthrapol and softener and dried on gentle. So a *bath* here is a batch,
+and the two sessions this app plans are oven work and microwave work. Anywhere
+this file or the code says "pot", "stovetop" or "sink", it is describing a shop
+that does not exist.
+
+**The microwave is what sets `number_per_dye_bath`,** and it is a bulk limit
+rather than a piece count: Rectangle Veil is 3, most silk is 4, the yarn bases
+are 5, and Sash Belt is 8 because a 5x72 belt is at most a third of a 54x108
+veil by weight. That is why the capacity needs no expression of its own — it is
+already inside the bath — and why **only the oven is a box to plan to.** A
+microwave session is bounded by how much work there is.
+
+Some colorways are made in an oven rather than the microwave. The oven holds
 **fifteen trays and one tray is one bath**, so `production.OVEN_TRAYS` is a
 row count and nothing here needs tray arithmetic of its own.
 
@@ -1007,19 +1024,39 @@ reasons is a sign the breakdown happened in the wrong order, and the
 arithmetic that follows is the cost of that rather than an inherent
 complication.
 
-**It is the opposite planning problem from the dye room.** A stovetop session
+**It is the opposite planning problem from the microwave.** A microwave session
 is bounded by how much work there is; an oven session is bounded by the box.
 Running the oven is an *event* — it heats once whether it comes out full or
 empty — so the picker plans *to* fifteen rather than to a number somebody
 types, and the gap is the number the page is actually about.
 
-**`Recipe.oven_dyed` is the axis, because the technique is a property of the
-colour.** An oven colorway is oven-dyed on every blank it is dyed on, so
-flagging the recipe answers it once instead of a few hundred times. It is a
-checkbox on each open row of `private/recipes/`, riding the Save that is
-already there — the person filling in a colorway's dyes is the person who
-knows which box it is made in, and a control with its own button would be a
-second trip through every row. It is `list_editable` in the admin too.
+**`FinishedProduct.oven_dyed` is the axis, because the technique is a property
+of the blank *and* the colour.** It was on `Recipe` first, on the reasoning
+that an oven colorway is oven-dyed on every blank it is dyed on, so flagging
+the colour answers it once instead of a few hundred times. That is half true,
+and the missing half is silent: **silk is never oven-dyed — it always goes in
+the microwave** — so a colour dyed on silk and on yarn is oven work on one and
+not the other, and a flag on the colour said "oven" for both. That took the
+silk off the microwave sheet as well as putting it on a sheet for an appliance
+it never enters, and the row looked like every other row either way.
+
+It is the same shape as `RawProduct.made_in_a_dye_bath`, reached by the same
+argument: a category test ("silk means microwave") is right today and wrong the
+day something arrives that breaks it, and it breaks quietly. A typed answer per
+pair is always right and can be looked at. Migration 0047 carried the old flags
+over — every product of an oven colorway except the silk — and the category
+test lives *there*, applied once to the rows as they stood, rather than in any
+code that runs again.
+
+**The entry cost is real and is paid on the row somebody is already saving.**
+The recipes page draws one box per blank on the open colorway, labelled with
+the blank's name, riding the Save that is already there — so a colour made in
+the oven on three yarns is three ticks in one pass, and a mixed colorway is
+expressible rather than flattened to whichever answer a single box held. The
+badge on a closed row says `oven` when they agree and `oven on 2 of 5` when
+they do not, because a summary that hides the disagreement hides exactly the
+case the flag was moved to express. `private/production-needed/` prints the
+share the same way, and the product admin carries the column for a bulk pass.
 
 **It is typed and never derived, and there is a rule that makes that
 tempting**: a colour name goes in the oven (Ochre, Cabernet), an idea doesn't
@@ -1039,7 +1076,7 @@ Exceptions will exist that nobody knows about today, which is the whole
 argument for a flag.
 
 **It partitions both ways, and that is the load-bearing half.** An oven
-colorway on a dye-room sheet sends somebody to a sink to make a thing that is
+colorway on a microwave sheet sends somebody to make a thing that is
 not made there — the failure `made_in_a_dye_bath` already exists to stop, one
 technique further in, and just as silent, because the row looks like every
 other row. So `candidates(oven=...)` returns two disjoint populations and
@@ -1064,9 +1101,9 @@ each miss is silent:
 - the search form's own hidden copy, for a no-script Find;
 - the checkbox itself.
 
-Drop one and the sheet turns back into a dye-room sheet mid-edit, with the
+Drop one and the sheet turns back into a microwave sheet mid-edit, with the
 loudest symptom being a tray gauge that quietly stops being drawn. Drop it on
-the Print path and the run is *stored* as a dye-room sheet, after which the
+the Print path and the run is *stored* as a microwave sheet, after which the
 run page refuses the oven colorways that are actually on it.
 `test_every_control_on_the_page_carries_the_tick` walks the rendered page and
 pins all of it, rather than trusting four templates to each remember.
@@ -1106,7 +1143,7 @@ with a person who can see the calendar — the same call the short-blank warning
 makes. Over fifteen is said out loud too, and still prints.
 
 **Nothing about the oven is enforced, including which colorways go in it.**
-That was built as a refusal first and it was wrong. `Recipe.oven_dyed` is
+That was built as a refusal first and it was wrong. `oven_dyed` is
 typed by a person, from a rule with exceptions nobody knows about today —
 which is the whole reason it is a flag — so refusing on it is the app
 enforcing somebody's own provisional data back at them, at the exact moment

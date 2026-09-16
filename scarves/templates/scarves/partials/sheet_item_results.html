@@ -30,7 +30,7 @@ reason.
       <input type="hidden" name="product" value="{{ p.id }}">
       <button type="submit" class="result">
         <span class="who">{{ p.name }}</span>
-        <span class="muted">{{ p.sku|default:"no SKU" }}{% if p.recipe.oven_dyed != oven %} — {% if p.recipe.oven_dyed %}oven colorway{% else %}made in a pot{% endif %}{% endif %}</span>
+        <span class="muted">{{ p.sku|default:"no SKU" }}{% if p.oven_dyed != oven %} — {% if p.oven_dyed %}made in the oven{% else %}made in the microwave{% endif %}{% endif %}</span>
         <span class="qty">+{{ p.bath_size }}</span>
       </button>
     </form>

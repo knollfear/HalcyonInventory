@@ -65,6 +65,7 @@ from .helpers import (
     make_bathable,
     make_employee,
     make_recipe,
+    mark_oven,
 )
 
 
@@ -460,20 +461,20 @@ class OneAnswerToWhatIsShortTests(TestCase):
     def test_an_oven_colorway_is_still_reported(self):
         """The page reports where the sheet plans: `oven=None`, so both boxes
         are listed and the oven ones are badged rather than dropped."""
-        Recipe.objects.filter(pk=self.recipe.pk).update(oven_dyed=True)
+        mark_oven(*self.recipe.finished_products.all())
 
         self.assertEqual(self._shortage(), 8)
 class OvenRunTests(TestCase):
     """The oven: a second kind of session, planned to the box rather than to
     the work.
 
-    Some colorways are made in an oven rather than in a pot, and running it
+    Some colorways are made in an oven rather than the microwave, and running it
     is an *event* — it heats once, holds `OVEN_TRAYS` trays, and fifteen is
     what makes the heating worth it. Two things follow, and both are the sort
     that fail silently if they come undone:
 
-    **The partition runs both ways.** An oven colorway on a dye-room sheet
-    sends somebody to a sink to make a thing that is not made there, which is
+    **The partition runs both ways.** An oven colorway on a microwave sheet
+    sends somebody to make a thing that is not made there, which is
     exactly the failure `made_in_a_dye_bath` exists to stop. It is invisible
     on the paper — the row looks like every other row.
 
@@ -487,11 +488,11 @@ class OvenRunTests(TestCase):
 
         self.pot = make_recipe("Stormy Sea")
         self.oven = make_recipe("Speckled Ember")
-        Recipe.objects.filter(pk=self.oven.pk).update(oven_dyed=True)
-        self.oven.refresh_from_db()
 
         self.pot_product = make_bathable(self.pot, "Stormy Silk", on_hand=0, par=8, bath=4)
-        self.oven_product = make_bathable(self.oven, "Ember Wool", on_hand=0, par=8, bath=4)
+        self.oven_product = mark_oven(
+            make_bathable(self.oven, "Ember Wool", on_hand=0, par=8, bath=4)
+        )
 
         # One page, one tick — the oven is a checkbox on the picker, not a
         # second URL somebody has to remember because of which appliance
@@ -580,8 +581,7 @@ class OvenRunTests(TestCase):
         # A second oven colorway, so a remove link still has rows left in it
         # — the single-row case reduces to `?oven=1` and would pass trivially.
         second = make_recipe("Ash Bloom")
-        Recipe.objects.filter(pk=second.pk).update(oven_dyed=True)
-        make_bathable(second, "Ash Wool", on_hand=0, par=8, bath=4)
+        mark_oven(make_bathable(second, "Ash Wool", on_hand=0, par=8, bath=4))
 
         response = self.client.get(self.sheet_url, {"baths": 15, "oven": "1"})
         html = response.content.decode()
@@ -654,8 +654,9 @@ class OvenRunTests(TestCase):
         """The one place the app suggests making something not below par —
         and it offers, it never adds."""
         spare = make_recipe("Ash Bloom")
-        Recipe.objects.filter(pk=spare.pk).update(oven_dyed=True)
-        stocked = make_bathable(spare, "Ash Wool", on_hand=99, par=8, bath=4)
+        stocked = mark_oven(
+            make_bathable(spare, "Ash Wool", on_hand=99, par=8, bath=4)
+        )
 
         response = self.client.get(self.sheet_url, {"baths": 15, "oven": "1"})
 
@@ -672,7 +673,7 @@ class OvenRunTests(TestCase):
         response = self.client.get(self.sheet_url, {"baths": 15, "oven": "1"})
 
         for product, _ in response.context["top_ups"]:
-            self.assertTrue(product.recipe.oven_dyed)
+            self.assertTrue(product.oven_dyed)
 
     def test_nothing_is_offered_once_the_box_is_full(self):
         """The panel only ever answers a question the page is asking."""
@@ -702,7 +703,7 @@ class OvenRunTests(TestCase):
         )
 
         self.assertEqual(run.rows.count(), before + 1)
-        self.assertContains(response, "made in a pot")
+        self.assertContains(response, "made in the microwave")
 
     def test_an_oven_colorway_can_still_be_added_to_a_dye_room_sheet(self):
         self.client.post(self.sheet_url, {"baths": 10})
@@ -716,7 +717,7 @@ class OvenRunTests(TestCase):
         )
 
         self.assertEqual(run.rows.count(), before + 1)
-        self.assertContains(response, "oven colorway")
+        self.assertContains(response, "made in the oven")
 
     def test_what_still_cannot_go_on_a_sheet(self):
         """The line: how a thing comes into being is a fact, which stays
@@ -802,8 +803,9 @@ class OvenRunTests(TestCase):
         that as a typo, and a real over-full oven is several colours anyway.
         """
         second = make_recipe("Ash Bloom")
-        Recipe.objects.filter(pk=second.pk).update(oven_dyed=True)
-        other = make_bathable(second, "Ash Wool", on_hand=0, par=8, bath=4)
+        other = mark_oven(
+            make_bathable(second, "Ash Wool", on_hand=0, par=8, bath=4)
+        )
         return {
             "items": [f"{self.oven_product.pk}:8", f"{other.pk}:8"],
             "oven": "1",
@@ -837,8 +839,9 @@ class OvenRunTests(TestCase):
         """The guard is narrow. Everything else about this box stays
         permissive — a bath nobody needs is exactly what it is for."""
         spare = make_recipe("Ash Bloom")
-        Recipe.objects.filter(pk=spare.pk).update(oven_dyed=True)
-        stocked = make_bathable(spare, "Ash Wool", on_hand=99, par=8, bath=4)
+        stocked = mark_oven(
+            make_bathable(spare, "Ash Wool", on_hand=99, par=8, bath=4)
+        )
 
         self.client.post(self.sheet_url, {"baths": 15, "oven": "1"})
         run = ProductionRun.objects.get()
@@ -2799,7 +2802,7 @@ class HandPickedSheetTests(TestCase):
     """Creating a run from colorways somebody chose, not from par.
 
     Par is not the only reason to dye — an order taken at the stall, a colour
-    worth trying, room beside a pot already being heated. And a planner that
+    worth trying, room in a session already under way. And a planner that
     can only answer "what is below par" cannot plan a session at all when
     nothing is short, which is exactly when there is time for one.
     """
@@ -2978,7 +2981,7 @@ class SheetEditorTests(TestCase):
 
     The planner only knows about shortages against par, and there are real
     reasons to dye something that isn't one — an order taken at the stall,
-    room left in a pot already being heated. A plan that can't be edited gets
+    room left in a session already under way. A plan that can't be edited gets
     worked around on paper, and then the paper and the app disagree about
     what the session was.
     """

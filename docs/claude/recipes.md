@@ -375,7 +375,7 @@ place on every row. Above the chips it moved down the cell as a colorway gained
 dyes.
 
 **Render only `form.dye_fields` in the pickers, never `{% for field in form %}`.**
-That renders every field, and `oven_dyed` is a declared attribute while the dye
+That renders every field, and `oven_dyed` was once a declared attribute while the dye
 slots are added in `__init__` — so Django orders it first, and the row came out
 with a stray checkbox in front of the dye boxes which was the *same field* the
 oven label below already renders. Two inputs sharing one name is worse than

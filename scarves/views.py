@@ -399,6 +399,11 @@ def production_needed_view(request):
             "recipe_id": rid,
             "recipe_name": fps[0].recipe.name,
             "recipe_obj": fps[0].recipe,
+            # A count rather than a flag, because the answer is per blank now:
+            # a colour can be oven work on its yarns and microwave on its silk,
+            # and a bare badge would say the whole group belongs on an oven
+            # sheet when only some of it does. The badge prints the share.
+            "oven_count": sum(1 for p in fps if p.oven_dyed),
             # Asked of what is left *after* the paper, like the shortage
             # beside it. The model property answers about the shelf alone and
             # would light up rows a printed sheet already covers.
@@ -1231,22 +1236,45 @@ def _edit_row_url(recipe, missing_only=False, category=None):
     return _showcase_url(missing=missing_only, category=category, row=recipe.pk)
 
 
+def _oven_products(recipe):
+    """The colorway's products, in the order its oven boxes are drawn.
+
+    By blank name, because that is what the boxes are labelled with and a
+    list somebody reads twice should not change order between reads.
+    """
+    return list(
+        recipe.finished_products.filter(is_active=True)
+        .select_related("raw_product")
+        .order_by("raw_product__name", "pk")
+    )
+
+
 def _recipe_row_context(recipe, form=None, saved=False, missing_only=False,
                         category=None):
     """One showcase row with its editor open."""
+    products = _oven_products(recipe)
     if form is None:
         initial = {
             f"dye{i}": rd.dye_id
             for i, rd in enumerate(recipe.recipe_dyes.all()[: RecipeDyesForm.SLOTS], start=1)
         }
-        # Without this the box renders unticked on a flagged recipe, and the
-        # next Save on that row silently un-flags it.
-        initial["oven_dyed"] = recipe.oven_dyed
-        form = RecipeDyesForm(initial=initial)
+        # Without this a box renders unticked on a product that is flagged,
+        # and the next Save on that row silently un-flags it.
+        for product in products:
+            initial[f"{RecipeDyesForm.OVEN_PREFIX}{product.pk}"] = product.oven_dyed
+        form = RecipeDyesForm(initial=initial, products=products)
+    oven = [p for p in products if p.oven_dyed]
     return {
         "recipe": recipe,
         "form": form,
         "edit_mode": True,
+        # The badge is a summary of several answers now, so it has to say
+        # whether they agree: a colorway that is oven work on its yarns and
+        # microwave on its silk is the case the flag was moved to express,
+        # and a bare "oven" tag would hide exactly that.
+        "oven_count": len(oven),
+        "oven_all": bool(oven) and len(oven) == len(products),
+        "product_count": len(products),
         "saved": saved,
         "edit_row_url": _edit_row_url(
             recipe, missing_only=missing_only, category=category
@@ -1516,7 +1544,7 @@ def recipe_dyes_save(request, pk):
     something, so a save that was about the dyes says nothing about the bands.
     """
     recipe = get_object_or_404(Recipe, pk=pk)
-    form = RecipeDyesForm(request.POST)
+    form = RecipeDyesForm(request.POST, products=_oven_products(recipe))
 
     if not form.is_valid():
         recipe = Recipe.objects.prefetch_related(
@@ -4977,7 +5005,7 @@ def production_sheet_index(request):
     # what actually goes in the box. Counting every row instead would read
     # "17 of 15" for fifteen trays plus two pots, which is the page telling
     # somebody to take out work the oven was never holding.
-    oven_baths = [b for b in baths if b.product.recipe.oven_dyed]
+    oven_baths = [b for b in baths if b.product.oven_dyed]
     pot_baths = len(baths) - len(oven_baths)
     tray_gap = production.OVEN_TRAYS - len(oven_baths) if oven else 0
     # Built here rather than counted in the template, which cannot range.
@@ -5120,7 +5148,7 @@ def production_run_detail(request, pk):
     live_rows = [row for row in run.rows.all() if not row.is_cancelled]
     live = sum(
         1 for row in live_rows
-        if row.finished_product.recipe and row.finished_product.recipe.oven_dyed
+        if row.finished_product.oven_dyed
     )
     alongside = len(live_rows) - live
 
@@ -5173,8 +5201,8 @@ def production_run_add_row(request, pk):
     # thing comes into being.
     #
     # A mismatched oven flag is *not* that, and it used to be refused here.
-    # `Recipe.oven_dyed` is typed by a person, from a rule about the world
-    # ("a colour name goes in the oven"), and it was made a flag precisely
+    # `FinishedProduct.oven_dyed` is typed by a person, from a rule about the
+    # world ("a colour name goes in the oven"), and it was made a flag precisely
     # because there will be exceptions nobody knows about today. Refusing on
     # it means the app enforcing somebody's own provisional data back at
     # them, at the moment they are trying to say the data is wrong — and the
@@ -5192,11 +5220,11 @@ def production_run_add_row(request, pk):
         return redirect("production_run_detail", pk=run.pk)
 
     mismatch = (
-        product.recipe.oven_dyed != run.oven
+        product.oven_dyed != run.oven
         and (
-            "That is an oven colorway and this is a dye-room sheet"
-            if product.recipe.oven_dyed else
-            "That is made in a pot and this is an oven run"
+            "That one is made in the oven and this is a microwave sheet"
+            if product.oven_dyed else
+            "That one is made in the microwave and this is an oven run"
         )
     )
 

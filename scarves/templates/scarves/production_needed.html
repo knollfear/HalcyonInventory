@@ -141,7 +141,7 @@
           <span class="soldcount {% if not g.units_sold %}none{% endif %}">
             sold {{ g.units_sold }}
           </span>
-          {% if g.recipe_obj.oven_dyed %}
+          {% if g.oven_count %}
             {% comment %}
             **This page deliberately does not filter on the oven**, and the
             badge is what makes that safe. What is below par is a fact worth
@@ -156,8 +156,8 @@
             the shortage.
             {% endcomment %}
             <a class="ovenbadge" href="{% url 'production_sheet_index' %}?oven=1"
-               title="Made in the oven, not in a pot — plan it on an oven run.">
-              oven
+               title="Made in the oven, not the microwave — plan it on an oven run.">
+              oven{% if g.oven_count != g.items|length %} ({{ g.oven_count }} of {{ g.items|length }}){% endif %}
             </a>
           {% endif %}
           {% if g.has_behind %}

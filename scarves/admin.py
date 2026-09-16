@@ -528,30 +528,18 @@ class RecipeDyeInline(admin.TabularInline):
 
 @admin.register(Recipe)
 class RecipeAdmin(admin.ModelAdmin):
-    # `oven_dyed` is editable from the list, which is the whole of how a
-    # catalogue of a few hundred colorways gets flagged: it is one property
-    # of the colour, it is known when the recipe is written, and the
-    # alternative is a few hundred round trips through the change form. Same
-    # bargain the dye list makes about colour, brand and stock.
-    list_display = ("name", "dye_count", "oven_dyed", "is_active")
-    list_editable = ("oven_dyed",)
-    list_filter = ("oven_dyed", "is_active")
+    list_display = ("name", "dye_count", "is_active")
+    list_filter = ("is_active",)
     search_fields = ("name", "description")
     inlines = [RecipeDyeInline]
     ordering = ("name",)
-    # The whole catalogue on one screen, because flagging the oven is one
-    # pass down an alphabetical list rather than a search per colorway. At a
-    # few hundred recipes this is one page and one Save.
+    # The whole catalogue on one screen, because filling a colorway in is one
+    # pass down an alphabetical list rather than a search per colour.
     #
-    # **Nothing derives this from the name**, though there is a rule — a
-    # colour name goes in the oven, an idea doesn't. It stays typed because
-    # the rule is about the world and not about the string: `Forest Fire` is
-    # two colour words and is not an oven colorway, `Burnt Orange` is two
-    # words and is, and the dye-book shorthand (`russet-cab-black`) is
-    # neither. A classifier would be confidently wrong on exactly those, and
-    # wrong here is silent — the colorway lands on the other session's sheet
-    # and the row looks like every other row. The rule is how somebody
-    # decides what to tick; the flag is what the app reads.
+    # **The oven flag used to live here and does not any more** — it is on
+    # `FinishedProduct`, because silk is never oven-dyed and so a colorway
+    # dyed on silk and on yarn is oven work on one and not the other. A flag
+    # on the colour could not say that, and said the wrong thing silently.
     list_per_page = 250
 
 
@@ -580,9 +568,16 @@ class FinishedProductAdmin(admin.ModelAdmin):
         "number_on_hand",
         "par",
         "display_slots",
+        "oven_dyed",
         "is_active",
         "created_at",
     )
+    # Editable from the list, which is the whole of how a few hundred products
+    # get flagged: one pass down a filtered list rather than a round trip
+    # through the change form each time. Same bargain the dye list makes about
+    # colour, brand and stock — and it is where the Recipe list's oven column
+    # went, one axis further in.
+    list_editable = ("oven_dyed",)
     search_fields = (
         "name",
         "raw_product__name",
@@ -593,7 +588,12 @@ class FinishedProductAdmin(admin.ModelAdmin):
     inlines = [FinishedProductImageInline]
     # Blank recipe means undyed passthrough, and that is a real choice made
     # here rather than an oversight — so it gets a filter of its own.
-    list_filter = ("is_active", "raw_product__category", ("recipe", admin.EmptyFieldListFilter))
+    list_filter = (
+        "is_active",
+        "oven_dyed",
+        "raw_product__category",
+        ("recipe", admin.EmptyFieldListFilter),
+    )
     ordering = ("name",)
 
 

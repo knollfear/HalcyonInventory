@@ -437,29 +437,6 @@ class Recipe(models.Model):
     )
     is_active = models.BooleanField(default=True)
 
-    oven_dyed = models.BooleanField(
-        default=False,
-        db_index=True,
-        help_text=(
-            "Tick for a colorway that is made in the oven rather than in a "
-            "pot, and it moves from one kind of session to the other.\n\n"
-            "This is a property of the colour, not of the yarn: the "
-            "technique is what produces the result, so an oven colorway is "
-            "oven-dyed on every blank it is dyed on.\n\n"
-            "**It partitions both ways, which is the whole point.** An oven "
-            "colorway is the only thing that can go on an oven run, and it "
-            "must also drop off the ordinary dye-room sheet — otherwise "
-            "somebody is sent to a sink to make a thing that is not made "
-            "there. That is the same failure `RawProduct.made_in_a_dye_bath` "
-            "exists to stop, one technique further in.\n\n"
-            "`private/production-needed/` deliberately does *not* filter on "
-            "this. It reports what is below par, and an oven colorway being "
-            "short is a real fact worth reading; it badges the row instead, "
-            "so the reason it is missing from the dye-room sheet is visible "
-            "rather than silent."
-        ),
-    )
-
     color_bands = ArrayField(
         models.CharField(max_length=12, choices=BAND_CHOICES),
         default=list,
@@ -590,6 +567,43 @@ class FinishedProduct(models.Model):
             "empty — which is exactly when the crew should be holding this "
             "product's kanban tag. Zero means this never goes on display, so "
             "no tag will ever come up for it and the close leaves it alone."
+        ),
+    )
+    oven_dyed = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text=(
+            "Tick for a thing made in the oven rather than the microwave, and "
+            "it moves from one kind of session to the other.\n\n"
+            "**It lives here, on the blank-and-colorway pair, because that is "
+            "what decides it.** It was on `Recipe` first, on the reasoning "
+            "that a technique is a property of the colour and so needs "
+            "answering once rather than a few hundred times. That is half "
+            "true and the missing half is silent: silk is never oven-dyed — it "
+            "always goes in the microwave — so a colorway dyed on both silk "
+            "and yarn is oven work on one and not the other, and a flag on "
+            "the colour cannot say so. It said 'oven' for both, which took "
+            "the silk off the microwave sheet as well as putting it on an oven "
+            "sheet for an appliance it never enters. The row looked like every "
+            "other row either way.\n\n"
+            "The same shape as `RawProduct.made_in_a_dye_bath` and for the "
+            "same reason: a category test ('silk means microwave') is right "
+            "today and wrong the day something arrives that breaks it, and it "
+            "breaks silently. A typed answer per pair is always right and can "
+            "be looked at.\n\n"
+            "**Typed, never derived.** There is a rule — a colour name goes in "
+            "the oven, an idea doesn't — and it is a rule about the world "
+            "rather than about the string: `Forest Fire` is two colour words "
+            "and is not oven work, `Burnt Orange` is two words and is. Every "
+            "version of guessing is confidently wrong on the cases that "
+            "decide it, and wrong here is silent — the row lands on the other "
+            "session's sheet and reads like any other.\n\n"
+            "**It partitions both ways, which is the load-bearing half.** An "
+            "oven colorway on a microwave sheet sends somebody to make a thing "
+            "that is not made there, and a microwave one missing from that "
+            "sheet is a shortage nobody can see. `production.candidates(oven=)` "
+            "returns two disjoint populations and defaults to the microwave, "
+            "which keeps every existing caller meaning what it meant."
         ),
     )
     sku = models.CharField(

@@ -197,22 +197,25 @@ class RecipeDyesForm(forms.Form):
     #: is the person who knows whether it goes in the oven, and a second
     #: control with its own button would be a second trip through 162 rows.
     #:
-    #: **Typed, never derived.** There is a rule — a colour name goes in the
-    #: oven, an idea doesn't — and it is a rule about the world rather than
-    #: about the string: `Forest Fire` is two colour words and is not an oven
-    #: colorway, `Burnt Orange` is two words and is. Dye count is the better
-    #: correlate and is not recorded for most of the catalogue. Every version
-    #: of guessing is confidently wrong on the cases that matter, and wrong
-    #: here is silent — the colorway lands on the other session's sheet and
-    #: the row reads like any other.
-    oven_dyed = forms.BooleanField(
-        required=False,
-        label="Oven",
-        help_text="Made in the oven rather than in a pot.",
-    )
+    #: The oven boxes are built in `__init__`, one per product of the
+    #: colorway, because the answer is per blank-and-colorway pair — see
+    #: `FinishedProduct.oven_dyed`. A single box here would be the flag back
+    #: on the recipe wearing a different hat: it could not say "oven on the
+    #: yarns, microwave on the silk", and saving the row would flatten a
+    #: mixed colorway to whatever the one box happened to hold.
+    OVEN_PREFIX = "oven_"
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, products=(), **kwargs):
         super().__init__(*args, **kwargs)
+        # Held so `save` writes exactly the rows the form drew a box for. A
+        # product added while the row sat open is simply not part of this
+        # picture, which is better than a save that silently answers for it.
+        self.products = list(products)
+        for product in self.products:
+            self.fields[f"{self.OVEN_PREFIX}{product.pk}"] = forms.BooleanField(
+                required=False,
+                label=product.raw_product.name,
+            )
         queryset = picker_dyes()
         for i in range(1, self.SLOTS + 1):
             self.fields[f"dye{i}"] = forms.ModelChoiceField(
@@ -221,6 +224,14 @@ class RecipeDyesForm(forms.Form):
                 label=f"Dye {i}",
                 widget=DyeSelect,
             )
+
+    @property
+    def oven_fields(self):
+        """`(product, bound field)` per product, for a template to lay out."""
+        return [
+            (product, self[f"{self.OVEN_PREFIX}{product.pk}"])
+            for product in self.products
+        ]
 
     @property
     def dye_fields(self):
@@ -263,14 +274,22 @@ class RecipeDyesForm(forms.Form):
         for order, dye in enumerate(self.selected_dyes(), start=1):
             RecipeDye.objects.create(recipe=recipe, dye=dye, order=order)
 
-        # An unticked checkbox posts nothing, so this reads as False on a row
-        # that was never touched — which is correct here only because the box
-        # is rendered with the recipe's current value as `initial` and the
-        # whole row is always submitted together. It is the same bargain the
-        # dye slots make: the form is a picture of the final state, not a
-        # diff.
-        recipe.oven_dyed = bool(self.cleaned_data.get("oven_dyed"))
-        recipe.save(update_fields=["oven_dyed"])
+        # An unticked checkbox posts nothing, so each box reads as False on a
+        # row that was never touched — which is correct here only because
+        # every box is rendered with its product's current value as `initial`
+        # and the whole row is always submitted together. Same bargain the dye
+        # slots make: the form is a picture of the final state, not a diff.
+        #
+        # Written per product with `save(update_fields=...)` rather than one
+        # queryset update, because `FinishedProduct.save` is what keeps a
+        # passthrough's mirrored count honest — the rule in
+        # `docs/claude/stock.md` about never reaching for `update()` on these
+        # rows.
+        for product in self.products:
+            want = bool(self.cleaned_data.get(f"{self.OVEN_PREFIX}{product.pk}"))
+            if product.oven_dyed != want:
+                product.oven_dyed = want
+                product.save(update_fields=["oven_dyed"])
         return recipe
 
 

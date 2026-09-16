@@ -30,7 +30,9 @@ by htmx stays findable — a row without it would vanish from every search.
     question somebody asks of the list without wanting to edit it — and in
     read-only mode this badge is the only place the flag appears at all.
     {% endcomment %}
-    {% if row.recipe.oven_dyed %}<span class="oventag">oven</span>{% endif %}
+    {% if row.oven_all %}<span class="oventag">oven</span>
+    {% elif row.oven_count %}<span class="oventag">oven on {{ row.oven_count }} of {{ row.product_count }}</span>
+    {% endif %}
   </td>
 
   {# The scarf itself — the recipe name rarely says what the colorway was. #}
@@ -113,13 +115,26 @@ by htmx stays findable — a row without it would vanish from every search.
       colorway's dyes is who knows which box it is made in, and a control
       with its own button would be a second trip through every row.
 
-      `{{ row.form.oven_dyed }}` is inside the same `closest tr` the Save posts,
-      so it needs nothing of its own to be submitted.
+      The boxes are inside the same `closest tr` the Save posts, so they need
+      nothing of their own to be submitted.
+
+      **One box per blank, not one for the colorway.** Silk is never
+      oven-dyed, so a colour dyed on silk and on yarn is oven work on one and
+      not the other — see `FinishedProduct.oven_dyed`. A single box could not
+      say that, and saving the row would flatten whichever answer it did not
+      hold.
       {% endcomment %}
-      <label class="ovenbox">
-        {{ row.form.oven_dyed }}
-        <span>Oven Recipe</span>
-      </label>
+      {% if row.form.oven_fields %}
+        <div class="ovenboxes">
+          <span class="muted small">Made in the oven</span>
+          {% for product, field in row.form.oven_fields %}
+            <label class="ovenbox">
+              {{ field }}
+              <span>{{ product.raw_product.name }}</span>
+            </label>
+          {% endfor %}
+        </div>
+      {% endif %}
 
       <div class="rowactions">
         <button type="button" class="btn"

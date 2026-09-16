@@ -78,6 +78,7 @@ from .helpers import (
     make_bathable,
     make_product,
     make_recipe,
+    mark_oven,
 )
 
 
@@ -1744,53 +1745,78 @@ class RecipeRowActionTests(TestCase):
         data.update(extra)
         return data
 
-    # --- the oven flag ----------------------------------------------------
+    # --- the oven flag, one box per blank -------------------------------
+
+    def _oven_field(self, product):
+        return f"{RecipeDyesForm.OVEN_PREFIX}{product.pk}"
 
     def test_the_row_saves_the_oven_flag(self):
         self.client.post(
             reverse("recipe_dyes_save", args=[self.recipe.pk]),
-            self._dye_post(oven_dyed="on"),
+            self._dye_post(**{self._oven_field(self.product): "on"}),
         )
 
-        self.recipe.refresh_from_db()
-        self.assertTrue(self.recipe.oven_dyed)
+        self.product.refresh_from_db()
+        self.assertTrue(self.product.oven_dyed)
+
+    def test_a_colorway_can_be_oven_on_one_blank_and_not_another(self):
+        """The whole reason the flag moved off the recipe. Silk is never
+        oven-dyed, so a colour dyed on silk and on yarn is oven work on one
+        and not the other — a single box per colorway could not say it."""
+        silk = make_bathable(self.recipe, "Cabernet Veil", on_hand=0, par=8, bath=4)
+
+        self.client.post(
+            reverse("recipe_dyes_save", args=[self.recipe.pk]),
+            self._dye_post(**{self._oven_field(self.product): "on"}),
+        )
+
+        self.product.refresh_from_db()
+        silk.refresh_from_db()
+        self.assertTrue(self.product.oven_dyed)
+        self.assertFalse(silk.oven_dyed)
 
     def test_saving_a_flagged_row_does_not_silently_unflag_it(self):
-        """The trap in a checkbox: unticked posts nothing, so a row rendered
+        """The trap in a checkbox: unticked posts nothing, so a box rendered
         without its current value would clear the flag on the next Save of
         anything else on that row."""
-        Recipe.objects.filter(pk=self.recipe.pk).update(oven_dyed=True)
+        mark_oven(self.product)
 
         response = self.client.get(
             reverse("recipe_showcase"), {"row": self.recipe.pk}
         )
 
         form = response.context["rows"][0]["form"]
-        self.assertTrue(form.initial["oven_dyed"])
+        self.assertTrue(form.initial[self._oven_field(self.product)])
 
-    def test_the_editor_renders_exactly_one_oven_checkbox(self):
-        """`{% for field in form %}` renders every field, and `oven_dyed` is a
-        declared attribute while the dye slots are added in `__init__` — so
-        Django ordered it first and the row came out with a stray checkbox in
-        front of the dye boxes. Two inputs sharing one name is worse than
-        untidy: unticking the visible one while the stray stays ticked still
-        posts `on`."""
+    def test_the_editor_renders_one_checkbox_per_product(self):
+        """`{% for field in form %}` renders every field, and the row once had
+        a declared `oven_dyed` attribute that Django ordered in front of the
+        dye slots — a stray second input sharing one name, where unticking the
+        visible one still posted `on`. The boxes are built in `__init__`
+        alongside the slots now, so the count is the products and nothing
+        else."""
+        silk = make_bathable(self.recipe, "Cabernet Veil", on_hand=0, par=8, bath=4)
+
         html = self.client.get(
             reverse("recipe_row", args=[self.recipe.pk]), {"edit": "1"}
         ).content.decode()
 
-        self.assertEqual(html.count('name="oven_dyed"'), 1)
+        self.assertEqual(html.count(f'name="{self._oven_field(self.product)}"'), 1)
+        self.assertEqual(html.count(f'name="{self._oven_field(silk)}"'), 1)
+        # Labelled by the blank, or two identical boxes ask an ambiguous
+        # question.
+        self.assertIn("Cabernet Veil", html)
 
     def test_the_box_can_be_unticked(self):
-        Recipe.objects.filter(pk=self.recipe.pk).update(oven_dyed=True)
+        mark_oven(self.product)
 
         self.client.post(
             reverse("recipe_dyes_save", args=[self.recipe.pk]),
             self._dye_post(),
         )
 
-        self.recipe.refresh_from_db()
-        self.assertFalse(self.recipe.oven_dyed)
+        self.product.refresh_from_db()
+        self.assertFalse(self.product.oven_dyed)
 
     def test_retiring_deactivates_and_never_deletes(self):
         """History points at this row — inventory logs, production rows,

@@ -137,8 +137,16 @@
       background: #fdf4e8; border-radius: 999px; padding: 1px 8px;
       margin-left: 6px;
   }
+  /* One box per blank, laid out as a row of them: the answer is per
+     blank-and-colorway pair, and several boxes stacked full-width read as
+     several separate questions rather than one question asked per yarn. */
+  .ovenboxes {
+      display: flex; align-items: center; flex-wrap: wrap; gap: 4px 14px;
+      margin-top: 10px;
+  }
+  .ovenboxes > .muted.small { width: 100%; margin-bottom: -2px; }
   .ovenbox {
-      display: flex; align-items: center; gap: 8px; margin-top: 10px;
+      display: flex; align-items: center; gap: 6px;
       font-size: 13px; font-weight: 600;
   }
   .ovenbox .muted { font-weight: 400; }

@@ -46,8 +46,8 @@ somebody's own provisional data against them.
             hx-push-url="true">
       <span class="who">{{ p.name }}</span>
       <span class="muted">
-        {{ p.bath_size }} per bath{% if p.recipe.oven_dyed != oven %} —
-        {% if p.recipe.oven_dyed %}an oven colorway{% else %}made in a pot{% endif %},
+        {{ p.bath_size }} per bath{% if p.oven_dyed != oven %} —
+        {% if p.oven_dyed %}made in the oven{% else %}made in the microwave{% endif %},
         so not what this sheet is for{% endif %}
       </span>
     </button>

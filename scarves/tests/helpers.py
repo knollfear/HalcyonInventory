@@ -72,6 +72,20 @@ def make_product(recipe, name, with_image=True, active=True):
             image_url=f"https://example.test/{name}.jpg",
         )
     return product
+def mark_oven(*products):
+    """Say these products are made in the oven.
+
+    Per product, because that is where the flag lives — silk is never
+    oven-dyed, so a colorway dyed on silk and on yarn is oven work on one and
+    not the other. A test that marks the recipe cannot express the case the
+    flag exists for.
+    """
+    for product in products:
+        product.oven_dyed = True
+        product.save(update_fields=["oven_dyed"])
+    return products[0] if len(products) == 1 else products
+
+
 def make_jpeg(size=(4032, 3024), exif_orientation=None, color=(180, 90, 60)):
     """Bytes of a JPEG, optionally carrying an EXIF orientation tag."""
     from io import BytesIO
