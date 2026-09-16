@@ -153,6 +153,22 @@ class RawProductCategory(models.Model):
         blank=True,
         help_text="Square CATEGORY catalog object ID.",
     )
+    dye_book_bath_units = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        help_text=(
+            "How many units one dye-book bath covers on this table. Yarn is "
+            "5 — the book writes every amount for a five-skein bath, so a "
+            "four-skein bath takes 80% of what is written. "
+            "**Null means the book has no figures for this fibre**, and no "
+            "amount is printed for it. Silk is null on purpose: the ounces "
+            "on a recipe are the book's yarn numbers, and what a silk scarf "
+            "drinks is a different question nobody has answered. Setting a "
+            "basis on a second category claims those same numbers apply "
+            "there, which is the one way to get this wrong quietly — the "
+            "sheet would print a confident amount off the wrong fibre."
+        ),
+    )
 
     class Meta:
         verbose_name_plural = "Raw product categories"
@@ -498,7 +514,24 @@ class RecipeDye(models.Model):
         decimal_places=2,
         blank=True,
         null=True,
-        help_text="Optional proportion (e.g. grams, % of total).",
+        help_text=(
+            "Optional proportion (e.g. % of total). Not the dye-book amount "
+            "— that is `book_ounces`, which is an absolute weight."
+        ),
+    )
+    book_ounces = models.DecimalField(
+        max_digits=6,
+        decimal_places=3,
+        blank=True,
+        null=True,
+        help_text=(
+            "Ounces of this dye, exactly as the dye book writes it: the "
+            "amount for one full bath of the category that carries a "
+            "`dye_book_bath_units` basis (yarn, five skeins). Stored as "
+            "written rather than per skein because that is what somebody is "
+            "copying off the page, and a number typed in the form it is read "
+            "in can be checked against the book by eye."
+        ),
     )
 
     class Meta:
@@ -507,6 +540,28 @@ class RecipeDye(models.Model):
 
     def __str__(self):
         return f"{self.recipe.name} - {self.dye.name} (#{self.order})"
+
+    def ounces_for(self, units, basis):
+        """Ounces of this dye for a bath of `units`, or None if unanswerable.
+
+        **Dye is per skein; the book is per bath.** The book records one
+        number for a five-skein bath because that is the bath that usually
+        gets run, but nothing about the dye is per-bath — four skeins take
+        four fifths of it. So the stored figure divides by the basis and
+        multiplies back up, and a short bath is not sent out with a full
+        bath's dye in it.
+
+        None when there is no amount on file, and None when `basis` is None,
+        which is what a fibre the dye book has no figures for looks like.
+        Returning None rather than the book figure is the point: an ounces
+        number printed beside a silk bath would be read at the sink as a
+        measurement somebody took, and nobody took it.
+        """
+        if self.book_ounces is None or not basis:
+            return None
+        return (
+            Decimal(self.book_ounces) / Decimal(basis) * Decimal(units)
+        ).quantize(Decimal("0.001"))
 
 
 class FinishedProduct(models.Model):

@@ -1,4 +1,5 @@
 {% extends "scarves/base_internal.html" %}
+{% load form_extras %}
 
 {% block title %}{{ recipe.name }}{% endblock %}
 {% block heading %}{{ recipe.name }}{% endblock %}
@@ -208,6 +209,12 @@
                 title="{{ rd.dye.hex_color }}"></span>
           {{ rd.dye.name }}
           {% if rd.dye.brand %}<span class="ratio">{{ rd.dye.brand.name }}</span>{% endif %}
+          {% comment %}
+          Book strength: ounces for a five-skein bath, which is how the dye
+          book writes it. What a given bath takes is on the production sheet,
+          where the bath size is known — see `scarves/dyeamounts.py`.
+          {% endcomment %}
+          {% if rd.book_ounces %}<span class="ratio">· {{ rd.book_ounces|ounces }} / 5-skein bath</span>{% endif %}
           {% if rd.ratio %}<span class="ratio">· {{ rd.ratio }}</span>{% endif %}
           {% if not rd.dye.in_stock %}<span class="ratio">· out of stock</span>{% endif %}
         </span>

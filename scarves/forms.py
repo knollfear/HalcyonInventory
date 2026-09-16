@@ -205,6 +205,12 @@ class RecipeDyesForm(forms.Form):
     #: mixed colorway to whatever the one box happened to hold.
     OVEN_PREFIX = "oven_"
 
+    #: The dye-book amount that rides beside each slot, in ounces for a full
+    #: book bath — five skeins of yarn. Stored as written; every reader
+    #: divides by the basis to get the bath in front of it. See
+    #: `scarves/dyeamounts.py`.
+    AMOUNT_PREFIX = "oz"
+
     def __init__(self, *args, products=(), **kwargs):
         super().__init__(*args, **kwargs)
         # Held so `save` writes exactly the rows the form drew a box for. A
@@ -223,6 +229,28 @@ class RecipeDyesForm(forms.Form):
                 required=False,
                 label=f"Dye {i}",
                 widget=DyeSelect,
+            )
+            # Beside its own dye, because the book has them side by side and
+            # a column of amounts detached from the dyes is five things to
+            # line up by eye — the same argument that put the swatch inside
+            # the dye pill.
+            #
+            # Optional on purpose. The backlog is dyes with no recipe at all,
+            # and requiring an amount to save a dye would stop the entry the
+            # picker exists to keep moving.
+            self.fields[f"{self.AMOUNT_PREFIX}{i}"] = forms.DecimalField(
+                required=False,
+                min_value=0,
+                max_digits=6,
+                decimal_places=3,
+                label=f"Ounces {i}",
+                widget=forms.NumberInput(attrs={
+                    "step": "0.01",
+                    "min": "0",
+                    "class": "ozbox",
+                    "placeholder": "oz",
+                    "aria-label": f"Ounces of dye {i} per 5-skein bath",
+                }),
             )
 
     @property
@@ -246,6 +274,18 @@ class RecipeDyesForm(forms.Form):
         """
         return [self[f"dye{i}"] for i in range(1, self.SLOTS + 1)]
 
+    @property
+    def dye_slots(self):
+        """`(dye field, amount field)` per slot, so the two stay paired.
+
+        The template lays them out together; separating them into two loops
+        is how the third amount comes to sit under the fourth dye.
+        """
+        return [
+            (self[f"dye{i}"], self[f"{self.AMOUNT_PREFIX}{i}"])
+            for i in range(1, self.SLOTS + 1)
+        ]
+
     def clean(self):
         cleaned = super().clean()
         chosen = [cleaned.get(f"dye{i}") for i in range(1, self.SLOTS + 1)]
@@ -256,11 +296,20 @@ class RecipeDyesForm(forms.Form):
 
     def selected_dyes(self):
         """The chosen dyes in slot order, gaps removed."""
-        return [
-            d
-            for d in (self.cleaned_data.get(f"dye{i}") for i in range(1, self.SLOTS + 1))
-            if d
-        ]
+        return [dye for dye, _oz in self.selected_rows()]
+
+    def selected_rows(self):
+        """`(dye, ounces or None)` in slot order, empty slots removed.
+
+        An amount typed into a slot with no dye in it is dropped with the
+        slot, which is the only sensible reading: ounces of nothing.
+        """
+        rows = []
+        for i in range(1, self.SLOTS + 1):
+            dye = self.cleaned_data.get(f"dye{i}")
+            if dye:
+                rows.append((dye, self.cleaned_data.get(f"{self.AMOUNT_PREFIX}{i}")))
+        return rows
 
     @transaction.atomic
     def save(self, recipe):
@@ -270,9 +319,14 @@ class RecipeDyesForm(forms.Form):
         form a straightforward picture of the final state, and lets a row be
         cleared by emptying every slot.
         """
+        # Replaced wholesale, so the amount has to come back through the
+        # form with its dye — a row rebuilt without one would silently drop
+        # the ounces every time somebody saved a band or an oven box.
         RecipeDye.objects.filter(recipe=recipe).delete()
-        for order, dye in enumerate(self.selected_dyes(), start=1):
-            RecipeDye.objects.create(recipe=recipe, dye=dye, order=order)
+        for order, (dye, ounces) in enumerate(self.selected_rows(), start=1):
+            RecipeDye.objects.create(
+                recipe=recipe, dye=dye, order=order, book_ounces=ounces,
+            )
 
         # An unticked checkbox posts nothing, so each box reads as False on a
         # row that was never touched — which is correct here only because

@@ -1231,6 +1231,34 @@ Dyes marked out of stock are called out in both places. A missing dye is a
 bath that can't run, and finding that out at the sink is the expensive
 version of finding it out here.
 
+### The sheet prints the bath's own amount
+
+Each row of the working copy lists its dyes with the ounces **for that bath**,
+not the ounces the dye book writes. The book's figures are for a five-skein
+bath; a row is one bath of `number_per_dye_bath` units, and those are often
+not the same number. Printing the book figure on a four-skein row would send
+it out with a fifth too much dye in it, and nothing would say so until the
+colour came out wrong.
+
+`recipe_bath_dyes` does it, over `dyeamounts.bath_amounts`, which is the same
+function the recipe page uses — one place where the division happens, because
+the paper and the screen disagreeing about what goes in a pot is exactly the
+failure `recipe_dye_names` was consolidated to prevent.
+
+A blank whose table carries no dye-book basis — silk — prints its dye names
+with no weights at all. See *Dye amounts* in `docs/claude/recipes.md` for why
+that is a refusal rather than a gap.
+
+**The collection page still pools dyes by bath count, not by weight, and that
+is the job it is for: picking the dyes off the shelf, not weighing them.**
+Weighing happens at the sink, over a particular pot, which is where the row's
+own scaled figure is printed. "Get a lot of the black out" is what a walk to
+the shelf needs.
+
+A total in ounces would also be a sum over recipes whose amounts are mostly
+not recorded yet — a confident-looking number quietly missing however many
+baths have nothing on file.
+
 ### Photographing a marked sheet
 
 `secret/production/upload/` takes a photo of a marked sheet and hands the

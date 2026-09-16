@@ -94,6 +94,55 @@ to say they belong together. It reads either shape: a Django fixture, or a
 plain `{name: hex}` map, which is what a fresh scrape off a supplier's page
 looks like before anyone has made it into anything.
 
+## Dye amounts: the book is per bath, the dye is per skein
+
+The dye book writes one figure per dye per recipe, in ounces, **for a
+five-skein bath** — that is the bath that usually gets run, so that is the
+number on the page. The dye itself is not per bath: four skeins take four
+fifths of it. Both facts are true and the app holds them apart.
+
+- **`RecipeDye.book_ounces` stores the figure exactly as written.** Not per
+  skein. Somebody copying a column out of the book should be able to check
+  what they typed against the page by eye, and a per-skein box asks them to
+  do a division at entry, from a page that does not show the answer, into a
+  box nothing verifies.
+- **`RawProductCategory.dye_book_bath_units` is the divisor**, and it is 5 on
+  Yarn. Everything that prints an amount divides by it and multiplies back up
+  by the bath in front of it. The arithmetic lives in
+  `scarves/dyeamounts.py` and nowhere else.
+
+**Silk has no basis, and prints no amount.** The ounces on a recipe are the
+book's *yarn* numbers; what a silk scarf drinks is a question nobody has
+answered. Scaling a yarn figure by scarf count would answer it by arithmetic,
+and the output would be indistinguishable on paper from a weight somebody
+measured — which is the failure this app keeps naming: a derived number that
+reads as a recorded one. `bath_amounts` returns `None` for it, never zero,
+and the sheet prints the dye names alone.
+
+That also names the one quiet way to break this: **setting a basis on a second
+category claims the book's numbers apply to that fibre too.** The column is
+the opt-in, so it should stay null until somebody has actually recorded
+figures for the table it belongs to — and when they do, the figures are a
+second column, not this one under a different divisor.
+
+**Amounts are optional and blank means nothing on file.** The backlog on this
+page is colorways with no dyes recorded at all; a required amount would stop
+the entry the row exists to keep moving. The box rides beside its own dye in
+the slot rather than in a column of its own, for the reason the swatch sits
+inside the dye pill: five numbers in a detached column are five things to
+line up by eye.
+
+**The row rewrites its dyes on every Save** (`RecipeDyesForm.save` deletes and
+recreates), so the amount has to come back through the form with its dye.
+Forget that and saving a rainbow band silently clears every weight on the
+row — the same trap the oven boxes were carrying, and the reason each slot is
+rendered with its stored value as `initial`.
+
+The recipe row and the recipe page print the book figure at book strength,
+labelled as such. **The scaled number belongs where the bath size is known**,
+which is the production sheet — see *The sheet prints the bath's own amount*
+in `docs/claude/production.md`.
+
 ## Rainbow bands: never print an unconfirmed guess
 
 `Recipe.color_bands` says which sections of the rainbow reference sheet a

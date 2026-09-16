@@ -1254,10 +1254,16 @@ def _recipe_row_context(recipe, form=None, saved=False, missing_only=False,
     """One showcase row with its editor open."""
     products = _oven_products(recipe)
     if form is None:
-        initial = {
-            f"dye{i}": rd.dye_id
-            for i, rd in enumerate(recipe.recipe_dyes.all()[: RecipeDyesForm.SLOTS], start=1)
-        }
+        initial = {}
+        for i, rd in enumerate(
+            recipe.recipe_dyes.all()[: RecipeDyesForm.SLOTS], start=1
+        ):
+            initial[f"dye{i}"] = rd.dye_id
+            # The stored amount, in the units the book writes it in. Without
+            # this the box renders empty on a recipe that has one, and the
+            # next Save down the row clears it — the same trap the oven boxes
+            # were carrying.
+            initial[f"{RecipeDyesForm.AMOUNT_PREFIX}{i}"] = rd.book_ounces
         # Without this a box renders unticked on a product that is flagged,
         # and the next Save on that row silently un-flags it.
         for product in products:

@@ -47,6 +47,7 @@ from django.db.models import Count, F, Q, Sum, Value
 from django.db.models.functions import Greatest
 from django.utils import timezone
 
+from .dyeamounts import bath_amounts, format_ounces
 from .models import FinishedProduct
 
 #: How many live sheets the picker lists before it stops.
@@ -1562,7 +1563,14 @@ def render_sheet(run, return_url, upload_url) -> bytes:
     # disagrees is the one already in somebody's hand.
     rows = list(
         run.rows
-        .select_related("finished_product__recipe", "finished_product__raw_product")
+        .select_related(
+            "finished_product__recipe",
+            "finished_product__raw_product",
+            # The dye amounts are scaled by the blank's table — silk has no
+            # figures, so the category decides whether a row prints ounces at
+            # all. Without this it is a query per bath.
+            "finished_product__raw_product__category",
+        )
         .prefetch_related("finished_product__recipe__recipe_dyes__dye__brand")
     )
     # **The reporting sheet groups; the work sheet does not.** Three baths of
@@ -1912,13 +1920,36 @@ def _draw_work_row(pdf, row, number, y, page_w):
     pdf.setLineWidth(1)
     pdf.rect(box_x, baseline + 2, STAGE_BOX, STAGE_BOX)
 
-    dyes = recipe_dye_names(product.recipe)
+    dyes = recipe_bath_dyes(product, row.quantity)
     pdf.setFont("Helvetica" if dyes else "Helvetica-Oblique", 8)
     text = ", ".join(dyes) if dyes else "no dyes on file"
     # Bounded so a five-dye recipe cannot run under the box and out of the
     # page. reportlab will happily draw past the margin and say nothing.
     room = box_x - 8 - (text_x + 170)
     pdf.drawString(text_x + 170, baseline + 8, _clipped(pdf, text, room))
+
+
+def recipe_bath_dyes(product, quantity):
+    """The dye line for one bath: names, with ounces where there are any.
+
+    **The amount is this bath's, not the book's.** The dye book writes every
+    figure for a five-skein bath and the pot in front of somebody is often
+    not five, so printing the book number here would send a four-skein bath
+    out with a fifth too much dye in it — a mistake that is invisible until
+    the colour comes out wrong. `dyeamounts` does the division; a blank whose
+    table has no basis (silk) prints the names alone, because an ounces
+    figure beside a silk bath would be read at the sink as a measurement
+    somebody took on silk, and nobody has.
+    """
+    parts = []
+    for recipe_dye, ounces in bath_amounts(
+        product.recipe, product.raw_product, quantity
+    ):
+        text = recipe_dye.dye.name
+        if ounces is not None:
+            text = f"{text} {format_ounces(ounces)}"
+        parts.append(text)
+    return parts
 
 
 def recipe_dye_names(recipe):

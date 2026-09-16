@@ -46,6 +46,14 @@
 
   .pickers { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
   .pickers .dyepick { min-width: 11rem; }
+  /* The amount sits under its own dye, not in a column of its own: the book
+     has them side by side, and a detached column is five numbers to line up
+     by eye against five names. */
+  .dyeslot { display: flex; flex-direction: column; gap: 4px; }
+  .ozbox { width: 6rem; padding: 4px 6px; font-size: 13px; }
+  /* Quiet beside the dye name — the colour is what the pill is read for and
+     the weight is a note on it. */
+  .oz { color: #555; font-size: 12px; font-variant-numeric: tabular-nums; }
   .copyrow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .copied { color: #8a5a00; font-size: 13px; }
   .rowactions { margin-top: 10px; display: flex; gap: 8px; }

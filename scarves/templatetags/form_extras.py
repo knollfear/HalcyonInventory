@@ -1,5 +1,7 @@
 from django import template
 
+from scarves.dyeamounts import format_ounces
+
 register = template.Library()
 
 @register.filter
@@ -49,3 +51,13 @@ def plain(value):
         return f"{round(float(value)):,}"
     except (TypeError, ValueError):
         return ""
+
+
+@register.filter
+def ounces(value):
+    """A dye weight as the sheet and the recipe row print it: `0.75 oz`.
+
+    Empty for None, which is what "no amount on file" and "no figures for
+    this fibre" both come back as — a zero there would read as "no dye".
+    """
+    return format_ounces(value)

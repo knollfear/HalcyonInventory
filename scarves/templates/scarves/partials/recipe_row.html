@@ -1,3 +1,4 @@
+{% load form_extras %}
 {% comment %}
 One row of the recipe showcase, in read-only or edit mode.
 
@@ -65,9 +66,24 @@ by htmx stays findable — a row without it would vanish from every search.
       Each field renders as a DyeSelect, which the type-ahead takes over.
       The picker draws its own colour chip, so there is none out here.
       {% endcomment %}
+      {% comment %}
+      Each dye with its ounces beside it. **The box asks for the dye book's
+      number, not this bath's** — the book writes every amount for a
+      five-skein bath, so that is what gets typed and what gets stored, and
+      every reader divides it down to the bath in front of it. Asking for a
+      per-skein figure would make somebody do the division at entry, from a
+      page that does not print it, into a box nothing checks.
+
+      Amounts are optional, and blank means nothing on file: the backlog here
+      is dyes with no recipe at all, and a required amount would stop the
+      entry this row exists to keep moving.
+      {% endcomment %}
       <div class="pickers">
-        {% for field in row.form.dye_fields %}{{ field }}{% endfor %}
+        {% for field, amount in row.form.dye_slots %}
+          <div class="dyeslot">{{ field }}{{ amount }}</div>
+        {% endfor %}
       </div>
+      <span class="muted small">Ounces are per 5-skein bath, as the dye book writes them.</span>
 
       {% comment %}
       The rainbow bands, on the row rather than on a page of their own. The
@@ -223,6 +239,13 @@ by htmx stays findable — a row without it would vanish from every search.
                 <span class="dyedot unknown"></span>
               {% endif %}
               {{ rd.dye.name }}
+              {% comment %}
+              Book strength — the number on the page it was copied from. A
+              bath's own amount is on the production sheet, where the bath
+              size is known; scaling it here would need a blank, and this
+              row is about the colorway.
+              {% endcomment %}
+              {% if rd.book_ounces %}<span class="oz">{{ rd.book_ounces|ounces }}</span>{% endif %}
             </span>
           {% endfor %}
         </div>
