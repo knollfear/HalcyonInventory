@@ -31,6 +31,7 @@ happens to the pile — and nothing plans against that column.
   .basis { font-size: 11px; color: #8a919c; }
   .none { color: #8a919c; }
   .claimed { font-size: 11px; color: #1558a0; }
+  .allstock { font-size: 13px; color: #667; margin: 0 0 10px; }
   .caveat { font-size: 12px; color: #667; margin-top: 22px; line-height: 1.6; }
 {% endblock %}
 
@@ -39,6 +40,11 @@ happens to the pile — and nothing plans against that column.
   <p class="lead">
     What is sitting in the building, in dollars. Stock is money moved out of an
     account and onto a shelf, and this is the shelf's side of that.
+  </p>
+
+  <p class="allstock">
+    {{ totals.units }} unit{{ totals.units|pluralize }} in all, across the three
+    piles below.
   </p>
 
   <div class="headline">
@@ -54,9 +60,15 @@ happens to the pile — and nothing plans against that column.
       <div class="n quiet">${{ totals.margin|floatformat:0 }}</div>
       <div class="what">the difference, before dye, labour and the stall</div>
     </div>
+    {% comment %}
+    Undyed units, not every unit owned. The baths are a count of what is still
+    ahead of the dye room, and dyed stock and bought-in stock can never be part
+    of it — so pairing them with the total read as a share of something it is
+    not.
+    {% endcomment %}
     <div class="fig">
-      <div class="n quiet">{{ totals.units }}</div>
-      <div class="what">units, of which {{ totals.baths }} bath{{ totals.baths|pluralize }} still to dye</div>
+      <div class="n quiet">{{ totals.baths }}</div>
+      <div class="what">baths still to dye, from {{ totals.undyed_units }} undyed unit{{ totals.undyed_units|pluralize }}</div>
     </div>
   </div>
 

@@ -280,6 +280,13 @@ class Totals:
     """The bottom line, across every section."""
 
     units: int = 0
+    #: Units of the piles a bath is still ahead of. Kept apart from `units`
+    #: because the bath count is *only* about those: the headline read
+    #: "4,201 units, of which 387 baths still to dye", which makes the baths
+    #: sound like a share of everything owned when dyed stock and bought-in
+    #: stock can never be part of it. Derived from the same flag that decides
+    #: whether a section prints a bath column, so the two cannot drift.
+    undyed_units: int = 0
     baths: int = 0
     cost: Decimal = ZERO
     retail: Decimal = ZERO
@@ -295,6 +302,9 @@ class Totals:
 def totals(found):
     return Totals(
         units=sum(section.units for section in found),
+        undyed_units=sum(
+            section.units for section in found if section.shows_baths
+        ),
         baths=sum(section.baths for section in found),
         cost=_money(sum((section.cost for section in found), ZERO)),
         retail=_money(sum((section.retail for section in found), ZERO)),

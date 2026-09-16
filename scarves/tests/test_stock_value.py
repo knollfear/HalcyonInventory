@@ -137,6 +137,20 @@ class StockValueTests(TestCase):
 
         self.assertEqual(_section(stockvalue.sections(), "undyed").rows, [])
 
+    def test_the_bath_count_is_only_ever_about_the_undyed(self):
+        """It read "4,201 units, of which 387 baths still to dye", which makes
+        the baths sound like a share of everything owned. Dyed stock and
+        bought-in stock can never be part of that count."""
+        FinishedProduct.objects.create(
+            name="Infinity Rainbow", raw_product=self.blank,
+            recipe=self.recipe, price="34.00", number_on_hand=3,
+        )
+        totals = stockvalue.totals(stockvalue.sections())
+
+        self.assertEqual(totals.units, 55)
+        self.assertEqual(totals.undyed_units, 52)
+        self.assertEqual(totals.baths, 10)
+
     def test_totals_add_the_sections_up(self):
         FinishedProduct.objects.create(
             name="Infinity Rainbow", raw_product=self.blank,
