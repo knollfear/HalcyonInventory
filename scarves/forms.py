@@ -248,7 +248,6 @@ class RecipeDyesForm(forms.Form):
                     "step": "0.01",
                     "min": "0",
                     "class": "ozbox",
-                    "placeholder": "oz",
                     "aria-label": f"Ounces of dye {i} per 5-skein bath",
                 }),
             )

@@ -80,7 +80,15 @@ by htmx stays findable — a row without it would vanish from every search.
       {% endcomment %}
       <div class="pickers">
         {% for field, amount in row.form.dye_slots %}
-          <div class="dyeslot">{{ field }}{{ amount }}</div>
+          <div class="dyeslot">
+            {{ field }}
+            {% comment %}
+            The unit is beside the box, not inside it: a placeholder is gone
+            the moment somebody types, so the one state where the box needs
+            to say what it wants is the one state that doesn't say it.
+            {% endcomment %}
+            <label class="ozfield">{{ amount }}<span class="ozunit">oz</span></label>
+          </div>
         {% endfor %}
       </div>
       <span class="muted small">Ounces are per 5-skein bath, as the dye book writes them.</span>
