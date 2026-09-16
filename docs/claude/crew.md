@@ -5,14 +5,28 @@ Part of the project guidance in `CLAUDE.md`, which carries the rules that apply 
 ## Timekeeping: the pay week, and the two totals
 
 The hours form (`secret/hours/`) and the timesheet (`private/timesheet/`)
-replace a paper bag and a lot of mental arithmetic. Three things are load-
+replace a paper bag and a lot of mental arithmetic. Four things are load-
 bearing and none of them are obvious from the models.
 
-**The pay week runs Saturday to Friday.** No date library assumes that, so
+**The pay week runs Wednesday to Tuesday.** No date library assumes that, so
 every "which week is this?" question goes through `timesheets.week_start()`
 rather than being worked out at the call site. Getting it wrong is invisible:
 the page still renders seven columns, they're just the wrong seven, and the
 totals belong to a week nobody is paying for. `PayWeekTests` pins it.
+
+**The boundary is set by when the money moves, not by the faire.** Pay goes
+out through Square on Wednesday, so the week being paid has to be closed
+before the run: ending it Tuesday means Tuesday's hours are the last ones in
+and Wednesday morning pays a week nothing can still arrive for. A week that
+closed on Friday and paid the following Wednesday left four days in which a
+late report landed after the money had already gone, and the only fix for
+that is next week's cheque.
+
+It was Saturday to Friday, and the one thing that week bought is kept: a
+faire weekend — Saturday, Sunday and a Labor Day Monday — still falls inside
+a single pay week rather than being split across two. That is why the start
+moved to Wednesday rather than to the Monday or Tuesday that "pay on
+Wednesday" also allows; either of those cuts a weekend in half.
 
 **Hours are self-reported, not clocked.** Nobody enters a start and end time;
 they pick a decimal off a quarter-hour dropdown. That's a deliberate trade —
@@ -27,19 +41,60 @@ The picker is a *rendering* of the rule, not the rule itself. `hours` is a
 originally a `ChoiceField`, which compares submitted strings and so decided
 `9.5` and `9.50` were different answers and only accepted one.
 
-**Scope is booth hours during festival days — nothing else.** Production
-help (dyeing, prep, anything back at the shop) is deliberately not tracked
-here. There is no employer field, no work-type field, and no "kind of work"
-dimension anywhere in `TimeEntry`, `HoursForm` or `timesheets.py`; an earlier
-draft had one and it was removed on purpose.
+**Hours are booth or dyeing, and both are paid the same hourly rate.**
+`TimeEntry.kind` says which, the form asks it as two radios, and the
+timesheet gives each person a sub-row per kind under their name.
 
-**Don't add one back as a schema change.** Whether a second kind of work
-belongs in these totals is a payroll question, and it has to be answered
-before the field exists — a column that quietly starts collecting a second
-kind of work makes every total on the timesheet mean something different
-depending on who typed it, with nothing on the page to say so. Until then a
-single unqualified total is the honest output, and the page says "booth
-hours" rather than "hours" so it can't be misread later.
+This is worth reading as a worked example of a precondition being *met*
+rather than dropped, because the file used to say the opposite. Scope was
+booth hours only, and the rule was: a second kind of work must not be
+collected until somebody decides what it means for payroll, because a column
+that quietly starts holding two kinds makes every total mean something
+different depending on who typed it. That rule was right. What changed is
+that the question got answered — people are now paid by the hour to dye, at
+the same rate as the booth — and an answered payroll question is exactly what
+the restriction was waiting for.
+
+**The rate being shared is the load-bearing part, not the field.** Because
+one hour is one hour whichever kind it is, the week's grand total is still a
+single number payroll can use, and the split is there to be *read*: thirty
+hours is a different week if half of it was dyeing, and the person signing
+the week off is the one who knows whether that's right. Nothing in the app
+multiplies `kind` by anything. **If the two rates ever diverge, the grand
+total is the first thing that has to go** — at that point the split stops
+being presentational and the page is back to showing one number whose meaning
+depends on who typed it.
+
+**Why the restriction came off rather than being defended.** People were
+being paid for dyeing and the form in front of them said their work didn't
+belong on it. A page that argues with the person filling it in doesn't get
+corrected, it gets worked around — and the workaround for "this form won't
+take my hours" is booth hours with the dyeing folded in, which is the
+ambiguous total the restriction existed to prevent, arriving anyway with
+nothing on the page to say so. Meeting people where they are was the cheaper
+half of the trade: the kind is one tap, and it buys a total that can be
+taken apart again.
+
+**The day key grew a column.** One row per employee per day *per kind*
+(migration `0050`), which is what makes a morning of dyeing and an afternoon
+at the booth two entries instead of a choice between them. Get this wrong —
+key the overwrite check on the date alone — and reporting the second kind
+shows an overwrite warning for unrelated work and, confirmed, replaces it.
+
+**"Long day" is a question about the person, not the row.** Split across two
+kinds, a fourteen-hour day is two unremarkable entries, so `_entry_flags`
+takes the person's combined total for that day and every entry on such a day
+carries the flag. This is the one flag that had to change shape when the
+split landed, and it is the kind of thing that breaks silently: nothing
+errors, the sheet just stops mentioning the long days.
+
+**The form opens on the kind you reported last** (`views._last_kind`), same
+argument as the remembered name and PIN — somebody paid to dye reports dyeing
+most days running, and a field resetting to Booth every time charges them a
+tap for being the less common case. The tradeoff is that a dyer picking up a
+booth shift opens on the wrong answer; it costs nothing in pay because the
+rates match, and the radios show their choice without being opened, which is
+why they are radios and not a dropdown.
 
 ## The booth: photos in, and unidentified sales
 
@@ -319,8 +374,11 @@ them.
 Two things in it are worth keeping accurate because they are the ones that
 cost money when wrong: **the variation is the colorway** and a wrong one
 balances perfectly at the till while corrupting the count of two colours, and
-**the pay week runs Saturday to Friday**, which is what keeps a faire weekend
-inside a single pay week instead of splitting it across two.
+**the pay week runs Wednesday to Tuesday**, so Tuesday is the last day to
+report hours for the week being paid on Wednesday, and a faire weekend still
+falls inside one pay week instead of being split across two. The third is
+**one entry per kind of work per day** — booth and dyeing in one day are two
+entries, and reporting the same kind twice replaces rather than adds.
 
 ## The PIN is remembered, and remembering is not authorising
 

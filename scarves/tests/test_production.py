@@ -1329,6 +1329,7 @@ class ProductionReturnTests(TestCase):
         employee = make_employee("Sam", pin="4821")
         self.client.post(reverse("hours_entry"), {
             "employee": employee.pk, "pin": "4821", "hours": "9.5",
+            "kind": "booth",
             "work_date": timezone.localdate().isoformat(),
         })
 

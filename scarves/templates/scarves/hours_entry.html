@@ -16,7 +16,7 @@ end of a long day, quite possibly in the dark.
   :root { --column: 460px; }
 
   .field { margin-bottom: 18px; }
-  .field label {
+  .field > label, .field .grouplabel {
       display: block; font-weight: 600; font-size: .95rem; margin-bottom: 6px;
   }
   /* 16px minimum on the controls — anything smaller and iOS zooms the page
@@ -30,6 +30,24 @@ end of a long day, quite possibly in the dark.
       outline: none; border-color: var(--accent);
       box-shadow: 0 0 0 3px rgba(35, 70, 107, .14);
   }
+  /* The kind-of-work radios, styled as two big targets rather than a list.
+     Django renders RadioSelect as a <div> of <div><label><input>…, so the
+     hooks are the wrapper id and the labels inside it. Same 16px floor as
+     the other controls: this is filled in one-handed, in the dark. */
+  #id_kind { display: flex; gap: 10px; }
+  #id_kind > div { flex: 1; }
+  #id_kind label {
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+      font-size: 16px; font-weight: 500; padding: 12px;
+      border: 1px solid #c8cfd8; border-radius: 8px; background: #fff;
+      cursor: pointer;
+  }
+  #id_kind label:has(input:checked) {
+      border-color: var(--accent); background: #eef3f8; font-weight: 600;
+      box-shadow: 0 0 0 2px rgba(35, 70, 107, .12);
+  }
+  #id_kind input { accent-color: var(--accent); width: auto; margin: 0; }
+
   .field .errorlist {
       margin: 6px 0 0; padding-left: 1.1rem;
       font-size: .85rem; color: #8a2f2a;
@@ -83,7 +101,7 @@ end of a long day, quite possibly in the dark.
         <p>
           <strong>{{ saved.employee.name }}</strong>,
           {{ saved.hours|floatformat:"-2" }} hour{{ saved.hours|floatformat:"-2"|pluralize }}
-          on {{ saved.work_date|date:"l j F" }}.
+          {{ saved.get_kind_display|lower }} on {{ saved.work_date|date:"l j F" }}.
         </p>
 
         {% if saved_week %}
@@ -94,7 +112,10 @@ end of a long day, quite possibly in the dark.
           <table class="recap">
             {% for entry in saved_week.entries %}
               <tr>
-                <td>{{ entry.work_date|date:"D j M" }}</td>
+                <td>
+                  {{ entry.work_date|date:"D j M" }}
+                  <span class="muted">{{ entry.get_kind_display|lower }}</span>
+                </td>
                 <td class="num">{{ entry.hours|floatformat:"-2" }}</td>
               </tr>
             {% endfor %}
@@ -117,15 +138,21 @@ end of a long day, quite possibly in the dark.
       the one screen where a wrong tap silently loses a day's pay.
       {% endcomment %}
       <div class="panel warn">
-        <h2>You already reported that day</h2>
+        <h2>You already reported that</h2>
         <p>
           <strong>{{ existing.employee.name }}</strong> has
           {{ existing.hours|floatformat:"-2" }} hour{{ existing.hours|floatformat:"-2"|pluralize }}
-          down for {{ existing.work_date|date:"l j F" }}.
+          of <strong>{{ existing.get_kind_display|lower }}</strong> down for
+          {{ existing.work_date|date:"l j F" }}.
         </p>
         <p>
           Submitting again replaces that figure — it doesn't add to it. If you
-          worked two shifts that day, report the total.
+          did two stretches of {{ existing.get_kind_display|lower }} that day,
+          report the total.
+        </p>
+        <p class="muted">
+          The other kind of work is a separate entry and isn't touched by
+          this — switch it below and report that on its own.
         </p>
       </div>
     {% endif %}
@@ -152,7 +179,17 @@ end of a long day, quite possibly in the dark.
 
       {% for field in form %}
         <div class="field">
-          <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+          {% if field.id_for_label %}
+            <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+          {% else %}
+            {% comment %}
+            A radio group has no single labelable element, so `id_for_label`
+            comes back empty and a <label for=""> would point at nothing —
+            which is worse than no association, because it reads as one.
+            Each radio carries its own label; this is the group's heading.
+            {% endcomment %}
+            <span class="grouplabel">{{ field.label }}</span>
+          {% endif %}
           {{ field }}
           {{ field.errors }}
         </div>
@@ -172,8 +209,9 @@ end of a long day, quite possibly in the dark.
     </form>
 
     <p class="muted" style="margin-top:18px">
-      Booth hours only, one entry per day, after the shift. Round to the
-      nearest quarter hour and don't count your break.
+      One entry per kind of work per day, after the shift — if you did both
+      in one day, that's two entries. Round to the nearest quarter hour and
+      don't count your break.
     </p>
 
   {% endif %}

@@ -1181,10 +1181,12 @@ class ProductImageUpload(models.Model):
 
 
 class Employee(models.Model):
-    """Someone who works the booth during festival hours and reports their own.
+    """Someone paid by the hour who reports their own.
 
-    "Works the booth" is the whole roster this covers — it is not a list of
-    everyone who helps out. See TimeEntry for why the boundary matters.
+    The roster used to be booth crew and only booth crew, because booth
+    hours were the only thing reportable. It now covers anyone paid by the
+    hour — dyeing is on the form too, at the same rate — so the boundary is
+    "we pay this person hourly", not which job they do. See TimeEntry.
 
     Deliberately not a `django.contrib.auth` User. A seasonal crew would mean
     an account, a password and a reset request per person, all to protect a
@@ -1257,17 +1259,36 @@ class TimeEntry(models.Model):
     a claim against. What replaces it is review — the weekly sheet flags the
     rows worth questioning, and a person signs the week off.
 
-    Scope is deliberately narrow: **hours running the booth during festival
-    days**. Production help — dyeing, prep, anything back at the shop — is
-    not recorded here and must not be added later without deciding what it
-    means for payroll first. A field that quietly starts collecting a second
-    kind of work turns every total on the timesheet into a number whose
-    meaning depends on who typed it.
+    **Every row says what kind of work it was.** This started out booth-only,
+    with a note here saying a second kind must not be added without deciding
+    what it meant for payroll first. That was the right precondition and it
+    has been met: dyeing is paid by the hour at the same rate as the booth,
+    so the week's grand total is still one number payroll can use — the kind
+    only says what the hours were *for*.
 
-    One row per employee per day, enforced in the database. A double-tapped
-    Submit is the likeliest mistake this form will ever see, and without the
-    constraint it books the day twice.
+    Because the rate is shared, `kind` is a reporting dimension and not a
+    pricing one. Nothing in this app multiplies it by anything. If the two
+    rates ever diverge, that is the moment this becomes a payroll field and
+    the timesheet has to stop presenting one unqualified grand total.
+
+    One row per employee per day **per kind**, enforced in the database. The
+    constraint is what makes a second submission a correction rather than a
+    second shift, and it used to be per day alone — which quietly meant a
+    person who dyed in the morning and worked the booth in the afternoon had
+    to pick one or add them together. Now each kind gets its own row and each
+    is separately correctable, while a double-tapped Submit still lands on
+    the same row it did before.
     """
+    #: The two kinds of work that get reported by the hour. `booth` is the
+    #: default because it is what every row written before this field existed
+    #: was, and what the form was for.
+    BOOTH = "booth"
+    DYEING = "dyeing"
+    KIND_CHOICES = [
+        (BOOTH, "Booth"),
+        (DYEING, "Dyeing"),
+    ]
+
     employee = models.ForeignKey(
         Employee,
         on_delete=models.PROTECT,
@@ -1275,6 +1296,12 @@ class TimeEntry(models.Model):
     )
     work_date = models.DateField(
         help_text="The day worked — not the day it was reported.",
+    )
+    kind = models.CharField(
+        max_length=16,
+        choices=KIND_CHOICES,
+        default=BOOTH,
+        help_text="What the hours were for. Both are paid the same hourly rate.",
     )
     hours = models.DecimalField(
         max_digits=4,
@@ -1293,13 +1320,16 @@ class TimeEntry(models.Model):
         verbose_name_plural = "time entries"
         constraints = [
             models.UniqueConstraint(
-                fields=["employee", "work_date"],
-                name="one_time_entry_per_employee_per_day",
+                fields=["employee", "work_date", "kind"],
+                name="one_time_entry_per_employee_per_day_per_kind",
             ),
         ]
 
     def __str__(self):
-        return f"{self.employee.name} — {self.hours}h on {self.work_date:%d %b %Y}"
+        return (
+            f"{self.employee.name} — {self.hours}h {self.get_kind_display().lower()} "
+            f"on {self.work_date:%d %b %Y}"
+        )
 
     @property
     def was_revised(self) -> bool:

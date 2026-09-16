@@ -1,13 +1,15 @@
 {% extends "scarves/base_internal.html" %}
 {% comment %}
-One pay week, Saturday to Friday, added up.
+One pay week, Wednesday to Tuesday, added up — pay goes out the
+Wednesday it ends on.
 
 The table is the deliverable: read down it, fix what's wrong in the admin,
 and type the totals into payroll. Flags don't mean an entry is wrong — they
 mean it's the row to look at first.
 
-Every figure here is booth hours. Nothing on this page distinguishes kinds
-of work, so nothing on it should imply it does.
+Hours are split into booth and dyeing, per person. Both are paid at the same
+hourly rate, which is the only reason one grand total is honest — if those
+rates ever diverge, the banner at the bottom is the first thing to go.
 {% endcomment %}
 
 {% block title %}Timesheet{% endblock %}
@@ -39,6 +41,15 @@ of work, so nothing on it should imply it does.
   }
   .sheet td.empty { color: #c3c9d1; text-align: right; }
   .sheet .who { font-weight: 600; }
+
+  /* A person is a block: their name and week total on top, one indented row
+     per kind of work under it. The rule above each name is what separates
+     one person's block from the next, since the sub-rows are what carry the
+     numbers and they all look alike. */
+  .sheet tr.person td { border-bottom: none; padding-top: 14px; }
+  .sheet tbody tr.person:not(:first-child) td { border-top: 1px solid #e1e5ea; }
+  .sheet tr.kind td { border-bottom: none; color: #444; }
+  .sheet tr.kind td.label { padding-left: 22px; font-size: 13px; color: #666; }
   .sheet tfoot td {
       border-top: 2px solid #1a3a5c; border-bottom: none;
       font-weight: 600; padding-top: 10px;
@@ -84,7 +95,7 @@ of work, so nothing on it should imply it does.
 
     <form method="get">
       <label class="small" for="week">Jump to</label>
-      {# Any day is accepted and snapped back to its Saturday. #}
+      {# Any day is accepted and snapped back to its Wednesday. #}
       <input type="date" id="week" name="week" value="{{ summary.start|date:'Y-m-d' }}">
       <button class="btn-quiet" type="submit">Go</button>
     </form>
@@ -104,22 +115,36 @@ of work, so nothing on it should imply it does.
         </thead>
         <tbody>
           {% for row in summary.rows %}
-            <tr>
+            {% comment %}
+            The person's own row carries the week total — that is the figure
+            that gets typed into payroll, and it spans both kinds because
+            both are paid the same rate. The days are left blank on it: the
+            numbers live on the kind rows, and repeating their sum here would
+            put two different readings of one column on the same screen.
+            {% endcomment %}
+            <tr class="person">
               <td class="who">{{ row.employee.name }}</td>
-              {% for cell in row.cells %}
-                {% if cell.entry %}
-                  <td class="num{% if cell.flags %} flagged{% endif %}"
-                      {% if cell.flags %}title="{{ cell.flags|join:', ' }}"{% endif %}>
-                    {{ cell.entry.hours|floatformat:"-2" }}
-                  </td>
-                {% else %}
-                  <td class="empty">·</td>
-                {% endif %}
-              {% endfor %}
+              {% for day in summary.days %}<td></td>{% endfor %}
               <td class="num total{% if row.flags %} flagged{% endif %}">
                 {{ row.total|floatformat:"-2" }}
               </td>
             </tr>
+            {% for kind in row.kinds %}
+              <tr class="kind">
+                <td class="label">{{ kind.label }}</td>
+                {% for cell in kind.cells %}
+                  {% if cell.entry %}
+                    <td class="num{% if cell.flags %} flagged{% endif %}"
+                        {% if cell.flags %}title="{{ cell.flags|join:', ' }}"{% endif %}>
+                      {{ cell.entry.hours|floatformat:"-2" }}
+                    </td>
+                  {% else %}
+                    <td class="empty">·</td>
+                  {% endif %}
+                {% endfor %}
+                <td class="num total">{{ kind.total|floatformat:"-2" }}</td>
+              </tr>
+            {% endfor %}
           {% endfor %}
         </tbody>
         <tfoot>
@@ -135,8 +160,17 @@ of work, so nothing on it should imply it does.
     </div>
 
     <p class="grand">
-      Booth hours this week:
+      Hours this week:
       <strong>{{ summary.total|floatformat:"-2" }}</strong>
+      <span class="muted">
+        ({% for kind in summary.kind_totals %}{{ kind.label|lower }}
+        {{ kind.total|floatformat:"-2" }}{% if not forloop.last %} ·
+        {% endif %}{% endfor %})
+      </span>
+      <br>
+      <span class="muted small">
+        One number, because booth and dyeing are paid the same hourly rate.
+      </span>
     </p>
 
     {% comment %}
@@ -145,14 +179,17 @@ of work, so nothing on it should imply it does.
     {% endcomment %}
     <ul class="flaglist">
       {% for row in summary.rows %}
-        {% for cell in row.cells %}
-          {% if cell.flags %}
-            <li>
-              <span class="who">{{ row.employee.name }}</span>,
-              {{ cell.day|date:"D j M" }} —
-              <span class="why">{{ cell.flags|join:", " }}</span>
-            </li>
-          {% endif %}
+        {% for kind in row.kinds %}
+          {% for cell in kind.cells %}
+            {% if cell.flags %}
+              <li>
+                <span class="who">{{ row.employee.name }}</span>,
+                {{ cell.day|date:"D j M" }}
+                <span class="muted">({{ kind.label|lower }})</span> —
+                <span class="why">{{ cell.flags|join:", " }}</span>
+              </li>
+            {% endif %}
+          {% endfor %}
         {% endfor %}
         {% if row.flags %}
           <li>

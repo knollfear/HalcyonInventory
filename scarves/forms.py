@@ -22,6 +22,7 @@ from .models import (  # RecipeDye is the through model
     RecipeDye,
     RawProduct,
     RawProductCategory,
+    TimeEntry,
     dye_match_key,
 )
 
@@ -428,9 +429,13 @@ class HoursForm(forms.Form):
     a reason it can state — a form that silently accepts 96 hours or a shift
     next Tuesday costs more to unpick later than it saves now.
 
-    Booth hours only. There is deliberately no "what kind of work" field: see
-    TimeEntry for why adding one is a payroll decision before it is a schema
-    decision.
+    Five fields now, because the form asks what the work was. It used to be
+    booth hours only and it used to say so — which meant somebody paid by the
+    hour to dye had a form in front of them that told them their work did not
+    belong on it. The rule the restriction was protecting (don't collect a
+    second kind of work without deciding what it means for payroll) held; the
+    answer arrived, and it is that both kinds are paid the same hourly rate.
+    So the kind is recorded and the total still adds up to one payable number.
     """
 
     #: The picker runs in quarter-hours, which is how payroll rounds anyway
@@ -462,6 +467,17 @@ class HoursForm(forms.Form):
             "autocomplete": "off",
             "placeholder": "····",
         }),
+    )
+    # Two radios rather than a dropdown: this is a two-option question on a
+    # phone, and a <select> costs a tap to open and a tap to choose where
+    # radios cost one. It is also the only field whose current value has to
+    # be readable without opening anything — the wrong one submitted is the
+    # mistake this field can make.
+    kind = forms.ChoiceField(
+        choices=TimeEntry.KIND_CHOICES,
+        initial=TimeEntry.BOOTH,
+        label="What were you doing?",
+        widget=forms.RadioSelect(),
     )
     # A decimal validated against the rule, rendered as a picker — not a
     # ChoiceField. A ChoiceField compares the submitted *string* to the option

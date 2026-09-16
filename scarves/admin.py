@@ -903,9 +903,15 @@ class TimeEntryAdmin(admin.ModelAdmin):
     The hours form only reaches back three weeks and only lets somebody edit
     their own day. Anything older, or anyone else's, is fixed here — which is
     also the only way an entry gets deleted.
+
+    `kind` leads the filters because it is the one column a correction can
+    get wrong without the figure looking wrong: booth hours filed as dyeing
+    total up to exactly the same pay and read as a different week.
     """
-    list_display = ("employee", "work_date", "hours", "created_at", "was_revised")
-    list_filter = ("employee", "work_date")
+    list_display = (
+        "employee", "work_date", "kind", "hours", "created_at", "was_revised",
+    )
+    list_filter = ("kind", "employee", "work_date")
     search_fields = ("employee__name", "notes")
     date_hierarchy = "work_date"
     ordering = ("-work_date", "employee__name")

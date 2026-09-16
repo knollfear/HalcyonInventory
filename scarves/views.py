@@ -4346,7 +4346,7 @@ def quiz_page(request):
 #
 # Two pages that between them replace a paper bag and a lot of mental
 # arithmetic: a public form where somebody reports a day's hours, and a staff
-# page that adds a Saturday–Friday week up.
+# page that adds a Wednesday–Tuesday week up, in time for Wednesday's pay run.
 #
 # The form is under public/ because the whole point is that nobody needs an
 # account. What guards it is a four-digit PIN, which is enough to stop the
@@ -4462,14 +4462,20 @@ def crew_handbook(request):
 )
 @require_http_methods(["GET", "POST"])
 def hours_entry(request):
-    """Report one day's hours.
+    """Report one day's hours, and what they were for.
 
-    Reporting the same day twice is a correction, not a second shift — the
-    database won't take two rows for a person and a date, so the second
-    submission asks before it overwrites the first. Getting that wrong in the
-    other direction is the expensive mistake: a double-tapped Submit that
-    quietly books sixteen hours is exactly the kind of thing that survives
-    all the way to payroll.
+    Reporting the same day **and the same kind of work** twice is a
+    correction, not a second shift — the database won't take two rows for a
+    person, a date and a kind, so the second submission asks before it
+    overwrites the first. Getting that wrong in the other direction is the
+    expensive mistake: a double-tapped Submit that quietly books sixteen
+    hours is exactly the kind of thing that survives all the way to payroll.
+
+    The kind is part of that key, which is the whole reason it can be asked
+    for at all. Left out of it, somebody reporting a morning of dyeing on a
+    day they had already reported a booth shift would be shown an overwrite
+    warning for work that has nothing to do with it — and, confirming it,
+    would replace the booth hours instead of adding to the day.
     """
     today = timezone.localdate()
 
@@ -4502,9 +4508,10 @@ def hours_entry(request):
             employee = form.cleaned_data["employee"]
             work_date = form.cleaned_data["work_date"]
             hours = form.cleaned_data["hours"]
+            kind = form.cleaned_data["kind"]
 
             existing = TimeEntry.objects.filter(
-                employee=employee, work_date=work_date
+                employee=employee, work_date=work_date, kind=kind
             ).first()
 
             # An unconfirmed overwrite bounces back with the old figure shown.
@@ -4521,6 +4528,7 @@ def hours_entry(request):
             entry, _created = TimeEntry.objects.update_or_create(
                 employee=employee,
                 work_date=work_date,
+                kind=kind,
                 defaults={"hours": hours},
             )
             request.session["hours_entry_saved"] = entry.pk
@@ -4532,7 +4540,11 @@ def hours_entry(request):
         if form.has_error("pin"):
             request.session["hours_pin_attempts"] = attempts + 1
     else:
-        form = HoursForm(today=today, initial=crew.initial(request, work_date=today))
+        initial = crew.initial(request, work_date=today)
+        remembered_employee = crew.remembered(request)[0]
+        if remembered_employee is not None:
+            initial["kind"] = _last_kind(remembered_employee)
+        form = HoursForm(today=today, initial=initial)
 
     return render(request, "scarves/hours_entry.html", {
         "form": form,
@@ -4544,12 +4556,42 @@ def hours_entry(request):
     })
 
 
+def _last_kind(employee) -> str:
+    """The kind of work this person reported last, for the form to open on.
+
+    Somebody paid by the hour to dye reports dyeing most days running, and a
+    field that resets to Booth every time is a tap they pay for being the
+    less common case. Same argument as the remembered name and PIN: the form
+    fills itself in, and the person still submits it.
+
+    The tradeoff is real and is why this is a *prefill* and not a default
+    with memory: on the day a dyer picks up a booth shift, the form opens on
+    the wrong answer. That costs nothing in pay — both kinds are the same
+    hourly rate — and the radio is on screen with its choice showing, which
+    is the whole reason the field is radios rather than a dropdown.
+    """
+    last = (
+        TimeEntry.objects
+        .filter(employee=employee)
+        .order_by("-work_date", "-created_at")
+        .values_list("kind", flat=True)
+        .first()
+    )
+    return last or TimeEntry.BOOTH
+
+
 def _employee_week(entry):
     """One employee's pay week around a just-saved entry, for the receipt.
 
     Showing the week back is the cheapest error check there is: the person
-    who worked the days is the only one who can look at Saturday through
-    Friday and say "that's not right" while it's still easy to fix.
+    who worked the days is the only one who can look at Wednesday through
+    Tuesday and say "that's not right" while it's still easy to fix — and
+    the window for that closes Tuesday, because Wednesday it gets paid.
+
+    Every kind of work is in it, not just the one just reported. A week with
+    two kinds in it is exactly the week worth reading back, and filtering to
+    the kind in hand would show somebody a total that is missing hours they
+    know they worked.
     """
     start = timesheets.week_start(entry.work_date)
     entries = list(
@@ -4572,8 +4614,9 @@ def _employee_week(entry):
 @page_meta(
     title="Timesheet",
     description=(
-        "Everyone's booth hours for one Saturday–Friday week, totalled per "
-        "person and per day, with the rows worth a second look flagged."
+        "Everyone's hours for one Wednesday–Tuesday pay week, split into "
+        "booth and dyeing, totalled per person and per day, with the rows "
+        "worth a second look flagged."
     ),
     category="Payroll",
     note="Defaults to this week; ?week=YYYY-MM-DD picks another.",

@@ -75,50 +75,69 @@ from .helpers import (
 
 
 class PayWeekTests(TestCase):
-    """Saturday-to-Friday, which no date library assumes for you.
+    """Wednesday-to-Tuesday, which no date library assumes for you.
 
     Worth pinning hard: getting it wrong still renders seven columns, they're
     just the wrong seven, and the totals belong to a week nobody is paying for.
+    The boundary is the Wednesday pay run — the week has to be closed before
+    the money moves, so Tuesday is the last day in it.
     """
 
-    def test_a_saturday_is_its_own_week_start(self):
-        saturday = date(2026, 8, 1)
-        self.assertEqual(saturday.weekday(), 5)
-        self.assertEqual(timesheets.week_start(saturday), saturday)
+    def test_a_wednesday_is_its_own_week_start(self):
+        wednesday = date(2026, 8, 5)
+        self.assertEqual(wednesday.weekday(), 2)
+        self.assertEqual(timesheets.week_start(wednesday), wednesday)
 
-    def test_every_day_of_a_week_maps_to_the_same_saturday(self):
-        saturday = date(2026, 8, 1)
+    def test_every_day_of_a_week_maps_to_the_same_wednesday(self):
+        wednesday = date(2026, 8, 5)
         for offset in range(7):
-            day = saturday + timedelta(days=offset)
+            day = wednesday + timedelta(days=offset)
             with self.subTest(day=day):
-                self.assertEqual(timesheets.week_start(day), saturday)
+                self.assertEqual(timesheets.week_start(day), wednesday)
 
-    def test_the_next_saturday_starts_a_new_week(self):
+    def test_the_next_wednesday_starts_a_new_week(self):
         self.assertEqual(
-            timesheets.week_start(date(2026, 8, 8)), date(2026, 8, 8)
+            timesheets.week_start(date(2026, 8, 12)), date(2026, 8, 12)
         )
 
-    def test_a_friday_closes_the_week_it_belongs_to(self):
-        self.assertEqual(timesheets.week_end(date(2026, 8, 1)), date(2026, 8, 7))
+    def test_a_tuesday_closes_the_week_it_belongs_to(self):
+        self.assertEqual(timesheets.week_end(date(2026, 8, 5)), date(2026, 8, 11))
 
-    def test_the_week_runs_saturday_to_friday(self):
-        days = timesheets.week_days(date(2026, 8, 1))
+    def test_the_week_runs_wednesday_to_tuesday(self):
+        days = timesheets.week_days(date(2026, 8, 5))
         self.assertEqual(len(days), 7)
-        self.assertEqual(days[0].strftime("%A"), "Saturday")
-        self.assertEqual(days[-1].strftime("%A"), "Friday")
+        self.assertEqual(days[0].strftime("%A"), "Wednesday")
+        self.assertEqual(days[-1].strftime("%A"), "Tuesday")
 
-    def test_a_week_param_is_snapped_to_its_saturday(self):
+    def test_a_faire_weekend_stays_inside_one_pay_week(self):
+        """Saturday, Sunday and a Labor Day Monday are one week's work.
+
+        The old Saturday-to-Friday week promised this too; the shift to a
+        Wednesday start keeps it, and it is the reason a Monday or Tuesday
+        start was not the answer to "pay on Wednesday".
+        """
+        saturday = date(2026, 9, 5)
+        self.assertEqual(saturday.strftime("%A"), "Saturday")
+        labor_day_monday = saturday + timedelta(days=2)
+        self.assertEqual(
+            timesheets.week_start(saturday),
+            timesheets.week_start(labor_day_monday),
+        )
+
+    def test_a_week_param_is_snapped_to_its_wednesday(self):
         """Any day inside the week is a valid way to ask for it."""
         self.assertEqual(
-            timesheets.parse_week("2026-08-05", date(2026, 8, 7)), date(2026, 8, 1)
+            timesheets.parse_week("2026-08-09", date(2026, 8, 11)), date(2026, 8, 5)
         )
 
     def test_an_unreadable_week_param_falls_back_to_this_week(self):
         for bad in ["", "not-a-date", "2026-13-45", "08/01/2026", None]:
             with self.subTest(value=bad):
                 self.assertEqual(
-                    timesheets.parse_week(bad, date(2026, 8, 7)), date(2026, 8, 1)
+                    timesheets.parse_week(bad, date(2026, 8, 11)), date(2026, 8, 5)
                 )
+
+
 class HoursFormTests(TestCase):
     """What the public form will and won't accept."""
 
@@ -130,6 +149,7 @@ class HoursFormTests(TestCase):
         data = {
             "employee": self.sam.pk,
             "pin": "4821",
+            "kind": "booth",
             "hours": "9.5",
             "work_date": "2026-08-07",
         }
@@ -217,6 +237,7 @@ class HoursEntryViewTests(TestCase):
         data = {
             "employee": self.sam.pk,
             "pin": "4821",
+            "kind": "booth",
             "hours": "9.5",
             "work_date": timezone.localdate().isoformat(),
         }
@@ -242,6 +263,7 @@ class HoursEntryViewTests(TestCase):
             {
                 "employee": self.sam.pk,
                 "pin": "4821",
+                "kind": "booth",
                 "hours": "9.5",
                 "work_date": timezone.localdate().isoformat(),
             },
@@ -267,7 +289,7 @@ class HoursEntryViewTests(TestCase):
 
         response = self._post(hours="6")
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "already reported that day")
+        self.assertContains(response, "already reported that")
 
         # Still the original figure — nothing was overwritten by the ask.
         self.assertEqual(TimeEntry.objects.get().hours, Decimal("9.5"))
@@ -293,6 +315,7 @@ class HoursEntryViewTests(TestCase):
         self.client.post(self.url, {
             "employee": alex.pk,
             "pin": "1111",
+            "kind": "booth",
             "hours": "7",
             "work_date": timezone.localdate().isoformat(),
         })
@@ -327,10 +350,26 @@ class TimesheetViewTests(TestCase):
         self.sam = make_employee("Sam", pin="4821")
         self.alex = make_employee("Alex", pin="1111")
         self.url = reverse("timesheet")
-        # The week of Sat 1 Aug – Fri 7 Aug 2026.
-        self.week = date(2026, 8, 1)
+        # The pay week of Wed 5 Aug – Tue 11 Aug 2026, paid Wed 12 Aug.
+        self.week = date(2026, 8, 5)
 
-    def _entry(self, employee, day, hours, created=None):
+    def _cells(self, summary, index=0):
+        """Every day cell for one person, across kinds.
+
+        The sheet groups a person's days under a sub-row per kind of work, so
+        a test about days has to flatten that back out — otherwise it only
+        ever looks at whichever kind happens to sort first.
+        """
+        return [
+            cell
+            for kind in summary["rows"][index]["kinds"]
+            for cell in kind["cells"]
+        ]
+
+    def _flags(self, summary, index=0):
+        return [f for cell in self._cells(summary, index) for f in cell["flags"]]
+
+    def _entry(self, employee, day, hours, created=None, kind="booth"):
         """An entry reported on the day it was worked, unless `created` says
         otherwise.
 
@@ -344,7 +383,7 @@ class TimesheetViewTests(TestCase):
         have sailed on with a spurious flag.
         """
         entry = TimeEntry.objects.create(
-            employee=employee, work_date=day, hours=Decimal(str(hours))
+            employee=employee, work_date=day, hours=Decimal(str(hours)), kind=kind
         )
         if created is None:
             created = timezone.make_aware(datetime.combine(day, time(17, 0)))
@@ -364,17 +403,17 @@ class TimesheetViewTests(TestCase):
         self.assertIn("/login", response["Location"])
 
     def test_an_empty_week_says_so_rather_than_erroring(self):
-        response = self.client.get(self.url, {"week": "2026-08-01"})
+        response = self.client.get(self.url, {"week": "2026-08-05"})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Nobody reported hours")
 
     def test_a_week_totals_each_person(self):
-        self._entry(self.sam, date(2026, 8, 1), "9.5")
-        self._entry(self.sam, date(2026, 8, 2), "6")
-        self._entry(self.alex, date(2026, 8, 1), "4.25")
+        self._entry(self.sam, date(2026, 8, 5), "9.5")
+        self._entry(self.sam, date(2026, 8, 6), "6")
+        self._entry(self.alex, date(2026, 8, 5), "4.25")
 
         summary = self.client.get(
-            self.url, {"week": "2026-08-01"}
+            self.url, {"week": "2026-08-05"}
         ).context["summary"]
 
         totals = {r["employee"].name: r["total"] for r in summary["rows"]}
@@ -382,22 +421,27 @@ class TimesheetViewTests(TestCase):
         self.assertEqual(summary["total"], Decimal("19.75"))
 
     def test_the_neighbouring_weeks_are_excluded(self):
-        """The Friday before and the Saturday after both belong elsewhere."""
-        self._entry(self.sam, date(2026, 7, 31), "8")   # previous week's Friday
-        self._entry(self.sam, date(2026, 8, 1), "5")    # this week's Saturday
-        self._entry(self.sam, date(2026, 8, 8), "8")    # next week's Saturday
+        """The Tuesday before and the Wednesday after both belong elsewhere.
+
+        Those two days are the ones a pay run can get wrong: the Tuesday was
+        paid last Wednesday and the Wednesday will be paid next week, so an
+        off-by-one boundary double-pays one and skips the other.
+        """
+        self._entry(self.sam, date(2026, 8, 4), "8")    # previous week's Tuesday
+        self._entry(self.sam, date(2026, 8, 5), "5")    # this week's Wednesday
+        self._entry(self.sam, date(2026, 8, 12), "8")   # next week's Wednesday
 
         summary = self.client.get(
-            self.url, {"week": "2026-08-01"}
+            self.url, {"week": "2026-08-05"}
         ).context["summary"]
         self.assertEqual(summary["total"], Decimal("5"))
 
     def test_any_day_in_the_week_lands_on_the_same_sheet(self):
-        self._entry(self.sam, date(2026, 8, 1), "5")
-        for day in ["2026-08-01", "2026-08-04", "2026-08-07"]:
+        self._entry(self.sam, date(2026, 8, 5), "5")
+        for day in ["2026-08-05", "2026-08-08", "2026-08-11"]:
             with self.subTest(week=day):
                 summary = self.client.get(self.url, {"week": day}).context["summary"]
-                self.assertEqual(summary["start"], date(2026, 8, 1))
+                self.assertEqual(summary["start"], date(2026, 8, 5))
 
     def test_it_defaults_to_the_current_week(self):
         summary = self.client.get(self.url).context["summary"]
@@ -406,69 +450,312 @@ class TimesheetViewTests(TestCase):
         )
 
     def test_every_day_gets_a_column_even_when_nobody_worked_it(self):
-        self._entry(self.sam, date(2026, 8, 1), "5")
+        self._entry(self.sam, date(2026, 8, 5), "5")
         summary = self.client.get(
-            self.url, {"week": "2026-08-01"}
+            self.url, {"week": "2026-08-05"}
         ).context["summary"]
-        cells = summary["rows"][0]["cells"]
+        cells = self._cells(summary)
         self.assertEqual(len(cells), 7)
         self.assertEqual(sum(1 for c in cells if c["entry"]), 1)
 
     def test_a_long_day_is_flagged(self):
-        self._entry(self.sam, date(2026, 8, 1), "13")
+        self._entry(self.sam, date(2026, 8, 5), "13")
         summary = self.client.get(
-            self.url, {"week": "2026-08-01"}
+            self.url, {"week": "2026-08-05"}
         ).context["summary"]
-        flags = [f for c in summary["rows"][0]["cells"] for f in c["flags"]]
-        self.assertIn("long day", flags)
+        self.assertIn("long day", self._flags(summary))
 
     def test_an_ordinary_day_is_not_flagged(self):
-        self._entry(self.sam, date(2026, 8, 1), "9.5")
+        self._entry(self.sam, date(2026, 8, 5), "9.5")
         summary = self.client.get(
-            self.url, {"week": "2026-08-01"}
+            self.url, {"week": "2026-08-05"}
         ).context["summary"]
-        self.assertEqual(
-            [f for c in summary["rows"][0]["cells"] for f in c["flags"]], []
-        )
+        self.assertEqual(self._flags(summary), [])
 
     def test_a_long_week_is_flagged(self):
         for offset in range(6):
-            self._entry(self.sam, date(2026, 8, 1) + timedelta(days=offset), "10")
+            self._entry(self.sam, date(2026, 8, 5) + timedelta(days=offset), "10")
         summary = self.client.get(
-            self.url, {"week": "2026-08-01"}
+            self.url, {"week": "2026-08-05"}
         ).context["summary"]
         self.assertIn("long week", summary["rows"][0]["flags"])
 
     def test_a_figure_reported_long_after_the_fact_is_flagged(self):
         self._entry(
-            self.sam, date(2026, 8, 1), "8",
+            self.sam, date(2026, 8, 5), "8",
             created=timezone.make_aware(datetime(2026, 8, 20, 12, 0)),
         )
         summary = self.client.get(
-            self.url, {"week": "2026-08-01"}
+            self.url, {"week": "2026-08-05"}
         ).context["summary"]
-        flags = [f for c in summary["rows"][0]["cells"] for f in c["flags"]]
+        flags = self._flags(summary)
         self.assertTrue(any("later" in f for f in flags), flags)
 
     def test_a_revised_figure_is_flagged(self):
-        entry = self._entry(self.sam, date(2026, 8, 1), "8")
+        entry = self._entry(self.sam, date(2026, 8, 5), "8")
         TimeEntry.objects.filter(pk=entry.pk).update(
             updated_at=entry.created_at + timedelta(minutes=5)
         )
         summary = self.client.get(
-            self.url, {"week": "2026-08-01"}
+            self.url, {"week": "2026-08-05"}
         ).context["summary"]
-        flags = [f for c in summary["rows"][0]["cells"] for f in c["flags"]]
-        self.assertIn("revised", flags)
+        self.assertIn("revised", self._flags(summary))
 
     def test_a_fresh_entry_is_not_called_revised(self):
         """auto_now and auto_now_add land microseconds apart on create."""
-        entry = self._entry(self.sam, date(2026, 8, 1), "8")
+        entry = self._entry(self.sam, date(2026, 8, 5), "8")
         self.assertFalse(entry.was_revised)
 
     def test_the_sheet_tells_you_where_staff_report_their_hours(self):
         response = self.client.get(self.url)
         self.assertContains(response, reverse("hours_entry"))
+class WorkKindTests(TestCase):
+    """Booth and dyeing: two kinds, one rate, one day key wide enough for both.
+
+    The restriction this replaces (booth hours only, no work-type dimension)
+    came off because the payroll question behind it got answered — dyeing is
+    paid by the hour at the booth rate. That answer is what these pin: the
+    kinds stay apart on the page and together in the total.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("boss", "b@example.test", "pw")
+        self.sam = make_employee("Sam", pin="4821")
+        self.url = reverse("hours_entry")
+        self.day = timezone.localdate()
+
+    def _post(self, kind, hours, follow=False, **overrides):
+        data = {
+            "employee": self.sam.pk,
+            "pin": "4821",
+            "kind": kind,
+            "hours": hours,
+            "work_date": self.day.isoformat(),
+        }
+        data.update(overrides)
+        return self.client.post(self.url, data, follow=follow)
+
+    # --- the day key ----------------------------------------------------
+
+    def test_both_kinds_fit_in_one_day(self):
+        """A morning dyeing and an afternoon at the booth is two entries.
+
+        Under the old key — one row per person per day — this was a choice
+        between them, or two numbers added together and filed as one kind.
+        """
+        self._post("dyeing", "4")
+        self._post("booth", "5")
+
+        self.assertEqual(TimeEntry.objects.filter(employee=self.sam).count(), 2)
+        self.assertEqual(
+            sorted(
+                TimeEntry.objects
+                .filter(employee=self.sam)
+                .values_list("kind", "hours")
+            ),
+            [("booth", Decimal("5.00")), ("dyeing", Decimal("4.00"))],
+        )
+
+    def test_the_second_kind_is_not_treated_as_an_overwrite(self):
+        """The expensive version of getting the key wrong.
+
+        Keyed on the date alone, reporting dyeing after a booth shift shows
+        an overwrite warning for work that has nothing to do with it — and
+        confirming it replaces the booth hours instead of adding the day up.
+        """
+        self._post("booth", "9.5")
+        response = self._post("dyeing", "4")
+
+        # A save redirects; the overwrite question is the one that comes back
+        # as a rendered page, so the status code is the assertion here.
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            TimeEntry.objects.get(employee=self.sam, kind="booth").hours,
+            Decimal("9.5"),
+        )
+        self.assertEqual(
+            TimeEntry.objects.get(employee=self.sam, kind="dyeing").hours,
+            Decimal("4"),
+        )
+
+    def test_the_same_kind_twice_is_still_a_correction(self):
+        self._post("booth", "9.5")
+        response = self._post("booth", "6")
+
+        self.assertContains(response, "already reported that")
+        self.assertEqual(TimeEntry.objects.count(), 1)
+        self.assertEqual(TimeEntry.objects.get().hours, Decimal("9.5"))
+
+    def test_the_database_refuses_a_duplicate_kind_on_a_day(self):
+        from django.db import IntegrityError
+
+        TimeEntry.objects.create(
+            employee=self.sam, work_date=self.day, hours=Decimal("8"), kind="booth"
+        )
+        with self.assertRaises(IntegrityError):
+            TimeEntry.objects.create(
+                employee=self.sam, work_date=self.day, hours=Decimal("6"),
+                kind="booth",
+            )
+
+    def test_an_entry_defaults_to_booth(self):
+        """Every row written before the field existed was booth hours."""
+        entry = TimeEntry.objects.create(
+            employee=self.sam, work_date=self.day, hours=Decimal("8")
+        )
+        self.assertEqual(entry.kind, TimeEntry.BOOTH)
+
+    # --- the sheet ------------------------------------------------------
+
+    def test_the_sheet_splits_a_person_by_kind_and_still_totals_the_week(self):
+        """The whole bargain: apart to read, together to pay."""
+        TimeEntry.objects.create(
+            employee=self.sam, work_date=self.day, hours=Decimal("5"), kind="booth"
+        )
+        TimeEntry.objects.create(
+            employee=self.sam, work_date=self.day, hours=Decimal("4"), kind="dyeing"
+        )
+
+        summary = timesheets.week_summary(timesheets.week_start(self.day))
+        row = summary["rows"][0]
+
+        self.assertEqual(
+            [(k["kind"], k["total"]) for k in row["kinds"]],
+            [("booth", Decimal("5")), ("dyeing", Decimal("4"))],
+        )
+        self.assertEqual(row["total"], Decimal("9"))
+        self.assertEqual(summary["total"], Decimal("9"))
+
+    def test_the_kinds_read_in_a_fixed_order_whoever_reported_first(self):
+        """Dyeing reported first must not put it above Booth on the page."""
+        TimeEntry.objects.create(
+            employee=self.sam, work_date=self.day, hours=Decimal("4"), kind="dyeing"
+        )
+        TimeEntry.objects.create(
+            employee=self.sam, work_date=self.day, hours=Decimal("5"), kind="booth"
+        )
+        summary = timesheets.week_summary(timesheets.week_start(self.day))
+        self.assertEqual(
+            [k["kind"] for k in summary["rows"][0]["kinds"]], ["booth", "dyeing"]
+        )
+
+    def test_a_person_with_one_kind_still_gets_a_labelled_sub_row(self):
+        """The label is the point; a table that changes shape is unscannable."""
+        TimeEntry.objects.create(
+            employee=self.sam, work_date=self.day, hours=Decimal("5"), kind="booth"
+        )
+        summary = timesheets.week_summary(timesheets.week_start(self.day))
+        kinds = summary["rows"][0]["kinds"]
+        self.assertEqual(len(kinds), 1)
+        self.assertEqual(kinds[0]["label"], "Booth")
+
+    def test_the_week_totals_are_broken_out_by_kind(self):
+        alex = make_employee("Alex", pin="1111")
+        TimeEntry.objects.create(
+            employee=self.sam, work_date=self.day, hours=Decimal("5"), kind="booth"
+        )
+        TimeEntry.objects.create(
+            employee=self.sam, work_date=self.day, hours=Decimal("4"), kind="dyeing"
+        )
+        TimeEntry.objects.create(
+            employee=alex, work_date=self.day, hours=Decimal("3"), kind="dyeing"
+        )
+
+        summary = timesheets.week_summary(timesheets.week_start(self.day))
+        self.assertEqual(
+            {k["kind"]: k["total"] for k in summary["kind_totals"]},
+            {"booth": Decimal("5"), "dyeing": Decimal("7")},
+        )
+        self.assertEqual(summary["total"], Decimal("12"))
+
+    def test_a_day_total_counts_both_kinds(self):
+        TimeEntry.objects.create(
+            employee=self.sam, work_date=self.day, hours=Decimal("5"), kind="booth"
+        )
+        TimeEntry.objects.create(
+            employee=self.sam, work_date=self.day, hours=Decimal("4"), kind="dyeing"
+        )
+        start = timesheets.week_start(self.day)
+        summary = timesheets.week_summary(start)
+        index = timesheets.week_days(start).index(self.day)
+        self.assertEqual(summary["day_totals"][index], Decimal("9"))
+
+    def test_a_long_day_split_across_kinds_is_still_flagged(self):
+        """The flag that had to change shape, and would have gone quiet.
+
+        Eight hours dyeing and seven at the booth is a fifteen-hour day. Per
+        entry neither clears the twelve-hour bar, so a flag asked row by row
+        would never mention the one day on the sheet worth asking about.
+        """
+        TimeEntry.objects.create(
+            employee=self.sam, work_date=self.day, hours=Decimal("8"), kind="dyeing"
+        )
+        TimeEntry.objects.create(
+            employee=self.sam, work_date=self.day, hours=Decimal("7"), kind="booth"
+        )
+        summary = timesheets.week_summary(timesheets.week_start(self.day))
+        flags = [
+            f
+            for kind in summary["rows"][0]["kinds"]
+            for cell in kind["cells"]
+            for f in cell["flags"]
+        ]
+        self.assertEqual(flags.count("long day"), 2, flags)
+
+    def test_an_ordinary_split_day_is_not_flagged(self):
+        TimeEntry.objects.create(
+            employee=self.sam, work_date=self.day, hours=Decimal("4"), kind="dyeing"
+        )
+        TimeEntry.objects.create(
+            employee=self.sam, work_date=self.day, hours=Decimal("5"), kind="booth"
+        )
+        summary = timesheets.week_summary(timesheets.week_start(self.day))
+        self.assertEqual(
+            [
+                f
+                for kind in summary["rows"][0]["kinds"]
+                for cell in kind["cells"]
+                for f in cell["flags"]
+            ],
+            [],
+        )
+
+    def test_the_sheet_names_both_kinds(self):
+        self.client.force_login(self.user)
+        TimeEntry.objects.create(
+            employee=self.sam, work_date=self.day, hours=Decimal("4"), kind="dyeing"
+        )
+        response = self.client.get(reverse("timesheet"))
+        self.assertContains(response, "Dyeing")
+
+    # --- the form -------------------------------------------------------
+
+    def test_the_form_opens_on_the_kind_reported_last(self):
+        """A dyer's phone opens on dyeing — same bargain as the remembered PIN."""
+        self._post("dyeing", "4")
+        response = self.client.get(self.url)
+        self.assertEqual(response.context["form"].initial["kind"], "dyeing")
+
+    def test_a_stranger_gets_booth(self):
+        """Nothing remembered, so nothing to carry over."""
+        response = self.client.get(self.url)
+        self.assertEqual(
+            response.context["form"].initial.get("kind", TimeEntry.BOOTH),
+            TimeEntry.BOOTH,
+        )
+
+    def test_the_form_refuses_a_kind_it_does_not_offer(self):
+        response = self._post("admin", "4")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(TimeEntry.objects.count(), 0)
+
+    def test_the_receipt_shows_the_whole_week_not_just_the_kind_reported(self):
+        """A week with two kinds in it is the week worth reading back."""
+        self._post("dyeing", "4")
+        response = self._post("booth", "5", follow=True)
+        self.assertEqual(len(response.context["saved_week"]["entries"]), 2)
+
+
 class TimeEntryModelTests(TestCase):
     def setUp(self):
         self.sam = make_employee("Sam", pin="4821")
@@ -1185,6 +1472,7 @@ class CrewCookieTests(TestCase):
         data = {
             "employee": self.sam.pk,
             "pin": "4821",
+            "kind": "booth",
             "hours": "9.5",
             "work_date": timezone.localdate().isoformat(),
         }
@@ -1518,7 +1806,7 @@ class CrewHandbookTests(TestCase):
         response = self._unlock()
         self.assertTrue(response.context["unlocked"])
         self.assertIn(
-            "The pay week runs Saturday to Friday", response.content.decode()
+            "The pay week runs Wednesday to Tuesday", response.content.decode()
         )
 
     def test_inactive_employee_is_not_offered(self):
@@ -1545,7 +1833,7 @@ class CrewHandbookTests(TestCase):
         response = self._ask_for_pass(read_it="")
         self.assertTrue(response.context["unlocked"])
         self.assertIn(
-            "The pay week runs Saturday to Friday", response.content.decode()
+            "The pay week runs Wednesday to Tuesday", response.content.decode()
         )
 
     def test_bad_pin_on_the_pass_request_does_relock(self):
@@ -1780,7 +2068,7 @@ class CrewHandbookSignedInTests(TestCase):
 
         self.assertTrue(response.context["unlocked"])
         self.assertIn(
-            "The pay week runs Saturday to Friday", response.content.decode()
+            "The pay week runs Wednesday to Tuesday", response.content.decode()
         )
 
     def test_a_login_is_asked_for_neither_name_nor_pin(self):
