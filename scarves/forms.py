@@ -241,11 +241,13 @@ class RecipeDyesForm(forms.Form):
             self.fields[f"{self.AMOUNT_PREFIX}{i}"] = forms.DecimalField(
                 required=False,
                 min_value=0,
-                max_digits=6,
-                decimal_places=3,
+                max_digits=5,
+                # A tenth, because that is what the scale reads. A box that
+                # takes hundredths asks for a figure nobody can weigh out.
+                decimal_places=1,
                 label=f"Ounces {i}",
                 widget=forms.NumberInput(attrs={
-                    "step": "0.01",
+                    "step": "0.1",
                     "min": "0",
                     "class": "ozbox",
                     "aria-label": f"Ounces of dye {i} per 5-skein bath",

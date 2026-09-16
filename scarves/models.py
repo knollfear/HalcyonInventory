@@ -1,6 +1,6 @@
 import re
 import secrets
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from colorfield.fields import ColorField
 from django.contrib.postgres.fields import ArrayField
@@ -439,6 +439,12 @@ class RawProduct(models.Model):
         return (plain.blank_cost or Decimal("0")) + (self.fancying_cost or Decimal("0"))
 
 
+#: The finest weight the dye scale reads, and so the finest any amount is
+#: asked for or printed. Dye is measured by feel here, not to the gram — a
+#: figure with no mark on the scale for it is one nobody can hit.
+SCALE_STEP = Decimal("0.1")
+
+
 class Recipe(models.Model):
     """
     A dye recipe made from 1–5 dyes.
@@ -520,8 +526,8 @@ class RecipeDye(models.Model):
         ),
     )
     book_ounces = models.DecimalField(
-        max_digits=6,
-        decimal_places=3,
+        max_digits=5,
+        decimal_places=1,
         blank=True,
         null=True,
         help_text=(
@@ -530,7 +536,9 @@ class RecipeDye(models.Model):
             "`dye_book_bath_units` basis (yarn, five skeins). Stored as "
             "written rather than per skein because that is what somebody is "
             "copying off the page, and a number typed in the form it is read "
-            "in can be checked against the book by eye."
+            "in can be checked against the book by eye. One decimal place, "
+            "because that is what the scale reads — a box offering "
+            "hundredths invites a figure nobody can weigh out."
         ),
     )
 
@@ -542,7 +550,9 @@ class RecipeDye(models.Model):
         return f"{self.recipe.name} - {self.dye.name} (#{self.order})"
 
     def ounces_for(self, units, basis):
-        """Ounces of this dye for a bath of `units`, or None if unanswerable.
+        """Ounces of this dye for a bath of `units`, to the nearest tenth.
+
+        None if unanswerable.
 
         **Dye is per skein; the book is per bath.** The book records one
         number for a five-skein bath because that is the bath that usually
@@ -559,9 +569,22 @@ class RecipeDye(models.Model):
         """
         if self.book_ounces is None or not basis:
             return None
-        return (
-            Decimal(self.book_ounces) / Decimal(basis) * Decimal(units)
-        ).quantize(Decimal("0.001"))
+        # **Rounded to what the scale reads, which is a tenth.** Four fifths
+        # of 0.3 oz is 0.24, and printing that is false precision: there is no
+        # mark on the scale for it, nobody can hit it, and a sheet that asks
+        # for it is asking to be ignored. Dyeing is at the by-feel end of
+        # precision, not the exact-flour-weights end — the honest figure here
+        # is the one somebody can actually measure out.
+        #
+        # Never rounded away to nothing, though. A fifth of a tenth is 0.02,
+        # and `0 oz` on a sheet reads as "no dye" rather than "not much" —
+        # which is a bath somebody runs wrong. The floor is the smallest
+        # weight the scale has a mark for.
+        exact = Decimal(self.book_ounces) / Decimal(basis) * Decimal(units)
+        rounded = exact.quantize(SCALE_STEP, rounding=ROUND_HALF_UP)
+        if rounded == 0 and exact > 0:
+            return SCALE_STEP
+        return rounded
 
 
 class FinishedProduct(models.Model):

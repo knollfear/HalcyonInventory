@@ -106,6 +106,8 @@ fifths of it. Both facts are true and the app holds them apart.
   what they typed against the page by eye, and a per-skein box asks them to
   do a division at entry, from a page that does not show the answer, into a
   box nothing verifies.
+- **Entry is to a tenth of an ounce, because that is what the scale reads.**
+  A box offering hundredths invites a figure nobody can weigh out.
 - **`RawProductCategory.dye_book_bath_units` is the divisor**, and it is 5 on
   Yarn. Everything that prints an amount divides by it and multiplies back up
   by the bath in front of it. The arithmetic lives in
@@ -137,6 +139,19 @@ recreates), so the amount has to come back through the form with its dye.
 Forget that and saving a rainbow band silently clears every weight on the
 row — the same trap the oven boxes were carrying, and the reason each slot is
 rendered with its stored value as `initial`.
+
+**The scaled figure rounds to a tenth too, because precision has two ends and
+this shop is at the far one.** Four fifths of 0.3 oz is 0.24, and there is no
+mark on the scale for 0.24 — printing it asks for a weight nobody can hit,
+which is how a sheet teaches the person reading it to ignore its numbers. The
+first instinct here is the baker's, where the flour is weighed exactly; the
+dye room is the other end of that, where the figure is a starting point and
+the eye finishes it. An unroundable decimal is false precision, not honesty
+about the arithmetic.
+
+It never rounds away to nothing, though: a fifth of a tenth is 0.02, and
+`0 oz` reads as *no dye* rather than *not much*. The floor is
+`SCALE_STEP` — the smallest weight the scale has a mark for.
 
 The recipe row and the recipe page print the book figure at book strength,
 labelled as such. **The scaled number belongs where the bath size is known**,

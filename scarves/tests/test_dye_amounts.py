@@ -50,13 +50,13 @@ class BathArithmeticTests(TestCase):
 
     def setUp(self):
         self.recipe = make_recipe("Cabernet", hexes=("#800020", "#202020"))
-        _set_amounts(self.recipe, "1.000", "0.500")
+        _set_amounts(self.recipe, "1.0", "0.5")
 
     def test_a_full_bath_is_the_book_figure(self):
         product = _yarn_bath(self.recipe, "Cabernet Heavenly", bath=5)
         amounts = dyeamounts.bath_amounts(self.recipe, product.raw_product, 5)
         self.assertEqual(
-            [oz for _rd, oz in amounts], [Decimal("1.000"), Decimal("0.500")]
+            [oz for _rd, oz in amounts], [Decimal("1.0"), Decimal("0.5")]
         )
 
     def test_a_four_skein_bath_takes_eighty_percent(self):
@@ -64,7 +64,7 @@ class BathArithmeticTests(TestCase):
         product = _yarn_bath(self.recipe, "Cabernet Artisan", bath=4)
         amounts = dyeamounts.bath_amounts(self.recipe, product.raw_product, 4)
         self.assertEqual(
-            [oz for _rd, oz in amounts], [Decimal("0.800"), Decimal("0.400")]
+            [oz for _rd, oz in amounts], [Decimal("0.8"), Decimal("0.4")]
         )
 
     def test_silk_gets_no_amount_at_all(self):
@@ -85,6 +85,27 @@ class BathArithmeticTests(TestCase):
         amounts = dyeamounts.bath_amounts(recipe, product.raw_product, 5)
         self.assertEqual([oz for _rd, oz in amounts], [None])
 
+    def test_a_scaled_amount_rounds_to_what_the_scale_reads(self):
+        """Four fifths of 0.3 is 0.24 and there is no mark on the scale for
+        it. Dyeing is at the by-feel end of precision — printing 0.24 oz asks
+        for a weight nobody can hit, which is a sheet asking to be ignored."""
+        recipe = make_recipe("Awkward", hexes=("#654321",))
+        _set_amounts(recipe, "0.3")
+        product = _yarn_bath(recipe, "Awkward Artisan", bath=4)
+        amounts = dyeamounts.bath_amounts(recipe, product.raw_product, 4)
+        self.assertEqual([oz for _rd, oz in amounts], [Decimal("0.2")])
+        self.assertEqual(dyeamounts.format_ounces(amounts[0][1]), "0.2 oz")
+
+    def test_a_tiny_amount_never_rounds_away_to_nothing(self):
+        """A fifth of a tenth is 0.02, and `0 oz` on a sheet reads as no dye
+        rather than not much — which is a bath somebody runs wrong. The floor
+        is the smallest weight the scale has a mark for."""
+        recipe = make_recipe("Whisper", hexes=("#eeeeee",))
+        _set_amounts(recipe, "0.1")
+        product = _yarn_bath(recipe, "Whisper Noble", bath=1)
+        amounts = dyeamounts.bath_amounts(recipe, product.raw_product, 1)
+        self.assertEqual([oz for _rd, oz in amounts], [Decimal("0.1")])
+
     def test_the_formatter_drops_the_padding(self):
         self.assertEqual(dyeamounts.format_ounces(Decimal("0.750")), "0.75 oz")
         self.assertEqual(dyeamounts.format_ounces(Decimal("1.000")), "1 oz")
@@ -96,7 +117,7 @@ class SheetPrintsTheBathsOwnAmountTests(TestCase):
 
     def setUp(self):
         self.recipe = make_recipe("Stormy Sea", hexes=("#2f4f6f",))
-        _set_amounts(self.recipe, "1.000")
+        _set_amounts(self.recipe, "1.0")
 
     def _sheet_text(self, product, quantity):
         run = ProductionRun.objects.create()
@@ -126,14 +147,14 @@ class AmountsSurviveTheEditorTests(TestCase):
         self.user = User.objects.create_user("staff", password="pw")
         self.client.force_login(self.user)
         self.recipe = make_recipe("Mooney", hexes=("#445566",))
-        _set_amounts(self.recipe, "0.250")
+        _set_amounts(self.recipe, "0.3")
         self.dye = self.recipe.recipe_dyes.get().dye
 
     def test_the_editor_offers_the_stored_amount(self):
         response = self.client.get(
             reverse("recipe_row", args=[self.recipe.pk]) + "?edit=1"
         )
-        self.assertContains(response, 'value="0.250"')
+        self.assertContains(response, 'value="0.3"')
 
     def test_saving_keeps_an_amount_it_was_given(self):
         self.client.post(
@@ -141,7 +162,7 @@ class AmountsSurviveTheEditorTests(TestCase):
             {"dye1": self.dye.pk, f"{RecipeDyesForm.AMOUNT_PREFIX}1": "0.5"},
         )
         self.assertEqual(
-            RecipeDye.objects.get(recipe=self.recipe).book_ounces, Decimal("0.500")
+            RecipeDye.objects.get(recipe=self.recipe).book_ounces, Decimal("0.5")
         )
 
     def test_an_amount_with_no_dye_is_dropped_with_its_slot(self):
@@ -160,11 +181,11 @@ class AmountsSurviveTheEditorTests(TestCase):
         response = self.client.post(
             reverse("recipe_dyes_save", args=[self.recipe.pk]),
             {"dye1": self.dye.pk, "dye2": other.pk,
-             f"{RecipeDyesForm.AMOUNT_PREFIX}1": "0.25"},
+             f"{RecipeDyesForm.AMOUNT_PREFIX}1": "0.2"},
         )
         self.assertEqual(response.status_code, 200)
         amounts = list(
             RecipeDye.objects.filter(recipe=self.recipe)
             .order_by("order").values_list("book_ounces", flat=True)
         )
-        self.assertEqual(amounts, [Decimal("0.250"), None])
+        self.assertEqual(amounts, [Decimal("0.2"), None])
