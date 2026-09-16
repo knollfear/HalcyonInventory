@@ -162,21 +162,34 @@ class Outlook:
         return self.blank.raw_shortage
 
     @property
-    def count_is_stale(self):
-        """Has a bath been recorded since anybody counted this shelf?
+    def never_counted(self):
+        """Has anybody ever put an absolute count against this shelf?
 
-        The cheap version of a question with no good answer: the count is
-        wrong by however much has been dyed without being planned through a
-        sheet — which is unknowable, because the baths nobody entered are
-        exactly the ones nothing knows about. What can be said is whether the
-        count predates the dyeing the app does know about, and that is enough
-        to stop the number being read as a measurement of today.
+        **This is the whole of what can honestly be said**, and it used to
+        claim more. The old version asked whether a bath had been *entered*
+        since the count, which was a real question while raw stock fell at
+        reporting time: an entry then meant skeins had left the shelf after
+        somebody counted it.
+
+        Claiming the blanks when a run is created ended that. The skeins now
+        leave the count when the sheet is made — see *The blanks come off when
+        the run is made* in `docs/claude/production.md` — so an entry written
+        afterwards says nothing at all about the count, and the shelf's own
+        number already has the claim taken off it. The test fired on the
+        ordinary healthy path (plan a sheet, count the shelf, report the baths
+        a few days later) and so it fired on the best counts in the system:
+        four yarn blanks counted by hand on 13 September read `stale` two days
+        later, with nothing wrong with any of them.
+
+        What it was reaching for — baths dyed without a sheet — is exactly the
+        thing nothing here can see, and a flag that cannot see its subject
+        should not draw a warning. A warning that is always on is one nobody
+        reads, which costs the real signal below.
+
+        So the row prints the date and lets a person judge it, and this says
+        only the one thing the data supports: nobody has ever looked.
         """
-        if self.blank.counted_at is None:
-            return True
-        if self.last_entry is None:
-            return False
-        return self.last_entry > self.blank.counted_at
+        return self.blank.counted_at is None
 
 
 def units_outlook(blanks, today=None):

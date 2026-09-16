@@ -168,18 +168,26 @@
                   <div class="sub claimed">{{ o.claimed }} claimed by open sheets</div>
                 {% endif %}
                 {% comment %}
-                How old the count is, said on the row, because this is the
-                one pile in the app nothing recounts on its own — a week of
-                dyeing nobody planned through a sheet leaves it reading high.
+                How old the count is, said plainly on the row, because this is
+                the one pile in the app nothing recounts on its own.
+
+                **A date, not a verdict.** This used to badge a count as stale
+                whenever a bath had been entered since — which was meaningful
+                while raw fell at reporting time, and stopped being meaningful
+                the day a run claimed its blanks at creation: the skeins leave
+                the count when the sheet is made, so a later entry says nothing
+                about the count and the number already has the claim off it.
+                It fired on counts two days old and hand-corrected, which is a
+                warning on permanently and therefore a warning read never.
+
+                What it was reaching for is baths dyed outside a sheet, and
+                that is precisely what nothing here can see. So the row says
+                when somebody last looked and leaves the judgement where it
+                belongs. Never counted is still worth flagging: that one is a
+                fact, not an inference.
                 {% endcomment %}
-                {% if o.count_is_stale %}
-                  <div class="sub stale">
-                    {% if o.blank.counted_at %}
-                      counted {{ o.blank.counted_at|timesince }} ago, baths since
-                    {% else %}
-                      never counted
-                    {% endif %}
-                  </div>
+                {% if o.never_counted %}
+                  <div class="sub stale">never counted</div>
                 {% else %}
                   <div class="sub">counted {{ o.blank.counted_at|timesince }} ago</div>
                 {% endif %}

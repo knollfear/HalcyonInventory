@@ -1971,11 +1971,15 @@ class RawCountFreshnessTests(TestCase):
         self.assertEqual(self.blank.number_on_hand, 177)
         self.assertIsNone(self.blank.counted_at)
 
-    def test_an_uncounted_shelf_reads_as_stale(self):
+    def test_an_uncounted_shelf_says_so(self):
         outlook = rawdemand.rows([self.blank])[0]
-        self.assertTrue(outlook.count_is_stale)
+        self.assertTrue(outlook.never_counted)
 
-    def test_a_bath_entered_after_the_count_makes_it_stale(self):
+    def test_a_bath_entered_after_the_count_does_not_impugn_it(self):
+        """It did once, and that was right while raw fell at reporting time.
+        A run claims its blanks when it is created now, so the skeins left the
+        count when the sheet was made and a later entry says nothing about the
+        count — it fired on four shelves counted by hand two days earlier."""
         recipe = make_recipe("Lilac Garden")
         product = FinishedProduct.objects.create(
             name="Homespun — Lilac Garden", raw_product=self.blank,
@@ -1989,14 +1993,23 @@ class RawCountFreshnessTests(TestCase):
         )
 
         outlook = rawdemand.rows([self.blank])[0]
-        self.assertTrue(outlook.count_is_stale)
+        self.assertFalse(outlook.never_counted)
 
-    def test_a_fresh_count_with_no_baths_since_is_not_stale(self):
+    def test_the_page_does_not_badge_a_counted_shelf(self):
+        self.blank.counted_at = timezone.now() - timedelta(days=2)
+        self.blank.save(update_fields=["counted_at"])
+
+        body = self.client.get(f"{self.url}?par=1").content.decode()
+
+        self.assertNotIn("never counted", body)
+        self.assertIn("counted", body)
+
+    def test_a_counted_shelf_is_not_flagged(self):
         self.blank.counted_at = timezone.now()
         self.blank.save(update_fields=["counted_at"])
 
         outlook = rawdemand.rows([self.blank])[0]
-        self.assertFalse(outlook.count_is_stale)
+        self.assertFalse(outlook.never_counted)
 
 
 class RawDemandTests(TestCase):

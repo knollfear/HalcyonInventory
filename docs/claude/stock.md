@@ -132,10 +132,27 @@ agrees still counts**: what was learned is that somebody looked today, and
 dating the count to whenever the number last happened to *move* would put a
 steady blank's count in another season.
 
-`count_is_stale` is the cheap version of a question with no good answer — the
-baths nobody entered are exactly the ones nothing knows about, so what can be
-said is whether the count predates the dyeing the app *does* know about. Enough
-to stop the number being read as a measurement of today.
+**What the row prints is the date, not a verdict**, and the difference was
+learned the hard way. `count_is_stale` used to badge a shelf whenever a bath
+had been *entered* since it was counted. That was a real question while raw
+stock fell at reporting time — an entry then meant skeins had left the shelf
+after somebody counted it. Claiming a run's blanks at creation ended it: the
+skeins leave the count when the sheet is made, so an entry written afterwards
+says nothing about the count, and `number_on_hand` already has the claim taken
+off it.
+
+The flag then fired on the ordinary healthy path — plan a sheet, count the
+shelf, report the baths a few days later — which meant it fired on the best
+data in the system. Four yarn blanks were counted by hand on 13 September 2026,
+the most accurate that shelf has ever been, and read `stale` two days later
+with nothing wrong with any of them.
+
+The thing it was reaching for is baths dyed without a sheet, and that is
+exactly what nothing here can see. A flag that cannot see its subject should
+not draw a warning, because a warning that is always on is one nobody reads —
+and the cost is the real signal beside it. So `never_counted` says the one
+thing the data supports, the row prints when somebody last looked, and the
+judgement stays with the person placing the order.
 
 The column that looks like a dyeing rate is labelled **entered** for the same
 reason. These rows are written when a session is typed up, not when the dye
