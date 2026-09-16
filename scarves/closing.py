@@ -21,6 +21,12 @@ one shape of answer:
     no tag                   fill the display, count the bag        slots + rest
     tag nobody predicted     app overcounts — count the display     0 … slots
 
+One thing is left off that list, and it is the pair `par == 0` and nothing on
+hand: no plan to make any and no number to check, so the row can only ever
+come back zero and it comes back every weekend forever. See
+`expected_products` for why it takes both clauses, and why the row returns on
+its own the moment one physically exists.
+
 **Every answered row is a count, and the count is the total.** The tag is no
 longer the answer; it is what puts the product in front of somebody. The
 outcome is the sign of `counted - on_hand_before`, which is why a predicted
@@ -73,6 +79,34 @@ def expected_products():
     pile nobody can see. Par is a production number and has no business
     deciding what gets audited.
 
+    **With one exception, and it is about a pile nobody can see either: par
+    zero *and* nothing on hand.** The app has no number to check and no plan
+    to make one, so there is no belief here for a count to disagree with —
+    the row can only ever come back zero, and it comes back every weekend
+    forever. That is not a harmless extra line. Two hundred of them arrived
+    the day the fancy, triangle-fringe and infinity colorways were created at
+    par zero with `display_slots` copied from their plain counterparts, and a
+    list nobody can finish audits nothing: the rows that *do* carry a belief
+    get read past on every pass down the pile. The close's whole value is
+    that somebody works the list to the end.
+
+    **The two clauses are both load-bearing and neither alone is the rule.**
+    Par zero on its own would drop a colorway that is simply not being made
+    any more — still on the pegs, still selling, still worth counting — which
+    is the case the par gate was removed for in the first place. Zero on hand
+    on its own is the most interesting row on the list when somebody *is*
+    planning to make more. It is the pair that means "nobody is keeping a
+    count of this", and the pair is what drops off.
+
+    **It heals itself in the direction that matters.** The moment one of
+    these physically exists — a bath reports one, a fancy conversion moves
+    one across, somebody counts one on the restock walk or types the tag into
+    this page's own search — `number_on_hand` leaves zero and the product is
+    back on the next close with nothing to remember. Raising par does the
+    same. A fancy veil hanging on a mapped peg was never relying on the close
+    anyway: `restock.board()` walks pegs, not beliefs, and asks about every
+    one of them.
+
     Passthroughs are excluded by the null-recipe test they always fail: an
     undyed skein is ordered rather than made, its count lives on the raw
     product, and there is no kanban card in a bag for it to disagree with.
@@ -84,6 +118,7 @@ def expected_products():
             number_on_hand__lte=F("display_slots"),
             recipe__isnull=False,
         )
+        .exclude(par=0, number_on_hand=0)
         .select_related("raw_product", "recipe")
         .order_by("sku", "raw_product__name", "recipe__name")
     )

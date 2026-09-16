@@ -410,6 +410,18 @@ countable. They hang on a board, they get walked, and the Sunday close asks
 about them — which works precisely because `expected_products()` gates on
 `display_slots > 0` rather than on par.
 
+**It asks about the ones that exist, and that qualifier was learned the hard
+way.** 204 fancy, triangle-fringe and infinity colorways went in at par zero
+with `display_slots` copied from their plain counterparts, on the reasoning
+above — and since not one had ever been made, every one of them landed on
+every close at zero and stayed there. The close was dominated by rows nobody
+could answer, which is worse than not asking: the rows that do carry a number
+get read past on every pass. So `expected_products()` now leaves out the pair
+`par == 0` **and** nothing on hand, and the first fancy veil that physically
+exists is on the next close with nothing to remember. The peg is the other
+door and always was — `restock.board()` walks pegs, not beliefs. The argument
+is in `docs/claude/close.md`.
+
 So the supply stays unplannable and the **demand becomes answerable**: sales
 land in `InventoryLog` like everything else, and at the end of a season "what
 did fancy sell" is a query.

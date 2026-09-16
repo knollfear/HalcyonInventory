@@ -60,6 +60,30 @@ has no business deciding what gets audited — a colorway nobody plans to make
 again can still be on the pegs this weekend. Zero slots means it never goes on
 display, so no tag will ever come up for it and the close leaves it alone.
 
+**The one exception is the pair `par == 0` and nothing on hand**, and it is
+about a pile nobody can see rather than about production. There is no belief
+to check and no plan to make one, so the row can only ever come back zero —
+every weekend, forever. Two hundred of those arrived the day the fancy,
+triangle-fringe and infinity colorways were created at par zero with
+`display_slots` copied from their plain counterparts, and they drowned the
+close. **A list nobody can finish audits nothing:** the rows that do carry a
+number get read past on every pass down the pile, so the cost of a phantom
+row is paid by the real ones beside it.
+
+It takes **both** clauses. Par zero alone drops the colorway that is merely
+not being made any more — still on the pegs, still selling — which is the
+case the par gate was removed for. Zero on hand alone is the most interesting
+row on the list when somebody *is* planning more. The pair is what means
+"nobody is keeping a count of this".
+
+And **nothing has to be remembered to undo it.** A bath reporting one, a
+fancy conversion, a restock walk or this page's own tag search all move
+`number_on_hand` off zero, and the product is back on the next close by
+itself; raising par does the same. A fancy veil on a mapped peg was never
+relying on the close anyway — `restock.board()` walks pegs, not beliefs.
+The exclusion decides what gets **predicted**, never what can be answered:
+somebody holding a tag for one types it in and it is an ordinary row.
+
 **Absolute counts, never a rate.** Ten corrections in a weekend is ten
 corrections whether the list was twelve products long or two hundred.
 Nothing computes `4 / 50`, because putting the reassuring number beside the

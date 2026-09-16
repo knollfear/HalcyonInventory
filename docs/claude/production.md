@@ -929,8 +929,12 @@ all.
 
 **Par and the close are separate circuits, and this is the thing to check
 before touching either.** `closing.expected_products()` gates on
-`display_slots`, never on par — so changing par changes nothing about which
-rows come up to be counted or which come back zero. Dropping par to 4 would
+`display_slots`, never on par — with one exception that is not about
+production: a product at par zero with **nothing on hand** is left off,
+because there is no belief there to check and the row can only come back
+zero. Everything below concerns products with stock or a par, so changing par
+changes nothing about which rows come up to be counted or which come back
+zero. Dropping par to 4 would
 not make this fire more often; it would cut the ask by two-thirds and
 **silently delete every bath-5 product from the default sheet**, because
 `behind_a_bath` is `shortage >= bath_size` and par 4 caps the shortage at 4.

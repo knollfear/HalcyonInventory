@@ -130,6 +130,63 @@ class SundayCloseTests(TestCase):
         product = make_close_product("No Par, Still Out There", on_hand=1, par=0)
         self.assertIn(product, list(closing.expected_products()))
 
+    def test_nothing_on_hand_and_no_par_is_not_asked_about(self):
+        """The rows that clogged the close: nobody makes them, nobody has any.
+
+        Two hundred of these were created the day the fancy, triangle-fringe
+        and infinity colorways went in — par zero, `display_slots` copied
+        from the plain counterpart, and never a unit of any of them. There is
+        no belief here to disagree with, so the row can only come back zero,
+        and it comes back every weekend. A list nobody finishes audits
+        nothing: the rows that *do* carry a number get read past on every
+        pass down the pile.
+        """
+        phantom = make_close_product("Never Existed", on_hand=0, par=0)
+        self.assertNotIn(phantom, list(closing.expected_products()))
+
+    def test_it_takes_both_clauses_and_neither_alone(self):
+        """Par zero alone would drop the case the par gate was removed for.
+
+        A colorway nobody plans to make again can still be on the pegs this
+        weekend, and it is still worth counting — that is stock and those are
+        sales. And zero on hand is the most interesting row on the list when
+        somebody *is* planning more of it.
+        """
+        stopped_making_it = make_close_product("Last Few", on_hand=1, par=0)
+        sold_out = make_close_product("Sold Out", on_hand=0, par=6)
+
+        expected = list(closing.expected_products())
+        self.assertIn(stopped_making_it, expected)
+        self.assertIn(sold_out, expected)
+
+    def test_one_turning_up_puts_it_back_on_the_close(self):
+        """Nothing has to be remembered to undo the exclusion.
+
+        A bath reports one, a fancy conversion moves one across, somebody
+        counts one on the restock walk — `number_on_hand` leaves zero and the
+        product is on the next close by itself.
+        """
+        product = make_close_product("Fancy Veil, Aegean", on_hand=0, par=0)
+        self.assertNotIn(product, list(closing.expected_products()))
+
+        product.set_on_hand(1)
+        self.assertIn(product, list(closing.expected_products()))
+
+    def test_a_tag_for_one_can_still_be_added_by_hand(self):
+        """The exclusion decides what gets *predicted*, never what can be
+        answered. Somebody holding the tag types it in, and the row is an
+        ordinary row — which is also what puts it back on next week's list."""
+        product = make_close_product("Fancy Veil, Rust", on_hand=0, par=0)
+        run, _ = closing.run_for_today(employee=self.employee)
+        self.assertFalse(run.rows.filter(finished_product=product).exists())
+
+        row, created = closing.add_tag(run, product)
+        self.assertTrue(created)
+        closing.record_count(run, row, 2)
+        row.refresh_from_db()
+        self.assertEqual(row.counted, 2)
+        self.assertIn(product, list(closing.expected_products()))
+
     def test_a_passthrough_never_asks_for_a_tag(self):
         """Undyed stock is ordered, not made, and has no kanban card.
 

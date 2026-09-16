@@ -463,8 +463,11 @@ def stockout_baths():
     somebody did not get to.
 
     Par is untouched, and so is the close: `expected_products()` gates on
-    `display_slots`, so nothing here changes which rows come up to be counted.
-    The two are on separate circuits on purpose.
+    `display_slots` rather than par, so nothing here changes which rows come
+    up to be counted. The two are on separate circuits on purpose. (Par zero
+    *and* nothing on hand is the one exception, and it cannot reach this
+    function: a row that never appears never comes back zero, and it was
+    never going to — see `closing.expected_products`.)
     """
     from .models import CloseRun, CloseRunRow
 
