@@ -31,6 +31,13 @@
       margin: 3px 16px 3px 0; white-space: nowrap;
   }
   .scroller { overflow-x: auto; }
+
+  textarea.paste {
+      width: 100%; min-height: 9rem; font-family: ui-monospace, Menlo, monospace;
+      font-size: 13px; line-height: 1.5;
+  }
+  .paste-errors { margin: 10px 0 0; padding-left: 18px; }
+  .paste-errors li { color: #b3261e; font-size: 13px; margin: 2px 0; }
 {% endblock %}
 
 {% block content %}
@@ -82,9 +89,35 @@
       Each row is one recipe; each column is a raw product. Fill in how many
       finished items you have and they'll be created as
       <code>&lt;Raw&gt; - &lt;Recipe&gt;</code> at the default price. Blank
-      cells are left alone.
+      cells are left alone. Twenty colorways is sixty boxes, so there is a
+      paste box too — it saves exactly what the grid does.
       <a href="{% url 'bulk_recipe_matrix_entry' %}">Pick different columns</a>.
     </p>
+
+    <div class="card">
+      <div class="card-title">
+        Paste a list
+        <span class="count">
+          name first, then one count per column — blank leaves a cell alone
+        </span>
+      </div>
+      <form method="post">
+        {% csrf_token %}
+        <textarea name="csv_rows" class="paste"
+                  placeholder="{{ paste_placeholder }}">{{ csv_rows|default:"" }}</textarea>
+        {% if csv_errors %}
+          <ul class="paste-errors">
+            {% for error in csv_errors %}<li>{{ error }}</li>{% endfor %}
+          </ul>
+        {% endif %}
+        <div class="actions">
+          <button class="btn" type="submit">Save pasted rows</button>
+          <span class="small muted">
+            Commas or tabs. Saves exactly what the grid below would.
+          </span>
+        </div>
+      </form>
+    </div>
 
     <form method="post">
       {% csrf_token %}

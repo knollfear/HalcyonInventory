@@ -620,3 +620,80 @@ A swap that never arrives leaves the previous table sitting there looking
 answered, so both the wait and the failure are said out loud. The listener is
 on the `#history` container rather than the chips, because the chips are
 themselves replaced by every swap.
+
+## `private/bulk-matrix/`: the paste box builds the grid's own POST
+
+The grid is rows of colorways against columns of blanks, and it is the right
+shape for three of them. A colorway list off the dye book's page is twenty
+names against three yarn bases — **sixty boxes to tab through, holding the same
+number in nearly every one.** That is where the page stopped being used and a
+shell script got written instead, which is the tell worth reacting to: a
+one-off script against production has no validation, no SKU generation it did
+not remember to call, and no record that it ran.
+
+So there is a paste box above the grid. One line per colorway, the name first
+and then one count per column, commas or tabs.
+
+**It writes nothing itself.** It turns the text into `form-N-recipe_name` /
+`form-N-on_hand_<raw id>` keys and hands them to the *same* `RowFormSet` the
+grid posts, which then runs the same save loop. The columns, the validation,
+the blank-means-leave-alone rule, par coming off `finished_par_default` on
+creation and nothing else, the `<Raw> - <Recipe>` naming and the SKU that
+`save()` fills in — all of it stays in one place, and a paste is incapable of
+writing something the grid could not. A second parser reaching
+`FinishedProduct` on its own would be the second door onto the same room, and
+the two would drift on the first change to either.
+
+**Tabs count as commas when any line holds one**, sniffed over the whole block
+rather than per line, because the other way this list arrives is a selection
+dragged out of a spreadsheet.
+
+### The two refusals, and why they are refusals
+
+Both are about the shape of wrong that reads as right.
+
+- **A row must carry exactly one cell per column.** `Pink,5` against three
+  blanks is refused, not applied to the first and skipped on the other two.
+  A short row is what a dropped comma looks like, the page says *saved* either
+  way, and the column that did not take is invisible until somebody counts the
+  shelf weeks later. `Pink,5,,` says *only the first blank* on purpose, and is
+  accepted — the blank cell rule is unchanged, it just has to be written down.
+- **A count with no name is refused**, where the typed grid simply skips a
+  nameless row. In a paste a missing first field shifts every count one column
+  left, so the row is not empty, it is wrong.
+
+Nothing is saved when any line is refused. Part of twenty lines landing is
+worse than none of them: the box is cleared on success, so a partial save
+leaves nothing on screen saying which half went in.
+
+**A refused paste comes back in the box, and errors name the line.** Losing
+twenty lines to one typo is a reason never to open the box again. The line
+number is carried through the parse rather than recomputed from the form
+index — blank lines are skipped, so the two drift apart the moment the pasted
+block has a gap in it, and an error pointing at a line that is fine is worse
+than one pointing nowhere. A validation error names its column too (`Line 2
+(Navy), Hearth: Enter a whole number`), because `form-6-on_hand_32` is not
+something anybody can find in a text box.
+
+**The placeholder is built from the columns actually on screen**, so a
+two-column grid shows a two-count example. A written-out example is a written
+promise about a shape that changes with `?raw_ids=`, and the one thing the box
+has to teach is which count goes where.
+
+### What the names do, which is the real hazard
+
+`Recipe.objects.get_or_create(name=...)` is what a row lands on, and **the name
+is the only thing it matches on.** Paste the dye book's shorthand — `ELECT`,
+`AUB`, `Sab`, `Russett` — and every one of them creates a *second* recipe
+beside `Electric Violet`, `Eggplant`, `Sapphire` and `Russet`. Nothing errors.
+The colorway now exists twice, its history splits across the pair, it prints
+twice on the reference sheet, and Square gets two variations of one colour.
+
+There is no fix for this in the code and there should not be one: a resolver
+guessing that `Sab` means `Sapphire` is the dye book's alias table all over
+again, where the same guess reaches a band the scarf was never dyed in. The
+page lists no colorways to pick from because the whole point is creating ones
+that do not exist yet. **Check the shorthand against `private/recipes/` before
+pasting it** — that is a person's job, and it is why the text sits in a box
+that can be edited before the button is pressed rather than in a file being
+fed to a script.

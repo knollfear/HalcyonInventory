@@ -673,6 +673,152 @@ class BulkRecipeMatrixTests(TestCase):
         self.assertContains(
             self.client.get(self.url, {"raw_ids": str(raw.id)}), reverse("index")
         )
+
+
+class BulkRecipeMatrixPasteTests(TestCase):
+    """The paste box. Its whole design is that it writes nothing itself — it
+    builds the grid's own POST data and hands it to the grid's own formset —
+    so what is worth pinning is that a paste can't do anything the grid
+    couldn't, and that a bad line is named rather than swallowed."""
+
+    def setUp(self):
+        self.client.force_login(
+            User.objects.create_superuser("paste", "p@example.test", "pw")
+        )
+        self.silk, _ = RawProductCategory.objects.get_or_create(name="Silk")
+        self.halo = self._raw("Halo")
+        self.hearth = self._raw("Hearth")
+        self.url = (
+            f"{reverse('bulk_recipe_matrix_entry')}"
+            f"?raw_ids={self.halo.id},{self.hearth.id}"
+        )
+
+    def _raw(self, name):
+        return RawProduct.objects.create(
+            name=name, category=self.silk, price="5.00",
+            suggested_price="30.00", finished_par_default=6,
+        )
+
+    def _paste(self, text):
+        return self.client.post(self.url, {"csv_rows": text})
+
+    def test_a_paste_saves_what_the_grid_would(self):
+        response = self._paste("Peacock,5,5\nNavy,5,5")
+        self.assertEqual(response.status_code, 302)
+
+        self.assertEqual(Recipe.objects.count(), 2)
+        self.assertEqual(FinishedProduct.objects.count(), 4)
+
+        product = FinishedProduct.objects.get(
+            raw_product=self.halo, recipe__name="Peacock"
+        )
+        self.assertEqual(product.name, "Halo - Peacock")
+        self.assertEqual(product.number_on_hand, 5)
+        # Straight off the blank, the same as a typed row — the paste doesn't
+        # get its own defaults.
+        self.assertEqual(product.par, 6)
+        self.assertTrue(product.sku)
+
+    def test_an_existing_colorway_is_reused_not_duplicated(self):
+        """The reason the names matter: get_or_create matches on the name, so
+        a paste of shorthand would build a second recipe beside the real one
+        and split the colorway's history in two."""
+        existing = Recipe.objects.create(name="Electric Violet")
+
+        self._paste("Electric Violet,5,5")
+
+        self.assertEqual(Recipe.objects.count(), 1)
+        self.assertEqual(
+            FinishedProduct.objects.filter(recipe=existing).count(), 2
+        )
+
+    def test_a_blank_cell_leaves_that_column_alone(self):
+        self._paste("Peacock,5,")
+
+        self.assertTrue(
+            FinishedProduct.objects.filter(
+                raw_product=self.halo, recipe__name="Peacock"
+            ).exists()
+        )
+        self.assertFalse(
+            FinishedProduct.objects.filter(raw_product=self.hearth).exists()
+        )
+
+    def test_tabs_work_too_because_the_list_arrives_from_a_spreadsheet(self):
+        self._paste("Peacock\t5\t5")
+        self.assertEqual(FinishedProduct.objects.count(), 2)
+
+    def test_blank_lines_are_skipped(self):
+        """A pasted block ends in one, and the groups on the page it comes
+        from are separated by them."""
+        self._paste("Peacock,5,5\n\nNavy,5,5\n")
+        self.assertEqual(Recipe.objects.count(), 2)
+
+    def test_a_short_row_is_refused_rather_than_half_applied(self):
+        """Two counts for three columns reads as applied and isn't. Nothing
+        is written and the line is named."""
+        response = self._paste("Peacock,5,5\nNavy,5")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(Recipe.objects.exists())
+        self.assertFalse(FinishedProduct.objects.exists())
+        self.assertIn("Line 2 (Navy)", " ".join(response.context["csv_errors"]))
+
+    def test_a_count_with_no_name_is_refused(self):
+        response = self._paste(",5,5")
+        self.assertFalse(FinishedProduct.objects.exists())
+        self.assertIn("Line 1", " ".join(response.context["csv_errors"]))
+
+    def test_a_count_that_is_not_a_number_names_its_line_and_column(self):
+        response = self._paste("Peacock,5,5\nNavy,5,lots")
+
+        self.assertFalse(FinishedProduct.objects.exists())
+        errors = " ".join(response.context["csv_errors"])
+        self.assertIn("Line 2 (Navy)", errors)
+        self.assertIn("Hearth", errors)
+
+    def test_a_line_number_survives_a_blank_line_above_it(self):
+        """Form index and line number drift apart the moment a blank line is
+        skipped, and an error naming the wrong line sends somebody to a row
+        that is fine."""
+        response = self._paste("Peacock,5,5\n\n\nNavy,5,nope")
+        self.assertIn("Line 4 (Navy)", " ".join(response.context["csv_errors"]))
+
+    def test_a_refused_paste_comes_back_in_the_box(self):
+        text = "Peacock,5,5\nNavy,5"
+        response = self._paste(text)
+        self.assertEqual(response.context["csv_rows"], text)
+        self.assertContains(response, "Navy,5")
+
+    def test_an_empty_paste_says_so_rather_than_erroring(self):
+        response = self._paste("   \n\n")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Nothing pasted", " ".join(response.context["csv_errors"]))
+
+    def test_the_grid_still_posts_without_a_paste(self):
+        """Two forms on one page; the grid's POST carries no csv_rows at all
+        and must not be read as an empty paste."""
+        response = self.client.post(
+            self.url,
+            {
+                "form-TOTAL_FORMS": "10", "form-INITIAL_FORMS": "0",
+                "form-MIN_NUM_FORMS": "0", "form-MAX_NUM_FORMS": "1000",
+                "form-0-recipe_name": "Stormy Sea",
+                f"form-0-on_hand_{self.halo.id}": "4",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            FinishedProduct.objects.get(recipe__name="Stormy Sea").number_on_hand, 4
+        )
+
+    def test_the_placeholder_is_built_from_the_columns_on_screen(self):
+        """Two columns means two counts in the example. A written-out example
+        that disagreed with the grid would teach the shape that gets refused."""
+        response = self.client.get(self.url)
+        self.assertEqual(
+            response.context["paste_placeholder"].splitlines()[0], "Peacock,5,5"
+        )
 class RecipeDetailTests(TestCase):
     """The recipe page. Its job is to answer "how did this get here?" — so
     the arithmetic over the inventory log is what's worth pinning."""
