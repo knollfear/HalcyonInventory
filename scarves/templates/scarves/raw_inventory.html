@@ -68,7 +68,13 @@
 {% block content %}
   <p class="lead">
     {% if par_mode %}
-      Par is the floor — what stays on the shelf so the dye room never stops.
+      {% if dyed_table %}
+        Par is the floor — what stays on the shelf so the dye room never stops.
+      {% else %}
+        Par is the floor — what stays on the shelf so the table never runs
+        empty. Nothing here is dyed: a shortage is answered by ordering more,
+        not by a bath.
+      {% endif %}
       It is not the season's requirement, which is the
       <strong>rest of season</strong> column beside it. Don't add them.
     {% else %}
@@ -230,11 +236,23 @@
                   —
                 {% elif o.shortfall %}
                   <span class="short">{{ o.shortfall }} short</span>
-                  {% if o.is_bought %}
-                    <div class="sub">{{ o.baths }} bath{{ o.baths|pluralize }} · ${{ o.cost|floatformat:0 }}</div>
-                  {% else %}
+                  {% if not o.is_bought %}
                     {# Nothing to order: a fancy blank is a plain one worked on. #}
                     <div class="sub">made here, not ordered</div>
+                  {% elif o.is_dyed %}
+                    <div class="sub">{{ o.baths }} bath{{ o.baths|pluralize }} · ${{ o.cost|floatformat:0 }}</div>
+                  {% else %}
+                    {% comment %}
+                    A passthrough — a notion, an undyed yarn — is bought and
+                    sold exactly as it arrives, so the shortfall is already in
+                    the unit it gets ordered in and there is no bath to count.
+                    `Outlook.baths` returns 0 for these, which this used to
+                    print: "0 baths · $85" beside a yarn bowl, on the page
+                    whose whole job is to say what to buy. Zero of a thing
+                    that does not happen reads as an instruction to do
+                    nothing.
+                    {% endcomment %}
+                    <div class="sub">{{ o.shortfall }} to order · ${{ o.cost|floatformat:0 }}</div>
                   {% endif %}
                 {% else %}
                   <span class="ok">covered</span>

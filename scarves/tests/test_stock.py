@@ -2075,6 +2075,91 @@ class RawDemandTests(TestCase):
         self.assertEqual(outlook.baths, 0)
 
 
+class NotionsOnTheReorderPageTests(TestCase):
+    """A table where nothing is dyed, on the page that says what to buy.
+
+    Notions are the third category beside Yarn and Silk, and every row on it
+    is bought and resold exactly as it arrives. `private/raw-inventory/` is
+    where they belong — you order these, you don't make them — but the page
+    was written for blanks that go through a bath, and two of the sentences
+    it prints only make sense for those.
+    """
+
+    def setUp(self):
+        User.objects.create_user("staff", "s@example.test", "pw")
+        self.client.login(username="staff", password="pw")
+        self.category = RawProductCategory.objects.create(name="Notions")
+        self.blank = RawProduct.objects.create(
+            name="Yarn bowl", category=self.category, price=Decimal("18.00"),
+            par_level=6, number_on_hand=2,
+        )
+        FinishedProduct.objects.create(
+            name="Yarn bowl", raw_product=self.blank, recipe=None,
+            price=Decimal("50.00"), par=0, display_slots=0,
+        )
+        self.url = reverse("raw_inventory", args=[self.category.pk])
+
+    def _par_page(self, **kwargs):
+        """The par view with one outlook of our choosing.
+
+        Patched rather than seeded: `rawdemand` projects off whole prior
+        seasons, and what is being pinned here is how the page words an
+        answer, not how it reaches one.
+        """
+        kwargs.setdefault("is_dyed", False)
+        outlook = rawdemand.Outlook(blank=self.blank, **kwargs)
+        with mock.patch.object(rawdemand, "rows", return_value=[outlook]):
+            return self.client.get(f"{self.url}?par=1").content.decode()
+
+    def test_a_shortfall_is_priced_and_never_counted_in_baths(self):
+        """`number_per_dye_bath` carries its default of 4 on every blank, so
+        `Outlook.baths` returning 0 is correct and printing it is not: the
+        row read "0 baths · $684" beside a yarn bowl, which is zero of a
+        thing that does not happen, on the page whose job is to say what to
+        buy."""
+        body = self._par_page(remaining=40)
+
+        self.assertIn("38 short", body)
+        self.assertIn("38 to order", body)
+        self.assertNotIn("0 bath", body)
+
+    def test_the_floor_is_not_described_as_feeding_the_dye_room(self):
+        """It is the sentence somebody reads to decide what number to type,
+        and no par on this table has ever kept a dye room going."""
+        body = self._par_page(remaining=40)
+
+        self.assertNotIn("dye room never stops", body)
+        self.assertIn("table never runs", body)
+
+    def test_a_dyed_table_still_reads_the_way_it_always_did(self):
+        """The control. Both sentences are chosen off the rows rather than
+        off the category's name, so this is the half that must not move."""
+        dyed = RawProduct.objects.create(
+            name="Homespun", category=self.category, price=Decimal("6.71"),
+            number_on_hand=10, number_per_dye_bath=4,
+        )
+        outlook = rawdemand.Outlook(blank=dyed, is_dyed=True, remaining=50)
+        with mock.patch.object(rawdemand, "rows", return_value=[outlook]):
+            body = self.client.get(f"{self.url}?par=1").content.decode()
+
+        self.assertIn("10 baths", body)
+        self.assertIn("dye room never stops", body)
+
+    def test_the_bill_half_of_the_page_takes_a_count_like_any_other(self):
+        """Nothing special is asked of a notion here: the reorder workflow is
+        the reorder workflow, which is the whole reason these sit on it."""
+        self.client.post(self.url, {f"counted_{self.blank.pk}": "9"})
+
+        self.blank.refresh_from_db()
+        self.assertEqual(self.blank.number_on_hand, 9)
+        self.assertIsNotNone(self.blank.counted_at)
+        # The mirror follows, because the raw row is the pile and the
+        # finished row is a view of it.
+        self.assertEqual(
+            FinishedProduct.objects.get(name="Yarn bowl").number_on_hand, 9
+        )
+
+
 class RawDemandIsReadOnlyTests(TestCase):
     """The module behind the ordering columns writes nothing at all."""
 

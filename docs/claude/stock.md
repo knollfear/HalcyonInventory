@@ -376,6 +376,52 @@ the sale reads as though it never happened. `resolve_unmatched_sale` did
 exactly that, harmlessly, right up until this feature made passthroughs
 reachable from it.
 
+#### `Notions` is a category of its own, and yarn was not
+
+This reverses the call made one section up for the undyed yarns, so it is
+worth saying why the two differ rather than leaving the inconsistency to be
+discovered and tidied away.
+
+Category means **which table at the stall**, which is what makes an undyed
+skein belong under `Yarn`: it sits on the yarn table beside the dyed ones,
+and the distinction actually needed there — *this can't be dyed* — already
+keys on the null recipe. A yarn bowl is not on the yarn table in the sense
+that matters here. It has a different supplier, a different reorder rhythm,
+and no relationship at all to a colorway, so the one thing the category
+buys is the one thing it should buy: `private/raw-inventory/Notions` is a
+shelf you can read without forty skeins in front of it.
+
+Nothing in the schema changed for it. `RawProductCategory` was always
+expandable without code — the row carries the Square category id, and
+`import_square_passthroughs --category Notions` fills the table from
+whatever the dashboard has been assigned to it.
+
+**Leave `dye_book_bath_units` null.** It already is by default, and the
+model's own help text has the argument: setting a basis claims the dye
+book's yarn figures apply to that fibre, which is the one way to get a
+printed amount wrong quietly. There is no fibre here at all.
+
+**The reorder page had two sentences written for a blank that goes through a
+bath**, and a table where nothing is dyed is what surfaced them. Both are
+chosen off the rows rather than off the category's name, so a table that
+grows its first dyed blank starts reading the other way with nothing to
+change:
+
+- the shortfall sub-line printed `0 baths · $684` beside a yarn bowl.
+  `Outlook.baths` correctly returns 0 for a passthrough; *printing* it is
+  the mistake — zero of a thing that does not happen, on the page whose
+  whole job is to say what to buy. It reads `38 to order · $684` now, which
+  is the shortfall in the unit it is actually ordered in.
+- the par lead said the floor is "what stays on the shelf so the dye room
+  never stops". No par on this table has ever kept a dye room going, and
+  that sentence is the one somebody reads to decide what number to type.
+
+**A notion's sales history is reachable and worth linking.** These sold for
+years before the app had a row for them, so `relink_sale_lines --by-item`
+attaches the old lines to the new blanks by item name — 226 of them across
+eleven notions on the first pass. Without it *Sold this season* prints a
+zero, and a zero on that page is a reason not to order.
+
 ## Fancy veils: countable, not plannable
 
 A fancy veil is an already-dyed scarf with extra line work added. It costs

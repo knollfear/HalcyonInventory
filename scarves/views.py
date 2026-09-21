@@ -617,12 +617,23 @@ def raw_inventory_view(request, category_id):
     # one meaning per button.
     par_mode = request.GET.get("par") == "1"
     if par_mode:
+        outlooks = rawdemand.rows(products)
         return render(request, "scarves/raw_inventory.html", {
             "category": category,
             "products": products,
             "all_categories": RawProductCategory.objects.all().order_by("name"),
             "par_mode": True,
-            "outlooks": rawdemand.rows(products),
+            "outlooks": outlooks,
+            # Whether anything on this table is dyed at all, so the page can
+            # say what the floor is protecting. Notions are bought and resold
+            # as they arrive, and "so the dye room never stops" beside a shelf
+            # of yarn bowls names a consequence that cannot follow — which is
+            # the sentence somebody reads to decide what number to type.
+            # Derived from the rows rather than from the category's name, the
+            # same call `_showcase_categories` makes: a table that grows its
+            # first dyed blank starts reading the other way with nothing to
+            # change.
+            "dyed_table": any(o.is_dyed for o in outlooks),
             "typed": {},
             "errors": {},
         })
