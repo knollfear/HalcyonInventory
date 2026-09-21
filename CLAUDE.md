@@ -468,7 +468,15 @@ Two things follow, and both are cheap:
 - **Every derived answer needs somewhere to disagree with it.** The production
   sheet is now editable end to end — strike a row, add a bath the shortage
   query cannot see, or build the list by hand from "I know what to dye" — and
-  the picker offers a suggestion rather than a verdict.
+  the picker offers a suggestion rather than a verdict. The same page takes
+  **"I haven't got that today"**: tick a blank or a dye and the colorways
+  needing it come off the suggestion, because the two numbers that could have
+  answered it automatically — raw stock and `Dye.in_stock` — are both
+  believed rather than known, and *a wrong filter is worse than no filter,
+  since its output looks unremarkable*. It is asked per session and stored
+  nowhere: marking is prompted by the empty jar in your hand and unmarking is
+  prompted by nothing at all. See *"I haven't got that today"* in
+  `docs/claude/production.md`.
 - **Advice you cannot inspect is a decision in disguise.** An override is
   necessary and not sufficient: if the basis is hidden there is nothing to
   judge. Hence the sold count printed beside each colorway on

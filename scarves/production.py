@@ -224,8 +224,48 @@ ORDER_SOLD = "sold"
 ORDER_PAR = "par"
 
 
+def _pks(things):
+    """`{pk, ...}` from model instances or ids, whichever the caller has."""
+    return {thing if isinstance(thing, int) else thing.pk
+            for thing in (things or [])}
+
+
+def blocked_reasons(product, without_blanks=None, without_dyes=None):
+    """Why this colorway can't be dyed today, in words, or `[]`.
+
+    **The shelf the app cannot see.** Undyed stock is an opening balance that
+    nothing recounts on its own, and a dye's `in_stock` flag is set in the
+    admin and nowhere else, so neither number is good enough to plan against —
+    a sheet filtered on either would be silently dropping colorways on a
+    belief nobody checked. What is reliable is the person standing in the dye
+    room, so this takes what she has just said and nothing else.
+
+    Said per session and stored nowhere. A remembered "out of Fuchsia" is a
+    step that has to be remembered to be *cleared*, and the failure mode is a
+    colour that quietly stops being suggested for a month with nothing
+    anywhere saying why. Re-ticking two boxes next week is cheaper than that.
+    """
+    out_blanks = _pks(without_blanks)
+    out_dyes = _pks(without_dyes)
+    if not out_blanks and not out_dyes:
+        return []
+
+    reasons = []
+    if product.raw_product_id in out_blanks:
+        reasons.append(f"no {product.raw_product.name}")
+    if out_dyes and product.recipe_id:
+        # Prefetched by `candidates`; one query per row otherwise, which is
+        # why the picked list resolves its own in a single pass instead.
+        reasons.extend(
+            f"out of {rd.dye.name}"
+            for rd in product.recipe.recipe_dyes.all()
+            if rd.dye_id in out_dyes
+        )
+    return reasons
+
+
 def candidates(category=None, include_overshoot=False, order=ORDER_SOLD,
-               oven=False):
+               oven=False, without_blanks=None, without_dyes=None):
     """Products worth putting on a sheet, most urgent first.
 
     The default is `FinishedProduct.behind_a_bath` — products where a whole
@@ -251,6 +291,13 @@ def candidates(category=None, include_overshoot=False, order=ORDER_SOLD,
     dye room's work, and an oven colorway appearing on it would send
     somebody to a sink to make a thing that is not made there — the failure
     `made_in_a_dye_bath` already exists to stop, one technique further in.
+
+    **`without_blanks` and `without_dyes` annotate; they never filter.** They
+    are what somebody has just said she cannot dye today — an empty yarn box,
+    a dye jar with nothing in it — and each product comes back carrying
+    `blocked_by`, a list of reasons in words. `suggest()` is what acts on it,
+    because this function also feeds the page that *reports* shortages and a
+    colorway that cannot be dyed this afternoon is still short.
     """
     # A Sunday-night zero adds a bath, and it has to widen the prefilter as
     # well as the arithmetic. A product sitting *at* par that still sold out
@@ -330,8 +377,19 @@ def candidates(category=None, include_overshoot=False, order=ORDER_SOLD,
     # skip rule this replaced could not survive a confidence bound on its own
     # numbers. Two counted facts on the row can't be wrong that way.
     per_blank = sold_per_blank()
+    # Resolved once rather than per product: these arrive as querysets from
+    # the form, and asking each row to re-read them is a pass over the same
+    # two selects a few hundred times for one set of ids.
+    out_blanks, out_dyes = _pks(without_blanks), _pks(without_dyes)
     for product in wanted:
         product.sold_here = per_blank.get(product.pk, 0)
+        # **Annotated, never filtered out here.** `private/production-needed/`
+        # reads this same function and reports the whole catalogue; dropping a
+        # row at this level would take a colorway off the page that reports
+        # shortages as well as off the sheet that plans them, and a shortage
+        # that stops being printed is one nobody can act on later. `suggest()`
+        # is where the skipping happens, and it says how many it skipped.
+        product.blocked_by = blocked_reasons(product, out_blanks, out_dyes)
 
     if order == ORDER_PAR:
         return sorted(wanted, key=_urgency)
@@ -521,8 +579,60 @@ def _urgency(product):
     )
 
 
+@dataclass
+class Suggestion:
+    """What the planner proposes, and what it left out on purpose.
+
+    `skipped` is the load-bearing half. Ticking "I am out of 608 Pink" drops
+    every colorway that needs it and pulls others up to fill the sheet, so
+    without saying which ones went the list just quietly *changes* — and a
+    filter you cannot see the effect of is the same failure as advice you
+    cannot inspect. It carries the products themselves, each with its
+    `blocked_by` reasons, so the page can name them and their sales.
+    """
+
+    baths: list
+    skipped: list
+
+
+def suggest(limit, category=None, include_overshoot=False, order=ORDER_SOLD,
+            oven=False, without_blanks=None, without_dyes=None):
+    """`plan_baths`, plus what the day's shortages took off the list.
+
+    Only shortages that would have *reached* the sheet are reported as
+    skipped: the walk stops at the same recipe the limit stops at, so asking
+    for twenty baths cannot come back saying it declined to suggest forty
+    colorways nobody was going to see anyway.
+    """
+    by_recipe = {}
+    for product in candidates(category, include_overshoot, order, oven,
+                              without_blanks, without_dyes):
+        # `net_shortage`, not `shortage`: what is already out being dyed has
+        # been taken off, so a sheet asks for the baths still missing rather
+        # than reprinting the ones on last week's paper.
+        needed = ceil(product.net_shortage / product.bath_size)
+        for _ in range(needed):
+            by_recipe.setdefault(product.recipe_id, []).append(
+                Bath(product=product, quantity=product.bath_size)
+            )
+
+    baths, skipped = [], {}
+    for recipe_baths in by_recipe.values():
+        for bath in recipe_baths:
+            # A blocked colorway takes no place in the limit — the sheet was
+            # asked for twenty baths that can be dyed, not twenty minus the
+            # ones there is no yarn for.
+            if bath.product.blocked_by:
+                skipped.setdefault(bath.product.pk, bath.product)
+            else:
+                baths.append(bath)
+        if len(baths) >= limit:
+            break
+    return Suggestion(baths=baths[:limit], skipped=list(skipped.values()))
+
+
 def plan_baths(limit, category=None, include_overshoot=False, order=ORDER_SOLD,
-               oven=False):
+               oven=False, without_blanks=None, without_dyes=None):
     """The next `limit` baths, grouped so consecutive rows share a dye pot.
 
     Baths of the same recipe sit together because that is how the work is
@@ -533,23 +643,8 @@ def plan_baths(limit, category=None, include_overshoot=False, order=ORDER_SOLD,
     A recipe can be cut in half by the limit, and that is fine — the sheet
     was asked for a number of baths and it delivers exactly that number.
     """
-    by_recipe = {}
-    for product in candidates(category, include_overshoot, order, oven):
-        # `net_shortage`, not `shortage`: what is already out being dyed has
-        # been taken off, so a sheet asks for the baths still missing rather
-        # than reprinting the ones on last week's paper.
-        needed = ceil(product.net_shortage / product.bath_size)
-        for _ in range(needed):
-            by_recipe.setdefault(product.recipe_id, []).append(
-                Bath(product=product, quantity=product.bath_size)
-            )
-
-    baths = []
-    for recipe_baths in by_recipe.values():
-        baths.extend(recipe_baths)
-        if len(baths) >= limit:
-            break
-    return baths[:limit]
+    return suggest(limit, category, include_overshoot, order, oven,
+                   without_blanks, without_dyes).baths
 
 
 def baths_from_picks(picks):
@@ -580,7 +675,8 @@ def baths_from_picks(picks):
     return baths
 
 
-def top_ups(current, gap, category=None, oven=True):
+def top_ups(current, gap, category=None, oven=True,
+            without_blanks=None, without_dyes=None):
     """Oven colorways worth adding when the shortages don't fill the box.
 
     `current` is the list as it stands (products already on it), `gap` is how
@@ -638,6 +734,16 @@ def top_ups(current, gap, category=None, oven=True):
     )
     if category is not None:
         qs = qs.filter(raw_product__category=category)
+
+    # Filtered rather than flagged, unlike the list above it. Nothing here is
+    # short, so a topped-up tray is a free choice among colorways — and
+    # offering one that cannot be dyed today is offering nothing at all.
+    out_blanks = _pks(without_blanks)
+    out_dyes = _pks(without_dyes)
+    if out_blanks:
+        qs = qs.exclude(raw_product_id__in=out_blanks)
+    if out_dyes:
+        qs = qs.exclude(recipe__recipe_dyes__dye_id__in=out_dyes)
 
     from . import slowsellers
 

@@ -49,6 +49,19 @@ sends somebody to the shelf for the wrong things.
       oven colorways that are actually on it.
       {% endcomment %}
       {% if oven %}<input type="hidden" name="oven" value="1">{% endif %}
+      {% comment %}
+      The ticks travel with the list for the same reason `oven` does: with the
+      script blocked, a ✕ or an "Update the list" is a whole new address, and
+      anything not carried is dropped — here that means the panel comes back
+      clear and the next suggestion silently offers the colorways she just
+      said she had no yarn for.
+      {% endcomment %}
+      {% for raw in out_blanks %}
+        <input type="hidden" name="without_blanks" value="{{ raw.pk }}">
+      {% endfor %}
+      {% for dye in out_dyes %}
+        <input type="hidden" name="without_dyes" value="{{ dye.pk }}">
+      {% endfor %}
       {% if rows %}
       <hr>
       <table class="rows">
@@ -69,8 +82,21 @@ sends somebody to the shelf for the wrong things.
         </thead>
         <tbody>
           {% for row in rows %}
-            <tr>
-              <td>{{ row.product.recipe.name }}</td>
+            <tr{% if row.blocked_by %} class="blocked"{% endif %}>
+              <td>
+                {{ row.product.recipe.name }}
+                {% comment %}
+                Said, not enforced — the same call the short-blank warning
+                makes. This row is on the list because somebody put it there,
+                and the app refusing a colorway she asked for would be it
+                arguing with a person standing at the shelf.
+                {% endcomment %}
+                {% if row.blocked_by %}
+                  <span class="blockflag">
+                    {% for reason in row.blocked_by %}{{ reason }}{% if not forloop.last %}, {% endif %}{% endfor %}
+                  </span>
+                {% endif %}
+              </td>
               <td>{{ row.product.raw_product.name }}</td>
               <td class="num">
                 <input type="hidden" name="items"
@@ -280,9 +306,20 @@ sends somebody to the shelf for the wrong things.
   {% elif asked %}
     <hr>
     <p>
-      Nothing is below par for those settings. To dye something anyway,
-      search for it under <strong>I know what to dye</strong> — par is not
-      the only reason to run a session.
+      {% if skipped %}
+        {% comment %}
+        The distinction matters: "nothing is short" and "everything short
+        needs something you haven't got" are different answers, and only one
+        of them means there is no work to do.
+        {% endcomment %}
+        Everything that's below par needs something you've ticked as missing.
+        Untick one above to see what comes back, or search under
+        <strong>I know what to dye</strong> for something else.
+      {% else %}
+        Nothing is below par for those settings. To dye something anyway,
+        search for it under <strong>I know what to dye</strong> — par is not
+        the only reason to run a session.
+      {% endif %}
     </p>
   {% endif %}
   </div>

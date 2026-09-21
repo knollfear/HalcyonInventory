@@ -651,6 +651,23 @@ class PickedBathsField(forms.Field):
         return [(found[pk], n) for pk, n in wanted.items()]
 
 
+class HaventGotField(forms.ModelMultipleChoiceField):
+    """A set of things somebody has ticked, read leniently from the URL.
+
+    Lenient for the same reason `parse_label_items` is: this rides in the
+    query string beside a hand-built list of baths, and a stale pk in a link
+    somebody sent on — a blank retired since, a dye merged away — must not
+    invalidate the whole form and take the list down with it. An id that
+    names nothing is a tick that isn't there.
+    """
+
+    widget = forms.CheckboxSelectMultiple
+
+    def clean(self, value):
+        pks = [int(v) for v in (value or []) if str(v).isdigit()]
+        return self.queryset.filter(pk__in=pks) if pks else self.queryset.none()
+
+
 class ProductionSheetForm(forms.Form):
     """What goes on a printed production sheet.
 
@@ -728,11 +745,57 @@ class ProductionSheetForm(forms.Form):
         ),
     )
 
+    #: **What the shelf says today, and it is not stored anywhere.**
+    #:
+    #: Raw stock is an opening balance nothing recounts on its own, and a
+    #: dye's `in_stock` flag is set in the admin and nowhere else, so the
+    #: planner cannot look for holes in either and be right. The person in
+    #: the dye room can see both, and this is where she says so.
+    #:
+    #: Deliberately **per sheet rather than remembered**. A stored "out of
+    #: Fuchsia" has to be cleared to stop being true, and nothing would ever
+    #: prompt for that — the colour would go on quietly not being suggested,
+    #: with the sheets that came out looking entirely normal. Two ticks next
+    #: week is the cheaper failure, and it rides in the URL like every other
+    #: piece of state here, so a planned sheet is still a link somebody can
+    #: send.
+    without_blanks = HaventGotField(
+        queryset=RawProduct.objects.none(),   # set in __init__
+        required=False,
+        label="Blanks you haven't got",
+    )
+    without_dyes = HaventGotField(
+        queryset=Dye.objects.none(),          # set in __init__
+        required=False,
+        label="Dyes you're out of",
+    )
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # Per-instance, so a category added this morning is selectable
         # without a redeploy — same reasoning as the employee pickers.
         self.fields["category"].queryset = RawProductCategory.objects.order_by("name")
+        # Only blanks that are dyed at all: a passthrough or a fancy veil was
+        # never going to be suggested, so offering it as something to rule out
+        # is a tick that can only do nothing.
+        self.fields["without_blanks"].queryset = (
+            RawProduct.objects.filter(is_active=True, made_in_a_dye_bath=True)
+            .select_related("category")
+            .order_by("category__name", "name")
+        )
+        # **Every dye a recipe actually uses, and no more.** The shelf holds
+        # a hundred and thirty-two; the fifty-five that no live colorway
+        # calls for cannot block a bath, so a box beside one is a tick that
+        # can only do nothing — the same reason a passthrough is not offered
+        # as a blank. The list does not depend on what has been suggested:
+        # "out of J purple" is something she knows walking in, and a panel
+        # that only filled itself in after a suggestion asked her to plan
+        # before she could say what she hadn't got.
+        self.fields["without_dyes"].queryset = (
+            Dye.objects.filter(recipe_dyes__recipe__is_active=True)
+            .distinct()
+            .select_related("brand")
+        )
 
         # **One page, one tick.** The oven is a different session — only oven
         # colorways, and planned to the box rather than to the work — but it

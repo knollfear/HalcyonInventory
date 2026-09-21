@@ -762,13 +762,30 @@ can only answer "what is below par" cannot express any of them. It is also
 when there is time for one: the picker used to refuse to create a run at all.
 
 **The two are entry points, not modes, and they compose** — suggest twenty,
-add the two you promised somebody, drop the one you have no blanks for. They
-sit side by side with no toggle. An earlier version made them modes and it
-came out wrong in a way worth recording: a suggested list you could only look
-at, an editable picked list, and a read-only preview of the first sitting
+add the two you promised somebody, drop the one you have no blanks for. Both
+are on screen with no toggle. An earlier version made them modes and it came
+out wrong in a way worth recording: a suggested list you could only look at,
+an editable picked list, and a read-only preview of the first sitting
 underneath the editable copy of the second. **A suggestion you cannot change
 is a suggestion somebody works around on paper**, which is the whole failure
 the editable sheet exists to prevent.
+
+**They stack, full width each, rather than sitting in two columns.** The
+columns were spending the page on a rule down the middle and then wrapping
+every field in both halves — five questions in a column half a page wide,
+and a tick whose explanation came out eight lines of two words. Stacked, the
+three questions sit in one row and the two ticks in another, the tick panel
+gets the width that turns seventy-seven dyes into four short columns, and the
+`h2` rule from `base_internal` already draws the divider the middle rule was
+drawing by hand.
+
+**A tab strip was the other way to get that width, and it is the one to
+refuse.** Tabs are a mode switch wearing different clothes: whichever half is
+not in front is a click away and, more to the point, out of mind. These two
+are meant to be used in the same sitting. The cost of stacking is scrolling,
+which is cheap; the cost of tabs is the composition, which is the feature.
+Note that the CSS-only version (two hidden radios and `~` selectors) works
+fine and needs no script — *being buildable is not the objection*.
 
 So **every row is editable however the list was seeded** — a bath count and a
 ✕ per row. `items=<pk>:<baths>` is the canonical list and rides in the query
@@ -889,6 +906,108 @@ working from", not a queue to be worked off — the QR on the paper is the
 permanent door, so losing one from a list costs nothing. It is truncated at
 `RUNS_LISTED`. The overdue list beside it is the opposite and is never
 truncated: those sheets are asking for something.
+
+### "I haven't got that today": the one filter a person types in
+
+**The sheet can ask for a bath that cannot be dyed, and until now nothing on
+the page could say so.** A yarn box empties, a dye jar runs out, and the
+shortage arithmetic knows about neither — so twenty baths come off the
+printer, somebody walks to the shelf, and two of them are not going to
+happen. The tick panel on `private/production-sheet/` is where she says
+which.
+
+**It is the last question the suggest form asks, directly above its button,
+and there is only one button.** The first build hung it under the two
+starts with a *Suggest baths again* of its own, which made the whole thing
+an afterthought in the literal sense: plan, look at the plan, remember the
+empty jar, say so, plan a second time. Two buttons that suggest is also two
+buttons that mean the same thing, and the page then has to explain which one
+you want. What she has no yarn for is a condition on the session, known on
+the way in — so it belongs with the bath count and the oven tick, and the
+sheet is suggested once.
+
+**Why the app cannot answer this itself, which is the part worth keeping.**
+Both numbers exist and neither is good enough to plan against. Raw stock is
+an opening balance seeded from a count and topped up off invoices — *the one
+pile nothing recounts on its own*, per `docs/claude/stock.md` — and
+`Dye.in_stock` is a flag set in the Django admin and nowhere else, which is
+to say almost never. A sheet filtered on either would drop colorways on a
+belief no one had checked, and the sheet that came out would look entirely
+normal. **A wrong filter is worse than no filter precisely because its
+output is unremarkable.** What is reliable is the person who can see both
+shelves.
+
+So `production.blocked_reasons()` takes two sets of things she has just
+ticked and returns reasons in words — `no Sash Belt`, `out of 608 Pink`.
+`candidates()` hangs them on each product as `blocked_by` and **never
+filters on them**, because it also feeds `private/production-needed/` and a
+colorway that cannot be dyed this afternoon is still short; hiding it there
+would hide the shortage along with the bath. `suggest()` is what acts:
+blocked rows go to `Suggestion.skipped`, unblocked ones fill the sheet.
+
+**Nothing is stored, and that is the decision rather than a shortcut.** The
+obvious build is a flag on the dye and the blank, set once and honoured
+until cleared — and it fails the rule in `CLAUDE.md` about steps that have
+to be remembered, in the direction that is hardest to see. Marking is easy
+and prompted by the empty jar in your hand; *un*marking is prompted by
+nothing at all. The failure is a colour that quietly stops being suggested
+for a month, on every sheet, with each sheet looking fine. Re-ticking two
+boxes next week is the cheaper mistake. It rides in the query string like
+every other piece of state here, so a planned sheet is still a link somebody
+can send.
+
+**Four rules follow, and they are the same four this file keeps arriving at.**
+
+- **What it left off is named, never just subtracted.** Ticking a dye
+  changes which colorways come out *and* how many baths each of the rest
+  gets, so a list that silently reshuffled would be a filter working
+  invisibly. `skipped` prints under the starts with the reason, the
+  shortage and what it sold, so the cost of the tick lands on the same
+  screen as the sheet it shortened. It
+  folds into a disclosure past ten, but the **count stays in the summary** —
+  what is allowed behind a click is the eleven names, which are there to
+  troubleshoot a suggestion that came back looking wrong, never the fact
+  that a tick cost eleven colorways.
+- **A blocked colorway takes no place in the limit.** Twenty baths means
+  twenty that can be dyed, not twenty minus the ones there is no yarn for.
+- **A pick is never refused, only flagged.** The hand-picked half is
+  somebody deciding, and the row stays on the sheet with `out of Fuchsia`
+  under the colorway — the same call the short-blank warning makes, one
+  column over from a ✕ she can click if she agrees.
+- **Top-ups are the one place it filters rather than flags.** Nothing in
+  that panel is short, so a top-up is a free choice among colorways, and
+  offering one that cannot be dyed today is offering nothing.
+
+**Both tick lists are the whole shelf, and neither knows what has been
+suggested.** They are fixed catalogues grouped the way the shelves are —
+blanks by category, dyes by brand — and the panel reads the same on the way
+in as it does after twenty baths have been planned. The first build drew the
+dyes from the collection list for the sheet in front of her, on the argument
+that 132 checkboxes is a list nobody reads; what that actually did was
+**make the panel a reaction to a suggestion rather than something you can
+tell it.** "Out of J purple" is known standing in the dye room before
+anything is planned, and a list that filled itself in only after a plan
+existed asked her to plan first. It also moved the boxes around underneath
+her as the sheet re-planned, so undoing a tick meant hunting for it. Fixed
+catalogues are also what let the panel sit above the button rather than
+below it: there is nothing for it to wait on.
+
+Neither list is the whole table, though, and the cut is the same both times:
+**a box that can only do nothing is worse than no box, because ticking it
+looks like saying something.** The blanks are the 25 that are dyed at all —
+no passthroughs, no fancy veils. The dyes are the 77 of 132 that at least one
+*active* recipe calls for; the other 55 cannot block a bath. Both cuts live
+in the form's querysets, which also means a tick is always reachable to
+undo, because the list it came from never changes. Dyes file under the colour
+name with the catalog number stripped (`425 Amethyst` under A) and print it
+anyway — the number is what is on the jar, the name is what she asks for.
+
+**The ticks travel with the list, and that is the known trap.** They are not
+inputs of `#sheet-list`, so the ✕ links, the search form and the list form
+each carry them explicitly — exactly as `oven` is carried, and it goes wrong
+the same way: the page comes back with the panel cleared and the next
+suggestion cheerfully offers the colorways she just said she had no yarn
+for. `_without()` is the one to check first.
 
 ### A Sunday-night zero adds a bath — the one demand signal in the planner
 

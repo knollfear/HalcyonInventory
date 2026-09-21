@@ -4848,20 +4848,25 @@ def _crew_run_url(request, run):
 
 
 def sheet_list(form):
-    """`[(product, baths)]` — the editable list, however it was seeded.
+    """`([(product, baths)], skipped)` — the editable list, however it was seeded.
 
     One list with two ways to fill it. `items` wins when present, so a
     suggestion seeds the page and every edit after that is the list speaking
     for itself. An old `?baths=20` link still resolves, and now comes back
     editable rather than as something to look at.
+
+    `skipped` is only ever from the suggestion. **A pick is somebody
+    deciding**, so a hand-added colorway is never taken off for needing a dye
+    she said she was out of — the row is flagged and the ✕ is right there.
+    That is the same call the short-blank warning makes: said, not enforced.
     """
     picked = form.cleaned_data.get("items")
     if picked:
-        return picked
+        return picked, []
     if not form.cleaned_data.get("baths"):
-        return []
+        return [], []
 
-    plan = production.plan_baths(
+    plan = production.suggest(
         form.cleaned_data["baths"],
         category=form.cleaned_data.get("category"),
         include_overshoot=form.cleaned_data["include_overshoot"],
@@ -4869,19 +4874,24 @@ def sheet_list(form):
         # The pot and the oven suggest from disjoint sets, and the form knows
         # which one it is because the route told it.
         oven=form.is_oven_run,
+        # What she has just said she cannot dye today. Read off the same form
+        # as everything else, so it rides in the URL and the sheet stays a
+        # link somebody can send.
+        without_blanks=form.cleaned_data.get("without_blanks"),
+        without_dyes=form.cleaned_data.get("without_dyes"),
     )
-    # Back to one row per colorway. `plan_baths` returns a bath at a time
+    # Back to one row per colorway. `suggest` returns a bath at a time
     # because that is what the paper prints; the list is edited per colorway,
     # because "three of that one" is how somebody says it.
     counts, order = {}, []
-    for bath in plan:
+    for bath in plan.baths:
         if bath.product.pk not in counts:
             order.append(bath.product)
         counts[bath.product.pk] = counts.get(bath.product.pk, 0) + 1
-    return [(product, counts[product.pk]) for product in order]
+    return [(product, counts[product.pk]) for product in order], plan.skipped
 
 
-def _without(rows, product, oven=False):
+def _without(rows, product, oven=False, out_blanks=(), out_dyes=()):
     """`?items=` for the list minus one row, for that row's remove link.
 
     Server-rendered rather than built in the browser, so removing a row is an
@@ -4896,7 +4906,34 @@ def _without(rows, product, oven=False):
     params = {"items": [f"{p.pk}:{n}" for p, n in rows if p.pk != product.pk]}
     if oven:
         params["oven"] = "1"
+    # Same trap as `oven`, one field along: these ticks are not in the list
+    # form, so a link that drops them comes back with the panel cleared and
+    # the next "Suggest baths" quietly offering the colorways she just said
+    # she had no yarn for.
+    if out_blanks:
+        params["without_blanks"] = [str(raw.pk) for raw in out_blanks]
+    if out_dyes:
+        params["without_dyes"] = [str(dye.pk) for dye in out_dyes]
     return urlencode(params, doseq=True)
+
+
+def _tick_groups(things, ticked, group):
+    """`[{"name": ..., "items": [{"thing", "checked"}]}]` for a tick panel.
+
+    The two "haven't got" lists are the same shape and want the same
+    grouping — headings that match how the shelf is actually laid out, so
+    somebody scanning for a blank or a dye is scanning the order they
+    already know. `things` arrives pre-sorted; this only breaks it into runs.
+    """
+    groups = []
+    for thing in things:
+        name = group(thing)
+        if not groups or groups[-1]["name"] != name:
+            groups.append({"name": name, "items": []})
+        groups[-1]["items"].append(
+            {"thing": thing, "checked": thing.pk in ticked}
+        )
+    return groups
 
 
 @page_meta(
@@ -5171,7 +5208,8 @@ def production_sheet_index(request):
     if request.method == "POST":
         form = ProductionSheetForm(request.POST)
         if form.is_valid():
-            baths = production.baths_from_picks(sheet_list(form))
+            rows, _skipped = sheet_list(form)
+            baths = production.baths_from_picks(rows)
             if not baths:
                 messages.warning(request, "Nothing needs dyeing for those settings.")
                 return redirect(f"{sheet_url}?{request.POST.urlencode()}")
@@ -5209,9 +5247,15 @@ def production_sheet_index(request):
     # label both need it.
     oven = form.is_oven_run
 
-    rows = []
+    rows, skipped = [], []
+    out_blanks, out_dyes = [], []
     if form.is_bound and form.is_valid():
-        rows = sheet_list(form)
+        rows, skipped = sheet_list(form)
+        # Lists rather than querysets: they are walked several times below
+        # (the ticks, the row flags, the ✕ links) and re-evaluating the same
+        # two selects on every pass is a query per row for nothing.
+        out_blanks = list(form.cleaned_data["without_blanks"])
+        out_dyes = list(form.cleaned_data["without_dyes"])
     baths = production.baths_from_picks(rows)
 
     # The search is a plain GET form with htmx layered on, so with the script
@@ -5256,6 +5300,58 @@ def production_sheet_index(request):
     # cannot report different sales for the same blank.
     per_blank = production.sold_per_blank()
 
+    # **Both tick lists are the whole shelf, and neither one knows what has
+    # been suggested.** They are fixed catalogues grouped the way the
+    # physical shelves are — blanks by category, dyes by brand — so the panel
+    # is the same on the way in as it is after twenty baths have been
+    # planned. That is the point: "out of J purple" is something she knows
+    # standing in the dye room, and a list that only filled itself in once a
+    # suggestion existed would ask her to plan before she could say what she
+    # hadn't got. It also makes the tick stable — the boxes do not move
+    # around underneath her as the list re-plans, and a tick can always be
+    # undone in the place she made it.
+    #
+    # Neither list is the full table. A passthrough is never dyed and a dye
+    # no live recipe calls for can never block a bath, so both are left out
+    # by the form's querysets: a box that can only do nothing is worse than
+    # no box, because ticking it looks like saying something.
+    ticked_blanks = {raw.pk for raw in out_blanks}
+    ticked_dyes = {dye.pk for dye in out_dyes}
+    blank_groups = _tick_groups(
+        form.fields["without_blanks"].queryset,
+        ticked_blanks,
+        group=lambda raw: raw.category.name if raw.category_id else "Uncategorised",
+    )
+    # Sorted in Python because `sort_name` is a property — it drops the
+    # catalog number off the front, so `425 Amethyst` files under A where
+    # somebody looking for a purple will actually look for it.
+    dye_groups = _tick_groups(
+        sorted(form.fields["without_dyes"].queryset,
+               key=lambda dye: (dye.brand.name, dye.sort_name)),
+        ticked_dyes,
+        group=lambda dye: dye.brand.name,
+    )
+
+    # Flags for the picked half. One query for the lot rather than walking
+    # `recipe_dyes` per row, which the picked list does not prefetch.
+    blocked_dyes = {}
+    if out_dyes and rows:
+        for link in RecipeDye.objects.filter(
+            recipe_id__in={product.recipe_id for product, _ in rows
+                           if product.recipe_id},
+            dye_id__in=[dye.pk for dye in out_dyes],
+        ).select_related("dye"):
+            blocked_dyes.setdefault(link.recipe_id, []).append(link.dye)
+
+    def row_flags(product):
+        """Why this picked row can't be dyed today — said, never acted on."""
+        flags = []
+        if product.raw_product_id in ticked_blanks:
+            flags.append(f"no {product.raw_product.name}")
+        flags += [f"out of {dye.name}"
+                  for dye in blocked_dyes.get(product.recipe_id, [])]
+        return flags
+
     return render(request, template, {
         "form": form,
         "oven": oven,
@@ -5278,11 +5374,26 @@ def production_sheet_index(request):
                 [product for product, _ in rows],
                 tray_gap,
                 category=form.cleaned_data.get("category") if form.is_bound and form.is_valid() else None,
+                # Filtered here rather than flagged: a top-up is a free
+                # choice among colorways that are not short, so one that
+                # cannot be dyed today is not a choice at all.
+                without_blanks=out_blanks,
+                without_dyes=out_dyes,
             )
             if oven else []
         ),
         "baths": baths,
         "plan": production.dye_plan_for_baths(baths),
+        # The two tick lists and what they have already ruled out.
+        "blank_groups": blank_groups,
+        "dye_groups": dye_groups,
+        "out_blanks": out_blanks,
+        "out_dyes": out_dyes,
+        "excluded_any": bool(out_blanks or out_dyes),
+        # Named, not just subtracted. A sheet that came back shorter with no
+        # word about why is a filter working invisibly, which is the failure
+        # the override was built to avoid in the first place.
+        "skipped": skipped,
         "bath_count": len(baths),
         # What this session is worth before it starts — the same two figures a
         # statement reports when it closes, so the size of the work is
@@ -5314,7 +5425,11 @@ def production_sheet_index(request):
                 # scarves are the unit everybody thinks in, and the page has
                 # to show both without anybody multiplying.
                 "makes": product.bath_size * n,
-                "without": _without(rows, product, oven),
+                # A pick is somebody deciding, so this is a flag and not a
+                # filter — the row stays on the sheet and says what is
+                # missing.
+                "blocked_by": row_flags(product),
+                "without": _without(rows, product, oven, out_blanks, out_dyes),
             }
             for product, n in rows
         ],

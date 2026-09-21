@@ -93,6 +93,45 @@ the preview is deliberately a GET and the print button is the only POST.
   .dyeplan .gap ul.missing { margin: 8px 0; padding-left: 1.1rem; color: #445; }
   .dyeplan .gap p { margin: 8px 0 0; }
 
+  /* The "haven't got" panel — the last question the suggest form asks, sat
+     directly above its button. A disclosure rather than a permanent block:
+     most sessions tick nothing, and a setup form that opens on a list of
+     twenty-five blanks reads as twenty-five things to answer rather than
+     one override to reach for. Full width, so seventy-seven dyes come out
+     as five short columns instead of one long one. Open whenever anything is ticked, so a filtered
+     sheet can never be looked at without its filter being on screen. */
+  .havent { border: 1px solid #dfe4ea; border-radius: 8px; padding: 10px 14px;
+            margin: 18px 0; background: #fff; }
+  .havent > summary { cursor: pointer; font-size: 13px; font-weight: 600; }
+  .havent[open] > summary { margin-bottom: 10px; }
+  .havent .havent-body { border-top: 1px solid #eef1f4; padding-top: 10px; }
+  .havent h3 { font-size: 13px; margin: 0 0 6px; }
+  .havent .cat { font-size: 11px; text-transform: uppercase; color: #667;
+                 margin: 10px 0 2px; }
+  .havent .help { font-size: 12px; color: #667; margin: 0 0 10px; }
+  .havent h3.spaced { margin-top: 18px; }
+  ul.ticks { list-style: none; padding: 0; margin: 0; }
+  ul.ticks li { padding: 2px 0; font-size: 13px; }
+  ul.ticks label { display: flex; gap: 7px; align-items: center; }
+  ul.ticks .chip { width: 14px; height: 14px; flex: none; border-radius: 3px;
+                   border: 1px solid rgba(0,0,0,.25); }
+  /* Seventy-seven dyes is a column a screen and a half long. Flowed into
+     however many columns fit, the whole shelf is one glance — which is what
+     makes "the whole list, always" cheaper than a list that changed with the
+     suggestion. `break-inside` keeps a colour off two columns at once. */
+  ul.ticks.cols { column-width: 165px; column-gap: 22px; }
+  ul.ticks.cols li { break-inside: avoid; }
+  .skipped { border: 1px solid #dfe4ea; border-left: 3px solid #c9a227;
+             border-radius: 6px; padding: 10px 14px; margin: 18px 0;
+             background: #fffdf6; }
+  .skipped > summary { cursor: pointer; font-size: 13px; }
+  .skipped ul { margin: 8px 0; padding-left: 1.1rem; font-size: 13px; }
+  .skipped .muted { color: #78808c; font-size: 12px; }
+  /* A row on the list that needs something ticked. Flagged, never removed —
+     a pick is somebody deciding, and the ✕ is in the next column. */
+  table.rows tr.blocked td { background: #fffaf7; }
+  .blockflag { display: block; font-size: 11px; color: #8a2f2a; }
+
   /* Type-ahead results, matching the label page's picker. */
   .results { margin-top: 6px; display: grid; gap: 3px; }
   .results:empty { margin-top: 0; }
@@ -116,18 +155,44 @@ the preview is deliberately a GET and the print button is the only POST.
   table.picked th.num, table.picked td.num { text-align: right; }
   table.picked .qty { width: 62px; font: inherit; padding: 4px 6px;
       border: 1px solid #cfd6de; border-radius: 5px; text-align: right; }
-  /* Two ways in, side by side rather than behind a mode switch — they
-     compose, so hiding one behind the other would be the page insisting you
-     pick a lane it doesn't actually have. */
-  .starts { display: grid; grid-template-columns: 1fr 1fr; gap: 0 28px;
-            align-items: start; }
-  @media (max-width: 720px) { .starts { grid-template-columns: 1fr; gap: 20px 0; } }
+  /* **Two ways in, stacked, both the full width of the page.** They used to
+     sit in two columns of half a page each, which spent the width on a rule
+     down the middle and then made every field in both halves narrow enough
+     to wrap. Full width and one under the other costs a little scrolling and
+     buys the row below — and it keeps the thing the columns were for, which
+     is that neither entry point is behind the other. A tab strip was the
+     other way to get the width back; it is a mode switch, and these two
+     compose. */
+  /* The `h2` rule in base_internal already draws a line the width of the
+     page under each heading, which is the divider the rule down the middle
+     was doing by hand — so stacking needs nothing but the gap. */
+  .start + .start { margin-top: 26px; }
   .start h2 { font-size: 15px; margin: 0 0 10px; }
-  .start + .start { border-left: 1px solid #e6eaee; padding-left: 28px; }
-  @media (max-width: 720px) {
-      .start + .start { border-left: 0; padding-left: 0;
-                        border-top: 1px solid #e6eaee; padding-top: 18px; }
+
+  /* The width, spent on rows rather than a column of five. Two rows and not
+     one: five auto-fit cells leave the last tick alone on a line with three
+     empty columns beside it, which reads as something that failed to load.
+     Three questions, then the two ticks. Auto-fit rather than a fixed count,
+     so the same rules stack on a phone. */
+  .setup { display: grid; gap: 0 26px; align-items: start;
+           grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+  /* Wider cells: a tick here is a label and a paragraph, not a one-line
+     answer, and at 190px the oven's explanation is eight lines of two words. */
+  .setup.ticks { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+                 margin-top: 2px; }
+  /* A search box and its results do not get wider just because the page did:
+     past about forty characters a colorway name is followed by empty paper,
+     and the count on the right ends up further from the name it belongs to.
+     The label takes a line of its own (`flex-basis: 100%`) and the box and
+     its button share the next, which is the shape it had in half a page. */
+  .findbox { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .findbox > label { flex-basis: 100%; margin-bottom: 0; }
+  .findbox input[type="search"] {
+      flex: 1 1 260px; max-width: 420px; font: inherit;
+      padding: 6px 9px; border: 1px solid #cfd6de; border-radius: 6px;
+      background: #fff;
   }
+  .start .results { max-width: 620px; }
   .start > label { display: block; font-size: 13px; font-weight: 600;
                    margin-bottom: 4px; }
   .start input[type="text"] {
@@ -245,51 +310,148 @@ the preview is deliberately a GET and the print button is the only POST.
   what is below par, or you already know what you are dyeing — and both fill
   the same list, which is editable from that point on either way.
 
-  They sit side by side rather than behind a mode switch, because they
-  compose: suggest twenty, add the two you promised somebody, drop the one
-  you have no blanks for.
+  Both are on screen, one under the other, rather than behind a mode switch,
+  because they compose: suggest twenty, add the two you promised somebody,
+  drop the one you have no blanks for. Full width each — two half-page
+  columns spent the page on a rule down the middle and then wrapped the
+  fields in both halves.
   {% endcomment %}
   <div class="starts">
     <form method="get" class="start">
       <h2>Suggest dye baths to me</h2>
-      <div class="field">
-        <label for="{{ form.baths.id_for_label }}">{{ form.baths.label }}</label>
-        {{ form.baths }}
-        <div class="help">{{ form.baths.help_text }}</div>
-        {{ form.baths.errors }}
+      {% comment %}
+      One row of the page's full width rather than a stack: these five are
+      the whole setup, and read together they are a sentence — this many
+      baths, of this category, in this order, oven or not. Auto-fit, so a
+      phone gets the stack back.
+      {% endcomment %}
+      <div class="setup">
+        <div class="field">
+          <label for="{{ form.baths.id_for_label }}">{{ form.baths.label }}</label>
+          {{ form.baths }}
+          <div class="help">{{ form.baths.help_text }}</div>
+          {{ form.baths.errors }}
+        </div>
+        <div class="field">
+          <label for="{{ form.category.id_for_label }}">{{ form.category.label }}</label>
+          {{ form.category }}
+          {{ form.category.errors }}
+        </div>
+        <div class="field">
+          <label for="{{ form.order.id_for_label }}">{{ form.order.label }}</label>
+          {{ form.order }}
+          <div class="help">{{ form.order.help_text }}</div>
+          {{ form.order.errors }}
+        </div>
       </div>
-      <div class="field">
-        <label for="{{ form.category.id_for_label }}">{{ form.category.label }}</label>
-        {{ form.category }}
-        {{ form.category.errors }}
-      </div>
-      <div class="field">
-        <label for="{{ form.order.id_for_label }}">{{ form.order.label }}</label>
-        {{ form.order }}
-        <div class="help">{{ form.order.help_text }}</div>
-        {{ form.order.errors }}
+      <div class="setup ticks">
+        {% comment %}
+        The first question, because it changes what every other answer
+        here means: an oven run asks for a different set of colorways and
+        is planned to the box rather than to a number. A tick rather than
+        a second page — remembering a different URL because you are using
+        a different appliance is the wrong way round.
+        {% endcomment %}
+        <div class="field tick">
+          {{ form.oven }}
+          <div>
+            <label for="{{ form.oven.id_for_label }}">{{ form.oven.label }}</label>
+            <div class="help">{{ form.oven.help_text }}</div>
+          </div>
+        </div>
+        <div class="field tick">
+          {{ form.include_overshoot }}
+          <div>
+            <label for="{{ form.include_overshoot.id_for_label }}">{{ form.include_overshoot.label }}</label>
+            <div class="help">{{ form.include_overshoot.help_text }}</div>
+          </div>
+        </div>
       </div>
       {% comment %}
-      The first question, because it changes what every answer below means:
-      an oven run asks for a different set of colorways and is planned to the
-      box rather than to a number. A tick rather than a second page —
-      remembering a different URL because you are using a different appliance
-      is the wrong way round.
+      **What she cannot dye today, said once and remembered by nobody.**
+
+      The app does not know this and cannot: raw stock is an opening balance that
+      nothing recounts on its own, and a dye's in-stock flag is set in the admin
+      and nowhere else. So a sheet filtered on either number would be dropping
+      colorways on a belief no one had checked — which is worse than not
+      filtering at all, because the sheet that comes out looks perfectly normal.
+      The person in the dye room can see both shelves, and this is where she says
+      so.
+
+      Nothing here is stored. A remembered "out of Fuchsia" has to be *cleared*
+      to stop being true, nothing would ever prompt for that, and the symptom
+      would be a colour quietly not suggested for a month. Two ticks next week is
+      the cheaper failure — and it rides in the URL, so the sheet stays a link.
       {% endcomment %}
-      <div class="field tick">
-        {{ form.oven }}
-        <div>
-          <label for="{{ form.oven.id_for_label }}">{{ form.oven.label }}</label>
-          <div class="help">{{ form.oven.help_text }}</div>
+      <details class="havent" {% if excluded_any %}open{% endif %}>
+        <summary>
+          {% if excluded_any %}
+            Leaving out:
+            {% for raw in out_blanks %}<b>{{ raw.name }}</b>{% if not forloop.last %}, {% endif %}{% endfor %}
+            {% if out_blanks and out_dyes %}, {% endif %}
+            {% for dye in out_dyes %}<b>{{ dye.name }}</b>{% if not forloop.last %}, {% endif %}{% endfor %}
+          {% else %}
+            Out of a blank or a dye today?
+          {% endif %}
+        </summary>
+        <div class="havent-body">
+          <p class="help">
+            Tick what you haven't got before you suggest — the colorways that
+            need it come off, and others move up to fill the sheet. This is for
+            today's session only; nothing is remembered, so next week starts
+            clean.
+          </p>
+          {% comment %}
+          Both lists are the whole shelf, and neither waits on a suggestion:
+          "out of J purple" is something she knows walking in, which is exactly
+          why the question belongs up here with the rest of the setup. A panel
+          that filled itself in from a suggestion would have to be asked twice —
+          plan, then say what you haven't got, then plan again — and the second
+          ask is the one nobody makes.
+          {% endcomment %}
+          <h3>Blanks you haven't got</h3>
+          {% for group in blank_groups %}
+            <p class="cat">{{ group.name }}</p>
+            <ul class="ticks cols">
+              {% for choice in group.items %}
+                <li>
+                  <label>
+                    <input type="checkbox" name="without_blanks"
+                           value="{{ choice.thing.pk }}"
+                           {% if choice.checked %}checked{% endif %}>
+                    {{ choice.thing.name }}
+                  </label>
+                </li>
+              {% endfor %}
+            </ul>
+          {% endfor %}
+
+          {% comment %}
+          Grouped by brand and filed under the colour name rather than the catalog
+          number, because the question is asked as "out of J purple" — the brand
+          narrows it and the name finds it. The number stays printed: it is what
+          is on the jar.
+          {% endcomment %}
+          <h3 class="spaced">Dyes you're out of</h3>
+          {% for group in dye_groups %}
+            <p class="cat">{{ group.name }}</p>
+            <ul class="ticks cols">
+              {% for choice in group.items %}
+                <li>
+                  <label>
+                    <input type="checkbox" name="without_dyes"
+                           value="{{ choice.thing.pk }}"
+                           {% if choice.checked %}checked{% endif %}>
+                    <span class="chip" style="background: {{ choice.thing.hex_color }}"></span>
+                    {{ choice.thing.name }}
+                  </label>
+                </li>
+              {% endfor %}
+            </ul>
+          {% endfor %}
         </div>
-      </div>
-      <div class="field tick">
-        {{ form.include_overshoot }}
-        <div>
-          <label for="{{ form.include_overshoot.id_for_label }}">{{ form.include_overshoot.label }}</label>
-          <div class="help">{{ form.include_overshoot.help_text }}</div>
-        </div>
-      </div>
+      </details>
+
       {% comment %}
       Carries no `items`, which is what makes this re-seed rather than do
       nothing — the list wins when it is there, so the button that builds a
@@ -325,6 +487,16 @@ the preview is deliberately a GET and the print button is the only POST.
         address, and anything not in it is dropped.
         {% endcomment %}
         {% if oven %}<input type="hidden" name="oven" value="1">{% endif %}
+        {% comment %}
+        And the ticks, for the same reason — a no-script Find that dropped
+        them would come back with the panel cleared.
+        {% endcomment %}
+        {% for raw in out_blanks %}
+          <input type="hidden" name="without_blanks" value="{{ raw.pk }}">
+        {% endfor %}
+        {% for dye in out_dyes %}
+          <input type="hidden" name="without_dyes" value="{{ dye.pk }}">
+        {% endfor %}
         <label for="bath-search">Find a colorway</label>
         <input type="search" id="bath-search" name="q" value="{{ q }}"
                autocomplete="off" placeholder="Type a colorway or blank…"
@@ -346,6 +518,46 @@ the preview is deliberately a GET and the print button is the only POST.
       {{ form.items.errors }}
     </div>
   </div>
+
+  {% if skipped %}
+    {% comment %}
+    **Named, never just subtracted.** Ticking a dye changes which colorways
+    come out and how many baths each of them gets, and a list that quietly
+    reshuffles is a filter working invisibly — the same failure as advice with
+    its basis hidden. These are the shortages that would have been on the
+    sheet, so the cost of the tick is readable beside the tick itself.
+    {% endcomment %}
+    {% comment %}
+    Open while it is short enough to read at a glance, folded once it is
+    long. The count is in the summary either way, so the *fact* that a tick
+    cost eleven colorways is never behind a click — only the eleven names
+    are, and those are for troubleshooting a suggestion that came back
+    looking wrong.
+    {% endcomment %}
+    <details class="skipped" {% if skipped|length <= 10 %}open{% endif %}>
+      <summary>
+        <strong>
+          {{ skipped|length }} colorway{{ skipped|length|pluralize }} left off
+          because of what's ticked
+        </strong>
+      </summary>
+      <ul>
+        {% for product in skipped %}
+          <li>
+            {{ product.name }}
+            <span class="muted">
+              — {% for reason in product.blocked_by %}{{ reason }}{% if not forloop.last %}, {% endif %}{% endfor %}
+              · short {{ product.net_shortage }}, sold {{ product.sold_here }}
+            </span>
+          </li>
+        {% endfor %}
+      </ul>
+      <p class="muted">
+        Still short — untick to bring them back, or add one by hand under
+        <strong>I know what to dye</strong> if you want it on the paper anyway.
+      </p>
+    </details>
+  {% endif %}
 
   {% comment %}
   Everything below is one swap target. An edit re-renders the whole of it

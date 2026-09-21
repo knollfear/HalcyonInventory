@@ -1593,6 +1593,253 @@ class DyePlanTests(TestCase):
 
         self.assertEqual(plan.entries, [])
         self.assertEqual(plan.unrecorded, ["Stormy Sea"])
+class HaventGotTests(TestCase):
+    """Ruling out a blank or a dye for today's session.
+
+    The app cannot answer this on its own and should not pretend to: raw
+    stock is an opening balance nothing recounts, and a dye's `in_stock`
+    flag is set in the admin and nowhere else. So the person in the dye room
+    says it, per session, and nothing is remembered — a stored "out of
+    Fuchsia" has to be cleared to stop being true, and nothing would ever
+    prompt for that.
+    """
+
+    def setUp(self):
+        self.stormy = make_recipe("Stormy Sea", hexes=())
+        self.aegean = make_recipe("Aegean", hexes=())
+        self.silk = make_bathable(self.stormy, "Stormy Silk", on_hand=0, par=8, bath=4)
+        self.wool = make_bathable(self.aegean, "Aegean Wool", on_hand=0, par=8, bath=4)
+
+    def test_a_ticked_blank_takes_its_colorways_off(self):
+        baths = production.plan_baths(
+            20, without_blanks=[self.silk.raw_product]
+        )
+
+        self.assertEqual({b.product.pk for b in baths}, {self.wool.pk})
+
+    def test_a_ticked_dye_takes_every_colorway_that_needs_it_off(self):
+        """One jar, several colours — which is the whole reason the tick is
+        on the dye rather than on each colorway."""
+        gone = link_dye(self.stormy, "Fuchsia")
+        link_dye(self.aegean, "Turquoise")
+        third = make_bathable(self.stormy, "Stormy Wool", on_hand=0, par=8, bath=4)
+
+        baths = production.plan_baths(20, without_dyes=[gone])
+
+        self.assertEqual({b.product.pk for b in baths}, {self.wool.pk})
+        self.assertNotIn(third.pk, {b.product.pk for b in baths})
+
+    def test_a_recipe_with_no_dyes_on_file_cannot_be_ruled_out_by_dye(self):
+        """Most of the book has no dyes recorded yet. Nothing claims it does,
+        and the collection list already says how many baths it can't speak
+        for — what matters is that the sheet is not silently emptied."""
+        gone = link_dye(self.stormy, "Fuchsia")
+
+        baths = production.plan_baths(20, without_dyes=[gone])
+
+        self.assertIn(self.wool.pk, {b.product.pk for b in baths})
+
+    def test_what_was_left_off_is_named_with_its_reason(self):
+        """Subtracting quietly is the failure this is built to avoid: the
+        list just comes back different, and nothing says why."""
+        gone = link_dye(self.stormy, "Fuchsia")
+
+        plan = production.suggest(20, without_dyes=[gone])
+
+        self.assertEqual([p.pk for p in plan.skipped], [self.silk.pk])
+        self.assertEqual(plan.skipped[0].blocked_by, ["out of Fuchsia"])
+
+    def test_both_reasons_ride_on_one_row(self):
+        gone = link_dye(self.stormy, "Fuchsia")
+
+        plan = production.suggest(
+            20, without_blanks=[self.silk.raw_product], without_dyes=[gone]
+        )
+
+        self.assertEqual(
+            plan.skipped[0].blocked_by,
+            ["no raw-Stormy Silk", "out of Fuchsia"],
+        )
+
+    def test_a_blocked_colorway_takes_no_place_in_the_limit(self):
+        """The sheet was asked for two baths it can dye, not two minus the
+        ones there is no yarn for."""
+        blocked = make_bathable(self.stormy, "Stormy Wool", on_hand=0, par=8, bath=4)
+
+        baths = production.plan_baths(2, without_blanks=[blocked.raw_product])
+
+        self.assertEqual(len(baths), 2)
+        self.assertNotIn(blocked.pk, {b.product.pk for b in baths})
+
+    def test_the_page_that_reports_shortages_is_untouched(self):
+        """`candidates()` annotates and never filters — a colorway that
+        cannot be dyed this afternoon is still short, and dropping it from
+        the reporting page would hide the shortage as well as the bath."""
+        listed = production.candidates(
+            oven=None, include_overshoot=True,
+            without_blanks=[self.silk.raw_product],
+        )
+
+        self.assertIn(self.silk.pk, {p.pk for p in listed})
+        blocked = next(p for p in listed if p.pk == self.silk.pk)
+        self.assertEqual(blocked.blocked_by, ["no raw-Stormy Silk"])
+
+    def test_nothing_ticked_leaves_every_row_clear(self):
+        for product in production.candidates():
+            self.assertEqual(product.blocked_by, [])
+
+    def test_an_oven_top_up_that_cannot_be_dyed_is_not_offered(self):
+        """Nothing here is short, so a top-up is a free choice among
+        colorways — and one that can't be dyed today is not a choice."""
+        oven = make_bathable(self.stormy, "Oven Silk", on_hand=40, par=8, bath=4)
+        FinishedProduct.objects.filter(pk=oven.pk).update(oven_dyed=True)
+
+        offered = production.top_ups([], 5, oven=True)
+        self.assertIn(oven.pk, {p.pk for p, _sold in offered})
+
+        offered = production.top_ups(
+            [], 5, oven=True, without_blanks=[oven.raw_product]
+        )
+        self.assertNotIn(oven.pk, {p.pk for p, _sold in offered})
+
+
+class HaventGotOnThePageTests(TestCase):
+    """The ticks on the picker: what they offer, and what they never do."""
+
+    def setUp(self):
+        self.client.force_login(User.objects.create_user("staff", password="pw"))
+        self.stormy = make_recipe("Stormy Sea", hexes=())
+        self.aegean = make_recipe("Aegean", hexes=())
+        self.silk = make_bathable(self.stormy, "Stormy Silk", on_hand=0, par=8, bath=4)
+        self.wool = make_bathable(self.aegean, "Aegean Wool", on_hand=0, par=8, bath=4)
+        self.url = reverse("production_sheet_index")
+
+    def test_the_blanks_are_offered_before_anything_is_suggested(self):
+        """'No sash belts today' is a thing to say on the way in."""
+        response = self.client.get(self.url)
+
+        self.assertContains(response, "without_blanks")
+        self.assertContains(response, "raw-Stormy Silk")
+
+    def test_the_dyes_are_offered_before_anything_is_suggested_too(self):
+        """The whole shelf, not the collection list for this sheet. "Out of
+        J purple" is known walking in, so a panel that filled itself in only
+        once baths had been planned would ask her to plan first."""
+        link_dye(self.stormy, "Fuchsia")
+
+        html = self.client.get(self.url).content.decode()
+
+        self.assertIn("Fuchsia", html)
+
+    def test_a_dye_no_recipe_uses_is_not_offered(self):
+        """A box that can only do nothing is worse than no box: ticking it
+        looks like saying something."""
+        link_dye(self.stormy, "Fuchsia")
+        brand, _ = DyeBrand.objects.get_or_create(name="Jacquard")
+        Dye.objects.create(name="Never Used Here", brand=brand, hex_color="#111")
+
+        html = self.client.get(self.url, {"baths": "10"}).content.decode()
+
+        self.assertIn("Fuchsia", html)
+        self.assertNotIn("Never Used Here", html)
+
+    def test_a_dye_only_a_retired_colorway_used_is_not_offered(self):
+        """Nothing plans a retired recipe, so it is the same dead tick."""
+        link_dye(self.stormy, "Fuchsia")
+        old = make_recipe("Stopped Making It", hexes=())
+        link_dye(old, "Only Here")
+        Recipe.objects.filter(pk=old.pk).update(is_active=False)
+
+        html = self.client.get(self.url, {"baths": "10"}).content.decode()
+
+        self.assertNotIn("Only Here", html)
+
+    def test_a_ticked_dye_stays_tickable_after_it_drops_off_the_list(self):
+        """It has just left the collection list by being ticked, and a tick
+        you cannot reach is a filter you cannot undo."""
+        gone = link_dye(self.stormy, "Fuchsia")
+
+        html = self.client.get(
+            self.url, {"baths": "10", "without_dyes": str(gone.pk)}
+        ).content.decode()
+
+        self.assertIn(f'name="without_dyes" value="{gone.pk}"', html)
+        self.assertIn("checked", html)
+
+    def test_the_suggestion_says_what_it_left_off(self):
+        gone = link_dye(self.stormy, "Fuchsia")
+
+        response = self.client.get(
+            self.url, {"baths": "10", "without_dyes": str(gone.pk)}
+        )
+
+        self.assertContains(response, "left off")
+        self.assertContains(response, "out of Fuchsia")
+        self.assertNotContains(response, "Stormy Silk</td>")
+
+    def test_a_hand_picked_row_is_flagged_and_kept(self):
+        """A pick is somebody deciding. The app refusing a colorway she asked
+        for would be it arguing with a person standing at the shelf."""
+        gone = link_dye(self.stormy, "Fuchsia")
+
+        response = self.client.get(self.url, {
+            "items": f"{self.silk.pk}:1",
+            "without_dyes": str(gone.pk),
+        })
+
+        self.assertContains(response, "Stormy Sea")
+        self.assertContains(response, "out of Fuchsia")
+
+    def test_the_ticks_ride_the_remove_link(self):
+        """Same trap as the oven tick: a ✕ is a whole new address, and one
+        that drops them comes back with the panel cleared."""
+        gone = link_dye(self.stormy, "Fuchsia")
+
+        html = self.client.get(self.url, {
+            "items": [f"{self.silk.pk}:1", f"{self.wool.pk}:1"],
+            "without_dyes": str(gone.pk),
+        }).content.decode()
+
+        self.assertIn(f"without_dyes={gone.pk}", html)
+
+    def test_a_stale_id_does_not_take_the_list_down_with_it(self):
+        """This rides in a link somebody sent on. A blank retired since must
+        not invalidate the form and lose the hand-built list."""
+        response = self.client.get(self.url, {
+            "items": f"{self.silk.pk}:1",
+            "without_blanks": "99999",
+        })
+
+        self.assertContains(response, "Stormy Sea")
+
+    def test_printing_prints_what_is_on_the_list(self):
+        """The ticks shape the suggestion; once it is a list, the list is
+        what gets printed."""
+        gone = link_dye(self.stormy, "Fuchsia")
+
+        self.client.post(self.url, {
+            "baths": "10", "without_dyes": str(gone.pk),
+        })
+
+        run = ProductionRun.objects.get()
+        self.assertEqual(
+            {row.finished_product_id for row in run.rows.all()},
+            {self.wool.pk},
+        )
+
+    def test_everything_short_ruled_out_says_so(self):
+        """'Nothing is short' and 'everything short needs something you
+        haven't got' are different answers."""
+        gone = link_dye(self.stormy, "Fuchsia")
+        link_dye(self.aegean, "Fuchsia", order=2)
+
+        response = self.client.get(
+            self.url, {"baths": "10", "without_dyes": str(gone.pk)}
+        )
+
+        self.assertContains(response, "ticked as missing")
+
+
 class DyePlanOnThePageTests(TestCase):
     """Where the list shows up, and how the gap is framed.
 
@@ -2738,7 +2985,10 @@ class TheListIsEditableHoweverItWasSeededTests(TestCase):
         # The link the page rendered for dropping Ember.
         response = self.client.get(self.url, {"items": [f"{self.short.pk}:2"]})
 
-        self.assertNotContains(response, "Ember")
+        # On the row's own box, not on the colorway's name: the "haven't got
+        # that today" panel lists every dyeable blank, so "Ember Silk" is on
+        # the page whether or not Ember is on the list.
+        self.assertNotContains(response, f'name="qty-{self.also.pk}"')
         self.assertContains(response, "Stormy Sea")
 
     def test_a_suggested_count_can_be_edited(self):
@@ -2757,8 +3007,11 @@ class TheListIsEditableHoweverItWasSeededTests(TestCase):
             f"qty-{self.short.pk}": "0",
         })
 
-        self.assertNotContains(response, "Stormy Sea")
-        self.assertContains(response, "Ember")
+        # The row's own box again, not the colorway's name: the "haven't got
+        # that today" panel lists every blank and every dye a live recipe
+        # uses, so a colorway's words are on the page either way.
+        self.assertNotContains(response, f'name="qty-{self.short.pk}"')
+        self.assertContains(response, f'name="qty-{self.also.pk}"')
 
     def test_an_edit_is_what_gets_printed(self):
         self.client.post(self.url, {
@@ -2865,14 +3118,18 @@ class HandPickedSheetTests(TestCase):
 
     def test_a_pick_wins_over_a_suggestion(self):
         """A suggestion seeds the list; once it is a list, it is the list."""
-        make_bathable(make_recipe("Rosy"), "Rosy Silk", on_hand=0, par=8, bath=4)
+        rosy = make_bathable(
+            make_recipe("Rosy"), "Rosy Silk", on_hand=0, par=8, bath=4
+        )
 
         response = self.client.get(
             self.url, self._pick((self.ember, 1), **{"baths": "20"})
         )
 
         self.assertContains(response, "Ember")
-        self.assertNotContains(response, "Rosy")
+        # By row, not by name — "Rosy Silk" is a blank, and the blank ticks
+        # are offered before anything has been suggested.
+        self.assertNotContains(response, f'name="qty-{rosy.pk}"')
 
     def test_a_pick_is_a_link_somebody_can_send(self):
         """State in the query string, like every other picker here."""
