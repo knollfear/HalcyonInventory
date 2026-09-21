@@ -11,7 +11,7 @@ import json
 import random
 import uuid
 from datetime import date, datetime, time, timedelta, timezone as dt_timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from io import BytesIO
 
 from django.conf import settings
@@ -46,11 +46,14 @@ from .models import (
     RawProduct,
     RawProductCategory,
     RecipeDye,
+    SaleLine,
     TimeEntry,
     UnmatchedSale,
 )
 
 from django.contrib import messages
+from django.core.exceptions import ValidationError
+from django.core.validators import URLValidator
 from django.shortcuts import render, redirect
 
 logger = logging.getLogger(__name__)
@@ -615,6 +618,22 @@ def raw_inventory_view(request, category_id):
     # in one table means a par typed in and then abandoned by pressing **Save
     # this bill**, written nowhere and said nothing about. One mode, one form,
     # one meaning per button.
+    #
+    # The same argument makes supply a third mode rather than two more boxes
+    # on the bill: a cost typed beside a delivery and then lost to the wrong
+    # button is the identical failure, and this form is the one somebody sits
+    # down to work top to bottom.
+    if request.GET.get("supply") == "1":
+        return render(request, "scarves/raw_inventory.html", {
+            "category": category,
+            "products": products,
+            "all_categories": RawProductCategory.objects.all().order_by("name"),
+            "supply_mode": True,
+            "supply_rows": _supply_rows(products),
+            "typed": {},
+            "errors": {},
+        })
+
     par_mode = request.GET.get("par") == "1"
     if par_mode:
         outlooks = rawdemand.rows(products)
@@ -739,6 +758,188 @@ def raw_par_save(request, category_id):
         + ".",
     )
     return redirect(back)
+
+
+@require_POST
+@login_required
+def raw_supply_save(request, category_id):
+    """Set what a blank costs and where it is reordered from, in one pass.
+
+    **These two columns have been on this page since it existed and neither
+    could be filled in from it.** The page prints a cost and a *Supplier
+    page* link on every row — the two facts a reorder actually needs — and
+    the only door to either was the Django admin, one product per screen.
+    Twenty notions is twenty round trips through a form built for a
+    developer, which is why every one of them still reads $0.00: the import
+    cannot know a cost, and nothing since has made it cheap to say.
+
+    So this is the bill form's shape applied to the other two columns: every
+    row on one page, blank means untouched, and **one Save for the lot**. A
+    costing pass is one sitting the way a delivery is one document.
+
+    **Nothing is written unless every line reads**, the same refusal the bill
+    makes and for the same reason — half a costing pass applied is worse than
+    none, because the half that failed is invisible afterwards and the
+    numbers that landed look complete. The offending row is named under
+    itself rather than only in the banner.
+
+    **A price of zero is taken at its word, and blank is what means
+    untouched.** `RawProduct.price` is not nullable, so the two cannot be
+    told apart once stored — which is exactly why the form must not read an
+    empty box as a decision. Somebody clearing a box means "I don't know
+    this one", and writing 0 there would turn a gap into a claim.
+
+    Writes no `InventoryLog` and moves no stock: a cost is a fact about a
+    supplier, not about a shelf.
+    """
+    category = get_object_or_404(RawProductCategory, pk=category_id)
+    products = list(
+        RawProduct.objects.filter(category=category, is_active=True).order_by("name")
+    )
+    back = f"{reverse('raw_inventory', args=[category.pk])}?supply=1"
+
+    changes, errors = [], []
+    for product in products:
+        cost_raw = (request.POST.get(f"cost_{product.pk}") or "").strip()
+        url_raw = (request.POST.get(f"url_{product.pk}") or "").strip()
+        fields = {}
+
+        if cost_raw:
+            try:
+                cost = Decimal(cost_raw.lstrip("$").replace(",", ""))
+            except (InvalidOperation, ValueError):
+                errors.append(f"{product.name}: “{cost_raw}” isn't a cost.")
+                continue
+            if cost < 0:
+                errors.append(f"{product.name}: a cost can't be negative.")
+                continue
+            # Two decimal places, because that is what money has and what a
+            # supplier's invoice prints. Not the by-feel rounding the dye
+            # amounts take — there is no physical tool setting the
+            # resolution here, only the currency.
+            cost = cost.quantize(Decimal("0.01"))
+            if cost != product.price:
+                fields["price"] = cost
+
+        if url_raw:
+            validator = URLValidator()
+            try:
+                validator(url_raw)
+            except ValidationError:
+                errors.append(
+                    f"{product.name}: “{url_raw}” isn't a link. It needs the "
+                    f"https:// on the front."
+                )
+                continue
+            if url_raw != product.order_url:
+                fields["order_url"] = url_raw
+
+        if fields:
+            changes.append((product, fields))
+
+    if errors:
+        # Re-rendered rather than redirected, so nothing typed is lost — the
+        # bill form's bargain, and the reason it exists: losing a page of
+        # looked-up suppliers to one missing https:// is the expensive
+        # failure on this form.
+        for problem in errors:
+            messages.error(request, problem)
+        messages.error(
+            request,
+            "Nothing was saved — a costing pass goes in whole or not at all. "
+            "Fix the line named above and save again.",
+        )
+        return render(request, "scarves/raw_inventory.html", {
+            "category": category,
+            "products": products,
+            "all_categories": RawProductCategory.objects.all().order_by("name"),
+            "supply_mode": True,
+            "supply_rows": _supply_rows(products),
+            "typed": {
+                product.pk: {
+                    "cost": (request.POST.get(f"cost_{product.pk}") or "").strip(),
+                    "url": (request.POST.get(f"url_{product.pk}") or "").strip(),
+                }
+                for product in products
+            },
+            "errors": {},
+        })
+
+    if not changes:
+        messages.info(request, "Nothing filled in, so nothing changed.")
+        return redirect(back)
+
+    with transaction.atomic():
+        for product, fields in changes:
+            for name, value in fields.items():
+                setattr(product, name, value)
+            # `save()` rather than `update()`: `mirror_passthrough_stock`
+            # hangs off this model's `post_save`, and the page's own save
+            # note has the argument.
+            product.save(update_fields=list(fields))
+
+    messages.success(
+        request,
+        f"Saved {len(changes)} product{'' if len(changes) == 1 else 's'}: "
+        + ", ".join(
+            f"{p.name} ({', '.join('cost' if f == 'price' else 'link' for f in fields)})"
+            for p, fields in changes
+        )
+        + ".",
+    )
+    return redirect(back)
+
+
+def _supply_rows(products):
+    """Each blank with what it has earned, so an hour goes where the money is.
+
+    **The ordering is the whole point of the mode.** Twenty notions is an
+    hour of looking suppliers up, and that hour is not evenly worth
+    spending: this catalogue put half a season's notion revenue into two
+    products and left eleven of nineteen under $100 for the year. A costing
+    pass worked alphabetically spends the same effort on $1 buttons as on
+    the line that actually earns — and the buttons come first.
+
+    So this one sorts by revenue and the other two modes stay on name. That
+    is deliberate rather than inconsistent: the bill and the count are
+    worked row by row against a piece of paper or a shelf, where
+    alphabetical is what lets you find the line in your hand. This one is
+    worked top-down until the hour runs out.
+
+    **Revenue is lifetime, not this season.** A supplier link does not
+    expire with the faire, and a product that earned well last year and has
+    not shipped this one is exactly the row worth stopping on.
+
+    Read in one aggregate off `SaleLine` rather than through `seasonreport`,
+    which builds a whole season per blank. The precision a projection buys
+    is worth nothing to a column that only sorts attention.
+    """
+    found = {
+        row["raw_product"]: row
+        for row in SaleLine.objects
+        .filter(raw_product__in=products, event_type=SaleLine.PAYMENT)
+        .values("raw_product")
+        .annotate(units=Sum("quantity"), cents=Sum("gross_cents"))
+    }
+    rows = []
+    for product in products:
+        hit = found.get(product.pk) or {}
+        # `blank_cost` rather than `price`, so a fancy blank's derived cost
+        # is the one that shows — `price` is the supplier's number and a
+        # fancy veil has no supplier. See `FancyBlankCostHasOneHomeTests`.
+        cost = product.blank_cost or Decimal(0)
+        ask = product.suggested_price
+        rows.append({
+            "blank": product,
+            "units": int(hit.get("units") or 0),
+            "revenue": Decimal(hit.get("cents") or 0) / Decimal(100),
+            # None, never zero, when either half is missing. An uncosted row
+            # would otherwise show its full asking price as margin, which is
+            # the one wrong answer that reads as good news.
+            "margin": (ask - cost) if (cost and ask is not None) else None,
+        })
+    rows.sort(key=lambda r: (-r["revenue"], r["blank"].name))
+    return rows
 
 
 def _read_raw_lines(request, products):

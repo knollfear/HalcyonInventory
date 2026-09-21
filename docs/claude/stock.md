@@ -43,6 +43,60 @@ No `InventoryLog` is written here, which is unchanged rather than an omission
 introduced with the form. Raw stock is an opening balance that gets counted
 and topped up; the finished side is where provenance is tracked.
 
+## `?supply=1`: the two columns the page printed and could not fill
+
+`private/raw-inventory/<category>/?supply=1` is the third mode, beside
+**Receive stock** and **Set par**: a cost box and a supplier-link box per
+blank, one Save for the lot.
+
+**It exists because the page had been showing both figures since it was
+written and offered no way to set either.** Every row printed a *Cost* and a
+*Supplier page* link — the two facts a reorder actually needs — and the only
+door to either was the Django admin, one product per screen. Twenty notions
+is twenty round trips through a form built for a developer, which is why
+every imported one still read `$0.00`. The import cannot know a cost, and
+nothing since had made it cheap to say.
+
+**Why a third mode and not two more boxes on the bill.** The same argument
+that split par off: a cost typed beside a delivery and then lost to the
+wrong button is the identical failure, written nowhere and said nothing
+about. One mode, one form, one meaning per button.
+
+**The ordering is the advice, and it is the only thing here that is.** This
+mode sorts by lifetime revenue, biggest first, where the other two sort by
+name. That is deliberate rather than inconsistent: the bill and the count
+are worked row by row against a piece of paper or a shelf, where
+alphabetical is what lets you find the line in your hand. A costing pass is
+worked top-down until the hour runs out — and the hour is not evenly worth
+spending. One season put half its notion revenue into two products and left
+eleven of nineteen under $100 for the year. Alphabetical puts the $1 buttons
+first.
+
+Revenue is lifetime rather than this season, because a supplier link does
+not expire with the faire and a blank that earned well last year and has not
+shipped this one is exactly the row worth stopping on.
+
+**A blank box is untouched, and this one matters more than on the other two
+modes.** `RawProduct.price` is not nullable, so a stored zero and a cost
+nobody knows are the same row. Reading an empty box as a decision would turn
+a gap into a claim of free — and "I don't know this one" is most of a first
+pass.
+
+**Nothing is written unless every line reads**, the bill form's refusal for
+the bill form's reason: half a costing pass applied is worse than none,
+because the half that failed is invisible afterwards and the half that
+landed looks complete. Losing a page of looked-up suppliers to one missing
+`https://` is the expensive failure here, so a refusal re-renders with
+everything still typed and names the offending row under itself.
+
+**The margin prints beside the box**, which is the payoff made visible where
+the typing happens. An uncosted row says *not costed* rather than showing
+the full asking price as margin — that is the one wrong answer that reads as
+good news, and it would be on every row of a shelf nobody has costed yet.
+
+It writes no `InventoryLog` and moves no stock. A cost is a fact about a
+supplier, not about a shelf.
+
 ## Par on a blank is two numbers, and only one of them is stored
 
 `private/raw-inventory/<category>/?par=1` is the second mode of the page — a

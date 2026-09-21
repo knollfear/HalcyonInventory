@@ -9,6 +9,9 @@
   .category-nav { margin: 14px 0; font-size: 13px; display: flex; flex-wrap: wrap; gap: 4px 14px; }
   .category-nav .current { font-weight: 600; color: var(--ink); text-decoration: none; }
   .count-input { width: 5.5em; padding: 4px 6px; font: inherit; }
+  /* Wide, because what goes in it is a URL somebody pasted and a box that
+     shows eight characters of one is a box you cannot check. */
+  .supply-input { width: 22em; max-width: 100%; padding: 4px 6px; font: inherit; }
   .order-link { font-size: 13px; }
   /* Left, unlike the figure columns, because this column holds a *control*
      and a row with no "below" badge is narrower than one with it — right
@@ -67,7 +70,11 @@
 
 {% block content %}
   <p class="lead">
-    {% if par_mode %}
+    {% if supply_mode %}
+      What each one costs you, and where it gets reordered from. Biggest
+      earner first — so an hour spent here starts with the line that pays for
+      it and stops wherever it runs out.
+    {% elif par_mode %}
       {% if dyed_table %}
         Par is the floor — what stays on the shelf so the dye room never stops.
       {% else %}
@@ -86,7 +93,15 @@
   Two questions, said plainly, because the column headings are the only thing
   telling somebody which one they are answering.
   {% endcomment %}
-  {% if par_mode %}
+  {% if supply_mode %}
+    <p class="note">
+      <strong>Blank means untouched</strong>, so a row you don't know is a row
+      you leave. Filling a cost in is what turns a sales figure into a margin;
+      until then every report that prices this shelf is reading a zero.
+      <strong>One Save books the lot</strong>, and nothing is written unless
+      every line reads.
+    </p>
+  {% elif par_mode %}
     {% comment %}
     The basis, printed, because advice you cannot inspect is a decision in
     disguise — and the two soft spots in this particular basis are worth
@@ -121,6 +136,8 @@
        href="{% url 'raw_inventory' category.id %}">Receive stock</a>
     <a class="chip {% if par_mode %}on{% endif %}"
        href="{% url 'raw_inventory' category.id %}?par=1">Set par</a>
+    <a class="chip {% if supply_mode %}on{% endif %}"
+       href="{% url 'raw_inventory' category.id %}?supply=1">Cost &amp; supplier</a>
   </div>
 
   <div class="category-nav">
@@ -132,6 +149,83 @@
 
   {% if not products %}
     <p class="empty">No raw products found for this category.</p>
+  {% elif supply_mode %}
+    <form method="post" action="{% url 'raw_supply_save' category.id %}">
+    {% csrf_token %}
+    <div class="card">
+      <table>
+        <thead>
+          <tr>
+            <th>Raw Product</th>
+            <th class="num">Sold, all time</th>
+            <th class="num">Sells for</th>
+            <th class="entry">Costs you</th>
+            <th class="entry">Reorder from</th>
+            <th class="num">Margin</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in supply_rows %}
+            {% with entry=typed|lookup:r.blank.pk %}
+            <tr>
+              <td>{{ r.blank.name }}</td>
+              <td class="num">
+                ${{ r.revenue|floatformat:0 }}
+                <div class="sub">{{ r.units }} unit{{ r.units|pluralize }}</div>
+              </td>
+              <td class="num">
+                {% if r.blank.suggested_price %}${{ r.blank.suggested_price }}{% else %}—{% endif %}
+              </td>
+              <td class="entry">
+                {% comment %}
+                Placeholder rather than value, like the counted box: the
+                current figure is visible without being re-submitted, so a
+                row nobody touches stays untouched.
+                {% endcomment %}
+                <input type="text" inputmode="decimal" name="cost_{{ r.blank.pk }}"
+                       placeholder="{{ r.blank.price }}"
+                       value="{{ entry.cost|default_if_none:'' }}"
+                       aria-label="Cost of {{ r.blank.name }}"
+                       class="count-input">
+              </td>
+              <td class="entry">
+                <input type="url" name="url_{{ r.blank.pk }}"
+                       placeholder="{% if r.blank.order_url %}{{ r.blank.order_url }}{% else %}https://…{% endif %}"
+                       value="{{ entry.url|default_if_none:'' }}"
+                       aria-label="Supplier link for {{ r.blank.name }}"
+                       class="supply-input">
+                {% if r.blank.order_url %}
+                  <div class="sub"><a href="{{ r.blank.order_url }}" target="_blank">open current</a></div>
+                {% endif %}
+              </td>
+              <td class="num">
+                {% comment %}
+                The payoff, printed where the typing happens. A cost of zero
+                is the import's starting value rather than a measurement, so
+                a row that has never been costed says so instead of claiming
+                100% margin — which is the one wrong answer that looks like
+                good news.
+                {% endcomment %}
+                {% if r.margin is not None %}
+                  ${{ r.margin|floatformat:2 }}
+                  <div class="sub">each</div>
+                {% elif not r.blank.blank_cost %}
+                  <span class="stale">not costed</span>
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+            </tr>
+            {% endwith %}
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="savebar">
+      <button class="btn" type="submit">Save costs &amp; links</button>
+      <span class="note">Blank rows are left alone. Nothing saves unless every line reads.</span>
+    </div>
+    </form>
   {% elif par_mode %}
     <form method="post" action="{% url 'raw_par_save' category.id %}">
     {% csrf_token %}

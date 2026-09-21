@@ -2075,6 +2075,140 @@ class RawDemandTests(TestCase):
         self.assertEqual(outlook.baths, 0)
 
 
+class SupplyModeTests(TestCase):
+    """Typing in what a thing costs and where it comes from.
+
+    The two columns have been printed on this page since it existed and
+    neither could be filled in from it — the only door was the Django admin,
+    one product per screen. That is why every imported notion still reads
+    $0.00: nothing made it cheap to say.
+    """
+
+    def setUp(self):
+        User.objects.create_user("staff", "s@example.test", "pw")
+        self.client.login(username="staff", password="pw")
+        self.category = RawProductCategory.objects.create(name="Notions")
+        self.bowl = RawProduct.objects.create(
+            name="Yarn bowl", category=self.category,
+            price=Decimal("0"), suggested_price=Decimal("50.00"),
+        )
+        self.buttons = RawProduct.objects.create(
+            name="2 X Buttons", category=self.category,
+            price=Decimal("0"), suggested_price=Decimal("1.00"),
+        )
+        self.url = reverse("raw_inventory", args=[self.category.pk]) + "?supply=1"
+        self.save = reverse("raw_supply_save", args=[self.category.pk])
+
+    def test_a_cost_and_a_link_go_in_together(self):
+        self.client.post(self.save, {
+            f"cost_{self.bowl.pk}": "22.50",
+            f"url_{self.bowl.pk}": "https://example.test/bowls",
+        })
+
+        self.bowl.refresh_from_db()
+        self.assertEqual(self.bowl.price, Decimal("22.50"))
+        self.assertEqual(self.bowl.order_url, "https://example.test/bowls")
+
+    def test_a_dollar_sign_is_not_a_typo(self):
+        """It is what the invoice prints and what a hand types."""
+        self.client.post(self.save, {f"cost_{self.bowl.pk}": "$22.50"})
+
+        self.bowl.refresh_from_db()
+        self.assertEqual(self.bowl.price, Decimal("22.50"))
+
+    def test_a_blank_box_is_untouched_and_never_a_zero(self):
+        """`price` is not nullable, so stored zero and unknown are the same
+        row. Reading an empty box as a decision would turn a gap into a
+        claim — and 'I don't know this one' is most of a first pass."""
+        self.bowl.price = Decimal("22.50")
+        self.bowl.save(update_fields=["price"])
+
+        self.client.post(self.save, {
+            f"cost_{self.bowl.pk}": "",
+            f"cost_{self.buttons.pk}": "0.40",
+        })
+
+        self.bowl.refresh_from_db()
+        self.buttons.refresh_from_db()
+        self.assertEqual(self.bowl.price, Decimal("22.50"))     # left alone
+        self.assertEqual(self.buttons.price, Decimal("0.40"))
+
+    def test_nothing_is_written_unless_every_line_reads(self):
+        """A costing pass goes in whole or not at all: the half that failed
+        is invisible afterwards, and the half that landed looks complete."""
+        response = self.client.post(self.save, {
+            f"cost_{self.bowl.pk}": "22.50",
+            f"url_{self.buttons.pk}": "example.test/buttons",   # no scheme
+        })
+
+        self.bowl.refresh_from_db()
+        self.buttons.refresh_from_db()
+        self.assertEqual(self.bowl.price, Decimal("0"))         # not applied
+        self.assertEqual(self.buttons.order_url, "")
+        self.assertEqual(response.status_code, 200)             # re-rendered
+
+    def test_a_refused_pass_hands_back_everything_typed(self):
+        """Losing a page of looked-up suppliers to one missing https:// is
+        the expensive failure on this form."""
+        body = self.client.post(self.save, {
+            f"cost_{self.bowl.pk}": "22.50",
+            f"url_{self.buttons.pk}": "example.test/buttons",
+        }).content.decode()
+
+        self.assertIn("22.50", body)
+        self.assertIn("example.test/buttons", body)
+        self.assertIn("2 X Buttons", body)      # the offending row is named
+
+    def test_the_biggest_earner_is_offered_first(self):
+        """The ordering is the advice: an hour of supplier lookups is not
+        evenly worth spending, and alphabetical puts the $1 buttons on top."""
+        sale = Sale.objects.create(order_id="O1", sold_at=timezone.now())
+        SaleLine.objects.create(
+            sale=sale, line_key="k1", sold_at=timezone.now(),
+            item_name="Yarn bowl", raw_product=self.bowl,
+            quantity=1, gross_cents=5000,
+        )
+
+        body = self.client.get(self.url).content.decode()
+
+        self.assertLess(body.index("Yarn bowl"), body.index("2 X Buttons"))
+
+    def test_an_uncosted_row_does_not_claim_a_full_margin(self):
+        """Zero is the import's starting value, not a measurement — and a
+        row reading 100% margin is the one wrong answer that looks like
+        good news."""
+        body = self.client.get(self.url).content.decode()
+        self.assertIn("not costed", body)
+
+        self.client.post(self.save, {f"cost_{self.bowl.pk}": "22.50"})
+        body = self.client.get(self.url).content.decode()
+
+        self.assertIn("27.50", body)            # 50.00 ask - 22.50 cost
+
+    def test_the_mode_writes_no_log_and_moves_no_stock(self):
+        """A cost is a fact about a supplier, not about a shelf."""
+        self.bowl.number_on_hand = 4
+        self.bowl.save(update_fields=["number_on_hand"])
+
+        self.client.post(self.save, {f"cost_{self.bowl.pk}": "22.50"})
+
+        self.bowl.refresh_from_db()
+        self.assertEqual(self.bowl.number_on_hand, 4)
+        self.assertIsNone(self.bowl.counted_at)
+        self.assertEqual(InventoryLog.objects.count(), 0)
+
+    def test_the_other_two_modes_ignore_a_supply_post(self):
+        """One endpoint per meaning — the rule the par form already follows,
+        so a cost typed under the wrong button changes nothing."""
+        self.client.post(
+            reverse("raw_inventory", args=[self.category.pk]),
+            {f"cost_{self.bowl.pk}": "22.50"},
+        )
+
+        self.bowl.refresh_from_db()
+        self.assertEqual(self.bowl.price, Decimal("0"))
+
+
 class NotionsOnTheReorderPageTests(TestCase):
     """A table where nothing is dyed, on the page that says what to buy.
 

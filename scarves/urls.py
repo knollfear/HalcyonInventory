@@ -69,6 +69,14 @@ urlpatterns = [
         views.raw_par_save,
         name="raw_par_save",
     ),
+    # And supply its own again, for the third meaning: what a blank costs and
+    # where it is reordered from. POST-only like the par form, so no
+    # `@page_meta` — the mode is reached with `?supply=1` on the page itself.
+    path(
+        "private/raw-inventory/<int:category_id>/supply/",
+        views.raw_supply_save,
+        name="raw_supply_save",
+    ),
     path(
         "private/bulk-inventory/",
         views.bulk_inventory_update,
