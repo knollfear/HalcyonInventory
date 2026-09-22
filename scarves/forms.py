@@ -2060,27 +2060,27 @@ class RawProductForm(forms.ModelForm):
         sellable row — those have history, and retiring is how something goes
         away.
         """
-        product = super().save(commit=False)
+        blank = super().save(commit=False)
         opening = self.cleaned_data.get("opening_count")
-        if opening is not None and not product.pk:
-            product.number_on_hand = opening
+        if opening is not None and not blank.pk:
+            blank.number_on_hand = opening
         if not commit:
-            return product
+            return blank
 
         # `save()` rather than a queryset update: the `post_save` on this
         # model is what mirrors a passthrough's count onto its finished
         # row, and one physical pile gets exactly one row that counts it.
-        product.save()
+        blank.save()
 
         if self.cleaned_data.get("has_fancy_version"):
             blanks.ensure_fancy_counterpart(
-                product, self.cleaned_data.get("fancying_cost")
+                blank, self.cleaned_data.get("fancying_cost")
             )
         if self.cleaned_data.get("sold_undyed"):
-            blanks.ensure_undyed_product(product)
+            blanks.ensure_undyed_product(blank)
         # Stashed rather than messaged from here: a form has no request, and
         # the view is what tells somebody how many rows it just made.
         self.colorways_made, self.colorways_skipped = blanks.ensure_colorways(
-            product, self.cleaned_data.get("colorways") or []
+            blank, self.cleaned_data.get("colorways") or []
         )
-        return product
+        return blank

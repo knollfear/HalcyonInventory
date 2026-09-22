@@ -4,7 +4,7 @@ from django.test import TestCase
 from django.urls import reverse
 
 from .. import ledger, production
-from ..models import FinishedProduct, InventoryLog, ProductionRun, ProductionRunRow, RawProduct
+from ..models import InventoryLog, ProductionRun, ProductionRunRow, RawProduct
 from .helpers import make_bathable, make_recipe, make_undyed
 
 
@@ -60,15 +60,23 @@ class LedgerTests(TestCase):
 
         root = Path(__file__).resolve().parent.parent
         offenders = []
-        pattern = re.compile(r"\.number_on_hand\s*(\+=|-=|=\s*max\(|=\s*\w+\.number_on_hand\s*[+-])")
+        # Any assignment to the column: `+=`, `-=`, or a plain `=`.
+        pattern = re.compile(r"\.number_on_hand\s*([-+]?=)(?!=)")
+        # Raw blanks are the other pile — locked where they move, not yet
+        # ledgered — and these are the names the three raw writers and the
+        # invoice booking use for the row. `self.` is the model's own
+        # `set_on_hand` and the passthrough re-derive in `save()`.
+        allowed = ("raw.", "shelf.", "blank.", "self.")
+        exempt = {
+            "ledger.py",                           # the door itself
+            "create_sample_finished_products.py",  # seeds sample data, no ledger
+        }
         for path in list(root.glob("*.py")) + list(root.glob("views/*.py")) \
                 + list(root.glob("management/commands/*.py")):
-            if path.name in ("ledger.py", "production.py", "producedsince.py"):
-                continue   # the ledger, and the two places raw blanks move
+            if path.name in exempt:
+                continue
             for number, line in enumerate(path.read_text().splitlines(), 1):
-                # `raw`/`shelf` are RawProduct rows: blanks are the other pile,
-                # locked where they move and never ledgered (yet).
-                if pattern.search(line) and not line.lstrip().startswith(("raw.", "shelf.")):
+                if pattern.search(line) and not line.lstrip().startswith(allowed):
                     offenders.append(f"{path.relative_to(root)}:{number}: {line.strip()}")
         self.assertEqual(offenders, [])
 

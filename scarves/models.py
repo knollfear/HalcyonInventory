@@ -323,7 +323,6 @@ class Supplier(models.Model):
         help_text="Uncheck when you stop buying from them. Retire, don't delete.",
     )
 
-
     objects = ActiveQuerySet.as_manager()
 
     class Meta:
@@ -554,7 +553,6 @@ class RawProduct(models.Model):
             "exactly when the dye room has been busiest."
         ),
     )
-
 
     objects = ActiveQuerySet.as_manager()
 
@@ -788,7 +786,6 @@ class Recipe(models.Model):
         ),
     )
 
-
     objects = ActiveQuerySet.as_manager()
 
     class Meta:
@@ -1010,7 +1007,6 @@ class FinishedProduct(models.Model):
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-
 
     objects = FinishedProductQuerySet.as_manager()
 
@@ -1586,7 +1582,6 @@ class Employee(models.Model):
     )
     notes = models.TextField(blank=True)
 
-
     objects = ActiveQuerySet.as_manager()
 
     class Meta:
@@ -1761,7 +1756,6 @@ class LabelStock(models.Model):
     )
 
     is_active = models.BooleanField(default=True)
-
 
     objects = ActiveQuerySet.as_manager()
 
@@ -2622,7 +2616,6 @@ class DisplayFixture(models.Model):
     )
     is_active = models.BooleanField(default=True)
     notes = models.TextField(blank=True)
-
 
     objects = ActiveQuerySet.as_manager()
 

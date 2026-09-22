@@ -278,20 +278,27 @@ def retract(log, note=""):
 
         if moved:
             returned = blanks_consumed(log)
-            if returned:
-                raw = RawProduct.objects.select_for_update().get(pk=log.raw_product_id)
-                raw.number_on_hand = raw.number_on_hand + returned
-                raw.save(update_fields=["number_on_hand"])
 
         # Written even when nothing moved (quantity 0), because the row is
         # the retraction: `reverses` is what takes the original off the list.
-        return ledger.move(
+        #
+        # **Finished first, then the blanks.** `production.report` takes the
+        # same two locks in that order — the product's row through the
+        # ledger while it accepts sheet rows, then the blank for whatever is
+        # left — and two functions taking the same pair the other way round
+        # is a deadlock the moment a retraction and a report land together.
+        undo = ledger.move(
             product, -log.quantity if moved else 0,
             log_type=InventoryLog.ADJUSTMENT,
             source=InventoryLog.SOURCE_PRODUCTION_UNDO,
             notes=_note(log, moved, returned, note),
             reverses=log,
         )
+        if moved and returned:
+            raw = RawProduct.objects.select_for_update().get(pk=log.raw_product_id)
+            raw.number_on_hand = raw.number_on_hand + returned
+            raw.save(update_fields=["number_on_hand"])
+        return undo
 
 
 def _note(log, moved, returned, typed):

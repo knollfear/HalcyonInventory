@@ -1154,6 +1154,20 @@ def apply_row(row, yielded=None, fancy=0, via=""):
     """
     if row.applied_log_id is not None:
         return row.applied_log
+    # The in-memory check above is the cheap one; this is the real one. Two
+    # requests for the same pending row — a double-tapped submit, two people
+    # holding one printed sheet — both read `applied_log_id is None` before
+    # either commits, and both would move stock. Locking the row and reading
+    # the column again under the lock means the second waits and then sees
+    # the first's log. The caller's instance is kept, not replaced, because
+    # `accept_line` has already set `finished_product` on it.
+    applied_id = (
+        ProductionRunRow.objects.select_for_update()
+        .filter(pk=row.pk).values_list("applied_log_id", flat=True).first()
+    )
+    if applied_id is not None:
+        row.applied_log_id = applied_id
+        return row.applied_log
 
     product = row.finished_product
     raw = product.raw_product
@@ -1297,6 +1311,12 @@ def report(product, units, *, source, notes):
     planned, so there is nothing to claim and nothing to accept. The blanks
     come off now, locked in pk order like `open_rows` takes them, and the
     output goes on through the ledger.
+
+    **Lock order is finished product, then blank**, and it is the order
+    everything else keeps: `apply_row` takes the product (and its fancy
+    twin) and never the blank; `retract` takes the product and then the
+    blank. A second function taking the same pair the other way is a
+    deadlock the first time two of them land together.
     """
     units = max(int(units), 0)
     pending = list(

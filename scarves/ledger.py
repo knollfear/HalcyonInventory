@@ -69,7 +69,7 @@ def _settle(product, holder, value):
     holder.number_on_hand = value
     holder.save(update_fields=["number_on_hand"])   # a raw holder mirrors down
     product.number_on_hand = value
-    if holder is not product and product.raw_product_id == holder.pk:
+    if product.is_passthrough:
         # The caller may go on to read `product.raw_product.number_on_hand`;
         # only refresh a copy it has already fetched, so this costs no query.
         cached = FinishedProduct.raw_product.field.get_cached_value(product, None)

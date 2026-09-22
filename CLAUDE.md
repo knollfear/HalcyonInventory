@@ -284,9 +284,11 @@ writes the `InventoryLog` row in the same call with a required `source`.
 Seven call sites used to do this by hand and had drifted: some locked, some
 didn't, some knew about the passthrough mirror, some wrote to it and let it
 snap back. Nothing else may write `number_on_hand` on a finished product;
-`LedgerTests` greps for a `+=` that tries. Raw blanks are the exception and
-move in exactly two places — claimed by `production.open_rows` when a run is
-made, and taken by `production.report` for a bath nobody planned.
+`LedgerTests` greps for an assignment that tries. Raw blanks are the
+exception, not yet ledgered, and move in three places: claimed by
+`production.open_rows` when a run is made, taken by `production.report` for
+a bath nobody planned, and put back by `producedsince.retract`. All three
+lock the blank, and all three take it *after* any finished row they touch.
 
 **An `InventoryLog` row is never edited or deleted either, and a mistake in one
 is undone by a second row.** `private/produced-since/` has a *take it back*

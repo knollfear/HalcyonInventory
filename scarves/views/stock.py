@@ -590,8 +590,8 @@ def _apply_raw_lines(typed):
     """
     applied = []
     for entry in typed.values():
-        product = entry["product"]
-        before = product.number_on_hand
+        blank = entry["product"]
+        before = blank.number_on_hand
         counted = "set_to" in entry
         after = entry["set_to"] if counted else max(before + entry["delta"], 0)
 
@@ -604,14 +604,14 @@ def _apply_raw_lines(typed):
         if after == before and not counted:
             continue
 
-        product.number_on_hand = after
+        blank.number_on_hand = after
         if counted:
-            product.counted_at = timezone.now()
-        product.save()
+            blank.counted_at = timezone.now()
+        blank.save()
         if after == before:
-            applied.append(f"{product.name} counted {after}, unchanged")
+            applied.append(f"{blank.name} counted {after}, unchanged")
         else:
-            applied.append(f"{product.name} {before}→{after}")
+            applied.append(f"{blank.name} {before}→{after}")
     return applied
 
 
