@@ -59,6 +59,7 @@ from ..models import (
     RestockPass,
     Sale,
     SaleLine,
+    Supplier,
     TimeEntry,
     UnmatchedSale,
     sync_display_slots,
@@ -2207,6 +2208,210 @@ class SupplyModeTests(TestCase):
 
         self.bowl.refresh_from_db()
         self.assertEqual(self.bowl.price, Decimal("0"))
+
+
+class SupplierTests(TestCase):
+    """Who a blank is bought from, as one row rather than twenty-five copies.
+
+    The evidence is the repetition: 25 active blanks carried an `order_url`
+    between them, and those resolved to three domains — Wool2dye4 eighteen
+    times. Everything true of Wool2dye4 was written nowhere, because there
+    was nowhere to write it that wasn't eighteen places.
+    """
+
+    def setUp(self):
+        User.objects.create_user("staff", "s@example.test", "pw")
+        self.client.login(username="staff", password="pw")
+        self.category = RawProductCategory.objects.create(name="Yarn")
+        self.shop = Supplier.objects.create(
+            name="Wool2dye4", website="https://www.wool2dye4.com/",
+        )
+        self.person = Supplier.objects.create(
+            name="Wild Yam Pottery", contact="Sarah, 555-0143",
+        )
+
+    def _blank(self, name, **kwargs):
+        return RawProduct.objects.create(
+            name=name, category=self.category, price=Decimal("6.71"), **kwargs
+        )
+
+    def test_a_blank_with_its_own_page_still_links_straight_there(self):
+        """The 25 that already had a deep link keep their single click —
+        collapsing them onto the supplier would trade a product page for a
+        homepage."""
+        blank = self._blank(
+            "Homespun", supplier=self.shop,
+            order_url="https://www.wool2dye4.com/Single-and-Stunning.html",
+        )
+        kind, href, _ = blank.reorder_link
+        self.assertEqual(kind, "product")
+        self.assertEqual(href, "https://www.wool2dye4.com/Single-and-Stunning.html")
+
+    def test_a_blank_bought_from_a_person_links_to_their_card(self):
+        """The case the whole model exists for: a potter at the next stall
+        has no store page, so the column had nothing to offer and rendered
+        empty for all twenty notions."""
+        blank = self._blank("Yarn bowl", supplier=self.person)
+        kind, href, label = blank.reorder_link
+
+        self.assertEqual(kind, "supplier")
+        self.assertEqual(href, reverse("supplier_detail", args=[self.person.pk]))
+        self.assertEqual(label, "Wild Yam Pottery")
+
+    def test_knowing_nothing_is_not_an_empty_link(self):
+        """None, so "nobody said" is distinguishable from "somebody said
+        nothing" — only one of those is a gap to go and fill."""
+        self.assertIsNone(self._blank("Mystery").reorder_link)
+
+    def test_the_bill_page_prints_a_persons_name_where_a_link_would_go(self):
+        self._blank("Yarn bowl", supplier=self.person)
+
+        body = self.client.get(
+            reverse("raw_inventory", args=[self.category.pk])
+        ).content.decode()
+
+        self.assertIn("Wild Yam Pottery", body)
+        self.assertIn(reverse("supplier_detail", args=[self.person.pk]), body)
+
+    def test_a_supplier_with_blanks_cannot_be_deleted(self):
+        """Retire, don't delete — the rule the rest of the catalogue
+        follows, enforced by the schema rather than left to discipline."""
+        self._blank("Homespun", supplier=self.shop)
+
+        with self.assertRaises(ProtectedError):
+            self.shop.delete()
+
+    def test_the_card_lists_what_is_bought_from_them(self):
+        self._blank("Homespun", supplier=self.shop, par_level=100,
+                    number_on_hand=10)
+
+        body = self.client.get(
+            reverse("supplier_detail", args=[self.shop.pk])
+        ).content.decode()
+
+        self.assertIn("Homespun", body)
+        self.assertIn("90", body)               # below par, said on the card
+
+    def test_a_missing_lead_time_is_never_rendered_as_zero(self):
+        """Null means nobody has said, which is not "arrives today". A date
+        derived from a guess is the par mistake with a delivery on it."""
+        body = self.client.get(
+            reverse("supplier_detail", args=[self.person.pk])
+        ).content.decode()
+
+        self.assertIn("not known", body)
+        self.assertNotIn("about 0 day", body)
+
+    def test_the_picker_names_the_blanks_nobody_has_linked(self):
+        """Named, not counted: these are rows somebody has to go and fix,
+        and the backfill could only match a domain — so everything bought
+        from a person is here."""
+        self._blank("Yarn bowl")            # no supplier
+
+        body = self.client.get(reverse("supplier_index")).content.decode()
+
+        self.assertIn("Not linked to anyone yet", body)
+        self.assertIn("Yarn bowl", body)
+
+    def test_the_costing_form_sets_a_supplier(self):
+        blank = self._blank("Yarn bowl")
+
+        self.client.post(
+            reverse("raw_supply_save", args=[self.category.pk]),
+            {f"supplier_{blank.pk}": str(self.person.pk)},
+        )
+
+        blank.refresh_from_db()
+        self.assertEqual(blank.supplier, self.person)
+
+    def test_a_blank_supplier_box_leaves_the_row_alone(self):
+        blank = self._blank("Yarn bowl", supplier=self.person)
+
+        self.client.post(
+            reverse("raw_supply_save", args=[self.category.pk]),
+            {f"supplier_{blank.pk}": "", f"cost_{blank.pk}": "22.50"},
+        )
+
+        blank.refresh_from_db()
+        self.assertEqual(blank.supplier, self.person)
+        self.assertEqual(blank.price, Decimal("22.50"))
+
+
+class SupplierBackfillTests(TestCase):
+    """The three suppliers the order URLs already implied.
+
+    Shipping the model empty and asking somebody to retype what is in the
+    data would be the wrong way round — the repetition is the argument.
+    """
+
+    def _backfill(self):
+        """The migration's own function, run against this test's rows.
+
+        Imported rather than reimplemented: a copy of the mapping in the
+        test would pass while the migration shipped a typo, which is the
+        one failure a backfill test exists to catch.
+        """
+        import importlib
+        from django.apps import apps
+
+        module = importlib.import_module(
+            "scarves.migrations.0052_backfill_suppliers"
+        )
+        module.link(apps, None)
+        return module
+
+    def setUp(self):
+        self.category = RawProductCategory.objects.create(name="Yarn")
+
+    def _blank(self, name, url=""):
+        return RawProduct.objects.create(
+            name=name, category=self.category, price=Decimal("1"), order_url=url,
+        )
+
+    def test_the_domains_production_actually_uses_are_all_covered(self):
+        """A typo in the map is silent — the migration would link nothing and
+        the page would look like a shop that has never bought anything. These
+        three are what the live catalogue had."""
+        import importlib
+
+        module = importlib.import_module(
+            "scarves.migrations.0052_backfill_suppliers"
+        )
+        for domain in ("www.wool2dye4.com", "www.dharmatrading.com",
+                       "www.knomadyarn.com"):
+            self.assertIn(domain, module.KNOWN)
+
+    def test_blanks_sharing_a_domain_end_up_on_one_supplier(self):
+        """Eighteen products, one row. That collapse is the whole point."""
+        a = self._blank("Homespun", "https://www.wool2dye4.com/a.html")
+        b = self._blank("Heavenly", "https://www.wool2dye4.com/b.html")
+
+        self._backfill()
+        a.refresh_from_db(); b.refresh_from_db()
+
+        self.assertIsNotNone(a.supplier_id)
+        self.assertEqual(a.supplier_id, b.supplier_id)
+        self.assertEqual(Supplier.objects.count(), 1)
+
+    def test_an_unknown_domain_is_left_for_a_person(self):
+        """Matching is on the domain and nothing else. A guess here would
+        file one shop's blanks under another."""
+        blank = self._blank("Odd", "https://www.example.test/thing.html")
+
+        self._backfill()
+        blank.refresh_from_db()
+
+        self.assertIsNone(blank.supplier_id)
+
+    def test_a_blank_with_no_url_is_untouched(self):
+        """Every notion, because a person at the next stall has no page for
+        the backfill to match on."""
+        blank = self._blank("Yarn bowl")
+
+        self._backfill()
+        blank.refresh_from_db()
+
+        self.assertIsNone(blank.supplier_id)
 
 
 class NotionsOnTheReorderPageTests(TestCase):

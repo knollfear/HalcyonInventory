@@ -97,6 +97,73 @@ good news, and it would be on every row of a shelf nobody has costed yet.
 It writes no `InventoryLog` and moves no stock. A cost is a fact about a
 supplier, not about a shelf.
 
+## `Supplier`: who you buy from, which is not where you buy it
+
+`RawProduct.order_url` answered *where do I buy this exact blank* and there
+was nothing that answered *who am I buying it from*. The second question had
+no home at all, so everything true of a supplier — the contact, how long
+they take, that they ship in packs — was written nowhere.
+
+**The evidence was the repetition.** 25 active blanks carried an
+`order_url`, and those URLs resolved to **three** domains: Wool2dye4
+eighteen times, Dharma six, Knomad once. Eighteen copies of one supplier is
+eighteen places to edit and eighteen chances to edit only some.
+
+**It does not replace `order_url`**, and collapsing the two would be a real
+loss. Those URLs are *product* pages —
+`wool2dye4.com/suri-silk-cloud-mini.html` — so a blank keeps its single
+click to the thing being reordered. `RawProduct.reorder_link` holds the
+preference: the product page wins, the supplier's card is the fallback,
+`None` when nothing is known. One accessor, because two pages print that
+column and a rule restated twice is a rule that drifts.
+
+**The fallback is the whole reason this exists.** A good deal of what this
+shop resells comes from a person at the next stall — the yarn bowls from
+Wild Yam Pottery, the yarn cards from a neighbour — and they have no store
+page and never will. Before this the reorder column simply rendered empty
+for all twenty notions. The fix is a card of our own to link at, not a text
+field pretending to be a URL: `private/suppliers/<id>/` carries the contact,
+and `private/suppliers/` is its picker, per the rule that a parameterised
+page always gets one.
+
+**Retire, don't delete.** `supplier` is `PROTECT`, like everything else that
+records what happened. A supplier with blanks pointing at it is one you have
+bought from.
+
+**A null `lead_time_days` means nobody has said, and nothing derives a date
+from it.** Zero would mean "arrives today", and an order-by date computed
+off a guess is the par mistake with a delivery on the end of it. The picker
+prints *lead time not known* rather than a zero.
+
+**The backfill ships with it** (`0052`), creating the three suppliers the
+data already implied and linking the 25 blanks. Shipping an empty model and
+asking somebody to retype what is already in the catalogue would be the
+wrong way round. **It matches on the URL's domain and on nothing else** — a
+domain is evidence about who sells a thing, a product name is a coincidence
+— so anything unmatched is left for a person, which is every notion.
+
+### What is deliberately *not* here yet
+
+**Pack size, and it is the more valuable finding.** `RawProduct.notes` turned
+out not to be free text at all: it holds ordering data in two shapes, the
+silk's variant (`45" x 104" Semicircle`) and the yarn's pack line
+(`Package cost: $87.10 for 10 skeins`). So **you do not buy one skein, you
+buy ten**, and the reorder page saying *38 to order* is asking for something
+the supplier does not sell. Worse, `price` is that pack line divided by hand
+and has already drifted — two of six blanks are a penny off, which is the
+same failure the fancy blank cost has a section about.
+
+That belongs with **invoice ingestion** rather than here, because an invoice
+line *is* the pack: quantity, total, and a per-unit that derives rather than
+being typed. Building half of it now would put a second hand-maintained copy
+of the same number in the schema.
+
+**Delivery history** is the other half of that and is also deferred. It
+collides with a decision this file already records — the raw bill writes no
+`InventoryLog`, because raw stock is an opening balance rather than a ledger
+of movements — so adding it is a reversal to argue for on its own, not a
+detail to smuggle in beside a contact field.
+
 ## Par on a blank is two numbers, and only one of them is stored
 
 `private/raw-inventory/<category>/?par=1` is the second mode of the page — a

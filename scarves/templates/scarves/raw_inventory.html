@@ -161,6 +161,7 @@
             <th class="num">Sells for</th>
             <th class="entry">Costs you</th>
             <th class="entry">Reorder from</th>
+            <th class="entry">Supplier</th>
             <th class="num">Margin</th>
           </tr>
         </thead>
@@ -197,6 +198,22 @@
                 {% if r.blank.order_url %}
                   <div class="sub"><a href="{{ r.blank.order_url }}" target="_blank">open current</a></div>
                 {% endif %}
+              </td>
+              <td class="entry">
+                {% comment %}
+                A select, not a text box: a supplier is a row that exists,
+                and typing the name would fork "Wild Yam Pottery" from "Wild
+                Yam pottery" on the second visit — the colorway-shorthand
+                failure, with a shelf's worth of contact details behind it.
+                Blank leaves the row alone, like every other box here.
+                {% endcomment %}
+                <select name="supplier_{{ r.blank.pk }}"
+                        aria-label="Supplier for {{ r.blank.name }}">
+                  <option value="">{% if r.blank.supplier_id %}{{ r.blank.supplier.name }}{% else %}— none —{% endif %}</option>
+                  {% for sup in suppliers %}
+                    <option value="{{ sup.pk }}">{{ sup.name }}</option>
+                  {% endfor %}
+                </select>
               </td>
               <td class="num">
                 {% comment %}
@@ -379,7 +396,7 @@
             <th>Par</th>
             <th>Shortage</th>
             <th>Cost</th>
-            <th>Order URL</th>
+            <th>Reorder from</th>
             <th class="entry">Received</th>
             <th class="entry">Counted</th>
           </tr>
@@ -404,9 +421,21 @@
                 {% endif %}
               </td>
               <td class="order-link">
-                {% if p.order_url %}
-                  <a href="{{ p.order_url }}" target="_blank">Supplier page</a>
-                {% endif %}
+                {% comment %}
+                A link either way. The blank's own product page wins, so the
+                25 blanks that have one keep their single click to the thing
+                being ordered; everything else links to its supplier's card,
+                which is where a person's phone number lives. The preference
+                is `RawProduct.reorder_link` rather than an `{% if %}` here,
+                so the two pages printing this column cannot drift.
+                {% endcomment %}
+                {% with link=p.reorder_link %}
+                  {% if link.0 == 'product' %}
+                    <a href="{{ link.1 }}" target="_blank">{{ link.2 }}</a>
+                  {% elif link.0 == 'supplier' %}
+                    <a href="{{ link.1 }}">{{ link.2 }}</a>
+                  {% endif %}
+                {% endwith %}
               </td>
               <td class="entry">
                 {% comment %}

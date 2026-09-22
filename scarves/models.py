@@ -219,6 +219,82 @@ class CatalogGroup(models.Model):
         return self.name
 
 
+class Supplier(models.Model):
+    """Who a blank is bought from, as one row rather than twenty-five copies.
+
+    **The evidence this was needed is the repetition.** 25 active blanks
+    carried an `order_url` between them and those URLs resolved to three
+    domains: Wool2dye4 eighteen times, Dharma six, Knomad once. Everything
+    true of Wool2dye4 — the contact, how long it takes, the fact that they
+    ship in packs — was therefore written nowhere, because there was nowhere
+    to write it that wasn't eighteen places.
+
+    **It does not replace `RawProduct.order_url`, which answers a different
+    question.** Those URLs are *product* pages —
+    `wool2dye4.com/suri-silk-cloud-mini.html` — so the blank says "where do
+    I buy this exact thing" and the supplier says "who am I buying it from".
+    Collapsing the two would trade a working one-click reorder for a
+    homepage.
+
+    **A supplier is often a person, and that is the case this exists for.**
+    The notions come from the next stall over: `Wild Yam Pottery` makes the
+    yarn bowls, a neighbour makes the yarn cards. They have no store page
+    and never will, so the reorder column has nothing to link to — and the
+    fix is a card of our own to link at, not a text field pretending to be
+    a URL. `reorder_link` is where that preference lives.
+    """
+
+    name = models.CharField(max_length=150, unique=True)
+    website = models.URLField(
+        blank=True,
+        help_text="The supplier's own site, when they have one.",
+    )
+    contact = models.CharField(
+        max_length=300,
+        blank=True,
+        help_text=(
+            "How to reach them — a name, a phone number, a stall. Free text "
+            "on purpose: 'Sarah, 555-0143' and 'the pottery stall by the "
+            "joust field' are both the real answer for somebody here, and a "
+            "structured contact form would refuse the second one."
+        ),
+    )
+    lead_time_days = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        help_text=(
+            "Roughly how long between ordering and having it, in days.\n\n"
+            "**Null means nobody has said**, and that is different from "
+            "zero. Nothing computes an order-by date from a null, because a "
+            "date derived from a guess is exactly the kind of number that "
+            "reads as a fact — see the par argument in CLAUDE.md."
+        ),
+    )
+    notes = models.TextField(
+        blank=True,
+        help_text="Anything else about dealing with them.",
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text="Uncheck when you stop buying from them. Retire, don't delete.",
+    )
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
+
+    def get_absolute_url(self):
+        from django.urls import reverse
+
+        return reverse("supplier_detail", args=[self.pk])
+
+    @property
+    def blank_count(self):
+        return self.raw_products.filter(is_active=True).count()
+
+
 class RawProduct(models.Model):
     """
     Represents an undyed base product: skein of yarn, silk scarf, etc.
@@ -312,7 +388,25 @@ class RawProduct(models.Model):
     )
     order_url = models.URLField(
         blank=True,
-        help_text="Where you buy this from (supplier URL).",
+        help_text=(
+            "The product page for this exact blank, when there is one. Not "
+            "the supplier — that is `supplier`, and it is a separate "
+            "question: this is 'where do I buy this thing', that is 'who "
+            "from'."
+        ),
+    )
+    supplier = models.ForeignKey(
+        "Supplier",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="raw_products",
+        help_text=(
+            "Who this is bought from. PROTECT rather than SET_NULL: a "
+            "supplier with blanks pointing at it is one you have bought "
+            "from, and retiring is how it goes away — the rule the whole "
+            "catalogue follows."
+        ),
     )
     number_on_hand = models.PositiveIntegerField(
         default=0,
@@ -397,6 +491,29 @@ class RawProduct(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.category.name})"
+
+    @property
+    def reorder_link(self):
+        """Where the reorder column should point, as `(kind, href, label)`.
+
+        **A link either way, and the product page wins.** A blank with its
+        own page gets one click to the thing being ordered; a blank whose
+        supplier is a person at the next stall gets the supplier's card,
+        which is where the phone number is. Falling back to the supplier's
+        homepage instead would be a click that lands nowhere useful.
+
+        `None` when nothing is known, never an empty string — "nobody said"
+        and "somebody said nothing" are different answers, and only one of
+        them is a gap to go and fill.
+
+        The preference lives here rather than in each template that prints
+        it, so the two pages showing this column cannot drift apart.
+        """
+        if self.order_url:
+            return ("product", self.order_url, "Supplier page")
+        if self.supplier_id:
+            return ("supplier", self.supplier.get_absolute_url(), self.supplier.name)
+        return None
 
     @property
     def raw_shortage(self) -> int:

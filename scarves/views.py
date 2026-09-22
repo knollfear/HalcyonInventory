@@ -47,6 +47,7 @@ from .models import (
     RawProductCategory,
     RecipeDye,
     SaleLine,
+    Supplier,
     TimeEntry,
     UnmatchedSale,
 )
@@ -630,6 +631,7 @@ def raw_inventory_view(request, category_id):
             "all_categories": RawProductCategory.objects.all().order_by("name"),
             "supply_mode": True,
             "supply_rows": _supply_rows(products),
+            "suppliers": Supplier.objects.filter(is_active=True).order_by("name"),
             "typed": {},
             "errors": {},
         })
@@ -760,6 +762,16 @@ def raw_par_save(request, category_id):
     return redirect(back)
 
 
+#: What each written field is called in the save message. Named rather
+#: than derived: "order_url" is a column name, and the message is the
+#: only confirmation that the row which moved is the row meant.
+_SUPPLY_LABELS = {
+    "price": "cost",
+    "order_url": "link",
+    "supplier": "supplier",
+}
+
+
 @require_POST
 @login_required
 def raw_supply_save(request, category_id):
@@ -821,6 +833,17 @@ def raw_supply_save(request, category_id):
             if cost != product.price:
                 fields["price"] = cost
 
+        # A select, so the only values offered are rows that already exist.
+        # Blank means untouched, like every other box on this form.
+        supplier_raw = (request.POST.get(f"supplier_{product.pk}") or "").strip()
+        if supplier_raw.isdigit():
+            chosen = Supplier.objects.filter(pk=supplier_raw).first()
+            if chosen is None:
+                errors.append(f"{product.name}: that supplier no longer exists.")
+                continue
+            if chosen.pk != product.supplier_id:
+                fields["supplier"] = chosen
+
         if url_raw:
             validator = URLValidator()
             try:
@@ -855,6 +878,7 @@ def raw_supply_save(request, category_id):
             "all_categories": RawProductCategory.objects.all().order_by("name"),
             "supply_mode": True,
             "supply_rows": _supply_rows(products),
+            "suppliers": Supplier.objects.filter(is_active=True).order_by("name"),
             "typed": {
                 product.pk: {
                     "cost": (request.POST.get(f"cost_{product.pk}") or "").strip(),
@@ -882,12 +906,75 @@ def raw_supply_save(request, category_id):
         request,
         f"Saved {len(changes)} product{'' if len(changes) == 1 else 's'}: "
         + ", ".join(
-            f"{p.name} ({', '.join('cost' if f == 'price' else 'link' for f in fields)})"
+            f"{p.name} ({', '.join(_SUPPLY_LABELS[f] for f in fields)})"
             for p, fields in changes
         )
         + ".",
     )
     return redirect(back)
+
+
+@page_meta(
+    title="Suppliers",
+    description="Who each blank is bought from — the shops with a website and "
+                "the people at the next stall alike. Pick one for its card.",
+    category="Inventory",
+)
+@login_required
+def supplier_index(request):
+    """The picker, which exists so the card is reachable by clicking.
+
+    Carries the blank count and whether a lead time is known, so the page
+    answers "who have I not filled in yet" without a click — the same shape
+    `raw_inventory_index` uses.
+    """
+    suppliers = (
+        Supplier.objects.filter(is_active=True)
+        .annotate(blanks=Count("raw_products", filter=Q(raw_products__is_active=True)))
+        .order_by("name")
+    )
+    return render(request, "scarves/supplier_index.html", {
+        "suppliers": suppliers,
+        # Named rather than counted: these are the rows somebody has to go
+        # and fix, and a bare number sends nobody anywhere. The notions are
+        # all of them today, because a person at the next stall has no URL
+        # for the backfill to match on.
+        "unlinked": list(
+            RawProduct.objects.filter(is_active=True, supplier__isnull=True)
+            .select_related("category").order_by("category__name", "name")
+        ),
+    })
+
+
+@page_meta(
+    title="Supplier",
+    description="One supplier: how to reach them, how long they take, and "
+                "every blank bought from them.",
+    category="Inventory",
+    show_in_index=False,
+)
+@login_required
+def supplier_detail(request, supplier_id):
+    """One supplier's card — and the thing a people-supplier's blanks link to.
+
+    This is the other half of `RawProduct.reorder_link`. A blank with its own
+    product page links there; a blank whose supplier is a person links here,
+    because here is where the phone number is. Without it the reorder column
+    had nothing to offer for the twenty notions and simply rendered empty.
+    """
+    supplier = get_object_or_404(Supplier, pk=supplier_id)
+    blanks = list(
+        RawProduct.objects.filter(supplier=supplier, is_active=True)
+        .select_related("category").order_by("category__name", "name")
+    )
+    return render(request, "scarves/supplier_detail.html", {
+        "supplier": supplier,
+        "blanks": blanks,
+        # What this supplier is short of right now, so the card answers the
+        # question somebody opened it to ask. Read off the blanks already in
+        # memory rather than a query per row.
+        "short": [b for b in blanks if b.raw_shortage],
+    })
 
 
 def _supply_rows(products):

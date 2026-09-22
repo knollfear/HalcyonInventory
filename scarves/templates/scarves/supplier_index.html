@@ -1,0 +1,66 @@
+{% extends "scarves/base_internal.html" %}
+
+{% block title %}Suppliers{% endblock %}
+{% block heading %}Suppliers{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 860px; }
+  .stat { font-size: 13px; color: #555; }
+  .missing { font-size: 12px; color: #8a5a2a; }
+  .unlinked { margin-top: 30px; }
+  .unlinked li { font-size: 14px; margin-bottom: 3px; }
+{% endblock %}
+
+{% block content %}
+  <p class="lead">
+    Who each blank is bought from. A shop with a website and a potter at the
+    next stall are the same kind of row here — what differs is whether the
+    reorder column can link you straight to a product page.
+  </p>
+
+  <div class="cards">
+    {% for s in suppliers %}
+      <a class="card" href="{% url 'supplier_detail' s.pk %}">
+        <span class="name">{{ s.name }}</span>
+        <span class="stat">
+          {{ s.blanks }} blank{{ s.blanks|pluralize }}
+          {% if s.contact %} · {{ s.contact }}{% endif %}
+        </span>
+        {% comment %}
+        A missing lead time is said out loud rather than shown as a zero.
+        Nothing computes an order-by date from it, and a null that renders
+        as "0 days" is the kind of number somebody reads as a fact.
+        {% endcomment %}
+        {% if s.lead_time_days %}
+          <span class="ok">{{ s.lead_time_days }} day lead</span>
+        {% else %}
+          <span class="missing">lead time not known</span>
+        {% endif %}
+      </a>
+    {% empty %}
+      <p class="empty">No suppliers yet.</p>
+    {% endfor %}
+  </div>
+
+  {% if unlinked %}
+    <div class="unlinked">
+      <h2>Not linked to anyone yet</h2>
+      {% comment %}
+      Named, not counted. The backfill matched on the order URL's domain and
+      nothing else, so everything bought from a person is here — and a bare
+      count sends nobody anywhere.
+      {% endcomment %}
+      <p class="small">
+        These have no supplier. The backfill matched on a product page's
+        domain, so anything bought from somebody without a website is here
+        until it is set by hand.
+      </p>
+      <ul>
+        {% for b in unlinked %}
+          <li>{{ b.name }} <span class="muted">— {{ b.category.name }}</span></li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+{% endblock %}

@@ -1,0 +1,93 @@
+{% extends "scarves/base_internal.html" %}
+
+{% block title %}{{ supplier.name }}{% endblock %}
+{% block heading %}{{ supplier.name }}{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 860px; }
+  .facts { margin: 16px 0; font-size: 14px; }
+  .facts dt { font-size: 12px; color: #667; margin-top: 10px; }
+  .facts dd { margin: 2px 0 0; }
+  .unknown { color: #8a5a2a; }
+  td.num, th.num { text-align: right; white-space: nowrap; }
+{% endblock %}
+
+{% block content %}
+  <dl class="facts">
+    <dt>How to reach them</dt>
+    <dd>
+      {% if supplier.contact %}{{ supplier.contact }}
+      {% else %}<span class="unknown">not recorded</span>{% endif %}
+    </dd>
+
+    <dt>Website</dt>
+    <dd>
+      {% if supplier.website %}
+        <a href="{{ supplier.website }}" target="_blank">{{ supplier.website }}</a>
+      {% else %}
+        <span class="unknown">none — this one is a person, not a shop</span>
+      {% endif %}
+    </dd>
+
+    <dt>Lead time</dt>
+    <dd>
+      {% comment %}
+      Null is "nobody has said", which is not zero. Nothing here derives an
+      order-by date from it: a date computed off a guess reads as a fact,
+      which is the mistake par made for years.
+      {% endcomment %}
+      {% if supplier.lead_time_days %}
+        about {{ supplier.lead_time_days }} day{{ supplier.lead_time_days|pluralize }}
+      {% else %}
+        <span class="unknown">not known</span>
+      {% endif %}
+    </dd>
+
+    {% if supplier.notes %}
+      <dt>Notes</dt>
+      <dd>{{ supplier.notes|linebreaksbr }}</dd>
+    {% endif %}
+  </dl>
+
+  {% if short %}
+    <p class="note">
+      <strong>Below par right now:</strong>
+      {% for b in short %}{{ b.name }} ({{ b.raw_shortage }}){% if not forloop.last %}, {% endif %}{% endfor %}.
+    </p>
+  {% endif %}
+
+  <h2>Bought from them</h2>
+  <div class="card">
+    <table>
+      <thead>
+        <tr>
+          <th>Blank</th>
+          <th>Table</th>
+          <th class="num">On hand</th>
+          <th class="num">Par</th>
+          <th>Product page</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for b in blanks %}
+          <tr>
+            <td>{{ b.name }}</td>
+            <td>{{ b.category.name }}</td>
+            <td class="num">{{ b.number_on_hand }}</td>
+            <td class="num">{{ b.par_level }}</td>
+            <td>
+              {% if b.order_url %}
+                <a href="{{ b.order_url }}" target="_blank">order this</a>
+              {% else %}
+                <span class="muted">—</span>
+              {% endif %}
+            </td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="5" class="empty">Nothing is linked to them yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endblock %}

@@ -77,6 +77,19 @@ urlpatterns = [
         views.raw_supply_save,
         name="raw_supply_save",
     ),
+    # The card, and the picker that makes it reachable — the rule in
+    # CLAUDE.md: a `foo/<int:id>/` page always gets a `foo/` listing, or the
+    # site map grows a card nobody can click.
+    path(
+        "private/suppliers/",
+        views.supplier_index,
+        name="supplier_index",
+    ),
+    path(
+        "private/suppliers/<int:supplier_id>/",
+        views.supplier_detail,
+        name="supplier_detail",
+    ),
     path(
         "private/bulk-inventory/",
         views.bulk_inventory_update,
