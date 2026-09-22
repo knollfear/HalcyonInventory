@@ -144,19 +144,32 @@ domain is evidence about who sells a thing, a product name is a coincidence
 
 ### What is deliberately *not* here yet
 
-**Pack size, and it is the more valuable finding.** `RawProduct.notes` turned
-out not to be free text at all: it holds ordering data in two shapes, the
-silk's variant (`45" x 104" Semicircle`) and the yarn's pack line
-(`Package cost: $87.10 for 10 skeins`). So **you do not buy one skein, you
-buy ten**, and the reorder page saying *38 to order* is asking for something
-the supplier does not sell. Worse, `price` is that pack line divided by hand
-and has already drifted — two of six blanks are a penny off, which is the
-same failure the fancy blank cost has a section about.
+**Pack size.** `RawProduct.notes` is not free text: it holds ordering data
+in two shapes, the silk's variant (`45" x 104" Semicircle`) and the yarn's
+pack line (`Package cost: $87.10 for 10 skeins`). So a blank is bought ten
+or twenty-five at a time, and the reorder page's *38 to order* is not an
+order anybody can place.
 
-That belongs with **invoice ingestion** rather than here, because an invoice
-line *is* the pack: quantity, total, and a per-unit that derives rather than
-being typed. Building half of it now would put a second hand-maintained copy
-of the same number in the schema.
+**Be careful how large a problem that is called, because it is a small
+one.** The pack sizes are known — they are simply known by the person
+ordering rather than by the app, and he converts on the way to the basket
+without noticing. Nothing has gone wrong because of this and nothing is
+likely to. `price` is the pack line divided by hand and two of six blanks
+are a penny out, which is **not** the fancy-blank-cost failure wearing a
+different hat: that one drifted $8.96 to $17.30 across rows nobody could
+reconcile, and this one rounds. Do not cite it as evidence of anything.
+
+The honest case for recording it is smaller and still worth acting on: it
+is one person's knowledge, held nowhere else, and writing it down costs
+almost nothing. That is a different argument from a correctness fix, and
+overselling it is how a nice-to-have gets built ahead of something that
+matters.
+
+It belongs with **invoice ingestion** when that happens, because an invoice
+line *is* the pack — quantity, total, and a per-unit that derives rather
+than being typed — so the fact lands as a by-product of a job somebody
+already wants done. Building it alone would be a schema change bought with
+data entry, for a number that is currently right.
 
 **Delivery history** is the other half of that and is also deferred. It
 collides with a decision this file already records — the raw bill writes no
