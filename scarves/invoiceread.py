@@ -36,6 +36,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+
+from .models import RawProduct
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -331,11 +333,10 @@ def read_text(text, products=None, model=None):
 
 def _ask(content, products=None, model=None):
     """One call, whatever the document arrived as."""
-    from .models import RawProduct
 
     if products is None:
         products = list(
-            RawProduct.objects.filter(is_active=True)
+            RawProduct.objects.active()
             .select_related("category")
             .order_by("category__name", "name")
         )

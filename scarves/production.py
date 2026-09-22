@@ -37,7 +37,6 @@ stops meaning anything definite.
 """
 
 from dataclasses import dataclass
-from datetime import timedelta
 from decimal import Decimal
 from io import BytesIO
 from math import ceil
@@ -47,8 +46,18 @@ from django.db.models import Count, F, Q, Sum, Value
 from django.db.models.functions import Greatest
 from django.utils import timezone
 
+from . import ledger, slowsellers
 from .dyeamounts import bath_amounts, format_ounces
-from .models import FinishedProduct
+from .models import (
+    OVERDUE_AFTER,
+    CloseRun,
+    CloseRunRow,
+    FinishedProduct,
+    InventoryLog,
+    ProductionRun,
+    ProductionRunRow,
+    RawProduct,
+)
 
 #: How many live sheets the picker lists before it stops.
 #:
@@ -306,26 +315,14 @@ def candidates(category=None, include_overshoot=False, order=ORDER_SOLD,
     # paper is exactly what a stockout disproves.
     stockout = stockout_baths()
 
+    # `dyeable()` is the whole of "what a bath can make": no undyed
+    # passthrough (ordered, not dyed — without that the sheet put "4 × " with
+    # no colorway on it), no retired colorway (a retired *product* dropped out
+    # and a retired *recipe* never did, so a dye room was sent to make a
+    # colour somebody had decided to stop making), and no fancy veil (dyed,
+    # but a shortage of one is not answered by dyeing).
     qs = (
-        FinishedProduct.objects.filter(
-            is_active=True,
-            # Undyed passthroughs are ordered, not dyed. Without this the
-            # sheet would put "4 × " with no colorway on it and send somebody
-            # to the dye room to make something that arrives in a box.
-            recipe__isnull=False,
-            # A retired colorway is one nobody dyes any more, and *Retire,
-            # don't delete* says retiring takes something out of production
-            # planning. That was true of a retired product and never of a
-            # retired recipe: its finished products stay active, so the
-            # colorway kept being asked for with nothing to say why. The
-            # symptom is a dye room being sent to make a colour somebody
-            # decided to stop making.
-            recipe__is_active=True,
-            # Fancy veils are dyed scarves with extra line work added, so
-            # they carry a colorway and slip past the test above. You cannot
-            # answer a shortage of one by dyeing.
-            raw_product__made_in_a_dye_bath=True,
-        )
+        FinishedProduct.objects.dyeable()
         .filter(
             Q(par__gt=0, number_on_hand__lt=F("par")) | Q(pk__in=stockout)
         )
@@ -398,8 +395,6 @@ def candidates(category=None, include_overshoot=False, order=ORDER_SOLD,
     # among colorways that sell alike, and a colour nobody buys does not jump
     # the queue for being emptier. Pooled by recipe, because that is the unit
     # a bath is planned in and the unit the other page reports.
-    from . import slowsellers
-
     sold = slowsellers.sold_by_recipe(slowsellers.season_range({}))
     return sorted(
         wanted,
@@ -474,8 +469,6 @@ def in_flight():
     `number_on_hand`, so counting it here would subtract it twice, and a
     cancelled row is a bath that is never coming.
     """
-    from .models import ProductionRunRow
-
     rows = (
         ProductionRunRow.objects.filter(
             applied_log__isnull=True,
@@ -527,8 +520,6 @@ def stockout_baths():
     function: a row that never appears never comes back zero, and it was
     never going to — see `closing.expected_products`.)
     """
-    from .models import CloseRun, CloseRunRow
-
     run = CloseRun.objects.order_by("-day").first()
     if run is None:
         return {}
@@ -553,8 +544,6 @@ def sold_per_blank():
     question is how the page that ranks on it comes to disagree with the page
     that reports it.
     """
-    from . import slowsellers
-
     return slowsellers.sold_units(slowsellers.season_range({}))
 
 
@@ -722,13 +711,7 @@ def top_ups(current, gap, category=None, oven=True,
 
     on_list = {product.pk for product in current}
     qs = (
-        FinishedProduct.objects.filter(
-            is_active=True,
-            recipe__isnull=False,
-            recipe__is_active=True,
-            oven_dyed=oven,
-            raw_product__made_in_a_dye_bath=True,
-        )
+        FinishedProduct.objects.dyeable().filter(oven_dyed=oven)
         .select_related("raw_product", "recipe")
         .exclude(pk__in=on_list)
     )
@@ -744,8 +727,6 @@ def top_ups(current, gap, category=None, oven=True,
         qs = qs.exclude(raw_product_id__in=out_blanks)
     if out_dyes:
         qs = qs.exclude(recipe__recipe_dyes__dye_id__in=out_dyes)
-
-    from . import slowsellers
 
     sold = slowsellers.sold_by_recipe(slowsellers.season_range({}))
     ranked = sorted(
@@ -933,7 +914,9 @@ def dye_plan_for_run(run):
 #: overdue sheets and asks for one of the two answers that exist: accept what
 #: came out, or cancel what didn't. No escalation and no count of how often
 #: it happens — the same bargain `_drained_at` makes on the restock board.
-OVERDUE_AFTER = timedelta(days=10)
+# `OVERDUE_AFTER` itself is defined in `models`, beside the run whose
+# `is_overdue` reads it, and re-exported here so `production.OVERDUE_AFTER`
+# stays the name the rest of the app and the docs use.
 
 
 def with_row_states(queryset=None):
@@ -943,8 +926,6 @@ def with_row_states(queryset=None):
     are asked of lists — the picker shows several groups at once, and a
     per-run property there is a query per sheet per group.
     """
-    from .models import ProductionRun
-
     if queryset is None:
         queryset = ProductionRun.objects.all()
     return queryset.annotate(
@@ -1023,8 +1004,6 @@ def claimed_units(blanks):
     different answer — those skeins are either dyed or still there — and it is
     settled by reporting the sheet or striking it, not by a clock.
     """
-    from .models import ProductionRunRow
-
     claimed = {}
     rows = (
         ProductionRunRow.objects
@@ -1047,13 +1026,15 @@ def _move_blanks(rows, sign):
     copy of the same blank, and a read-modify-write across those copies loses
     all but the last silently.
     """
-    from .models import RawProduct
-
     totals = {}
     for row in rows:
         blank_id = row.finished_product.raw_product_id
         totals[blank_id] = totals.get(blank_id, 0) + row.quantity
+    _shift_blanks(totals, sign)
 
+
+def _shift_blanks(totals, sign):
+    """`{blank_pk: units}` off the shelf (`sign` -1) or back on (+1), locked, in pk order."""
     for blank_id in sorted(totals):
         raw = RawProduct.objects.select_for_update().get(pk=blank_id)
         raw.number_on_hand = max(raw.number_on_hand + sign * totals[blank_id], 0)
@@ -1097,8 +1078,6 @@ def open_rows(run, plan):
     and the shelf would drift down by exactly the yarn it forgot, which is the
     silent failure this whole file is arranged against.
     """
-    from .models import ProductionRunRow
-
     start = 1 + max((row.order for row in run.rows.all()), default=0)
     rows = ProductionRunRow.objects.bulk_create([
         ProductionRunRow(
@@ -1120,7 +1099,7 @@ def open_row(run, product, quantity=None):
 
 
 @transaction.atomic
-def apply_row(row, yielded=None, fancy=0):
+def apply_row(row, yielded=None, fancy=0, via=""):
     """Accept one bath into inventory, once. Returns the `InventoryLog`.
 
     **Applying twice is the failure this guards.** The return URL is a piece
@@ -1169,9 +1148,10 @@ def apply_row(row, yielded=None, fancy=0):
 
     Un-ticking is still not the inverse of this. Once stock has moved the
     correction is an inventory adjustment with a reason attached.
-    """
-    from .models import InventoryLog
 
+    `via` is appended to the log's note when the bath was reported from
+    somewhere other than the sheet's own page — see `report()`.
+    """
     if row.applied_log_id is not None:
         return row.applied_log
 
@@ -1190,29 +1170,6 @@ def apply_row(row, yielded=None, fancy=0):
     fancied = 0 if target is None else min(max(int(fancy or 0), 0), made)
     plain = made - fancied
 
-    # **Locked and re-read immediately before each write**, the same way
-    # `record_recipe_production` does it, and for the reason written there:
-    # two products of one recipe often share a blank, and a read-modify-write
-    # on stale copies silently loses all but the last of the writes.
-    #
-    # `lines_for_run` fetches the rows with `select_related`, which hands every
-    # row its own copy of the finished product and — via `fancy_target` — of
-    # the fancy product. Rows applied in one pass each read the count as it
-    # stood before any of them ran, add their own figure and save the total.
-    # Last write wins, a bath's worth of stock vanishes, and nothing is
-    # raised: the logs are all written and every row reads accepted. That is
-    # how sheet #2 left a shelf of 150 reading 135 instead of 130, back when
-    # the blanks were taken here.
-    #
-    # The lock rather than a plain re-read because the sheet is reported from
-    # phones at a stall, so the same collision also arrives as two requests.
-    # Consistent order — product, then fancy product — so two of these can't
-    # take each other's rows in opposite orders.
-
-    product = FinishedProduct.objects.select_for_update().get(pk=product.pk)
-    product.number_on_hand += plain
-    product.save(update_fields=["number_on_hand"])
-
     lost = row.quantity - made
     notes = f"Dye bath accepted from production sheet run {row.run_id}."
     if lost:
@@ -1224,16 +1181,23 @@ def apply_row(row, yielded=None, fancy=0):
         notes += (
             f" {fancied} of {made} finished as {target.raw_product.name}."
         )
+    if via:
+        notes += f" {via}"
 
-    # The plain row's log, written even at zero — it is what `applied_log`
+    # Through the ledger, which locks and re-reads the row before each write:
+    # two products of one recipe often share a blank, `lines_for_run` hands
+    # every row its own copy of the product, and a read-modify-write across
+    # those copies is how sheet #2 left a shelf of 150 reading 135 instead of
+    # 130. Product then fancy product, always, so two of these can't take
+    # each other's rows in opposite orders.
+    #
+    # The plain row's log is written even at zero — it is what `applied_log`
     # points at, and so what stops the bath being counted twice. A bath whose
     # whole output went out fancy still writes it.
-    log = InventoryLog.objects.create(
-        finished_product=product,
-        raw_product=raw,
+    log = ledger.move(
+        product, plain,
         log_type=InventoryLog.PRODUCTION,
         source=InventoryLog.SOURCE_PRODUCTION_SHEET,
-        quantity=plain,
         notes=notes,
     )
     if fancied:
@@ -1241,16 +1205,14 @@ def apply_row(row, yielded=None, fancy=0):
         # is per product, the same shape the conversion page writes. It is
         # PRODUCTION rather than a conversion because nothing was converted:
         # this scarf was never plain.
-        target = FinishedProduct.objects.select_for_update().get(pk=target.pk)
-        target.number_on_hand += fancied
-        target.save(update_fields=["number_on_hand"])
-        InventoryLog.objects.create(
-            finished_product=target,
-            raw_product=raw,
+        ledger.move(
+            target, fancied,
             log_type=InventoryLog.PRODUCTION,
             source=InventoryLog.SOURCE_PRODUCTION_SHEET,
-            quantity=fancied,
             notes=notes,
+            # Against the *plain* blank: one pot, and `blanks_consumed` reads
+            # a log whose blank is not its product's as the sibling entry.
+            raw_product=raw,
         )
 
     # **The money is frozen here, at the one event that is the payment
@@ -1269,8 +1231,8 @@ def apply_row(row, yielded=None, fancy=0):
     # is why the cost basis is `quantity` and not `made`.
     row.unit_blank_cost = raw.blank_cost
     row.output_retail = (
-        Decimal(plain) * (product.price or Decimal("0"))
-        + Decimal(fancied) * ((target.price if fancied else None) or Decimal("0"))
+        Decimal(plain) * Decimal(product.price or 0)
+        + Decimal(fancied) * Decimal((target.price if fancied else None) or 0)
     )
     row.fancy_yield = fancied
     row.yielded = made
@@ -1286,6 +1248,86 @@ def apply_row(row, yielded=None, fancy=0):
         "unit_blank_cost", "output_retail",
     ])
     return log
+
+
+@dataclass
+class Report:
+    """What `report()` did with the units it was handed."""
+    rows: list            # sheet rows accepted on the way, in sheet order
+    direct: int           # units booked with no row to accept
+    logs: list            # every `InventoryLog` written, rows first
+
+    @property
+    def units(self) -> int:
+        return sum(row.quantity for row in self.rows) + self.direct
+
+    @property
+    def sheets(self):
+        """The runs whose rows were accepted, deduplicated, in order."""
+        seen = []
+        for row in self.rows:
+            if row.run not in seen:
+                seen.append(row.run)
+        return seen
+
+
+@transaction.atomic
+def report(product, units, *, source, notes):
+    """Book `units` of `product` into stock from outside a sheet. Returns a `Report`.
+
+    Two pages record a bath after the fact rather than off a sheet: the
+    recipe page's production form and the *Bagged a bath* button on
+    `private/production-needed/`. Both used to take the blanks off the shelf
+    and add the output, which is right for a bath nobody planned and wrong
+    for one that is on a sheet — its blanks came off when the run was made
+    (`open_rows`), so recording it here took them twice, and the row stayed
+    open, still subtracting from the planner, for a bath that was already in
+    a bag. Nothing said so; the shelf simply read low and the sheet read
+    unfinished.
+
+    So a report **honours the claim first.** Pending rows for this product
+    are accepted in sheet order, whole rows only, for as long as the units
+    cover them, and only what is left over is booked directly. A person who
+    says "three baths of this are bagged" when two are on a sheet has ticked
+    the sheet's two and recorded one more, which is what happened. A report
+    smaller than the next row leaves that row alone — a short bath is the
+    sheet's own page's job, because it is the one that can say how short.
+
+    The remainder is the old path, and it is still not a run: nothing was
+    planned, so there is nothing to claim and nothing to accept. The blanks
+    come off now, locked in pk order like `open_rows` takes them, and the
+    output goes on through the ledger.
+    """
+    units = max(int(units), 0)
+    pending = list(
+        ProductionRunRow.objects.select_for_update(of=("self",))
+        .filter(
+            finished_product=product,
+            accepted_at__isnull=True,
+            cancelled_at__isnull=True,
+            applied_log__isnull=True,
+        )
+        .select_related("run")
+        .order_by("run__created_at", "run_id", "order")
+    )
+    rows, logs = [], []
+    for row in pending:
+        if row.quantity > units:
+            break
+        row.finished_product = product
+        logs.append(apply_row(row, via=notes))
+        rows.append(row)
+        units -= row.quantity
+
+    if units:
+        _shift_blanks({product.raw_product_id: units}, -1)
+        logs.append(ledger.move(
+            product, units,
+            log_type=InventoryLog.PRODUCTION,
+            source=source,
+            notes=notes,
+        ))
+    return Report(rows=rows, direct=units, logs=logs)
 
 
 @transaction.atomic

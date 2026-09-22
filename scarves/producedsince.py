@@ -49,12 +49,12 @@ not also be answering "did somebody find a bag of it in a cupboard".
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, time
 
 from django.db import transaction
-from django.utils import timezone
 
-from .models import FinishedProduct, InventoryLog
+from . import ledger
+from .models import RawProduct, ProductionRunRow, FinishedProduct, InventoryLog
+from .labels import as_datetime
 
 
 #: Sources whose production rows actually moved stock.
@@ -102,7 +102,7 @@ def entries(since, category=None, blanks=None):
     qs = (
         InventoryLog.objects.filter(
             log_type=InventoryLog.PRODUCTION,
-            created_at__gte=_as_datetime(since),
+            created_at__gte=as_datetime(since),
             reversals__isnull=True,
         )
         .select_related(
@@ -215,8 +215,6 @@ def blanks_consumed(log) -> int:
     the bath back twice, so a log whose product's blank is not the blank it
     consumed restores nothing — the sibling entry is accounting for the pot.
     """
-    from .models import ProductionRunRow
-
     if log.raw_product_id is None:
         return 0
     if log.raw_product_id != log.finished_product.raw_product_id:
@@ -279,22 +277,20 @@ def retract(log, note=""):
         returned = 0
 
         if moved:
-            product.set_on_hand(product.number_on_hand - log.quantity)
             returned = blanks_consumed(log)
             if returned:
-                raw = log.raw_product
+                raw = RawProduct.objects.select_for_update().get(pk=log.raw_product_id)
                 raw.number_on_hand = raw.number_on_hand + returned
                 raw.save(update_fields=["number_on_hand"])
 
-        notes = _note(log, moved, returned, note)
-        return InventoryLog.objects.create(
-            finished_product=product,
-            raw_product=log.raw_product,
+        # Written even when nothing moved (quantity 0), because the row is
+        # the retraction: `reverses` is what takes the original off the list.
+        return ledger.move(
+            product, -log.quantity if moved else 0,
             log_type=InventoryLog.ADJUSTMENT,
             source=InventoryLog.SOURCE_PRODUCTION_UNDO,
-            quantity=-log.quantity if moved else 0,
+            notes=_note(log, moved, returned, note),
             reverses=log,
-            notes=notes,
         )
 
 
@@ -330,10 +326,3 @@ def _note(log, moved, returned, typed):
 #: putting it anywhere a page could read it undoes the whole reason the button
 #: exists. The rows are in `InventoryLog` and can be counted by anyone who
 #: needs to; nothing in this app is going to do it for them.
-
-
-def _as_datetime(value):
-    """A date from a form means the start of that day, locally."""
-    if isinstance(value, datetime):
-        return value
-    return timezone.make_aware(datetime.combine(value, time.min))

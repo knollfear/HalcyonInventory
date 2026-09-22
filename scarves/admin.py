@@ -132,7 +132,7 @@ def preview_square_match(modeladmin, request, queryset):
                 cents = v["item_variation_data"].get("price_money", {}).get("amount", 0)
                 v["item_variation_data"]["price_dollars"] = f"{cents / 100:.2f}"
 
-            for fp in rp.finished_products.filter(is_active=True):
+            for fp in rp.finished_products.active():
                 var_ranked = sorted(
                     sq_variations,
                     key=lambda v: -_match_score(
@@ -233,7 +233,7 @@ def bulk_update_finished_par(modeladmin, request, queryset):
     ):
         current = sorted(
             set(
-                rp.finished_products.filter(is_active=True)
+                rp.finished_products.active()
                 .values_list("par", flat=True)
             )
         )
@@ -293,7 +293,7 @@ def bulk_update_display_slots(modeladmin, request, queryset):
     ):
         current = sorted(
             set(
-                rp.finished_products.filter(is_active=True)
+                rp.finished_products.active()
                 .values_list("display_slots", flat=True)
             )
         )

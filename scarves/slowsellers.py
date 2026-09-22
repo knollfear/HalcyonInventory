@@ -82,7 +82,8 @@ from dataclasses import dataclass
 from django.db.models import Count, Sum
 from django.utils import timezone
 
-from .models import FinishedProduct, SaleLine
+from . import sales
+from .models import Faire, FaireDay, FinishedProduct, SaleLine
 
 #: Price-point values Square writes when nothing was chosen. A line carrying
 #: one of these named an item and no variation, so it says nothing about
@@ -122,8 +123,6 @@ def season_range(params):
     Every other range key is `sales.resolve_range`'s, so the two report pages
     take the same parameters and a link off one works on the other.
     """
-    from . import sales
-    from .models import Faire, FaireDay
 
     asked = params.get("range") or params.get("from") or params.get("to")
     if asked and params.get("range") != "season":
@@ -199,7 +198,7 @@ def rows(rng, max_units=1, category=None):
     is a bigger fact than one sitting on two.
     """
     catalogue = (
-        FinishedProduct.objects.filter(is_active=True, recipe__isnull=False)
+        FinishedProduct.objects.active().filter(recipe__isnull=False)
         .select_related("raw_product", "raw_product__category", "recipe")
     )
     if category is not None:
@@ -255,7 +254,7 @@ def colorway_rows(rng, max_units=1, category=None):
     argument than the same zero on one empty peg.
     """
     catalogue = (
-        FinishedProduct.objects.filter(is_active=True, recipe__isnull=False)
+        FinishedProduct.objects.active().filter(recipe__isnull=False)
         .select_related("recipe", "raw_product")
     )
     if category is not None:
@@ -363,7 +362,7 @@ def lopsided(rng, category=None):
 
     catalogue = {
         row["raw_product"]: row["n"]
-        for row in FinishedProduct.objects.filter(is_active=True, recipe__isnull=False)
+        for row in FinishedProduct.objects.active().filter(recipe__isnull=False)
         .values("raw_product")
         .annotate(n=Count("id"))
         .order_by()

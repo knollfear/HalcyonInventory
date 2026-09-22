@@ -47,7 +47,7 @@ from decimal import Decimal
 
 from django.utils import timezone
 
-from . import seasonreport
+from . import production, seasonreport, slowsellers
 from .models import Faire, FinishedProduct, InventoryLog, RawProduct
 
 
@@ -342,7 +342,6 @@ def _claimed(blanks):
     `production.claimed_units` is the one query; this only guarantees a key
     per blank so the page never renders a missing figure as blank.
     """
-    from . import production
 
     claimed = production.claimed_units(blanks)
     return {blank.pk: claimed.get(blank.pk, 0) for blank in blanks}
@@ -356,7 +355,6 @@ RECENT_WEEKS = 8
 
 def rows(blanks, today=None):
     """An `Outlook` per blank, in the order given."""
-    from . import slowsellers
 
     blanks = list(blanks)
     if not blanks:

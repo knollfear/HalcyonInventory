@@ -14,8 +14,8 @@ class Command(BaseCommand):
     )
 
     def handle(self, *args, **options):
-        recipes = list(Recipe.objects.filter(is_active=True).order_by("id"))
-        raw_products = list(RawProduct.objects.filter(is_active=True).order_by("id"))
+        recipes = list(Recipe.objects.active().order_by("id"))
+        raw_products = list(RawProduct.objects.active().order_by("id"))
 
         if not recipes:
             self.stderr.write(

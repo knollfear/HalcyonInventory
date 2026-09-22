@@ -39,7 +39,7 @@ before it costs anything.
 """
 
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import datetime, time
 from decimal import Decimal
 from io import BytesIO
 
@@ -255,7 +255,7 @@ def inventory_run(extra=0, category=None, raw_products=None, include_zero=False,
     quietly eat labels.
     """
     qs = (
-        FinishedProduct.objects.filter(is_active=True, raw_product__is_active=True)
+        FinishedProduct.objects.active().filter(raw_product__is_active=True)
         .select_related("raw_product", "recipe")
     )
     if category:
@@ -354,7 +354,7 @@ def produced_since(cutoff, extra=0, style=BARCODE, category=None,
     `created_at` set to the date on the card, not the day it was typed, so a
     2024 card entered this morning correctly does not ask for stickers.
     """
-    cutoff_dt = _as_datetime(cutoff)
+    cutoff_dt = as_datetime(cutoff)
     logs = _labelled_logs(cutoff_dt, category, raw_products)
     totals = logs.values("finished_product").annotate(n=Sum("quantity"))
     counts = {t["finished_product"]: t["n"] or 0 for t in totals}
@@ -396,7 +396,7 @@ def _labelled_logs(cutoff_dt, category=None, raw_products=None):
     return qs
 
 
-def _as_datetime(value):
+def as_datetime(value):
     """A date from a form means the start of that day, locally."""
     if isinstance(value, datetime):
         return value

@@ -70,7 +70,7 @@ class ShrinkImageTests(TestCase):
     """Downscaling on upload — what keeps a round of the game from costing 40MB."""
 
     def test_long_edge_is_capped_and_aspect_is_kept(self):
-        from ..views import IMAGE_MAX_EDGE, _shrink_image
+        from ..views.images import IMAGE_MAX_EDGE, _shrink_image
 
         body, content_type = _shrink_image(make_jpeg((4032, 3024)))
         self.assertEqual(image_size(body), (IMAGE_MAX_EDGE, 900))
@@ -79,13 +79,13 @@ class ShrinkImageTests(TestCase):
     def test_portrait_is_capped_on_its_own_long_edge(self):
         """The cap is on the longer side, not on width — a portrait photo must
         come back 900x1200, never squashed toward a square."""
-        from ..views import _shrink_image
+        from ..views.images import _shrink_image
 
         body, _ = _shrink_image(make_jpeg((3024, 4032)))
         self.assertEqual(image_size(body), (900, 1200))
 
     def test_result_is_dramatically_smaller(self):
-        from ..views import _shrink_image
+        from ..views.images import _shrink_image
 
         original = make_jpeg((4032, 3024))
         body, _ = _shrink_image(original)
@@ -94,7 +94,7 @@ class ShrinkImageTests(TestCase):
     def test_an_already_small_image_is_left_alone(self):
         """Returning None rather than re-encoding: a second pass over an
         in-bounds photo must not cost it any quality."""
-        from ..views import _shrink_image
+        from ..views.images import _shrink_image
 
         self.assertIsNone(_shrink_image(make_jpeg((1200, 900))))
         self.assertIsNone(_shrink_image(make_jpeg((800, 600))))
@@ -105,14 +105,14 @@ class ShrinkImageTests(TestCase):
         photo would come out sideways in the games and the PDF — and it would
         look fine right up until it was resized.
         """
-        from ..views import _shrink_image
+        from ..views.images import _shrink_image
 
         # Orientation 6 = rotate 90°: a 4000x3000 file that displays as 3000x4000.
         body, _ = _shrink_image(make_jpeg((4000, 3000), exif_orientation=6))
         self.assertEqual(image_size(body), (900, 1200))
 
     def test_a_small_image_needing_rotation_is_still_rewritten(self):
-        from ..views import _shrink_image
+        from ..views.images import _shrink_image
 
         result = _shrink_image(make_jpeg((800, 600), exif_orientation=6))
         self.assertIsNotNone(result)
@@ -125,7 +125,7 @@ class ShrinkImageTests(TestCase):
         a .jpg name."""
         from io import BytesIO
         from PIL import Image
-        from ..views import _shrink_image
+        from ..views.images import _shrink_image
 
         buf = BytesIO()
         Image.new("RGB", (4032, 3024), (200, 80, 40)).save(buf, format="HEIF")
@@ -140,7 +140,7 @@ class ShrinkImageTests(TestCase):
         in the bucket under a .jpg key that no browser can open."""
         from io import BytesIO
         from PIL import Image
-        from ..views import _shrink_image
+        from ..views.images import _shrink_image
 
         buf = BytesIO()
         Image.new("RGB", (800, 600), (30, 60, 120)).save(buf, format="HEIF")
@@ -153,7 +153,7 @@ class ShrinkImageTests(TestCase):
     def test_heic_content_types_are_named_jpg(self):
         """The key's extension has to describe what ends up in the bucket after
         the transcode, not what the phone sent."""
-        from ..views import _CONTENT_TYPE_EXT
+        from ..views.images import _CONTENT_TYPE_EXT
 
         self.assertEqual(_CONTENT_TYPE_EXT["image/heic"], ".jpg")
         self.assertEqual(_CONTENT_TYPE_EXT["image/heif"], ".jpg")
@@ -163,7 +163,7 @@ class ShrinkImageTests(TestCase):
         time; changing format here would leave both lying."""
         from io import BytesIO
         from PIL import Image
-        from ..views import _shrink_image
+        from ..views.images import _shrink_image
 
         for fmt, content_type in (("PNG", "image/png"), ("WEBP", "image/webp")):
             buf = BytesIO()

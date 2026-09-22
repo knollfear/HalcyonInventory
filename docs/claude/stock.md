@@ -839,11 +839,13 @@ So the **raw row holds the count** and the finished row mirrors it:
   and isn't.
 - `FinishedProduct.save()` re-derives it too, covering the row being
   *created*, when there was no passthrough for the signal to find.
-- `FinishedProduct.set_on_hand()` writes a counted quantity to whichever row
-  actually holds it. Use it for stock takes — writing the finished count
-  directly means `save()` re-derives it, the number snaps back, and the count
-  looks like it never happened.
-- The Square webhook decrements the **raw** for a passthrough.
+- `ledger.move()` and `ledger.count()` write to whichever row actually
+  holds it, and every sale, bath and stock take goes through one of them.
+  Writing the finished count directly means `save()` re-derives it, the
+  number snaps back, and the count looks like it never happened — which is
+  why there is one door (see *Finished stock moves through `ledger`* in
+  `CLAUDE.md`). `FinishedProduct.set_on_hand()` is the same rule without
+  the ledger row, kept for shells and fixtures.
 
 Everything downstream keeps reading `FinishedProduct.number_on_hand` and gets
 the right answer without knowing a passthrough exists — the Square inventory
@@ -1004,7 +1006,7 @@ zero is honest *there* in a way it never is on the selling side: a cost of
 nothing overstates margin on a report nobody reads yet, where a price of
 nothing rings up free at the till with a queue behind it.
 
-**Resolving a passthrough sale must go through `set_on_hand()`.** Writing
+**Resolving a passthrough sale must go through the ledger.** Writing
 `number_on_hand` directly is correct for anything dyed and wrong here — the
 finished row is a mirror, `save()` re-derives it, the number snaps back, and
 the sale reads as though it never happened. `resolve_unmatched_sale` did

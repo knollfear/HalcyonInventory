@@ -222,6 +222,27 @@ A colorway that sold nothing is ranked last, never hidden. It may simply be
 new — 2026 is year one for colorway data — and this page is not where that
 gets decided.
 
+### Recording a bath that a sheet already claimed
+
+Two pages book a bath after the fact rather than off a sheet: the recipe
+page's production form and the *Bagged a bath* button above. Both used to
+take the blanks off the shelf and add the output, which is right for a bath
+nobody planned and wrong for one on a sheet — its blanks came off when the
+run was made (*The blanks come off when the run is made*, below), so the
+recording took them twice, and the row stayed open, still subtracting from
+the planner, for a bath already in a bag. Nothing said so: the shelf read
+low and the sheet read unfinished.
+
+`production.report(product, units, ...)` is now the door for both, and it
+**honours the claim first**: pending rows for the product are accepted in
+sheet order, whole rows only, for as long as the units cover them, and only
+what is left is booked as an unplanned bath (blanks off now, output on
+through the ledger). "Three baths of this are bagged" with two on a sheet
+ticks the sheet's two and records one more, which is what happened, and the
+page's message says which sheet was ticked. A report smaller than the next
+row leaves that row alone — a short bath is the sheet's own page's job,
+because it is the one that can say how short.
+
 ## `private/produced-since/`: the receipt, and the one way out
 
 Everything above writes `InventoryLog` rows. Every page that reads them

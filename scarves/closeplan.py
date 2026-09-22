@@ -43,7 +43,7 @@ from dataclasses import dataclass, field
 
 from django.db import transaction
 
-from . import production
+from . import production, slowsellers
 from .models import CloseRun, CloseRunRow, ProductionRun, ProductionRunRow
 
 
@@ -175,7 +175,6 @@ def cards(close):
     way, including claimed cards; the page lists those separately so the pool
     stays short, and `is_claimed` is what it reads.
     """
-    from . import slowsellers
 
     answered = (
         CloseRunRow.objects.filter(run=close)

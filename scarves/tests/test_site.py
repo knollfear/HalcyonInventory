@@ -953,7 +953,7 @@ class URLBucketTests(TestCase):
 
     def test_the_badge_follows_the_url_not_a_hand_maintained_list(self):
         """Move a view between buckets and the badge must move with it."""
-        from scarves.views import _site_map
+        from scarves.sitemap import site_map as _site_map
 
         by_name = {
             item["name"]: item

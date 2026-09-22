@@ -42,6 +42,8 @@ right, so a forged cookie buys a link to a page the browser could already
 reach. That is why these are plain cookies where `crew.py` signs its own: there
 is nothing to protect, and defensive parsing is what actually matters.
 """
+from .sitemap import site_map
+
 
 #: The pinned set. `name` or `name:Label`, comma separated.
 PIN_COOKIE = "scarves_nav"
@@ -84,11 +86,7 @@ def pinnable():
     is not on the map, and a parameterised page reverses to nothing, so
     `raw_inventory_view` cannot be pinned while its picker can.
 
-    Imported lazily because `views` imports this module. Same shape as
-    `_site_map`'s own deferred import of the URLconf.
     """
-    from .views import _site_map
-
     return [
         {
             "name": item["name"],
@@ -96,7 +94,7 @@ def pinnable():
             "category": group["name"],
             "url": item["url"],
         }
-        for group in _site_map()["grouped"]
+        for group in site_map()["grouped"]
         for item in group["items"]
         if item["url"] and item["name"] != "—"
     ]

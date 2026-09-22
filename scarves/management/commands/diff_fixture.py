@@ -100,8 +100,8 @@ class Command(BaseCommand):
         created = skipped = 0
 
         # Cache live recipes and raw products by name
-        recipes = {r.name: r for r in Recipe.objects.filter(is_active=True)}
-        raw_products = {rp.name: rp for rp in RawProduct.objects.filter(is_active=True)}
+        recipes = {r.name: r for r in Recipe.objects.active()}
+        raw_products = {rp.name: rp for rp in RawProduct.objects.active()}
 
         for name in names:
             fix = fixture_fps[name]

@@ -46,7 +46,7 @@ class Command(BaseCommand):
         from scarves.models import RawProduct
 
         products = list(
-            RawProduct.objects.filter(is_active=True)
+            RawProduct.objects.active()
             .select_related("category").order_by("category__name", "name")
         )
         names = {p.pk: p.name for p in products}

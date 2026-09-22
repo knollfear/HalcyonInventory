@@ -11,6 +11,7 @@ from .labels import (
     BARCODE as LABEL_BARCODE,
     STYLE_CHOICES as LABEL_STYLE_CHOICES,
 )
+from .skus import slug
 from .models import (  # RecipeDye is the through model
     UNCATEGORIZED_BRAND,
     FinishedProduct,
@@ -19,6 +20,7 @@ from .models import (  # RecipeDye is the through model
     Dye,
     DyeBrand,
     Employee,
+    LabelStock,
     Recipe,
     RecipeDye,
     CatalogGroup,
@@ -540,7 +542,7 @@ class HoursForm(forms.Form):
 
         # Only active rows, and evaluated per-instance rather than at import
         # time so somebody hired this morning is on the list without a redeploy.
-        self.fields["employee"].queryset = Employee.objects.filter(is_active=True)
+        self.fields["employee"].queryset = Employee.objects.active()
         self.fields["hours"].widget.choices = self.hour_choices()
         self.fields["work_date"].widget.attrs.update({
             "min": (self.today - timedelta(days=self.MAX_BACKDATE_DAYS)).isoformat(),
@@ -650,8 +652,6 @@ class PickedBathsField(forms.Field):
     MAX_PER_ITEM = 10
 
     def clean(self, value):
-        from .models import FinishedProduct
-
         if not value:
             return []
 
@@ -665,7 +665,7 @@ class PickedBathsField(forms.Field):
 
         found = {
             p.pk: p
-            for p in FinishedProduct.objects.filter(pk__in=wanted, is_active=True)
+            for p in FinishedProduct.objects.active().filter(pk__in=wanted)
             .select_related("raw_product", "recipe")
         }
         if set(wanted) - set(found):
@@ -816,7 +816,7 @@ class ProductionSheetForm(forms.Form):
         # never going to be suggested, so offering it as something to rule out
         # is a tick that can only do nothing.
         self.fields["without_blanks"].queryset = (
-            RawProduct.objects.filter(is_active=True, made_in_a_dye_bath=True)
+            RawProduct.objects.active().filter(made_in_a_dye_bath=True)
             .select_related("category")
             .order_by("category__name", "name")
         )
@@ -911,8 +911,6 @@ class ProductionSheetForm(forms.Form):
         box's older number. The add would look like it did nothing — which is
         exactly how this arrived.
         """
-        from .models import FinishedProduct
-
         raw = (self.data.get("add") or "").strip()
         if not raw.isdigit():
             return None
@@ -998,8 +996,6 @@ class LabelItemsField(forms.Field):
     widget = forms.MultipleHiddenInput
 
     def clean(self, value):
-        from .models import FinishedProduct
-
         if not value:
             return []
 
@@ -1116,14 +1112,12 @@ class LabelRunForm(forms.Form):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        from .models import LabelStock, RawProduct, RawProductCategory
-
         self.fields["category"].queryset = RawProductCategory.objects.order_by("name")
         self.fields["raw_products"].queryset = RawProduct.objects.filter(
             is_active=True
         ).select_related("category").order_by("category__name", "name")
 
-        stocks = LabelStock.objects.filter(is_active=True)
+        stocks = LabelStock.objects.active()
         self.fields["stock"].queryset = stocks
         self.fields["stock"].empty_label = None
         first = stocks.first()
@@ -1137,8 +1131,6 @@ class LabelRunForm(forms.Form):
         Falls back to a lenient parse when the form is invalid, so a mistake
         in some other field doesn't wipe a list somebody just built by hand.
         """
-        from .models import FinishedProduct
-
         if not self.is_bound:
             return []
         if self.is_valid():
@@ -1323,7 +1315,7 @@ class BoothPhotoForm(forms.Form):
         # asked to prove themselves twice on the same page.
         user = kwargs.pop("user", None)
         super().__init__(*args, **kwargs)
-        self.fields["employee"].queryset = Employee.objects.filter(is_active=True)
+        self.fields["employee"].queryset = Employee.objects.active()
 
         self.signed_in_as = None
         if user is not None and user.is_authenticated:
@@ -1356,7 +1348,6 @@ class BoothPhotoForm(forms.Form):
         Run through the same slug the SKU was built with, so someone typing
         `infi-` or `Infi 6` lands on the same prefix the barcode carries.
         """
-        from .skus import slug
         return slug(self.cleaned_data.get("sku_prefix"))
 
     def clean_sold_at(self):
@@ -1453,7 +1444,7 @@ class CloseStartForm(forms.Form):
     def __init__(self, *args, **kwargs):
         user = kwargs.pop("user", None)
         super().__init__(*args, **kwargs)
-        self.fields["employee"].queryset = Employee.objects.filter(is_active=True)
+        self.fields["employee"].queryset = Employee.objects.active()
 
         self.signed_in_as = None
         if user is not None and user.is_authenticated:
@@ -1705,7 +1696,7 @@ class CrewHandbookForm(forms.Form):
         # the ones that sign in through Django, and picking one is a dead end
         # because `clean_pin` can never be satisfied for a blank PIN.
         self.fields["employee"].queryset = (
-            Employee.objects.filter(is_active=True).exclude(pin="")
+            Employee.objects.active().exclude(pin="")
         )
 
         self.signed_in_as = None
@@ -1896,7 +1887,6 @@ class RawProductForm(forms.ModelForm):
             "name": "What it is called",
             "category": "Which table it sits on",
             "is_active": "Still bought and used",
-            "made_in_a_dye_bath": "Where it comes from",
             "price": "What one costs you",
             "suggested_price": "What a finished one sells for",
             "order_url": "The page you reorder it from",
@@ -2006,13 +1996,13 @@ class RawProductForm(forms.ModelForm):
         # Prefetched, because every row draws its dyes: 162 colourways is
         # 162 queries without it and two with.
         self.fields["colorways"].queryset = (
-            Recipe.objects.filter(is_active=True)
+            Recipe.objects.active()
             .prefetch_related("recipe_dyes__dye")
             .order_by("name")
         )
         if self.instance.pk:
             self.fields["colorways"].help_text += (
-                f"\n\n{self.instance.finished_products.filter(is_active=True).count()} "
+                f"\n\n{self.instance.finished_products.active().count()} "
                 f"already exist."
             )
 

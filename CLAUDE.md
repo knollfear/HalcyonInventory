@@ -151,11 +151,11 @@ templates or tests (`reverse()` them, including in regexes).
 
 ## Site map (`/scarves/private/`)
 
-`scarves/views.py` has a `@page_meta(...)` decorator and a dynamic `index` view
+`scarves/sitemap.py` has a `@page_meta(...)` decorator and `scarves/views/site.py` a dynamic `index` view
 that builds a self-documenting site map by introspecting the URLconf. The map is
 generated at request time — nothing is hardcoded.
 
-There are **two** maps, both built by the shared `_site_map()` helper:
+There are **two** maps, both built by the shared `sitemap.site_map()` helper:
 
 - `/scarves/private/` — the staff directory. Lists everything, and badges each
   card `public`, `private` or `secret` from the route's own first path segment,
@@ -274,6 +274,19 @@ when the run became the only account of what a session was *asked* to do —
 the ledger records what entered inventory, so a cancelled bath and a bath
 nobody printed leave the same trace there, which is none. Retiring a sheet is
 cancelling what is left on it; see the production-sheet section.
+
+**Finished stock moves through `scarves/ledger.py` and nowhere else.**
+`ledger.move(product, delta, ...)` for production and sales, which are deltas
+by nature; `ledger.count(product, value, ...)` for corrections, which are
+absolute (see *Self-healing* below). Each locks the row that actually holds
+the number — the raw product for an undyed passthrough — writes it, and
+writes the `InventoryLog` row in the same call with a required `source`.
+Seven call sites used to do this by hand and had drifted: some locked, some
+didn't, some knew about the passthrough mirror, some wrote to it and let it
+snap back. Nothing else may write `number_on_hand` on a finished product;
+`LedgerTests` greps for a `+=` that tries. Raw blanks are the exception and
+move in exactly two places — claimed by `production.open_rows` when a run is
+made, and taken by `production.report` for a bath nobody planned.
 
 **An `InventoryLog` row is never edited or deleted either, and a mistake in one
 is undone by a second row.** `private/produced-since/` has a *take it back*
@@ -423,6 +436,13 @@ Three rules follow:
   say what the shared claim does. A mode asks somebody to pick a loop before
   they know which suits the week, and the honest answer is both — par at a
   desk off season, cards during the nine weeks the stall is open.
+- **A bath recorded after the fact honours the claim first.** The recipe
+  page's production form and *Bagged a bath* on `private/production-needed/`
+  both go through `production.report`, which accepts this product's open
+  sheet rows before booking anything as unplanned — the sheet's blanks came
+  off when it was made, and recording the same bath from another page used
+  to take them a second time and leave the row open. Whole rows only; a
+  short bath is reported on the sheet's own page, which can say how short.
 - **A row is one bath, always.** "I made two" appends a second row rather than
   doubling a quantity, because every end state is per bath: three baths where
   one pot failed is `5, 5, 0`.

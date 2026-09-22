@@ -100,7 +100,7 @@ class ByColorSheetTests(TestCase):
         )
 
     def _pages(self, category=None):
-        from ..views import _by_color_pages
+        from ..views.sheets import _by_color_pages
         return _by_color_pages(category or self.silk)
 
     def test_a_two_band_colorway_prints_in_both_sections(self):
@@ -250,7 +250,7 @@ class ByColorSheetTests(TestCase):
     def test_the_tab_slot_is_the_band_not_the_page(self):
         """Fixed slots are what make a gap in a printed stack mean 'this
         category has nothing in green' rather than 'the tabs shifted up'."""
-        from ..views import _band_tab_painter
+        from ..views.sheets import _band_tab_painter
 
         painted = []
 

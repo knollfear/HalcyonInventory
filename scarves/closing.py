@@ -63,6 +63,7 @@ from django.db import transaction
 from django.db.models import F
 from django.utils import timezone
 
+from . import ledger
 from .models import CloseRun, CloseRunRow, FinishedProduct, InventoryLog
 
 
@@ -240,8 +241,10 @@ def record_count(run, row, counted):
             note = None
 
         if delta:
-            product.set_on_hand(counted)
-            log = _adjustment(product, delta, note)
+            log = ledger.count(
+                product, counted,
+                source=InventoryLog.SOURCE_SUNDAY_CLOSE, notes=note,
+            )
 
         row.outcome = outcome
         row.counted = counted
@@ -292,12 +295,14 @@ def undo(run, product_row):
         product = FinishedProduct.objects.select_related("raw_product").get(
             pk=product_row.finished_product_id
         )
-        product.set_on_hand(product.number_on_hand - log.quantity)
-        _adjustment(
-            product,
-            -log.quantity,
-            f"Sunday close: answer taken back on the page "
-            f"(reverses the {log.quantity:+d} logged a moment earlier).",
+        ledger.move(
+            product, -log.quantity,
+            log_type=InventoryLog.ADJUSTMENT,
+            source=InventoryLog.SOURCE_SUNDAY_CLOSE,
+            notes=(
+                f"Sunday close: answer taken back on the page "
+                f"(reverses the {log.quantity:+d} logged a moment earlier)."
+            ),
         )
 
         # A row the close never predicted was invented by somebody holding a
@@ -350,18 +355,6 @@ def add_tag(run, product):
         added_by_tag=True,
     )
     return row, True
-
-
-def _adjustment(product, delta, notes):
-    """One stock movement, tagged as this close's."""
-    return InventoryLog.objects.create(
-        finished_product=product,
-        raw_product=product.raw_product,
-        log_type=InventoryLog.ADJUSTMENT,
-        source=InventoryLog.SOURCE_SUNDAY_CLOSE,
-        quantity=delta,
-        notes=notes,
-    )
 
 
 def card_status(rows):

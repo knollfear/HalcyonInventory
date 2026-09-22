@@ -35,7 +35,7 @@ Nothing here writes anything. It says where you are and what is next; the
 views do the filing.
 """
 
-from .models import DisplayPosition
+from .models import DisplayPosition, FinishedProduct
 
 
 def stops(fixture):
@@ -202,7 +202,6 @@ def candidates(fixture, photo_bands, limit=12):
     Retired colorways are left out: a peg being filled in now is a decision
     about what hangs there this season.
     """
-    from .models import FinishedProduct
 
     products = FinishedProduct.objects.filter(
         is_active=True, recipe__isnull=False
@@ -222,7 +221,6 @@ def rankable(fixture):
     where the photo simply matched nothing — and the fix for the first is a
     trip to `private/colors/`, which nobody makes if they don't know.
     """
-    from .models import FinishedProduct
 
     products = FinishedProduct.objects.filter(
         is_active=True, recipe__isnull=False

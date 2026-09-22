@@ -56,6 +56,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_HALF_UP
 
+from . import production
 from .models import FinishedProduct, RawProduct
 
 ZERO = Decimal("0")
@@ -178,15 +179,14 @@ def sections():
     construction, so the totals underneath them add up without anything
     being counted twice.
     """
-    from . import production
 
     blanks = list(
-        RawProduct.objects.filter(is_active=True).select_related("category")
+        RawProduct.objects.active().select_related("category")
     )
     claimed = production.claimed_units(blanks)
 
     finished = list(
-        FinishedProduct.objects.filter(is_active=True)
+        FinishedProduct.objects.active()
         .select_related("raw_product", "raw_product__category", "recipe")
     )
     by_blank = {}

@@ -33,7 +33,7 @@ class Command(BaseCommand):
         # till, so it gets a prompt rather than a line in --help.
         if overwrite:
             at_risk = (
-                FinishedProduct.objects.filter(is_active=True)
+                FinishedProduct.objects.active()
                 .exclude(sku="")
                 .count()
             )
@@ -54,7 +54,7 @@ class Command(BaseCommand):
             FinishedProduct.objects.exclude(sku="").values_list("sku", flat=True)
         )
 
-        qs = FinishedProduct.objects.filter(is_active=True).select_related(
+        qs = FinishedProduct.objects.active().select_related(
             "raw_product", "recipe"
         )
         if not overwrite:

@@ -52,7 +52,7 @@ class GamePoolTests(TestCase):
         """The dedupe guarantee. An infinity and a rectangle from the same dye
         bath photograph near-identically; dealt as two pairs the board would be
         unwinnable by sight."""
-        from ..views import _deal_board, _recipe_game_pool
+        from ..views.games import _deal_board, _recipe_game_pool
 
         recipe = make_recipe("Stormy Sea")
         make_product(recipe, "Stormy Sea Infinity")
@@ -65,7 +65,7 @@ class GamePoolTests(TestCase):
         self.assertEqual(len(cards), 2)
 
     def test_recipes_without_images_are_excluded(self):
-        from ..views import _recipe_game_pool
+        from ..views.games import _recipe_game_pool
 
         make_product(make_recipe("Photographed"), "A", with_image=True)
         make_product(make_recipe("Unphotographed"), "B", with_image=False)
@@ -74,7 +74,7 @@ class GamePoolTests(TestCase):
         self.assertEqual(names, {"Photographed"})
 
     def test_inactive_recipes_and_products_are_excluded(self):
-        from ..views import _recipe_game_pool
+        from ..views.games import _recipe_game_pool
 
         make_product(make_recipe("Retired", active=False), "C")
         make_product(make_recipe("Discontinued Product"), "D", active=False)
@@ -88,14 +88,14 @@ class DealTests(TestCase):
             make_product(make_recipe(f"Recipe {i}"), f"Product {i}")
 
     def test_deal_returns_two_cards_per_pair(self):
-        from ..views import _deal_board
+        from ..views.games import _deal_board
 
         cards, pairs = _deal_board(6)
         self.assertEqual(pairs, 6)
         self.assertEqual(len(cards), 12)
 
     def test_every_pair_id_appears_exactly_twice(self):
-        from ..views import _deal_board
+        from ..views.games import _deal_board
 
         cards, _ = _deal_board(6)
         counts = {}
@@ -104,7 +104,7 @@ class DealTests(TestCase):
         self.assertTrue(all(n == 2 for n in counts.values()), counts)
 
     def test_each_pair_is_one_photo_and_one_name(self):
-        from ..views import _deal_board
+        from ..views.games import _deal_board
 
         cards, _ = _deal_board(6)
         by_pair = {}
@@ -114,7 +114,7 @@ class DealTests(TestCase):
             self.assertEqual(sorted(kinds), ["name", "photo"], f"pair {pair_id}")
 
     def test_small_pool_degrades_instead_of_erroring(self):
-        from ..views import _deal_board
+        from ..views.games import _deal_board
 
         # Deactivating is how a pool actually shrinks — recipes can't be deleted
         # while products reference them (FinishedProduct.recipe is PROTECT).
@@ -124,7 +124,7 @@ class DealTests(TestCase):
         self.assertEqual(len(cards), 2)
 
     def test_empty_pool_deals_nothing(self):
-        from ..views import _deal_board
+        from ..views.games import _deal_board
 
         FinishedProductImage.objects.all().delete()
         cards, pairs = _deal_board(6)
@@ -198,7 +198,7 @@ class QuizPoolTests(TestCase):
         """Same dedupe guarantee as the matching board, and it matters more
         here: two names from one dye bath under one photo is a question with two
         right answers."""
-        from ..views import _quiz_product_pool
+        from ..views.games import _quiz_product_pool
 
         recipe = make_recipe("Stormy Sea")
         make_product(recipe, "Stormy Sea Infinity")
@@ -207,7 +207,7 @@ class QuizPoolTests(TestCase):
         self.assertEqual(len(_quiz_product_pool()), 1)
 
     def test_unphotographed_and_inactive_are_excluded(self):
-        from ..views import _quiz_product_pool
+        from ..views.games import _quiz_product_pool
 
         make_product(make_recipe("A"), "Photographed")
         make_product(make_recipe("B"), "Unphotographed", with_image=False)
@@ -222,12 +222,12 @@ class QuizDealTests(TestCase):
             make_product(make_recipe(f"Recipe {i}"), f"Product {i}")
 
     def test_deals_the_requested_number_of_questions(self):
-        from ..views import _deal_quiz
+        from ..views.games import _deal_quiz
 
         self.assertEqual(len(_deal_quiz(10)), 10)
 
     def test_every_question_has_exactly_one_right_answer(self):
-        from ..views import _deal_quiz
+        from ..views.games import _deal_quiz
 
         for question in _deal_quiz(10):
             correct = [o for o in question["options"] if o["correct"]]
@@ -236,7 +236,7 @@ class QuizDealTests(TestCase):
 
     def test_options_are_four_distinct_names(self):
         """A repeated name would be a second right answer or a wasted slot."""
-        from ..views import _deal_quiz, QUIZ_CHOICES
+        from ..views.games import _deal_quiz, QUIZ_CHOICES
 
         for question in _deal_quiz(10):
             names = [o["name"] for o in question["options"]]
@@ -244,7 +244,7 @@ class QuizDealTests(TestCase):
             self.assertEqual(len(set(names)), QUIZ_CHOICES, names)
 
     def test_no_product_is_asked_about_twice(self):
-        from ..views import _deal_quiz
+        from ..views.games import _deal_quiz
 
         answers = [q["answer"] for q in _deal_quiz(10)]
         self.assertEqual(len(set(answers)), len(answers))
@@ -252,7 +252,7 @@ class QuizDealTests(TestCase):
     def test_the_answer_is_not_always_in_the_same_slot(self):
         """A stable position would make the quiz winnable without looking — and
         a forgotten shuffle looks fine in any single hand-played round."""
-        from ..views import _deal_quiz
+        from ..views.games import _deal_quiz
 
         slots = set()
         for question in _deal_quiz(12, rng=random.Random(0)):
@@ -262,7 +262,7 @@ class QuizDealTests(TestCase):
         self.assertGreater(len(slots), 1, slots)
 
     def test_distractors_never_share_the_answers_recipe(self):
-        from ..views import _deal_quiz, _quiz_product_pool
+        from ..views.games import _deal_quiz, _quiz_product_pool
 
         # Two products off one recipe: only one may ever reach the pool, so the
         # other can never turn up as a distractor beside it.
@@ -279,7 +279,7 @@ class QuizDealTests(TestCase):
         )
 
     def test_small_pool_degrades_instead_of_erroring(self):
-        from ..views import _deal_quiz
+        from ..views.games import _deal_quiz
 
         FinishedProduct.objects.exclude(name="Product 0").update(is_active=False)
         questions = _deal_quiz(10)
@@ -287,7 +287,7 @@ class QuizDealTests(TestCase):
         self.assertEqual(len(questions[0]["options"]), 1)
 
     def test_empty_pool_deals_nothing(self):
-        from ..views import _deal_quiz
+        from ..views.games import _deal_quiz
 
         FinishedProductImage.objects.all().delete()
         self.assertEqual(_deal_quiz(10), [])
@@ -300,7 +300,7 @@ class QuizDealTests(TestCase):
         Three dyes apiece, because that's what a real scarf is — a flow across
         several distinct colors, not one blended shade.
         """
-        from ..views import _deal_quiz, _quiz_product_pool
+        from ..views.games import _deal_quiz, _quiz_product_pool
 
         FinishedProduct.objects.update(is_active=False)
         blues = [
@@ -371,7 +371,7 @@ class QuizViewTests(TestCase):
         self.assertTrue(response.context["board_url"].startswith("https://"))
 
     def test_thin_pool_shows_the_empty_state_instead_of_a_giveaway(self):
-        from ..views import QUIZ_MIN_POOL
+        from ..views.games import QUIZ_MIN_POOL
 
         keep = [f"Product {i}" for i in range(QUIZ_MIN_POOL - 1)]
         FinishedProduct.objects.exclude(name__in=keep).update(is_active=False)
@@ -382,7 +382,7 @@ class QuizViewTests(TestCase):
     def test_scoring_constants_reach_the_template(self):
         """The JS reads these from the render; a rename in views.py that missed
         the template would silently score every answer as NaN."""
-        from ..views import QUIZ_POINTS_CORRECT, QUIZ_SPEED_BONUS, QUIZ_SPEED_WINDOW
+        from ..views.games import QUIZ_POINTS_CORRECT, QUIZ_SPEED_BONUS, QUIZ_SPEED_WINDOW
 
         response = self.client.get(reverse("quiz_board"))
         body = response.content.decode()

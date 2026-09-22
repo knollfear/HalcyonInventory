@@ -24,7 +24,8 @@ from collections import Counter, defaultdict
 
 from django.db import transaction
 
-from .models import FinishedProduct, RawProduct, Sale, SaleLine
+from . import seasons
+from .models import FaireDay, FinishedProduct, RawProduct, Sale, SaleLine
 
 
 def words(name):
@@ -217,8 +218,6 @@ def write(lines, source, force=False):
 
 def report(command, lines, skipped, matcher, result, dry_run):
     """The reconciliation print, shared so both doors say the same things."""
-    from . import seasons
-    from .models import FaireDay
 
     out, style = command.stdout, command.style
 

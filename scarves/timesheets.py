@@ -32,6 +32,8 @@ from collections import OrderedDict
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
+from .models import TimeEntry
+
 #: Wednesday. `date.weekday()` counts Monday as 0, so Wednesday is 2.
 WEEK_START_WEEKDAY = 2
 
@@ -100,7 +102,6 @@ def week_summary(start: date) -> dict:
     happened to report them, so Booth is above Dyeing for everybody and the
     column of labels reads straight down.
     """
-    from .models import TimeEntry
 
     days = week_days(start)
     entries = (

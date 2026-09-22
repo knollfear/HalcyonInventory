@@ -63,7 +63,7 @@ class Command(BaseCommand):
             )
 
         raw_products = list(
-            RawProduct.objects.filter(catalog_group=group, is_active=True)
+            RawProduct.objects.active().filter(catalog_group=group)
             .order_by("name")
         )
         if not raw_products:

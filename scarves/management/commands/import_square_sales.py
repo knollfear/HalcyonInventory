@@ -1,5 +1,6 @@
 import csv
 from django.core.management.base import BaseCommand, CommandError
+from scarves import ledger
 from scarves.models import FinishedProduct, InventoryLog
 
 
@@ -75,19 +76,13 @@ class Command(BaseCommand):
                     f"on_hand={fp.number_on_hand}→{max(fp.number_on_hand - qty, 0)}"
                 )
             else:
-                # An undyed passthrough keeps its count on the raw row and this
-                # one is the mirror, so writing here is re-derived away by
-                # save() — the row snaps back and the import prints OK having
-                # moved nothing. `set_on_hand` writes to whichever row actually
-                # holds the pile, and clamps at zero. Same reasoning the webhook
-                # applies with its own passthrough branch.
-                fp.set_on_hand(fp.number_on_hand - qty)
-                InventoryLog.objects.create(
-                    finished_product=fp,
-                    raw_product=fp.raw_product,
+                # Through the ledger, which writes to whichever row holds the
+                # pile — an undyed passthrough keeps its count on the raw row
+                # and this one is a mirror — and clamps at zero.
+                ledger.move(
+                    fp, -qty,
                     log_type=InventoryLog.SALE,
                     source=InventoryLog.SOURCE_SQUARE_IMPORT,
-                    quantity=-qty,
                     sale_reference=transaction_id,
                     notes=f"Imported from CSV: {date} {item_name}",
                 )

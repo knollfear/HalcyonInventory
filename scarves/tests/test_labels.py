@@ -521,7 +521,7 @@ class PrintShopTests(TestCase):
         form = LabelRunForm(self._params(x_offset_mm="1.5", y_offset_mm="-2"))
         self.assertTrue(form.is_valid(), form.errors)
 
-        from scarves.views import _label_stock_from
+        from scarves.views.labels import _label_stock_from
         stock = _label_stock_from(form)
         self.assertEqual(stock.x_offset_mm, Decimal("1.5"))
         self.assertEqual(stock.y_offset_mm, Decimal("-2"))
@@ -532,7 +532,7 @@ class PrintShopTests(TestCase):
         form = LabelRunForm(self._params(x_offset_mm="3"))
         self.assertTrue(form.is_valid(), form.errors)
 
-        from scarves.views import _label_stock_from
+        from scarves.views.labels import _label_stock_from
         _label_stock_from(form)
         self.stock.refresh_from_db()
         self.assertEqual(self.stock.x_offset_mm, Decimal("0"))
@@ -542,7 +542,7 @@ class PrintShopTests(TestCase):
         form = LabelRunForm(self._params(x_offset_mm="", y_offset_mm=""))
         self.assertTrue(form.is_valid(), form.errors)
 
-        from scarves.views import _label_stock_from
+        from scarves.views.labels import _label_stock_from
         self.assertEqual(_label_stock_from(form).x_offset_mm, Decimal("1"))
 
     def test_the_override_actually_moves_the_labels(self):

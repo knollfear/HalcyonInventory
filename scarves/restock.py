@@ -149,6 +149,7 @@ from datetime import timedelta
 from django.db import transaction
 from django.utils import timezone
 
+from . import ledger
 from .models import (
     DisplayFixture,
     FinishedProduct,
@@ -648,7 +649,7 @@ def pull_list():
     kind of claim that must not overstate.
     """
     wanted = {}
-    for fixture in DisplayFixture.objects.filter(is_active=True).select_related(
+    for fixture in DisplayFixture.objects.active().select_related(
         "raw_product"
     ):
         for row in board(fixture):
@@ -794,28 +795,17 @@ def record(restock_pass, position, counted=None):
 
     if delta:
         was = product.number_on_hand
-        product.set_on_hand(counted)
-        check.applied_log = _adjustment(
-            product,
-            delta,
-            f"Restock: {product.name} counted at {counted} against the app's "
-            f"{was}. The app was {'under' if delta > 0 else 'over'} by "
-            f"{abs(delta)}.",
+        check.applied_log = ledger.count(
+            product, counted,
+            source=InventoryLog.SOURCE_RESTOCK,
+            notes=(
+                f"Restock: {product.name} counted at {counted} against the "
+                f"app's {was}. The app was {'under' if delta > 0 else 'over'} "
+                f"by {abs(delta)}."
+            ),
         )
     check.save()
     return check
-
-
-def _adjustment(product, delta, notes):
-    """One stock movement, tagged as a restock's."""
-    return InventoryLog.objects.create(
-        finished_product=product,
-        raw_product=product.raw_product,
-        log_type=InventoryLog.ADJUSTMENT,
-        source=InventoryLog.SOURCE_RESTOCK,
-        quantity=delta,
-        notes=notes,
-    )
 
 
 def summary(restock_pass):

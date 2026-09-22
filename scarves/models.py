@@ -1,5 +1,6 @@
 import re
 import secrets
+from datetime import timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
 from colorfield.fields import ColorField
@@ -16,6 +17,49 @@ from django.utils import timezone
 from . import seasons
 
 from .colorbands import BAND_CHOICES
+
+
+class ActiveQuerySet(models.QuerySet):
+    """`.active()` on every model that retires instead of deleting.
+
+    *Retire, don't delete* (`CLAUDE.md`) means `is_active=True` is the test
+    for "still part of the shop" on products, recipes, blanks and crew alike,
+    and it was written out by hand at over a hundred sites. That is how the
+    rule gets broken: `candidates()` once remembered the product's flag and
+    forgot the recipe's, and a retired colorway kept being asked for. A
+    filter with a name is the same query, spelt once.
+
+    Reverse managers inherit it, so `recipe.finished_products.active()` reads
+    the same as `FinishedProduct.objects.active()`.
+    """
+
+    def active(self):
+        return self.filter(is_active=True)
+
+
+class FinishedProductQuerySet(ActiveQuerySet):
+    """The two readings of "a live product" that every planner and sheet needs."""
+
+    def dyed(self):
+        """Active, and on a colorway somebody still dyes.
+
+        The join through `recipe` drops undyed passthroughs by construction
+        (`recipe` is null on those — see *Undyed stock* in
+        `docs/claude/stock.md`), and `recipe__is_active` drops a retired
+        colorway, which a retired *product* never did on its own. Fancy veils
+        are in: they carry a colorway.
+        """
+        return self.active().filter(recipe__is_active=True)
+
+    def dyeable(self):
+        """What a dye bath can make: `dyed()`, on a blank that goes in the pot.
+
+        Fancy veils are dyed scarves with extra line work added, so they pass
+        `dyed()` and are excluded here — a shortage of one is not answered by
+        dyeing. This is the planner's set (`production.candidates`,
+        `top_ups`) and the one the reference sheets print from.
+        """
+        return self.dyed().filter(raw_product__made_in_a_dye_bath=True)
 
 
 class DyeBrand(models.Model):
@@ -279,6 +323,9 @@ class Supplier(models.Model):
         help_text="Uncheck when you stop buying from them. Retire, don't delete.",
     )
 
+
+    objects = ActiveQuerySet.as_manager()
+
     class Meta:
         ordering = ["name"]
 
@@ -292,7 +339,7 @@ class Supplier(models.Model):
 
     @property
     def blank_count(self):
-        return self.raw_products.filter(is_active=True).count()
+        return self.raw_products.active().count()
 
 
 class RawProduct(models.Model):
@@ -508,6 +555,9 @@ class RawProduct(models.Model):
         ),
     )
 
+
+    objects = ActiveQuerySet.as_manager()
+
     class Meta:
         ordering = ["category__name", "name"]
 
@@ -536,6 +586,18 @@ class RawProduct(models.Model):
         if self.supplier_id:
             return ("supplier", self.supplier.get_absolute_url(), self.supplier.name)
         return None
+
+    @property
+    def bath_size(self) -> int:
+        """How many of this blank go in one dye bath. Never 0.
+
+        A blank with no bath size recorded is treated as one per bath, so a
+        recorded bath still moves stock and a planned one still claims a
+        skein. Every caller used to spell `number_per_dye_bath or 1` itself,
+        and a caller that forgot the `or 1` divided by zero on the one blank
+        nobody had got round to.
+        """
+        return self.number_per_dye_bath or 1
 
     @property
     def raw_shortage(self) -> int:
@@ -725,6 +787,9 @@ class Recipe(models.Model):
             "look in orange, it isn't there, and nothing says why."
         ),
     )
+
+
+    objects = ActiveQuerySet.as_manager()
 
     class Meta:
         ordering = ["name"]
@@ -946,6 +1011,9 @@ class FinishedProduct(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+
+    objects = FinishedProductQuerySet.as_manager()
+
     class Meta:
         unique_together = ("raw_product", "recipe", "name")
         ordering = ["name"]
@@ -1001,6 +1069,32 @@ class FinishedProduct(models.Model):
         if update_fields is not None and field not in update_fields:
             kwargs["update_fields"] = list(update_fields) + [field]
 
+    def fancy_product(self):
+        """The one fancy product this could be finished as, or `None`.
+
+        **One to one**, off `RawProduct.fancy_counterpart`: a half circle veil
+        becomes a fancy half circle veil and nothing else. That is what lets
+        production route a bath's output without asking anybody which blank —
+        there is only one answer, so there is no question.
+
+        `fancy.target_for` is the other shape, taking a blank because the
+        conversion page lets somebody choose one. Both exist on purpose: the
+        conversion page is retrospective and the person doing it is holding
+        the scarf, while this runs at the moment a bath is accepted and has
+        to be unambiguous with nobody to ask.
+        """
+        if self.recipe_id is None:
+            return None
+        blank = self.raw_product.fancy_counterpart
+        if blank is None:
+            return None
+        return (
+            FinishedProduct.objects.active()
+            .filter(raw_product=blank, recipe_id=self.recipe_id)
+            .select_related("raw_product", "recipe")
+            .first()
+        )
+
     @property
     def is_passthrough(self) -> bool:
         """Bought and sold as it arrives — no dye step, no colorway.
@@ -1024,6 +1118,10 @@ class FinishedProduct(models.Model):
 
     def set_on_hand(self, value):
         """Write a counted quantity to whichever row actually holds it.
+
+        **Prefer `ledger.count`**, which does this under a lock and writes
+        the `InventoryLog` row in the same call. This is the bare write, for
+        a shell or a fixture where no movement is being recorded.
 
         For anything dyed that is this row. For a passthrough it is the raw
         product — the two describe one pile, and writing here instead would
@@ -1087,9 +1185,8 @@ class FinishedProduct(models.Model):
 
     @property
     def bath_size(self) -> int:
-        """How many of this come out of one dye bath. Never 0 — `record_dye_bath`
-        already treats a missing bath size as 1, and this has to agree with it."""
-        return self.raw_product.number_per_dye_bath or 1
+        """How many of this come out of one dye bath. Never 0 — see `RawProduct.bath_size`."""
+        return self.raw_product.bath_size
 
     @property
     def behind_a_bath(self) -> bool:
@@ -1489,6 +1586,9 @@ class Employee(models.Model):
     )
     notes = models.TextField(blank=True)
 
+
+    objects = ActiveQuerySet.as_manager()
+
     class Meta:
         ordering = ["name"]
 
@@ -1661,6 +1761,9 @@ class LabelStock(models.Model):
     )
 
     is_active = models.BooleanField(default=True)
+
+
+    objects = ActiveQuerySet.as_manager()
 
     class Meta:
         ordering = ["name"]
@@ -1844,7 +1947,7 @@ class BoothPhoto(models.Model):
         Empty prefix means every active product — the reviewer picks by hand,
         which is the honest answer rather than pretending to have narrowed it.
         """
-        products = FinishedProduct.objects.filter(is_active=True)
+        products = FinishedProduct.objects.active()
         if self.sku_prefix:
             products = products.filter(sku__istartswith=self.sku_prefix)
         return products.select_related("raw_product", "recipe").order_by("name")
@@ -2009,6 +2112,14 @@ def normalize_token(text):
     would buy real bits for the same effort, if it is ever wanted.
     """
     return re.sub(r"[^a-z0-9]", "", (text or "").lower())
+
+
+#: How long an open sheet keeps claiming the planner. After this its baths
+#: stop being subtracted from `production.candidates()`, so a forgotten
+#: colorway is asked for again; the yarn it claimed is a separate question
+#: (see `production.claimed_units`). The one copy of the bound — production
+#: imports it from here, since the run's own `is_overdue` reads it.
+OVERDUE_AFTER = timedelta(days=10)
 
 
 class ProductionRun(models.Model):
@@ -2213,7 +2324,7 @@ class ProductionRun(models.Model):
     # been accepted; the timestamp only knows that somebody once replied.
     #
     # `production.run_states` is the same four questions asked of a queryset,
-    # and `production.OVERDUE_AFTER` is the one copy of the age bound.
+    # and `OVERDUE_AFTER` above is the one copy of the age bound.
 
     @property
     def is_revoked(self) -> bool:
@@ -2269,11 +2380,9 @@ class ProductionRun(models.Model):
 
         The moment a sheet stops claiming the planner it has to become
         visible, or a colorway quietly stops being asked for — see
-        `production.OVERDUE_AFTER`.
+        `OVERDUE_AFTER`.
         """
-        from . import production
-
-        return self.is_open and self.created_at < timezone.now() - production.OVERDUE_AFTER
+        return self.is_open and self.created_at < timezone.now() - OVERDUE_AFTER
 
     @property
     def counts_against_the_plan(self) -> bool:
@@ -2442,9 +2551,7 @@ class ProductionRunRow(models.Model):
         and most silk — so the crew's form simply has no fancy box on those
         rows rather than offering one that leads nowhere.
         """
-        from . import fancy
-
-        return fancy.counterpart_for(self.finished_product)
+        return self.finished_product.fancy_product()
 
     @property
     def is_pending(self) -> bool:
@@ -2515,6 +2622,9 @@ class DisplayFixture(models.Model):
     )
     is_active = models.BooleanField(default=True)
     notes = models.TextField(blank=True)
+
+
+    objects = ActiveQuerySet.as_manager()
 
     class Meta:
         ordering = ["name"]

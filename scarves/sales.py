@@ -39,7 +39,7 @@ from django.db.models import Count, Max, Q, Sum
 from django.db.models.functions import TruncDate
 from django.utils import timezone
 
-from .models import InventoryLog
+from .models import FinishedProduct, InventoryLog
 
 
 #: The presets, in the order they appear. `today` and `yesterday` are resolved
@@ -206,7 +206,6 @@ def product_rows(logs):
     count one each: nothing says two of them were the same sale, and assuming
     so would quietly deflate the number.
     """
-    from .models import FinishedProduct
 
     agg = list(
         logs.values("finished_product")

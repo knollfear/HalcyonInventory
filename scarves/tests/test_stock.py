@@ -1653,13 +1653,22 @@ class InventoryLogSourceTests(TestCase):
 
     def test_every_creation_site_names_itself(self):
         import ast
+        import importlib
         import inspect
+        import pkgutil
 
-        from .. import production, views
+        from .. import ledger, production, views
         from ..management.commands import fake_sale, import_square_sales
 
+        # Every view module, not the package: `inspect.getsource` on the
+        # package reads only its `__init__`, and a writer that moved into a
+        # submodule would drop out of this check without anybody noticing.
+        view_modules = [
+            importlib.import_module(f"{views.__name__}.{info.name}")
+            for info in pkgutil.iter_modules(views.__path__)
+        ]
         missing = []
-        for module in (views, production, fake_sale, import_square_sales):
+        for module in (ledger, production, fake_sale, import_square_sales, *view_modules):
             tree = ast.parse(inspect.getsource(module))
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):

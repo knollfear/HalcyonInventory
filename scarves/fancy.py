@@ -42,6 +42,7 @@ side floors, and the discrepancy is reported rather than swallowed.
 
 from django.db import transaction
 
+from . import ledger
 from .models import FinishedProduct, InventoryLog, RawProduct
 
 
@@ -96,18 +97,7 @@ def counterpart_for(product):
     scarf, while this runs at the moment a bath is accepted and has to be
     unambiguous with nobody to ask.
     """
-    if product.recipe_id is None:
-        return None
-    blank = product.raw_product.fancy_counterpart
-    if blank is None:
-        return None
-    return (
-        FinishedProduct.objects.filter(
-            is_active=True, raw_product=blank, recipe_id=product.recipe_id
-        )
-        .select_related("raw_product", "recipe")
-        .first()
-    )
+    return product.fancy_product()
 
 
 def target_for(source, blank):
@@ -115,9 +105,8 @@ def target_for(source, blank):
     if source.recipe_id is None:
         return None
     return (
-        FinishedProduct.objects.filter(
-            is_active=True, raw_product=blank, recipe_id=source.recipe_id
-        )
+        FinishedProduct.objects.active()
+        .filter(raw_product=blank, recipe_id=source.recipe_id)
         .select_related("raw_product", "recipe")
         .first()
     )
@@ -154,21 +143,22 @@ def convert(source, blank, quantity, employee=None):
             f"it was under by {shortfall}."
         )
 
-    source.set_on_hand(source.number_on_hand - taken)
-    _log(source, -taken, note)
-
-    target.set_on_hand(target.number_on_hand + quantity)
-    _log(target, quantity, note)
-
-    return target, shortfall
-
-
-def _log(product, delta, notes):
-    return InventoryLog.objects.create(
-        finished_product=product,
-        raw_product=product.raw_product,
+    # Both sides through the ledger, which locks each row before it moves
+    # it. `taken` was measured against an unlocked read, so a sale landing
+    # in between would leave the plain side one under — the same overcount
+    # the restock walk already heals, and the reason corrections are
+    # absolute counts (see *Self-healing* in `CLAUDE.md`).
+    ledger.move(
+        source, -taken,
         log_type=InventoryLog.ADJUSTMENT,
         source=InventoryLog.SOURCE_FANCY_CONVERSION,
-        quantity=delta,
-        notes=notes,
+        notes=note,
     )
+    ledger.move(
+        target, quantity,
+        log_type=InventoryLog.ADJUSTMENT,
+        source=InventoryLog.SOURCE_FANCY_CONVERSION,
+        notes=note,
+    )
+
+    return target, shortfall

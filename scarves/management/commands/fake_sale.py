@@ -1,6 +1,7 @@
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
+from scarves import ledger
 from scarves.models import FinishedProduct, InventoryLog
 
 
@@ -22,18 +23,13 @@ class Command(BaseCommand):
 
         before = fp.number_on_hand
 
-        with transaction.atomic():
-            fp.number_on_hand = max(fp.number_on_hand - qty, 0)
-            fp.save(update_fields=["number_on_hand"])
-
-            InventoryLog.objects.create(
-                finished_product=fp,
-                log_type=InventoryLog.SALE,
-                source=InventoryLog.SOURCE_TEST,
-                quantity=-qty,
-                sale_reference="FAKE-SALE-TEST",
-                notes="Simulated sale via fake_sale management command.",
-            )
+        ledger.move(
+            fp, -qty,
+            log_type=InventoryLog.SALE,
+            source=InventoryLog.SOURCE_TEST,
+            sale_reference="FAKE-SALE-TEST",
+            notes="Simulated sale via fake_sale management command.",
+        )
 
         self.stdout.write(self.style.SUCCESS(
             f"Sold {qty}x '{fp.name}': {before} → {fp.number_on_hand} on hand."

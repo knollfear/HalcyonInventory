@@ -284,7 +284,7 @@ class Command(BaseCommand):
                 raw_product.save(update_fields=["square_item_id"])
                 updated_rp += 1
 
-            for fp in raw_product.finished_products.filter(is_active=True):
+            for fp in raw_product.finished_products.active():
                 temp_id = f"#fp_{fp.pk}"
                 if temp_id in id_mappings and not fp.square_variation_id:
                     fp.square_variation_id = id_mappings[temp_id]
@@ -345,7 +345,7 @@ class Command(BaseCommand):
         self._relink(client, announce_only_if_found=True)
 
         raw_products = (
-            RawProduct.objects.filter(is_active=True)
+            RawProduct.objects.active()
             .select_related("catalog_group")
             .prefetch_related("finished_products__recipe")
             .distinct()
@@ -593,7 +593,7 @@ class Command(BaseCommand):
         list a customer scrolls at the till.
         """
         ids = list(
-            RawProduct.objects.filter(is_active=True, square_item_id__gt="")
+            RawProduct.objects.active().filter(square_item_id__gt="")
             .values_list("square_item_id", flat=True)
         ) + list(
             CatalogGroup.objects.filter(square_item_id__gt="")
