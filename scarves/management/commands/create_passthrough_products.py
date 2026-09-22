@@ -10,8 +10,13 @@ from decimal import Decimal
 
 from django.core.management.base import BaseCommand, CommandError
 
+from scarves import blanks
 from scarves.models import CatalogGroup, FinishedProduct, RawProduct
 
+#: Re-exported from `scarves.blanks`, which owns the rule now that the blank
+#: editor offers the same thing as a checkbox. Kept as a name here because
+#: this module's messages quote it.
+#:
 #: Price used when the raw product hasn't got a usable one. Deliberately
 #: conspicuous rather than plausible: the alternative on offer was cost times
 #: three, a number that might reach a customer without anyone looking at it
@@ -26,7 +31,7 @@ from scarves.models import CatalogGroup, FinishedProduct, RawProduct
 #: nullable, so null means nobody set a price and zero means somebody set it
 #: to zero — a giveaway is a real product. A deliberate zero is honoured and
 #: reported; only a missing price is replaced.
-FALLBACK_PRICE = Decimal("1.00")
+FALLBACK_PRICE = blanks.FALLBACK_PRICE
 
 
 class Command(BaseCommand):
@@ -97,16 +102,10 @@ class Command(BaseCommand):
                 made.append((raw, price, "(not saved)"))
                 continue
 
-            product = FinishedProduct.objects.create(
-                name=raw.name,
-                raw_product=raw,
-                recipe=None,            # never dyed — see FinishedProduct.recipe
-                price=price,
-                # The par that matters for these lives on the raw product, as
-                # `par_level`, because you order them rather than making them.
-                # A par here would be a number nothing reads.
-                par=0,
-            )
+            # One implementation of "what a passthrough row is", shared with
+            # the blank editor's *sold undyed* box. Two copies of the $1
+            # fallback is two places for it to drift.
+            product = blanks.ensure_undyed_product(raw)
             made.append((raw, price, product.sku))
 
         for raw, price, sku in made:

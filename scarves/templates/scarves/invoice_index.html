@@ -1,0 +1,193 @@
+{% extends "scarves/base_internal.html" %}
+
+{% block title %}Invoices{% endblock %}
+{% block heading %}Invoices{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 940px; }
+  .drop {
+      margin: 18px 0 26px; padding: 16px; border: 1px dashed #cfd6de;
+      border-radius: 10px; background: #fbfcfd;
+  }
+  .drop input[type="file"] { font: inherit; font-size: 14px; }
+  .drop textarea {
+      width: 100%; font: inherit; font-size: 13px; line-height: 1.45;
+      padding: 8px 10px; border: 1px solid #cfd6de; border-radius: 6px;
+      background: #fff; resize: vertical;
+  }
+  .drop .or { margin: 14px 0 6px; font-size: 14px; }
+  .drop .actions { margin-top: 14px; }
+  .stat { font-size: 13px; color: #555; }
+  .missing { font-size: 12px; color: #8a5a2a; }
+  td.num, th.num { text-align: right; white-space: nowrap; }
+  .draftlist { margin-bottom: 28px; }
+{% endblock %}
+
+{% block content %}
+  <p class="lead">
+    A supplier's invoice is the only document that says what a blank costs to
+    buy <em>today</em> — and that is the number this app wants, not an average
+    of everything ever paid for one. Send one in and it comes back as a list
+    of rows to confirm.
+  </p>
+
+  <form class="drop" method="post" enctype="multipart/form-data">
+    {% csrf_token %}
+    <label for="invoice"><strong>A PDF, or a photo of the paper</strong></label>
+    <p class="small">
+      {% if can_read %}
+        It gets read once and turned into a draft. Nothing it proposes moves
+        anything — every figure lands in a box you can change, and the line as
+        the invoice worded it is printed beside the match so you can see what
+        it thought it was looking at.
+      {% else %}
+        No API key is configured, so nothing will be read from the document.
+        The draft still opens with an empty form and you can type the rows in,
+        which is how this was done before.
+      {% endif %}
+    </p>
+    <input type="file" name="invoice" id="invoice"
+           accept="application/pdf,image/*">
+
+    {% comment %}
+    The other door, and for most of these orders the easier one: they arrive
+    as an email long before they are ever a file. Getting a screenshot off a
+    phone and into a file picker is more work than select-all and copy, and
+    text is the easiest thing of the three to read — no photograph, no scan,
+    no column that wrapped. Paste whatever came; the headers and the
+    signature are not a problem.
+    {% endcomment %}
+    <p class="or"><strong>or paste it</strong> — straight out of the email,
+      tidying nothing.</p>
+    <textarea name="pasted" rows="8" placeholder="Order confirmation…"></textarea>
+
+    <div class="actions">
+      <button class="btn" type="submit">Read it</button>
+      <span class="small">Either one. Booking it needs the supplier's order number.</span>
+    </div>
+  </form>
+
+  {% if drafts %}
+    <div class="draftlist">
+      <h2>Not confirmed yet</h2>
+      {% comment %}
+      A draft has moved nothing. Said here rather than left to be inferred:
+      a list of documents where some have been booked and some haven't is
+      exactly the list where somebody assumes the delivery is on the shelf.
+      {% endcomment %}
+      <p class="small">
+        Read, but nobody has confirmed them. No stock has moved and no cost has
+        been set by these.
+      </p>
+      <div class="cards">
+        {% for i in drafts %}
+          <a class="card" href="{% url 'invoice_detail' i.pk %}">
+            <span class="name">{{ i.order_number|default:"no order number yet" }}</span>
+            <span class="stat">
+              {% if i.supplier %}{{ i.supplier.name }}{% else %}supplier not matched{% endif %}
+              · {{ i.line_count }} line{{ i.line_count|pluralize }}
+              {% if i.ordered_on %} · {{ i.ordered_on|date:"d M Y" }}{% endif %}
+            </span>
+            <span class="missing">needs confirming</span>
+          </a>
+        {% endfor %}
+      </div>
+    </div>
+  {% endif %}
+
+  {% if on_order %}
+    <div class="draftlist">
+      <h2>On order</h2>
+      {% comment %}
+      Confirmed and costed, not here yet. The state that did not exist before
+      — and the useful one: what is coming, so it is neither re-ordered nor
+      planned against. None of it is claimable by a production sheet, which
+      is the point.
+      {% endcomment %}
+      <p class="small">
+        Costs are set from these; the goods are not on a shelf and nothing can
+        plan a dye bath against them. One click on the card puts them on.
+      </p>
+      <div class="cards">
+        {% for i in on_order %}
+          <a class="card" href="{% url 'invoice_detail' i.pk %}">
+            <span class="name">{{ i.order_number }}</span>
+            <span class="stat">
+              {% if i.supplier %}{{ i.supplier.name }}{% endif %}
+              · {{ i.units_on_order }} unit{{ i.units_on_order|pluralize }}
+              {% if i.ordered_on %} · ordered {{ i.ordered_on|date:"d M Y" }}{% endif %}
+            </span>
+            <span class="missing">not arrived</span>
+          </a>
+        {% endfor %}
+      </div>
+    </div>
+  {% endif %}
+
+  {% if written_off %}
+    <div class="draftlist">
+      <h2>Never arrived</h2>
+      {% comment %}
+      Listed rather than hidden: an order given up on is a thing that
+      happened, and one nobody can find is one nobody chases with the
+      supplier. Its blanks count as needing ordering again.
+      {% endcomment %}
+      <p class="small">
+        Closed without delivering. Nothing moved, the costs they set stand,
+        and their blanks are back on the reorder page.
+      </p>
+      <div class="cards">
+        {% for i in written_off %}
+          <a class="card" href="{% url 'invoice_detail' i.pk %}">
+            <span class="name">{{ i.order_number }}</span>
+            <span class="stat">
+              {% if i.supplier %}{{ i.supplier.name }} · {% endif %}
+              given up {{ i.written_off_on|date:"d M Y" }}
+              {% if i.written_off_note %} · {{ i.written_off_note }}{% endif %}
+            </span>
+          </a>
+        {% endfor %}
+      </div>
+    </div>
+  {% endif %}
+
+  <h2>Received</h2>
+  {% if booked %}
+    <table>
+      <thead>
+        <tr>
+          <th>Order</th>
+          <th>Supplier</th>
+          <th>Dated</th>
+          <th class="num">Lines</th>
+          <th>Arrived</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for i in booked %}
+          <tr>
+            <td><a href="{% url 'invoice_detail' i.pk %}">{{ i.order_number }}</a></td>
+            <td>{% if i.supplier %}{{ i.supplier.name }}{% else %}<span class="missing">not matched</span>{% endif %}</td>
+            <td>{% if i.ordered_on %}{{ i.ordered_on|date:"d M Y" }}{% else %}<span class="missing">no date on it</span>{% endif %}</td>
+            <td class="num">{{ i.line_count }}</td>
+            <td class="stat">{{ i.received_on|date:"d M Y" }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="small">
+      These order numbers are what stops the same delivery going on the shelf
+      twice: send one in again and the page says so before anything moves.
+    </p>
+  {% else %}
+    <p class="empty">Nothing received yet.</p>
+  {% endif %}
+
+  <p class="small">
+    Changing what one blank costs without a document in hand is the costing
+    pass on <a href="{% url 'raw_inventory_index' %}">Raw Inventory</a> —
+    pick a category, then <em>Cost &amp; supplier</em>. That one moves no
+    stock, which is the difference.
+  </p>
+{% endblock %}

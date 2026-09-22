@@ -1079,7 +1079,10 @@ def open_rows(run, plan):
       that takes a blank under its floor has to say so on Monday — by Friday
       the window to order and have it on hand has gone. `raw_shortage` reads
       `number_on_hand`, so the claim is what makes the reorder signal fire in
-      time.
+      time. (It also subtracts what is already on order — see
+      `RawProduct.raw_shortage` — which suppresses the signal for a blank
+      whose replacement is on a van, and is the other half of the same rule:
+      the signal answers "should I order", never "what is on the shelf".)
 
     So `number_on_hand` now means **unclaimed yarn**, not skeins on the shelf.
     The two differ by whatever is on open sheets, and the difference is real

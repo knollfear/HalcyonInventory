@@ -6,6 +6,9 @@
 
 {% block style %}
   {{ block.super }}
+  /* A held-down shortage that is past its lead time. Amber, not red: it is
+     something to look at, not something the app has decided about. */
+  .late { color: #8a5a00; font-weight: 600; }
   .category-nav { margin: 14px 0; font-size: 13px; display: flex; flex-wrap: wrap; gap: 4px 14px; }
   .category-nav .current { font-weight: 600; color: var(--ink); text-decoration: none; }
   .count-input { width: 5.5em; padding: 4px 6px; font: inherit; }
@@ -101,6 +104,18 @@
       <strong>One Save books the lot</strong>, and nothing is written unless
       every line reads.
     </p>
+    {% comment %}
+    Said here because this is the page somebody sits down at to cost a shelf,
+    and the invoice does the same job off the document itself. Not a second
+    door onto this form — a different one, with the order number that lets it
+    move stock as well.
+    {% endcomment %}
+    <p class="note">
+      If what you are typing off is a supplier's invoice, it can be read
+      instead: <a href="{% url 'invoice_index' %}">Invoices</a> takes the PDF,
+      a photo, or the text out of the email, and sets the cost and the
+      delivery together.
+    </p>
   {% elif par_mode %}
     {% comment %}
     The basis, printed, because advice you cannot inspect is a decision in
@@ -117,6 +132,11 @@
       to order less.
     </p>
   {% else %}
+  <p class="small">
+    Changing what a blank <em>is</em> — its bath size, its supplier, the par a
+    new colorway inherits — or adding one that isn't here yet:
+    <a href="{% url 'blank_index' %}">Blanks</a>.
+  </p>
   <p class="note">
     <strong>Received</strong> is what a delivery note says arrived — it gets
     added on, so nobody has to do the sum. <strong>Counted</strong> is what is
@@ -317,6 +337,18 @@
                 {% if o.floor_short %}
                   <div class="sub short">{{ o.floor_short }} below</div>
                 {% endif %}
+                {% if o.on_order %}
+                  {% comment %}
+                  Printed whether or not anything is still short, because it
+                  is the reason the number above is the number above.
+                  {% endcomment %}
+                  <div class="sub {% if o.order_is_late %}late{% endif %}">
+                    {{ o.on_order }} on order{% if o.open_order.ordered_on %}
+                      since {{ o.open_order.ordered_on|date:"d M" }}
+                      {% if o.order_is_late %} — late{% endif %}
+                    {% endif %}
+                  </div>
+                {% endif %}
               </td>
               <td class="num">{{ o.dyed_recently }}</td>
               <td class="num">{{ o.sold }}</td>
@@ -409,10 +441,32 @@
               <td>{{ p.number_on_hand }}</td>
               <td>{{ p.par_level }}</td>
               <td>
+                {% comment %}
+                The shortage is already net of what is on order — par is an
+                order signal, and a second order does not make the first
+                arrive faster. What is subtracted is printed beside it: a
+                suppressed signal with no visible reason is the `par` mistake
+                wearing a delivery note, and an order that never turns up
+                would otherwise hold this down forever with nothing saying
+                so.
+                {% endcomment %}
                 {% if shortage > 0 %}
                   <span class="short">{{ shortage }} short</span>
+                {% elif p.on_order %}
+                  <span class="ok">covered</span>
                 {% else %}
                   <span class="ok">OK</span>
+                {% endif %}
+                {% if p.on_order %}
+                  {% with order=p.oldest_open_order %}
+                    <div class="sub {% if p.order_is_late %}late{% endif %}">
+                      {{ p.on_order }} on order
+                      {% if order.ordered_on %}
+                        since {{ order.ordered_on|date:"d M" }}
+                        {% if p.order_is_late %} — past their usual lead time{% endif %}
+                      {% endif %}
+                    </div>
+                  {% endwith %}
                 {% endif %}
               </td>
               <td>

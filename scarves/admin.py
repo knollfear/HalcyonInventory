@@ -21,6 +21,7 @@ from .models import (
     UnmatchedSale,
     RawProductCategory,
     RawProduct,
+    Supplier,
     Recipe,
     RecipeDye,
     FinishedProduct,
@@ -1104,3 +1105,60 @@ class DayWeatherAdmin(admin.ModelAdmin):
 
     def has_change_permission(self, request, obj=None):
         return False
+
+
+@admin.register(Supplier)
+class SupplierAdmin(admin.ModelAdmin):
+    """Making a supplier, until a page does it.
+
+    `private/suppliers/` lists them and `private/suppliers/<id>/` is the card,
+    per the picker rule — but neither creates one, so the only suppliers that
+    existed were the three the backfill in `0052` inferred from product-page
+    domains. Everything bought from a person at the next stall had nowhere to
+    come from at all, which is the case that model exists for.
+
+    Registered rather than built as a page on purpose, for now: adding a
+    supplier is a rare, one-at-a-time job done at a desk, which is the one
+    shape the admin is actually good at. The pages in this app exist where the
+    admin's one-row-per-screen costs somebody a whole sitting — twenty notions
+    through a developer's form — and that is not this.
+
+    **Retire, don't delete.** `RawProduct.supplier` is `PROTECT`: a supplier
+    with blanks pointing at it is one you have bought from, and unchecking
+    `is_active` is how it goes away. The blank count is here so that is
+    visible before somebody tries.
+    """
+
+    list_display = ("name", "contact", "lead_time", "blanks", "is_active")
+    list_filter = ("is_active",)
+    search_fields = ("name", "contact", "notes")
+
+    fieldsets = (
+        (None, {"fields": ("name", "is_active")}),
+        ("How to reach them", {
+            "description": "Free text on purpose: 'Sarah, 555-0143' and 'the "
+                           "pottery stall by the joust field' are both the "
+                           "real answer for somebody.",
+            "fields": ("contact", "website"),
+        }),
+        ("Ordering", {
+            "description": "Leave the lead time empty if nobody has said. "
+                           "Nothing computes an order-by date from it, and a "
+                           "zero would mean 'arrives today'.",
+            "fields": ("lead_time_days", "notes"),
+        }),
+    )
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).annotate(
+            blank_total=Count("raw_products", filter=Q(raw_products__is_active=True))
+        )
+
+    @admin.display(description="Lead time")
+    def lead_time(self, obj):
+        # "not known" rather than a zero, the same answer the picker gives.
+        return f"{obj.lead_time_days} days" if obj.lead_time_days else "not known"
+
+    @admin.display(description="Blanks", ordering="blank_total")
+    def blanks(self, obj):
+        return obj.blank_total

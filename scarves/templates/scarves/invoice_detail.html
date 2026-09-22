@@ -1,0 +1,237 @@
+{% extends "scarves/base_internal.html" %}
+
+{% block title %}Order {{ invoice.order_number }}{% endblock %}
+{% block heading %}Order {{ invoice.order_number }}{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 980px; }
+  .facts { margin: 16px 0 24px; font-size: 14px; }
+  .facts dt { font-size: 12px; color: #667; margin-top: 10px; }
+  .facts dd { margin: 2px 0 0; }
+  .unknown { color: #8a5a2a; }
+  .pasted {
+      white-space: pre-wrap; font-size: 12px; background: #f7f9fb;
+      border: 1px solid #e1e5ea; border-radius: 6px; padding: 10px;
+      max-height: 22rem; overflow: auto;
+  }
+  td.num, th.num { text-align: right; white-space: nowrap; }
+  .was { font-size: 12px; color: #667; }
+  .moved { color: #2e7d52; font-weight: 600; }
+  .onorder { color: #8a5a00; font-weight: 600; }
+  .shortfall { color: #8a5a00; font-weight: 600; }
+  .receive .arrived { margin: 12px 0 6px; background: #fff; border-radius: 8px; }
+  .receive .arrived .said { display: block; font-size: 11px; color: #667; }
+  .receive input.qty {
+      width: 5rem; font: inherit; padding: 4px 7px;
+      border: 1px solid #cfd6de; border-radius: 6px;
+  }
+  #arrived-lines { margin-top: 12px; }
+  .lost { color: #8a2f2a; font-weight: 600; }
+  .writeoff { margin: 22px 0; }
+  .writeoff label { font-size: 13px; color: #667; margin-right: 6px; }
+  .writeoff input[type="text"] {
+      font: inherit; padding: 5px 8px; border: 1px solid #cfd6de;
+      border-radius: 6px; margin-right: 8px; min-width: 16rem;
+  }
+  .receive {
+      margin: 26px 0; padding: 14px 16px; border-radius: 10px;
+      background: #fff6e0; border: 1px solid #f0e0b0;
+  }
+  .receive label { font-size: 13px; color: #667; margin-right: 6px; }
+  .receive input[type="date"] {
+      font: inherit; padding: 5px 8px; border: 1px solid #cfd6de;
+      border-radius: 6px; margin-right: 8px;
+  }
+{% endblock %}
+
+{% block scripts %}
+  {{ block.super }}
+  {% comment %}
+  Per-page, the way the other internal pages that use htmx load it. The page
+  works without it: the adjust link is a real URL.
+  {% endcomment %}
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+{% endblock %}
+
+{% block content %}
+  <dl class="facts">
+    <dt>Supplier</dt>
+    <dd>
+      {% if invoice.supplier %}
+        <a href="{% url 'supplier_detail' invoice.supplier.pk %}">{{ invoice.supplier.name }}</a>
+      {% else %}
+        <span class="unknown">not recorded</span>
+      {% endif %}
+    </dd>
+
+    <dt>Dated</dt>
+    <dd>
+      {% comment %}
+      Null is "no date could be read", not today. A date invented to fill a
+      column is the kind of number somebody later reads as a fact.
+      {% endcomment %}
+      {% if invoice.ordered_on %}{{ invoice.ordered_on|date:"d M Y" }}
+      {% else %}<span class="unknown">no date on the document</span>{% endif %}
+    </dd>
+
+    <dt>Booked</dt>
+    <dd>{{ invoice.booked_at|date:"d M Y, H:i" }}{% if invoice.booked_by %} by {{ invoice.booked_by }}{% endif %}</dd>
+
+    <dt>Goods</dt>
+    <dd>
+      {% if invoice.received_on %}
+        on the shelf since {{ invoice.received_on|date:"d M Y" }}
+      {% elif invoice.written_off_on %}
+        <span class="lost">never arrived</span> — given up on
+        {{ invoice.written_off_on|date:"d M Y" }}{% if invoice.written_off_note %},
+        {{ invoice.written_off_note }}{% endif %}. Nothing moved, the costs
+        below stand, and these blanks count as needing ordering again.
+      {% else %}
+        <span class="onorder">still on order</span> — the costs below are set,
+        and none of it is on a shelf or claimable by a production sheet.
+      {% endif %}
+    </dd>
+
+    {% if invoice.document %}
+      <dt>Document</dt>
+      <dd><a href="{{ invoice.document.url }}" target="_blank">Open it</a></dd>
+    {% elif invoice.pasted_text %}
+      <dt>Read from</dt>
+      <dd>
+        <details>
+          <summary>the text pasted in</summary>
+          <pre class="pasted">{{ invoice.pasted_text }}</pre>
+        </details>
+      </dd>
+    {% endif %}
+  </dl>
+
+  <h2>What it bought</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>What the invoice said</th>
+        <th>Blank</th>
+        <th class="num">Qty</th>
+        <th class="num">Arrived</th>
+        <th class="num">Each</th>
+        <th class="num">Line</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for line in lines %}
+        <tr>
+          <td>{{ line.description|default:"—" }}</td>
+          <td>{{ line.raw_product.name }} <span class="was">· {{ line.raw_product.category.name }}</span></td>
+          <td class="num">{{ line.quantity }}</td>
+          <td class="num">
+            {% comment %}
+            Both figures, because both are true: what the document billed and
+            what reached the shelf. A dash while it is still on order — none
+            of it has arrived, which is different from all of it having.
+            {% endcomment %}
+            {% if not invoice.received_on %}
+              <span class="was">—</span>
+            {% elif line.came_up_short %}
+              <span class="shortfall">{{ line.arrived }}</span>
+            {% else %}
+              {{ line.arrived }}
+            {% endif %}
+          </td>
+          <td class="num">
+            ${{ line.unit_cost }}
+            {% comment %}
+            What the cost was before this line, printed because a cost with
+            no basis reads as a fact. This is the whole record of the change:
+            the blank itself carries only the replacement cost, which is the
+            one number the shop wants.
+            {% endcomment %}
+            {% if line.price_moved %}
+              <span class="was">was ${{ line.previous_price }}</span>
+            {% endif %}
+          </td>
+          <td class="num">${{ line.line_total }}</td>
+        </tr>
+      {% empty %}
+        <tr><td colspan="5" class="empty">No lines were booked.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <p class="small">
+    <strong>${{ total }}</strong> of goods. Shipping and tax are not here —
+    they buy no stock and set no cost, so they were never lines to book.
+    Booking wrote each <em>each</em> onto its blank as the replacement cost
+    and added each <em>qty</em> to the shelf. Nothing was counted: a delivery
+    note is a claim about a change, and a count is a measurement.
+  </p>
+
+  {% if not invoice.received_on %}
+    {% comment %}
+    The second half of the booking, and the only half that moves stock. The
+    lines were settled when it was confirmed, so this replays them rather
+    than asking again.
+    {% endcomment %}
+    <form method="post" action="{% url 'invoice_receive' invoice.pk %}" class="receive">
+      {% csrf_token %}
+      <label for="received_on">It arrived on</label>
+      <input type="date" name="received_on" id="received_on" value="{{ today|date:'Y-m-d' }}">
+      <button class="btn" type="submit">Put it on the shelf</button>
+
+      {% comment %}
+      A plain link with htmx layered on: with the script blocked, `?adjust=1`
+      renders the same inputs by a full page load. The usual case is that the
+      whole order turned up, so the boxes stay out of the way until somebody
+      says otherwise — the button does not change what Save means, it changes
+      the numbers Save is given.
+      {% endcomment %}
+      <div id="arrived-lines">
+        {% if adjust %}
+          {% include "scarves/partials/invoice_receive_lines.html" %}
+        {% else %}
+          <a class="btn-quiet" href="?adjust=1"
+             hx-get="{% url 'invoice_receive_lines' invoice.pk %}"
+             hx-target="#arrived-lines" hx-swap="innerHTML">
+            Some of it didn't turn up
+          </a>
+        {% endif %}
+      </div>
+      <p class="small">
+        {% if invoice.written_off_on %}
+          It turned up after all — this clears the write-off and puts it on.
+        {% endif %}
+        Adds every quantity above to its blank. If some of it didn't come,
+        say so above rather than fixing the shelf afterwards: ordered 80 and
+        received 50 are both true, and the second half of a two-page
+        correction is the half that gets forgotten.
+      </p>
+    </form>
+  {% endif %}
+
+  {% if invoice.is_on_order %}
+    {% comment %}
+    The other way an order ends. It closes the document without moving
+    anything — and what it really does is hand back the reorder signal this
+    order has been holding down, which nothing does on its own because a rule
+    that decided an order was dead would be deciding to reorder.
+    {% endcomment %}
+    <form method="post" action="{% url 'invoice_write_off' invoice.pk %}" class="writeoff">
+      {% csrf_token %}
+      <p class="small">
+        <strong>Not coming?</strong> Lost, undeliverable, cancelled — closing
+        it moves no stock and leaves the costs alone, and puts these blanks
+        back on the reorder page, which they have been kept off while this was
+        outstanding.
+      </p>
+      <label for="written_off_note">Why</label>
+      <input type="text" name="written_off_note" id="written_off_note"
+             maxlength="200" placeholder="never shipped">
+      <button class="btn-quiet" type="submit">It isn't coming</button>
+    </form>
+  {% endif %}
+
+  <p class="small">
+    Sending this order number in again will say so before anything moves.
+  </p>
+{% endblock %}

@@ -150,3 +150,9 @@ pyrightconfig.json
 # Locally uploaded product photos (MEDIA_ROOT). Prod stores these in the
 # bucket; the local upload fallback writes them here.
 media/
+
+# Invoice paperwork dropped in for the reader to chew on. Real order
+# confirmations carry prices and account numbers; the README stays, the
+# samples don't.
+samples/*
+!samples/README.md

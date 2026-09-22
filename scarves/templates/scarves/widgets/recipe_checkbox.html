@@ -1,0 +1,24 @@
+{% comment %}
+One colourway: a checkbox, its name, and a chip per dye in the recipe's own
+order.
+
+Never blended into one swatch. A scarf shows each dye distinctly and flows
+between them, so an average would be a colour that is not on the product —
+and a dye with no hex gets hatching rather than a guess, because a
+placeholder swatch is something somebody reads off the screen as a fact.
+{% endcomment %}
+<label class="cwrow" for="{{ widget.attrs.id }}">
+  <input type="{{ widget.type }}" name="{{ widget.name }}"
+         {% if widget.value != None %}value="{{ widget.value|stringformat:'s' }}"{% endif %}
+         {% include "django/forms/widgets/attrs.html" %}>
+  <span class="cwname">{{ widget.label }}</span>
+  <span class="cwdyes">
+    {% for rd in widget.recipe.recipe_dyes.all %}
+      <span class="dyechip{% if not rd.dye.hex_color %} unknown{% endif %}"
+            {% if rd.dye.hex_color %}style="background: {{ rd.dye.hex_color }};"{% endif %}
+            title="{{ rd.dye.name }}"></span>
+    {% empty %}
+      <span class="cwnodyes">no dyes on file</span>
+    {% endfor %}
+  </span>
+</label>

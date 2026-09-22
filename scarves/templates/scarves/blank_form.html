@@ -1,0 +1,206 @@
+{% extends "scarves/base_internal.html" %}
+
+{% block title %}{% if product %}{{ product.name }}{% else %}New blank{% endif %}{% endblock %}
+{% block heading %}{% if product %}{{ product.name }}{% else %}Add a blank{% endif %}{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 760px; }
+  fieldset {
+      border: 1px solid #e1e5ea; border-radius: 10px; padding: 4px 18px 18px;
+      margin: 22px 0;
+  }
+  legend { font-size: 13px; color: #667; padding: 0 6px; }
+  .field { margin-top: 16px; }
+  .field > label { display: block; font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+  .field .helptext { display: block; font-size: 12px; color: #667; margin-top: 4px; }
+  .field input[type="text"], .field input[type="url"], .field input[type="number"],
+  .field select, .field textarea {
+      font: inherit; padding: 6px 9px; border: 1px solid #cfd6de;
+      border-radius: 6px; background: #fff; max-width: 26rem; width: 100%;
+  }
+  .field textarea { min-height: 5rem; resize: vertical; }
+  /* The colourway list. Scrolls rather than running to three screens —
+     a few hundred colourways is the normal size of this catalogue — and
+     every row is its own click, so nothing is lost by a stray one. */
+  .field .cwlist {
+      max-height: 22rem; overflow-y: auto; margin-top: 4px;
+      border: 1px solid #cfd6de; border-radius: 8px; background: #fff;
+      padding: 4px;
+  }
+  .field .cwlist > div { margin: 0; }
+  .field label.cwrow {
+      display: flex; align-items: center; gap: 9px; margin: 0;
+      padding: 5px 8px; border-radius: 6px; font-weight: 400; font-size: 14px;
+      cursor: pointer; max-width: none;
+  }
+  .field label.cwrow:hover { background: #eef2f7; }
+  .cwname { flex: 0 0 auto; min-width: 11rem; }
+  .cwdyes { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+  .cwnodyes { font-size: 11px; color: #8b929b; }
+  .field.check > label { display: inline; font-weight: 600; }
+  /* Radio lists: the option label carries the explanation, so it wraps and
+     needs to sit beside its button rather than under it. */
+  .field div label, .field ul label {
+      display: flex; gap: 8px; align-items: baseline;
+      font-weight: 400; font-size: 14px; margin-top: 7px; max-width: 34rem;
+  }
+  .field ul { list-style: none; margin: 0; padding: 0; }
+  .field input[type="radio"], .field input[type="checkbox"] {
+      width: auto; flex: 0 0 auto;
+  }
+  .field .helptext { white-space: pre-line; max-width: 34rem; }
+  .field.check input { margin-right: 7px; }
+  .wording {
+      margin: 16px 0; padding: 12px 14px; border-radius: 8px;
+      background: #f1f8f3; border: 1px solid #bcd8c6; font-size: 13px;
+  }
+  .wording code { background: #fff; padding: 1px 5px; border-radius: 4px; }
+  .sidenote { font-size: 13px; color: #555; margin-top: 6px; }
+{% endblock %}
+
+{% block content %}
+  {% if product %}
+    <p class="lead">
+      What this blank <em>is</em>. How many are on the shelf is
+      <a href="{% url 'raw_inventory' product.category_id %}">Raw Inventory</a>
+      — {{ product.number_on_hand }} there now{% if colorways %}, across
+      {{ colorways }} colorway{{ colorways|pluralize }}{% endif %}.
+    </p>
+  {% else %}
+    <p class="lead">
+      Something new to buy — a silk blank, a yarn, a notion. Only the name and
+      the table it sits on are required; everything else can be filled in when
+      it is known.
+    </p>
+  {% endif %}
+
+  {% if wording %}
+    {% comment %}
+    Shown, never editable. It is written by confirming an invoice line — the
+    promise being that nothing types it in — so the page's job is to say what
+    is known, not to offer a box.
+    {% endcomment %}
+    <p class="wording">
+      On an invoice this is recognised as <code>{{ wording }}</code>, exactly,
+      before anything is read. That came from confirming a line, and
+      confirming a different one replaces it.
+    </p>
+  {% endif %}
+
+  {% if form.non_field_errors %}
+    <div class="err">{{ form.non_field_errors }}</div>
+  {% endif %}
+
+  <form method="post">
+    {% csrf_token %}
+    {% if wording and not product %}
+      <input type="hidden" name="invoice_description" value="{{ wording }}">
+    {% endif %}
+
+    <fieldset>
+      <legend>What it is</legend>
+      {% include "scarves/partials/blank_field.html" with field=form.name %}
+      {% include "scarves/partials/blank_field.html" with field=form.category %}
+      {% comment %}
+      Origin sits here, with what the thing *is*, rather than down in
+      "dyeing it" — it is not a question about dyeing, and filing it there is
+      what made it read as one.
+      {% endcomment %}
+      {% include "scarves/partials/blank_field.html" with field=form.made_in_a_dye_bath %}
+      {% include "scarves/partials/blank_field.html" with field=form.is_active %}
+    </fieldset>
+
+    <fieldset>
+      <legend>Buying it</legend>
+      {% include "scarves/partials/blank_field.html" with field=form.price %}
+      {% include "scarves/partials/blank_field.html" with field=form.supplier %}
+      {% include "scarves/partials/blank_field.html" with field=form.order_url %}
+      {% include "scarves/partials/blank_field.html" with field=form.sku %}
+      {% if form.opening_count %}
+        {% include "scarves/partials/blank_field.html" with field=form.opening_count %}
+      {% endif %}
+    </fieldset>
+
+    <fieldset>
+      <legend>Dyeing it</legend>
+      {% include "scarves/partials/blank_field.html" with field=form.number_per_dye_bath %}
+      {% comment %}
+      The fancy pairing, made rather than chosen. Asking somebody to create
+      the fancy blank first and then come back to point at it was asking them
+      to do the app's bookkeeping in the right order — and the empty dropdown
+      that resulted read as "this is broken" rather than "do the other one
+      first".
+      {% endcomment %}
+      {% if form.has_fancy_version %}
+        {% include "scarves/partials/blank_field.html" with field=form.has_fancy_version %}
+        {% if product.fancy_counterpart %}
+          <p class="sidenote">
+            Its fancy version is
+            <a href="{% url 'blank_edit' product.fancy_counterpart.pk %}">{{ product.fancy_counterpart.name }}</a>.
+          </p>
+        {% endif %}
+      {% endif %}
+      {% if form.fancy_counterpart %}
+        {% include "scarves/partials/blank_field.html" with field=form.fancy_counterpart %}
+      {% endif %}
+      {% include "scarves/partials/blank_field.html" with field=form.fancying_cost %}
+    </fieldset>
+
+    <fieldset>
+      <legend>Selling it</legend>
+      {% include "scarves/partials/blank_field.html" with field=form.suggested_price %}
+      {% comment %}
+      The other second row. An undyed yarn is a pile and a thing Square
+      sells, and the second one could previously only be made by running a
+      management command — which is not a door.
+      {% endcomment %}
+      {% include "scarves/partials/blank_field.html" with field=form.sold_undyed %}
+      {% include "scarves/partials/blank_field.html" with field=form.catalog_group %}
+    </fieldset>
+
+    <fieldset>
+      <legend>Colourways, and what a new one inherits</legend>
+      {% comment %}
+      Creation-time defaults, and the legend says so: changing either never
+      rewrites a colorway that already exists, because that would silently
+      re-schedule production.
+      {% endcomment %}
+      {% include "scarves/partials/blank_field.html" with field=form.finished_par_default %}
+      {% include "scarves/partials/blank_field.html" with field=form.display_slots_default %}
+      {% comment %}
+      The expensive half of a new blank, and the reason this section exists
+      at all: the catalogue is narrow in styles and very wide in colour, so
+      one new silk is a few hundred finished products.
+      {% endcomment %}
+      <div class="field">
+        <label>{{ form.colorways.label }}</label>
+        <div class="cwlist">{{ form.colorways }}</div>
+        <span class="helptext">{{ form.colorways.help_text }}</span>
+        {% if form.colorways.errors %}<div class="err">{{ form.colorways.errors }}</div>{% endif %}
+      </div>
+      <p class="sidenote">
+        Both apply at creation only. Changing one never rewrites a colorway
+        that already exists — that would re-schedule production without
+        anybody asking for it.
+      </p>
+    </fieldset>
+
+    <fieldset>
+      <legend>Ordering floor</legend>
+      {% include "scarves/partials/blank_field.html" with field=form.par_level %}
+      {% include "scarves/partials/blank_field.html" with field=form.notes %}
+    </fieldset>
+
+    <div class="actions">
+      <button class="btn" type="submit">
+        {% if product %}Save{% else %}Create it{% endif %}
+      </button>
+      {% if back %}
+        <a class="btn-quiet" href="{{ back }}">Back to the invoice</a>
+      {% else %}
+        <a class="btn-quiet" href="{% url 'blank_index' %}">All blanks</a>
+      {% endif %}
+    </div>
+  </form>
+{% endblock %}

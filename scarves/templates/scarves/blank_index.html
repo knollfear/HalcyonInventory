@@ -1,0 +1,96 @@
+{% extends "scarves/base_internal.html" %}
+
+{% block title %}Blanks{% endblock %}
+{% block heading %}Blanks{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 980px; }
+  .stat { font-size: 13px; color: #555; }
+  .missing { font-size: 12px; color: #8a5a2a; }
+  .madehere { font-size: 12px; color: #55607a; }
+  .group { margin-top: 26px; }
+  .group h2 { margin-bottom: 6px; }
+  .retired { margin-top: 34px; }
+  .retired .card { opacity: .62; }
+  .newrow { margin: 18px 0 6px; }
+{% endblock %}
+
+{% block content %}
+  <p class="lead">
+    Everything undyed that gets bought: the silk blanks, the four yarns, the
+    notions off the next stall. This is what a blank <em>is</em> — how many
+    there are and what they cost is
+    <a href="{% url 'raw_inventory_index' %}">Raw Inventory</a>.
+  </p>
+
+  <p class="newrow">
+    <a class="btn" href="{% url 'blank_new' %}">Add a blank</a>
+  </p>
+
+  {% if uncosted %}
+    {% comment %}
+    Named rather than counted, the same call the supplier picker makes: these
+    are rows somebody has to go and fix, and a bare number sends nobody
+    anywhere. A cost of zero and a cost nobody knows are the same row once
+    stored, which is why it is worth saying out loud here.
+    {% endcomment %}
+    <p class="small">
+      <strong>No cost on file:</strong>
+      {% for p in uncosted %}{{ p.name }}{% if not forloop.last %}, {% endif %}{% endfor %}.
+      Until one is set, every report that prices this shelf reads a zero for them.
+    </p>
+  {% endif %}
+
+  {% for name, products in groups %}
+    <div class="group">
+      <h2>{{ name }}</h2>
+      <div class="cards">
+        {% for p in products %}
+          <a class="card" href="{% url 'blank_edit' p.pk %}">
+            <span class="name">{{ p.name }}</span>
+            <span class="stat">
+              {% if p.price %}${{ p.price }}{% else %}<span class="missing">not costed</span>{% endif %}
+              · {{ p.number_per_dye_bath }} per bath
+              {% if p.supplier %} · {{ p.supplier.name }}{% endif %}
+            </span>
+            {% comment %}
+            "Made here" rather than "no bath makes this". The second is true
+            of this blank and *sounds* true of every yarn sold undyed, which
+            is the reading that would have somebody set the flag on one — and
+            the flag is the fancy marker, not a statement about dyeing.
+            {% endcomment %}
+            {% if not p.made_in_a_dye_bath %}
+              <span class="madehere">made here, not bought</span>
+            {% endif %}
+          </a>
+        {% endfor %}
+      </div>
+    </div>
+  {% empty %}
+    <p class="empty">No blanks yet.</p>
+  {% endfor %}
+
+  {% if retired %}
+    <div class="retired">
+      <h2>Retired</h2>
+      {% comment %}
+      Listed rather than hidden. A retired blank is still pointed at by every
+      sale and production row it was part of — and one you cannot find is one
+      somebody makes a second copy of.
+      {% endcomment %}
+      <p class="small">
+        Not bought any more. Still here because the history points at them,
+        and still findable so nobody creates a second copy.
+      </p>
+      <div class="cards">
+        {% for p in retired %}
+          <a class="card" href="{% url 'blank_edit' p.pk %}">
+            <span class="name">{{ p.name }}</span>
+            <span class="stat">{{ p.category.name }}</span>
+          </a>
+        {% endfor %}
+      </div>
+    </div>
+  {% endif %}
+{% endblock %}

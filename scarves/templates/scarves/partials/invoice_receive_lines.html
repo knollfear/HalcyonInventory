@@ -1,0 +1,38 @@
+{% comment %}
+What actually turned up, per line. Swapped in by htmx, or rendered inline by
+`?adjust=1` when the script is blocked — the same inputs either way.
+
+Blank means "all of it", so a form somebody opened and thought better of
+behaves exactly as if they had never opened it.
+{% endcomment %}
+<table class="arrived">
+  <thead>
+    <tr>
+      <th>Blank</th>
+      <th class="num">Ordered</th>
+      <th class="num">Arrived</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for line in lines %}
+      <tr>
+        <td>
+          {{ line.raw_product.name|default:"— not matched —" }}
+          {% if line.description %}<span class="said">{{ line.description }}</span>{% endif %}
+        </td>
+        <td class="num">{{ line.quantity }}</td>
+        <td class="num">
+          <input class="qty" type="text" inputmode="numeric"
+                 name="arrived_{{ line.pk }}"
+                 value="{{ line.received_quantity|default_if_none:'' }}"
+                 placeholder="{{ line.quantity }}">
+        </td>
+      </tr>
+    {% endfor %}
+  </tbody>
+</table>
+<p class="small">
+  Leave a box empty and the whole line goes on. Ordered 80 and received 50 are
+  both true, so both are kept — the shelf gets what arrived, and the rest is
+  between you and the supplier. Nothing here tracks a refund.
+</p>

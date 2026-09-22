@@ -417,6 +417,28 @@ class RawProduct(models.Model):
         blank=True,
         help_text="Your internal SKU or supplier's item number.",
     )
+    invoice_description = models.CharField(
+        max_length=300,
+        blank=True,
+        editable=False,
+        help_text=(
+            "What the supplier calls this on their paperwork, in their "
+            "words.\n\n"
+            "`Machine Hemmed 8mm Habotai Scarves 21\" x 76\" Circle` is an "
+            "Infinity, and there is no way to derive that — not from the "
+            "name, not from the fibre, not by any amount of reading. It is "
+            "simply a fact somebody knows. But it only has to be said once, "
+            "and then it is worth more than a reading: an exact match is a "
+            "certainty where a model is a suggestion.\n\n"
+            "**Nothing types this in.** It is written by confirming an "
+            "invoice line against this blank — the choice somebody was "
+            "making anyway — which is why it is `editable=False`. Confirming "
+            "a different wording replaces it, and confirming this wording "
+            "against a *different* blank takes it off this one, so a "
+            "mis-match heals the next time somebody gets it right rather "
+            "than leaving two blanks claiming the same line."
+        ),
+    )
     notes = models.TextField(blank=True)
     is_active = models.BooleanField(
         default=True,
@@ -517,12 +539,119 @@ class RawProduct(models.Model):
 
     @property
     def raw_shortage(self) -> int:
-        """
-        How many more raw units we need to reach par.
+        """How many more to order to reach par — **what is coming counts.**
+
+        Par is an *order signal*, not a stock reading. Something already on a
+        supplier's van is not under par in any way that should make a page
+        flash: a second order will not make the first arrive faster, and a
+        page that keeps asking for one it already has gets ordered twice or
+        stops being read. This is the same subtraction `production.in_flight`
+        makes for baths already on a sheet — the claim is counted wherever it
+        came from.
+
+        **It is emphatically not added to `number_on_hand`.** That number is
+        what a production run claims its blanks from, and yarn in transit is
+        not something the dye room can touch. On order and on the shelf are
+        different facts and only one of them can start a bath.
+
+        The risk this takes on is an order that never arrives, quietly
+        suppressing the signal for good. Nothing automatic un-suppresses it —
+        that would be the app deciding — so every page that prints a shortage
+        prints what is on order beside it, with the date and whether it is
+        past the supplier's lead time. See `oldest_open_order`.
         """
         if self.par_level is None or self.par_level == 0:
             return 0
-        return max(self.par_level - self.number_on_hand, 0)
+        return max(self.par_level - self.number_on_hand - self.on_order, 0)
+
+    @property
+    def on_order(self) -> int:
+        """Units on a confirmed invoice whose goods have not turned up.
+
+        Memoised per instance, and `prime_on_order` fills a whole page's
+        worth in one query — a shortage column asks this once per row.
+        """
+        if getattr(self, "_on_order", None) is None:
+            self._on_order = self.invoice_lines.filter(
+                invoice__booked_at__isnull=False,
+                invoice__received_on__isnull=True,
+                # Given up on is not coming. This is what hands the reorder
+                # signal back.
+                invoice__written_off_on__isnull=True,
+            ).aggregate(total=models.Sum("quantity"))["total"] or 0
+        return self._on_order
+
+    @property
+    def oldest_open_order(self):
+        """The longest-outstanding invoice carrying this blank, or None.
+
+        What a page needs to say *why* a shortage is being held down, and the
+        only way a forgotten order becomes visible: a date somebody can look
+        at and judge.
+        """
+        return (
+            SupplierInvoice.objects.filter(
+                lines__raw_product=self,
+                booked_at__isnull=False,
+                received_on__isnull=True,
+                written_off_on__isnull=True,
+            )
+            .select_related("supplier")
+            .order_by("ordered_on", "booked_at")
+            .first()
+        )
+
+    @property
+    def order_is_late(self):
+        """Past the supplier's lead time, when both are known.
+
+        **Null lead time means nobody has said, and nothing is claimed.** A
+        date derived from a guess is the `par` mistake with a delivery on the
+        end of it — so this answers `False` rather than guessing, and the page
+        prints the order's age either way.
+        """
+        invoice = self.oldest_open_order
+        if invoice is None or invoice.ordered_on is None:
+            return False
+        days = invoice.supplier.lead_time_days if invoice.supplier_id else None
+        if not days:
+            return False
+        return (timezone.localdate() - invoice.ordered_on).days > days
+
+    def refresh_from_db(self, *args, **kwargs):
+        """Reloading the row drops the memoised `on_order` with it.
+
+        Without this the cache outlives the fact it caches: write an order
+        off, reload the blank, and it still reports the units as coming —
+        which would leave the reorder signal suppressed by an order that no
+        longer exists, the exact failure the write-off was built to prevent.
+        """
+        self._on_order = None
+        return super().refresh_from_db(*args, **kwargs)
+
+    @staticmethod
+    def prime_on_order(blanks):
+        """Fill `on_order` for a page of blanks in one query.
+
+        The property is correct on its own and every template can call it;
+        this exists so a forty-row table does not ask forty times. Measured
+        rather than assumed: it replaces one query per row with one for the
+        page.
+        """
+        blanks = list(blanks)
+        totals = dict(
+            SupplierInvoiceLine.objects.filter(
+                raw_product__in=blanks,
+                invoice__booked_at__isnull=False,
+                invoice__received_on__isnull=True,
+                invoice__written_off_on__isnull=True,
+            )
+            .values_list("raw_product")
+            .annotate(total=models.Sum("quantity"))
+        )
+        for blank in blanks:
+            blank._on_order = totals.get(blank.pk, 0)
+        return blanks
 
     @property
     def is_bought_in(self) -> bool:
@@ -3280,3 +3409,347 @@ class DayWeather(models.Model):
         is the day the stall covers went up.
         """
         return self.precipitation_in is not None and self.precipitation_in >= Decimal("0.1")
+
+
+class SupplierInvoice(models.Model):
+    """One order as the supplier billed it, and the only thing that stops a
+    delivery being booked twice.
+
+    **The order number is the whole design.** Everything this shop buys
+    arrives with one on the paperwork, and it is the one fact that makes a
+    bill *identifiable* rather than just a list of quantities. Without it,
+    booking a delivery is a delta nothing can check — type the same nine
+    lines in twice, on two different evenings, and the shelf is 18 high with
+    nothing anywhere saying so. `number_on_hand` only heals when somebody
+    counts, and raw stock is the one pile nothing recounts on its own (see
+    `RawProduct.counted_at`), so that error can sit for a season and then
+    silently under-order.
+
+    With the number, the second attempt is *loud*: the page names the
+    invoice already booked, when, and what it moved. That is why this is the
+    one place in the app where a delivery quantity and a cost may share a
+    Save button — `docs/claude/stock.md` splits them everywhere else because
+    a number typed beside the wrong button is written nowhere, and here the
+    order number is what makes the pair safe.
+
+    **It is a warning, not a lock.** A duplicate can still be booked, with an
+    explicit tick that says so. Two suppliers can pick the same number, a
+    number can be mistyped, an order can genuinely be re-sent — and a rule
+    that argues with the person holding the paper gets worked around rather
+    than obeyed. What matters is that it cannot happen *quietly*.
+
+    **A draft is an invoice nobody has confirmed yet** (`booked_at` is null):
+    what the reader proposed, sitting on its own page waiting for somebody to
+    correct it. Nothing points at a draft and nothing it says has moved any
+    stock, so discarding one really does delete it — the exception
+    `CLAUDE.md` already names, for a row that has no history to protect.
+    """
+
+    order_number = models.CharField(
+        max_length=60,
+        db_index=True,
+        help_text=(
+            "The supplier's order or invoice number, normalised to upper "
+            "case. Required to book, because it is what makes booking the "
+            "same delivery twice visible instead of silent."
+        ),
+    )
+    supplier = models.ForeignKey(
+        "Supplier",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="invoices",
+        help_text="Who sent it, when it matches a supplier already on file.",
+    )
+    ordered_on = models.DateField(
+        null=True,
+        blank=True,
+        help_text=(
+            "The date on the document. Null means nobody could read one — "
+            "not today's date, which would be a guess wearing a fact's "
+            "clothes."
+        ),
+    )
+    document = models.FileField(
+        upload_to="invoices/",
+        blank=True,
+        help_text=(
+            "The PDF or photograph this was read from, kept so the cost on a "
+            "blank has a basis somebody can open. Advice you cannot inspect "
+            "is a decision in disguise."
+        ),
+    )
+    pasted_text = models.TextField(
+        blank=True,
+        help_text=(
+            "The text this was read from, when it arrived pasted out of an "
+            "email rather than as a file. Kept for the same reason the "
+            "document is: a cost with no basis anybody can open reads as a "
+            "fact. One of the two is filled in, never both."
+        ),
+    )
+    read_note = models.TextField(
+        blank=True,
+        help_text=(
+            "What the reader made of the document, or why it made nothing of "
+            "it. Diagnostic only; nothing reads it back."
+        ),
+    )
+    received_on = models.DateField(
+        null=True,
+        blank=True,
+        help_text=(
+            "When the goods actually turned up. **Null means still on "
+            "order**, and that is the whole of the status this needs.\n\n"
+            "A date rather than a status field, because every other "
+            "not-yet-happened in this app is one — a null `booked_at` is a "
+            "draft, a null `counted_at` is a shelf nobody counted, a null "
+            "`lead_time_days` is nobody having said. A date answers *when* as "
+            "well as *whether*, which an enum with two values never can.\n\n"
+            "It exists because most of these documents are **order "
+            "confirmations, not delivery notes**. Booking one used to put the "
+            "goods on the shelf the moment it was read — and `number_on_hand` "
+            "is what a production run claims its blanks from, so the dye room "
+            "could be sent to start baths against yarn still in a van. The "
+            "cost is knowable at order time and lands then; the stock waits "
+            "for the box."
+        ),
+    )
+    written_off_on = models.DateField(
+        null=True,
+        blank=True,
+        help_text=(
+            "When it was given up on — lost, undeliverable, cancelled. The "
+            "other way an order ends.\n\n"
+            "**It closes the order without moving any stock**, which is the "
+            "whole of what it does and the reason it cannot be folded into "
+            "`received_on`: a received date says goods are on a shelf, and "
+            "putting one here would claim a delivery that never happened. "
+            "Two mutually exclusive events, each with its own date.\n\n"
+            "What it really undoes is the *suppression*. An open order takes "
+            "a blank's shortage off the reorder page — see "
+            "`RawProduct.raw_shortage` — so an order that is never coming "
+            "would hold that signal down for good, silently, which is the "
+            "worst shape a bug takes here. This is the door that gives the "
+            "signal back, and a person walks through it rather than a rule."
+        ),
+    )
+    written_off_note = models.CharField(
+        max_length=200,
+        blank=True,
+        help_text=(
+            "Why, in whatever words fit — 'never shipped', 'back-ordered to "
+            "March, cancelled', 'arrived soaked'. Free text because the real "
+            "answers vary and a fixed list of reasons would collect "
+            "'other'."
+        ),
+    )
+    booked_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When somebody confirmed it. Null means it is still a draft.",
+    )
+    booked_by = models.ForeignKey(
+        "auth.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="invoices_booked",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-ordered_on", "-created_at"]
+
+    def __str__(self):
+        who = self.supplier.name if self.supplier_id else "unknown supplier"
+        return f"{self.order_number or 'no order number'} ({who})"
+
+    def get_absolute_url(self):
+        from django.urls import reverse
+
+        return reverse("invoice_detail", args=[self.pk])
+
+    @property
+    def is_draft(self):
+        return self.booked_at is None
+
+    @property
+    def is_on_order(self):
+        """Confirmed, costed, still coming.
+
+        An invoice whose prices are already true of the catalogue and whose
+        goods are not yet anything the dye room can touch. It is also the
+        only state that holds a reorder signal down, which is why giving up
+        on one has to be expressible.
+        """
+        return (
+            self.booked_at is not None
+            and self.received_on is None
+            and self.written_off_on is None
+        )
+
+    @property
+    def is_written_off(self):
+        """Ended without arriving. Costs stand; no stock ever moved."""
+        return self.written_off_on is not None and self.received_on is None
+
+    @property
+    def units_on_order(self):
+        return sum(line.quantity for line in self.lines.all()) if self.is_on_order else 0
+
+    @property
+    def state(self):
+        """One word for what happened to this document.
+
+        Derived from the dates rather than stored, so it cannot disagree with
+        them — which is the reason there is no status column: a status and a
+        date for the same event are two places to write one fact.
+        """
+        if self.booked_at is None:
+            return "draft"
+        if self.received_on is not None:
+            return "received"
+        if self.written_off_on is not None:
+            return "written off"
+        return "on order"
+
+    @property
+    def total(self):
+        """What the booked lines came to, summed rather than stored.
+
+        The document's own total is not this: it carries shipping and tax,
+        which buy no stock and set no cost. Printed as what was booked, so it
+        is never mistaken for what was paid.
+        """
+        return sum(
+            (line.line_total or Decimal("0")) for line in self.lines.all()
+        )
+
+    @staticmethod
+    def normalise_number(raw):
+        """Upper case, one space between words, nothing on the ends.
+
+        `w2d-1183`, `W2D-1183 ` and `W2D-1183` are one order, and a duplicate
+        check that misses them because of a space is a duplicate check that
+        does nothing on the evening it matters.
+        """
+        return re.sub(r"\s+", " ", (raw or "").strip()).upper()
+
+
+class SupplierInvoiceLine(models.Model):
+    """One line of one invoice: the pack, and the unit cost that derives from it.
+
+    **An invoice line is where a pack size finally has a home.** A blank is
+    bought ten or twenty-five at a time and the per-unit cost was somebody
+    dividing by hand on the way to the basket — `docs/claude/stock.md` said
+    this fact belongs with invoice ingestion precisely because it lands here
+    as a by-product rather than as a schema change bought with data entry.
+    `quantity` *is* the pack.
+
+    **`unit_cost` is the replacement cost, and it is what gets written onto
+    the blank.** Not an average of what was ever paid, not a layered FIFO
+    cost — what one would cost to buy again today. If it cost a dollar and
+    costs two now, it is worth two, and last year's dollar is not a number
+    anything here needs.
+
+    `previous_price` is kept beside it so a row says what it changed, which
+    is the only way a costing decision can be checked afterwards. Lines
+    cascade with their invoice because a line is part of a document rather
+    than a record of its own; the *movement* it caused is on the blank, and
+    that stands whatever happens here.
+    """
+
+    invoice = models.ForeignKey(
+        SupplierInvoice,
+        on_delete=models.CASCADE,
+        related_name="lines",
+    )
+    raw_product = models.ForeignKey(
+        RawProduct,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="invoice_lines",
+        help_text=(
+            "The blank this line bought.\n\n"
+            "Null only ever on a draft: it is a line the reader could not "
+            "match, sitting there as a question for somebody. Booking one is "
+            "what settles it, and a booked line always names a blank — the "
+            "page refuses a ticked row that doesn't, by name, rather than "
+            "quietly dropping it."
+        ),
+    )
+    description = models.CharField(
+        max_length=300,
+        blank=True,
+        help_text=(
+            "What the invoice itself called it, kept verbatim. This is the "
+            "basis for the match beside it — a suggestion whose evidence is "
+            "hidden is not something anybody can agree or disagree with."
+        ),
+    )
+    quantity = models.PositiveIntegerField(
+        default=0,
+        help_text="How many arrived on this line — the pack.",
+    )
+    received_quantity = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text=(
+            "How many actually turned up, when it is not what was ordered.\n\n"
+            "**Null means all of it**, which is the ordinary case and why "
+            "this is nullable rather than a copy of `quantity` written on "
+            "every line. Ordered 80 and received 50 are both true, so both "
+            "are kept: `quantity` is what the document says was bought and "
+            "this is what reached the shelf.\n\n"
+            "Nothing here tracks the refund or the outstanding 30. A short "
+            "delivery is settled with the supplier by a person; what the app "
+            "needs is a shelf that matches the room."
+        ),
+    )
+    line_total = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(0)],
+        help_text=(
+            "What the line came to, before shipping and tax — as billed, so "
+            "it stays true of the document even when less arrives."
+        ),
+    )
+    unit_cost = models.DecimalField(
+        max_digits=8,
+        decimal_places=2,
+        validators=[MinValueValidator(0)],
+        help_text="What one costs — this is what gets written onto the blank.",
+    )
+    previous_price = models.DecimalField(
+        max_digits=8,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="What the blank cost before this line was booked.",
+    )
+
+    class Meta:
+        ordering = ["pk"]
+
+    def __str__(self):
+        return f"{self.quantity} × {self.raw_product} @ {self.unit_cost}"
+
+    @property
+    def arrived(self):
+        """How many reached the shelf: what turned up, else what was ordered."""
+        return self.quantity if self.received_quantity is None else self.received_quantity
+
+    @property
+    def came_up_short(self):
+        return self.received_quantity is not None and self.received_quantity != self.quantity
+
+    @property
+    def price_moved(self):
+        """Whether booking this changed what the blank is believed to cost."""
+        return self.previous_price is not None and self.previous_price != self.unit_cost

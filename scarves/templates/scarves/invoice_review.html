@@ -1,0 +1,269 @@
+{% extends "scarves/base_internal.html" %}
+
+{% block title %}Confirm invoice{% endblock %}
+{% block heading %}Confirm invoice{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 1180px; }
+  .facts { display: flex; gap: 18px; flex-wrap: wrap; align-items: flex-end; margin: 18px 0 8px; }
+  .facts label { display: block; font-size: 12px; color: #667; margin-bottom: 3px; }
+  .facts input[type="date"] { font: inherit; padding: 5px 8px; border: 1px solid #cfd6de; border-radius: 6px; }
+  .facts .wide input { width: 14rem; }
+
+  /* The duplicate warning. Loud on purpose and not a .message: a banner that
+     looks like every other banner is one somebody clicks past, and this is
+     the one thing on the page that cannot be undone by looking again later —
+     the shelf would simply be wrong, and raw stock is the pile nothing
+     recounts on its own. */
+  .already {
+      margin: 18px 0; padding: 16px 18px; border-radius: 10px;
+      background: #fdf2f1; border: 2px solid #d9534f; color: #7a241f;
+  }
+  .already h2 { margin: 0 0 6px; font-size: 19px; color: #8a2f2a; }
+  .already p { margin: 6px 0; font-size: 14px; }
+  .already label { font-weight: 600; }
+
+  td.num, th.num { text-align: right; white-space: nowrap; }
+  .said { font-size: 13px; color: #444; }
+  .said input { width: 100%; }
+  .now { font-size: 11px; color: #667; display: block; }
+  .unmatched { color: #8a5a2a; font-size: 12px; }
+  .remembered { color: #2e7d52; font-size: 12px; }
+  .makeone { font-size: 12px; }
+  fieldset.arrival {
+      border: 1px solid #e1e5ea; border-radius: 10px; padding: 4px 16px 14px;
+      margin: 22px 0 0;
+  }
+  fieldset.arrival legend { font-size: 13px; color: #667; padding: 0 6px; }
+  fieldset.arrival label { display: block; margin-top: 10px; font-size: 14px; }
+  fieldset.arrival input { margin-right: 7px; }
+  tr.off { background: #fafbfc; color: #8b929b; }
+  select.blank { max-width: 22rem; }
+  input.qty { width: 4.5rem; }
+  input.cost { width: 6rem; }
+  .spare th { padding-top: 18px; }
+  .filerow { margin: 10px 0 0; font-size: 13px; }
+  .pasted {
+      white-space: pre-wrap; font-size: 12px; background: #f7f9fb;
+      border: 1px solid #e1e5ea; border-radius: 6px; padding: 10px;
+      max-height: 22rem; overflow: auto; margin-top: 8px;
+  }
+{% endblock %}
+
+{% block content %}
+  <p class="lead">
+    This is what the document looked like to the reader. Nothing here has
+    moved yet. Correct anything that is wrong, untick anything that isn't a
+    delivery, and add what it missed — then book it.
+  </p>
+
+  {% if already %}
+    {% comment %}
+    The whole reason an order number is mandatory. A received quantity is a
+    delta, and a delta is only as good as the certainty it hasn't been
+    applied before.
+    {% endcomment %}
+    <div class="already">
+      <h2>This order has already been ingested</h2>
+      <p>
+        <strong>{{ already.order_number }}</strong> was booked on
+        {{ already.booked_at|date:"d M Y" }}{% if already.supplier %} from
+        {{ already.supplier.name }}{% endif %} —
+        <a href="{% url 'invoice_detail' already.pk %}">see what it moved</a>.
+      </p>
+      <p>
+        Booking it again adds these quantities to the shelf a second time, and
+        nothing afterwards counts undyed stock on its own, so it would sit
+        wrong until somebody walks the shelves.
+      </p>
+      <p>
+        <label>
+          <input type="checkbox" name="confirm_duplicate" value="1" form="bookform">
+          This really is a different delivery. Book it anyway.
+        </label>
+      </p>
+    </div>
+  {% endif %}
+
+  <form id="bookform" method="post" action="{% url 'invoice_book' invoice.pk %}">
+    {% csrf_token %}
+
+    <div class="facts">
+      <div class="wide">
+        <label for="order_number">Order number (required)</label>
+        <input type="text" name="order_number" id="order_number"
+               value="{{ invoice.order_number }}" required>
+      </div>
+      <div>
+        <label for="ordered_on">Dated</label>
+        <input type="date" name="ordered_on" id="ordered_on"
+               value="{{ invoice.ordered_on|date:'Y-m-d' }}">
+      </div>
+      <div>
+        <label for="supplier">Supplier</label>
+        <select name="supplier" id="supplier">
+          <option value="">— not recorded —</option>
+          {% for s in suppliers %}
+            <option value="{{ s.pk }}" {% if invoice.supplier_id == s.pk %}selected{% endif %}>{{ s.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
+    <p class="small">
+      The order number is what makes booking the same delivery twice something
+      this page can see. Everything this shop buys has one on the paperwork;
+      if this one genuinely doesn't, make one up that you would recognise
+      again.
+    </p>
+
+    {% if invoice.document %}
+      <p class="filerow">
+        <a href="{{ invoice.document.url }}" target="_blank">Open the document</a>
+        — the basis for every figure below.
+      </p>
+    {% elif invoice.pasted_text %}
+      <details class="filerow">
+        <summary>What was pasted in</summary>
+        <pre class="pasted">{{ invoice.pasted_text }}</pre>
+      </details>
+    {% endif %}
+
+    <table>
+      <thead>
+        <tr>
+          <th style="width:3rem">Book</th>
+          <th>What the invoice said</th>
+          <th>Which blank</th>
+          <th class="num">Qty</th>
+          <th class="num">Each</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+          {% if row.spare %}{% ifchanged row.spare %}
+            <tr class="spare">
+              <th colspan="5">
+                Rows the reader missed — the line on the back of the page, the
+                pack it couldn't match. Tick one to book it.
+              </th>
+            </tr>
+          {% endifchanged %}{% endif %}
+          <tr class="{% if not row.book %}off{% endif %}">
+            <td>
+              <input type="hidden" name="row" value="{{ row.key }}">
+              <input type="checkbox" name="book_{{ row.key }}" value="1"
+                     {% if row.book %}checked{% endif %}>
+            </td>
+            <td class="said">
+              {% comment %}
+              The invoice's own wording, editable but never invented. This is
+              the evidence for the match beside it: a suggestion whose basis
+              is hidden is not something anybody can disagree with.
+              {% endcomment %}
+              <input type="text" name="description_{{ row.key }}"
+                     value="{{ row.description }}"
+                     placeholder="what the line says">
+            </td>
+            <td>
+              <select class="blank" name="product_{{ row.key }}">
+                <option value="">— not matched —</option>
+                {% for p in products %}
+                  <option value="{{ p.pk }}" {% if row.product_id == p.pk %}selected{% endif %}>
+                    {{ p.name }} · {{ p.category.name }} — now ${{ p.price }}, {{ p.number_on_hand }} on hand
+                  </option>
+                {% endfor %}
+              </select>
+              {% if row.book and not row.product_id %}
+                <span class="unmatched">pick one, or untick the row</span>
+              {% elif not row.product_id and row.description %}
+                {% comment %}
+                The line is something the catalogue has never heard of. Rather
+                than a dead end, a door — prefilled from the line, so nothing
+                is retyped, and opened in a new tab because leaving this page
+                would lose whatever else has been corrected on it.
+                {% endcomment %}
+                <a class="makeone" target="_blank" rel="noopener"
+                   href="{% url 'blank_new' %}?name={{ row.suggested_name|urlencode }}&amp;invoice_description={{ row.description|urlencode }}{% if invoice.supplier_id %}&amp;supplier={{ invoice.supplier_id }}{% endif %}{% if row.unit_cost %}&amp;price={{ row.unit_cost|urlencode }}{% endif %}">
+                  new blank from this line ↗
+                </a>
+              {% elif row.remembered %}
+                {% comment %}
+                Said out loud because these two rows deserve different
+                amounts of checking. A remembered match is somebody's own
+                past answer to this exact wording — a certainty. A read one
+                is a guess at it.
+                {% endcomment %}
+                <span class="remembered">remembered from a past invoice</span>
+              {% endif %}
+            </td>
+            <td class="num">
+              <input class="qty" type="text" inputmode="numeric"
+                     name="quantity_{{ row.key }}" value="{{ row.quantity }}">
+            </td>
+            <td class="num">
+              <input class="cost" type="text" inputmode="decimal"
+                     name="cost_{{ row.key }}" value="{{ row.unit_cost }}">
+              {% if row.current %}
+                <span class="now">now ${{ row.current.price }}</span>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <p class="small">
+      <strong>Confirming a row teaches it the wording.</strong> Pick the blank
+      for <em>Machine Hemmed 8mm Habotai Scarves 21" x 76" Circle</em> once and
+      that line is an Infinity from then on — matched exactly, before anything
+      is read, and it stays right whatever a reading would have made of it.
+      Nothing to type: the pick is the recording. A line for something the
+      catalogue has never carried gets a <em>new blank from this line</em>
+      link instead — it opens prefilled in a new tab, so nothing here is lost;
+      reload afterwards and it is in the dropdown.
+    </p>
+
+    <p class="small">
+      <strong>Each</strong> is what one costs — the line total divided by the
+      pack, worked out from the document rather than typed. Booking writes it
+      flat onto the blank as the replacement cost: what it would cost to buy
+      again today, whatever was paid for the ones already on the shelf.
+      <strong>Qty</strong> is added to what is on the shelf; it does not count
+      it, so a shelf count is still a shelf count.
+    </p>
+
+    {% comment %}
+    Asked once, where it is answerable, and stored as a date rather than a
+    status. Most of what comes in is an order confirmation, not a delivery
+    note — and booking one as arrived would put yarn on the shelf that a
+    production sheet can then claim while it is still in a van.
+    {% endcomment %}
+    <fieldset class="arrival">
+      <legend>Has it turned up?</legend>
+      <label>
+        <input type="radio" name="arrival" value="received" checked>
+        <strong>Yes, it's here.</strong> Put these on the shelf, and set the costs.
+      </label>
+      <label>
+        <input type="radio" name="arrival" value="ordered">
+        <strong>No, still on order.</strong> Set the costs now — they are true
+        the moment the order is placed — and leave the shelf alone until the
+        box arrives. One click marks it received later.
+      </label>
+    </fieldset>
+
+    <div class="actions">
+      <button class="btn" type="submit">Book this invoice</button>
+      <span class="small">Ticked rows only. Nothing is booked unless every ticked row reads.</span>
+    </div>
+  </form>
+
+  <form method="post" action="{% url 'invoice_discard' invoice.pk %}"
+        class="actions">
+    {% csrf_token %}
+    <button class="btn-quiet" type="submit">Discard this draft</button>
+    <span class="small">It has moved nothing, so there is nothing to undo.</span>
+  </form>
+{% endblock %}

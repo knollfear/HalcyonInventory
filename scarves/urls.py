@@ -95,6 +95,72 @@ urlpatterns = [
         views.bulk_inventory_update,
         name="bulk_inventory_update",
     ),
+    # What a blank *is*, as opposed to how many there are. The picker is
+    # also the only door that makes one: `RawProduct` is not in the admin,
+    # so before this a new blank meant a shell or the Square sync.
+    path(
+        "private/raw-inventory/blank/",
+        views.blank_index,
+        name="blank_index",
+    ),
+    path(
+        "private/raw-inventory/blank/new/",
+        views.blank_new,
+        name="blank_new",
+    ),
+    path(
+        "private/raw-inventory/blank/<int:raw_product_id>/",
+        views.blank_edit,
+        name="blank_edit",
+    ),
+
+    # An invoice, read and then confirmed. The picker lists what has been
+    # booked and takes the upload; the card is one document either side of
+    # the decision. Booking is its own POST endpoint for the usual reason —
+    # one endpoint per meaning — and discarding another, because throwing a
+    # draft away and confirming it must not share a button.
+    path(
+        "private/invoices/",
+        views.invoice_index,
+        name="invoice_index",
+    ),
+    path(
+        "private/invoices/<int:invoice_id>/",
+        views.invoice_detail,
+        name="invoice_detail",
+    ),
+    path(
+        "private/invoices/<int:invoice_id>/book/",
+        views.invoice_book,
+        name="invoice_book",
+    ),
+    # Receiving is its own endpoint because it is its own meaning: booking
+    # settles what the document says and sets the costs, receiving is the
+    # claim that the goods are in the building.
+    path(
+        "private/invoices/<int:invoice_id>/receive/",
+        views.invoice_receive,
+        name="invoice_receive",
+    ),
+    # The other way an order ends. Its own endpoint, like receiving: one
+    # endpoint per meaning, and these two mean opposite things.
+    # An htmx fragment, so no `@page_meta` — the per-line quantities for a
+    # delivery that came up short.
+    path(
+        "private/invoices/<int:invoice_id>/receive-lines/",
+        views.invoice_receive_lines,
+        name="invoice_receive_lines",
+    ),
+    path(
+        "private/invoices/<int:invoice_id>/write-off/",
+        views.invoice_write_off,
+        name="invoice_write_off",
+    ),
+    path(
+        "private/invoices/<int:invoice_id>/discard/",
+        views.invoice_discard,
+        name="invoice_discard",
+    ),
 
     # What sold, per finished product, over a date range. A read-only report:
     # the state (range, filters, sort) is all query string, so a reading is a

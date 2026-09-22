@@ -1,3 +1,4 @@
+anthropic==1.7.0
 asgiref==3.8.1
 squareup==39.0.0.20241120
 reportlab==4.2.5

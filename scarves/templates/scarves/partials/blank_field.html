@@ -1,0 +1,17 @@
+{% comment %}
+One field of the blank editor: label, widget, help, errors.
+
+A partial rather than twenty copies, so the checkbox rule — label after the
+box, not above it — is written once. Partials carry no shell and inherit
+their styling from the page they land in, per the template note in CLAUDE.md.
+{% endcomment %}
+<div class="field {% if field.field.widget.input_type == 'checkbox' %}check{% endif %}">
+  {% if field.field.widget.input_type == 'checkbox' %}
+    {{ field }}<label for="{{ field.id_for_label }}">{{ field.label }}</label>
+  {% else %}
+    <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+    {{ field }}
+  {% endif %}
+  {% if field.help_text %}<span class="helptext">{{ field.help_text }}</span>{% endif %}
+  {% if field.errors %}<div class="err">{{ field.errors }}</div>{% endif %}
+</div>

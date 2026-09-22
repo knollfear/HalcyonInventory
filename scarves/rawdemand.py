@@ -158,8 +158,33 @@ class Outlook:
 
     @property
     def floor_short(self):
-        """How far below the working floor the shelf is. Never the season."""
+        """How far below the working floor the shelf is. Never the season.
+
+        Already net of anything on order — see `RawProduct.raw_shortage`. Par
+        is an order signal, and a blank with a hundred on a supplier's van is
+        not one to order again.
+        """
         return self.blank.raw_shortage
+
+    @property
+    def on_order(self):
+        """Units confirmed on an invoice and not yet arrived."""
+        return self.blank.on_order
+
+    @property
+    def open_order(self):
+        """The oldest invoice holding this blank up, for printing beside it.
+
+        The basis for a shortage that has been held down, because a
+        suppressed signal with no visible reason is the `par` mistake wearing
+        a delivery note — and a forgotten order is otherwise invisible
+        forever.
+        """
+        return self.blank.oldest_open_order
+
+    @property
+    def order_is_late(self):
+        return self.blank.order_is_late
 
     @property
     def never_counted(self):

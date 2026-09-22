@@ -265,6 +265,27 @@ SQUARE_ENVIRONMENT = os.environ.get("SQUARE_ENVIRONMENT", "sandbox")
 SQUARE_WEBHOOK_SIGNATURE_KEY = os.environ.get("SQUARE_WEBHOOK_SIGNATURE_KEY", "")
 SQUARE_WEBHOOK_URL = os.environ.get("SQUARE_WEBHOOK_URL", "")
 
+# Reading a supplier's invoice (scarves/invoiceread.py). Unset is a supported
+# state and not an error: the invoice page still opens, says nothing was read,
+# and offers the same form with an empty first row — which is the job as it
+# was done before anything read anything.
+CLAUDE_API_KEY = os.environ.get("CLAUDE_API_KEY", "")
+
+# Which model reads an invoice. Opus by default: this runs a couple of times
+# a month on a one-page document, so a year of it costs less than one
+# mis-booked delivery, and the job is exactly the kind — reading a table off
+# a photograph and matching it to a catalogue — where the better model earns
+# its keep. Override to trade that off:
+#
+#   claude-opus-5     $5 / $25 per million tokens in / out   (default)
+#   claude-sonnet-5   $2 / $10
+#   claude-haiku-4-5  $1 / $5
+#
+# `manage.py read_invoice --model <id>` reads one document without changing
+# the setting, which is the way to find out whether a cheaper one is as good
+# on real paperwork before making it the default.
+CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-opus-5")
+
 # settings.py
 LOGIN_REDIRECT_URL = '/accounts/'
 

@@ -6,13 +6,14 @@ from django import forms
 from django.db import transaction
 from django.utils import timezone
 
-from . import crew
+from . import blanks, crew
 from .labels import (
     BARCODE as LABEL_BARCODE,
     STYLE_CHOICES as LABEL_STYLE_CHOICES,
 )
 from .models import (  # RecipeDye is the through model
     UNCATEGORIZED_BRAND,
+    FinishedProduct,
     DisplayFixture,
     BoothPhoto,
     Dye,
@@ -20,8 +21,10 @@ from .models import (  # RecipeDye is the through model
     Employee,
     Recipe,
     RecipeDye,
+    CatalogGroup,
     RawProduct,
     RawProductCategory,
+    Supplier,
     TimeEntry,
     dye_match_key,
 )
@@ -67,6 +70,40 @@ def dye_option_attrs(dye):
     if not dye.in_stock:
         attrs["data-out-of-stock"] = "1"
     return attrs
+
+
+class RecipeCheckboxes(forms.CheckboxSelectMultiple):
+    """Colourways as a checkbox each, with the recipe's dyes beside it.
+
+    **Checkboxes rather than a multi-select, because a multi-select loses
+    everything to one stray click.** Pick thirty colourways, misclick, and
+    all thirty are gone with nothing said — the silent-destructive failure
+    this app keeps designing away from, and on a control where the only
+    warning is a modifier key nobody told you about. Every click here is
+    independent, and nothing has to be held down.
+
+    **The chips are the point, not decoration.** A colourway is a name like
+    `Babs` or `Forest Fire`, which says nothing about what it looks like to
+    anybody who has not dyed it. The dyes are what a person recognises.
+
+    Each dye gets its own chip, in the recipe's own order, and they are never
+    blended into one average colour: a scarf shows each dye distinctly and
+    flows between them, so an averaged swatch would be a colour that does not
+    exist on the product. A dye with no hex on file gets hatching rather than
+    a guess, the same rule `.dyechip` follows everywhere else — a placeholder
+    swatch is something somebody reads off the screen as fact.
+    """
+
+    option_template_name = "scarves/widgets/recipe_checkbox.html"
+
+    def create_option(self, name, value, label, selected, index, subindex=None, attrs=None):
+        option = super().create_option(
+            name, value, label, selected, index, subindex=subindex, attrs=attrs
+        )
+        # `value.instance` is the Recipe; the template needs the object to
+        # reach its dyes. Prefetched by the field, so this costs no query.
+        option["recipe"] = getattr(value, "instance", None)
+        return option
 
 
 class DyeSelect(forms.Select):
@@ -1707,3 +1744,353 @@ class CrewHandbookForm(forms.Form):
                 "Tick the box to say you've read the page, then ask again.",
             )
         return cleaned
+
+
+class RawProductForm(forms.ModelForm):
+    """Making a blank, and changing what one is.
+
+    **There was no door at all.** `RawProduct` is not registered in the admin
+    and no page created one, so the only blanks that existed were the ones a
+    migration or the Square sync put there. Adding the first new silk in a
+    year meant a shell — and an invoice that turns up carrying something the
+    catalogue has never heard of had nowhere to put it.
+
+    **What is deliberately not on here, and why.**
+
+    `number_on_hand` is an opening balance at creation and nothing
+    afterwards. A blank that already exists gets counted on
+    `private/raw-inventory/`, where the two columns say plainly which
+    question is being answered — *received* is a delta, *counted* is a
+    measurement — and a third box on a third page quietly writing the same
+    number is exactly the second door that makes two of them disagree.
+
+    `invoice_description` is written by confirming an invoice line, never
+    typed, so it is `editable=False` on the model and absent here.
+    `square_item_id` belongs to the sync: typing one by hand is how a
+    variation ends up pointed at the wrong shelf, and the sync repairs
+    nothing it did not write.
+
+    `counted_at` is a record of somebody physically counting, and a form that
+    could set it would be a form that could claim a count nobody did.
+
+    The help text is the short version of what is on the model. The long
+    arguments live there and on `docs/claude/stock.md`; this is a page for
+    somebody adding a blank, not for somebody deciding whether the field
+    should exist.
+    """
+
+    #: The flag's real question, asked as its real question.
+    #:
+    #: `made_in_a_dye_bath` is a *fancy* marker and nothing else — the data
+    #: says so plainly: every undyed yarn in the catalogue has it **True**,
+    #: because those blanks are dyed into colorways and *separately* sold as
+    #: they arrive, which is a colorway with no recipe rather than anything
+    #: about the blank. Not one row has it False.
+    #:
+    #: Asked as "a dye bath can produce this" it reads as a question about
+    #: dyeing, and the honest answer for a yarn sold undyed looks like *no* —
+    #: which would quietly mark it fancy, drop it off every production list
+    #: and route baths of it to a blank that does not exist. Two named
+    #: origins cannot be misread that way: nobody calls Superwash Merino
+    #: Zebra DK "made here from another blank".
+    ORIGIN_BOUGHT = "True"
+    ORIGIN_MADE_HERE = "False"
+
+    made_in_a_dye_bath = forms.TypedChoiceField(
+        label="Where it comes from",
+        coerce=lambda value: value == "True",
+        empty_value=True,
+        choices=(
+            (ORIGIN_BOUGHT,
+             "Bought from a supplier — it arrives on a delivery, and dye "
+             "baths make colorways of it"),
+            (ORIGIN_MADE_HERE,
+             "Made here from another blank — a bought one with extra work "
+             "added, like a fancy veil"),
+        ),
+        widget=forms.RadioSelect,
+        initial=ORIGIN_BOUGHT,
+        help_text=(
+            "Nearly everything is bought. “Made here” is for a blank no "
+            "supplier sells and no dye bath can produce, which today means "
+            "the fancy veils — an already-dyed scarf with line work added. "
+            "It drops off every production list, because sending somebody to "
+            "the dye room for one asks for a thing that isn't made there.\n\n"
+            "Selling something undyed, exactly as it arrives, is not this. "
+            "That is a colorway with no recipe, and the blank stays bought "
+            "from a supplier — which is how every undyed yarn is set."
+        ),
+    )
+
+    has_fancy_version = forms.BooleanField(
+        required=False,
+        label="It also comes in a fancy version",
+        help_text=(
+            "Ticking this makes the fancy blank and links the two. There is "
+            "nothing to pick from because the fancy version of this blank is "
+            "a thing that only exists to be that — one to one, since a veil "
+            "cannot become a fancy shawl.\n\n"
+            "Costs nothing to be wrong: a fancy blank nobody sells has par "
+            "0, no stock and no colorways, appears on no production list "
+            "(nothing can dye it) and asks for no order (nothing buys it). "
+            "Unticking it later does not delete it — retire it instead."
+        ),
+    )
+
+    sold_undyed = forms.BooleanField(
+        required=False,
+        label="Also sold exactly as it arrives, undyed",
+        help_text=(
+            "Makes the sellable row — one physical pile, two rows: this "
+            "blank is the pile, and a colorway with no recipe is what Square "
+            "sells. The count is mirrored between them, so moving a skein "
+            "from one to the other changes nothing.\n\n"
+            "It is priced at the suggested price above. Leave that empty and "
+            "it lands at $1.00, conspicuously, so somebody fixes it before it "
+            "reaches a till — zero would sync happily and ring up free."
+        ),
+    )
+
+    colorways = forms.ModelMultipleChoiceField(
+        queryset=Recipe.objects.none(),
+        required=False,
+        widget=RecipeCheckboxes,
+        label="Make it in these colourways",
+        # **How to work the control comes first, and nearly alone.** Help
+        # text on a field is operating instructions; the argument for why the
+        # field exists belongs in `scarves/blanks.py` and
+        # `docs/claude/stock.md`, where somebody goes looking for an
+        # argument. A multi-select whose reader cannot discover ⌘-click is a
+        # control that can only pick one thing, and three paragraphs of
+        # reasoning above it do not help with that — they bury it.
+        help_text=(
+            "Each tick becomes one product, “{blank} - {colourway}”, at the "
+            "par and display defaults below. Add more any time — one this "
+            "blank already has is skipped, not duplicated. Oven-dyed is left "
+            "off on all of them; set it per colourway when you know."
+        ),
+    )
+
+    opening_count = forms.IntegerField(
+        required=False,
+        min_value=0,
+        label="How many are on the shelf now",
+        help_text=(
+            "The opening balance, counted once. Blank means none. After this "
+            "the shelf is only ever changed by a delivery, a dye bath or a "
+            "count on the Raw Inventory page."
+        ),
+    )
+
+    class Meta:
+        model = RawProduct
+        fields = (
+            "name", "category", "is_active",
+            "price", "suggested_price", "supplier", "order_url", "sku",
+            "made_in_a_dye_bath", "number_per_dye_bath",
+            "fancy_counterpart", "fancying_cost",
+            "par_level", "finished_par_default", "display_slots_default",
+            "catalog_group", "notes",
+        )
+        labels = {
+            "name": "What it is called",
+            "category": "Which table it sits on",
+            "is_active": "Still bought and used",
+            "made_in_a_dye_bath": "Where it comes from",
+            "price": "What one costs you",
+            "suggested_price": "What a finished one sells for",
+            "order_url": "The page you reorder it from",
+            "sku": "Supplier's item number",
+            "made_in_a_dye_bath": "A dye bath can produce this",
+            "number_per_dye_bath": "How many go in one bath",
+            "fancy_counterpart": "Its fancy version",
+            "fancying_cost": "What the line work costs, per unit (made-here blanks only)",
+            "par_level": "Keep at least this many undyed",
+            "finished_par_default": "Par given to a new colorway of this",
+            "display_slots_default": "Display spots a new colorway gets",
+            "catalog_group": "Sell it under a shared Square item",
+            "notes": "Anything else",
+        }
+        help_texts = {
+            "price": (
+                "Replacement cost — what one would cost to buy again today. "
+                "An invoice overwrites this, so it is usually enough to get "
+                "it roughly right here."
+            ),
+            "suggested_price": (
+                "Leave empty if it is not decided. Empty and zero are "
+                "different answers, and the stock valuation says which."
+            ),
+            "supplier": "Who you buy it from, which is not the same as where.",
+            "order_url": "The product page for this exact blank, not the shop's front page.",
+            "number_per_dye_bath": "Five skeins, four scarves — whatever fits the pot.",
+            "fancy_counterpart": (
+                "Set this on the plain blank, pointing at the fancy one. It "
+                "lets a bath of five be reported as four plain and one fancy."
+            ),
+            "fancying_cost": (
+                "Only on a fancy blank. Leave empty on everything you buy: a "
+                "fancy veil has no supplier, and its cost is the plain one "
+                "plus this."
+            ),
+            "par_level": (
+                "The floor that keeps the dye room working, not a season's "
+                "requirement. 0 means no floor."
+            ),
+            "finished_par_default": (
+                "Only applies when a colorway is created. Changing it never "
+                "rewrites the par of one that already exists."
+            ),
+            "display_slots_default": (
+                "Display capacity, which is never a production target — a "
+                "bigger hook is somewhere to put stock, not a reason to make "
+                "more."
+            ),
+            "catalog_group": (
+                "Blank for everything dyed, which is the normal case. Set it "
+                "for something sold exactly as it arrives, where the Square "
+                "item is the group and this blank is one of its variations."
+            ),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["category"].queryset = RawProductCategory.objects.order_by("name")
+        self.fields["supplier"].queryset = Supplier.objects.filter(
+            is_active=True
+        ).order_by("name")
+        self.fields["supplier"].empty_label = "— nobody recorded —"
+        self.fields["catalog_group"].queryset = CatalogGroup.objects.order_by("name")
+        self.fields["catalog_group"].empty_label = "— its own Square item —"
+        self.fields["price"].required = False
+
+        # **The fancy pairing, and the order it has to be done in.** The
+        # dropdown can only offer blanks that are already marked as made
+        # here, so the fancy one exists first and the plain one is pointed at
+        # it afterwards. That is not guessable from an empty select, and an
+        # empty select reads as "this feature is broken" — so when there are
+        # none, the field says what to do instead of offering nothing.
+        fancies = RawProduct.objects.filter(made_in_a_dye_bath=False).order_by("name")
+        if self.instance.pk:
+            fancies = fancies.exclude(pk=self.instance.pk)
+        self.fields["fancy_counterpart"].queryset = fancies
+        self.fields["fancy_counterpart"].empty_label = "— it has no fancy version —"
+        # A fancy blank has no fancy version of its own: a veil becomes a
+        # fancy veil, and a fancy veil becomes nothing.
+        if self.instance.pk and not self.instance.made_in_a_dye_bath:
+            del self.fields["fancy_counterpart"]
+            del self.fields["has_fancy_version"]
+
+        # **The dropdown is the rare path now, and only offered when it can
+        # do something.** Making the fancy blank is the ordinary answer;
+        # pointing at one that already exists is for repairing a link, and an
+        # empty select offering nothing is what read as "broken".
+        if "fancy_counterpart" in self.fields:
+            unlinked = fancies.filter(plain_counterparts__isnull=True)
+            if self.instance.pk and self.instance.fancy_counterpart_id:
+                self.initial["has_fancy_version"] = True
+            if not unlinked.exists():
+                del self.fields["fancy_counterpart"]
+            else:
+                self.fields["fancy_counterpart"].queryset = unlinked
+                self.fields["fancy_counterpart"].help_text = (
+                    "Only needed to point at a fancy blank that already "
+                    "exists and isn't linked to anything. Ticking the box "
+                    "above makes a new one instead."
+                )
+                self.fields["fancy_counterpart"].disabled = False
+
+        # Only live colourways: a retired one is a colour somebody decided to
+        # stop making, and offering it here is the dye-room-sent-after-a-
+        # retired-recipe failure with a new door onto it.
+        # Prefetched, because every row draws its dyes: 162 colourways is
+        # 162 queries without it and two with.
+        self.fields["colorways"].queryset = (
+            Recipe.objects.filter(is_active=True)
+            .prefetch_related("recipe_dyes__dye")
+            .order_by("name")
+        )
+        if self.instance.pk:
+            self.fields["colorways"].help_text += (
+                f"\n\n{self.instance.finished_products.filter(is_active=True).count()} "
+                f"already exist."
+            )
+
+        if self.instance.pk:
+            self.initial["sold_undyed"] = FinishedProduct.objects.filter(
+                raw_product=self.instance, recipe__isnull=True
+            ).exists()
+
+        if self.instance.pk:
+            # The shelf is not editable here — see the class docstring. The
+            # field is dropped rather than shown disabled, because a greyed
+            # box still reads as "this is where that is changed".
+            del self.fields["opening_count"]
+
+    def clean_price(self):
+        """An empty cost is zero, and the page says so rather than refusing.
+
+        "I don't know what this costs yet" is most of a first pass, and
+        `price` is not nullable — so the honest thing is to take the gap and
+        show the row as *not costed* everywhere it matters, which is what the
+        reorder page already does.
+        """
+        price = self.cleaned_data.get("price")
+        return price if price is not None else Decimal("0")
+
+    def clean(self):
+        cleaned = super().clean()
+        # "A blank can't be its own fancy version" is not checked here, and
+        # deliberately: the queryset is the enforcement. It offers only
+        # made-here blanks and excludes this one, and the field is dropped
+        # altogether on a blank that is itself made here — so both halves of
+        # the rule are structural. A `clean()` branch for it would be code
+        # that can never run, which is worse than no check: it reads as the
+        # thing keeping the rule true.
+        if cleaned.get("fancying_cost") is not None and cleaned.get("made_in_a_dye_bath"):
+            self.add_error(
+                "fancying_cost",
+                "Line work costs belong on a made-here blank. Set “where it "
+                "comes from” to made here if that is what this is, or leave "
+                "the cost empty — `price` is what a supplier charges, and a "
+                "fancy veil has no supplier.",
+            )
+        return cleaned
+
+    def save(self, commit=True):
+        """Save the blank, and make whatever second rows it now implies.
+
+        **Both extras are made here rather than asked for elsewhere**, which
+        is the whole point: a blank that comes in a fancy version and a yarn
+        sold undyed are each two rows, and until now the second row meant
+        either a remembered ordering or a management command. Saying it on
+        the blank is the decision; the row is bookkeeping.
+
+        Neither is ever un-made. Unticking does not delete a fancy blank or a
+        sellable row — those have history, and retiring is how something goes
+        away.
+        """
+        product = super().save(commit=False)
+        opening = self.cleaned_data.get("opening_count")
+        if opening is not None and not product.pk:
+            product.number_on_hand = opening
+        if not commit:
+            return product
+
+        # `save()` rather than a queryset update: the `post_save` on this
+        # model is what mirrors a passthrough's count onto its finished
+        # row, and one physical pile gets exactly one row that counts it.
+        product.save()
+
+        if self.cleaned_data.get("has_fancy_version"):
+            blanks.ensure_fancy_counterpart(
+                product, self.cleaned_data.get("fancying_cost")
+            )
+        if self.cleaned_data.get("sold_undyed"):
+            blanks.ensure_undyed_product(product)
+        # Stashed rather than messaged from here: a form has no request, and
+        # the view is what tells somebody how many rows it just made.
+        self.colorways_made, self.colorways_skipped = blanks.ensure_colorways(
+            product, self.cleaned_data.get("colorways") or []
+        )
+        return product

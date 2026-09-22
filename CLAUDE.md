@@ -16,7 +16,7 @@ were about to make.
 | the pinned nav, `scarves/nav.py`, `?nav=` | `docs/claude/nav.md` |
 | dye entry, the dye picker, colour bands, `private/recipes/`, a recipe page | `docs/claude/recipes.md` |
 | the planner, production sheets, the oven, `sheetscan`, `secret/production/`, `private/produced-since/`, taking an entry back, planning from a close (`closeplan.py`) | `docs/claude/production.md` |
-| raw inventory, undyed yarn, notions, passthroughs, fancy veils, `private/stock-value/` | `docs/claude/stock.md` |
+| raw inventory, undyed yarn, notions, passthroughs, fancy veils, supplier invoices, `private/invoices/`, `private/stock-value/` | `docs/claude/stock.md` |
 | the display map, `DisplayFixture`, `secret/restock/` | `docs/claude/restock.md` |
 | `secret/close/`, `closing.py`, kanban tags | `docs/claude/close.md` |
 | top/slow sellers, `private/seasons/`, the faire calendar, weather | `docs/claude/reports.md` |

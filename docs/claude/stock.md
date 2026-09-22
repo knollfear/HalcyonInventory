@@ -43,6 +43,205 @@ No `InventoryLog` is written here, which is unchanged rather than an omission
 introduced with the form. Raw stock is an opening balance that gets counted
 and topped up; the finished side is where provenance is tracked.
 
+## `private/raw-inventory/blank/`: what a blank *is*, which had no door
+
+`RawProduct` is not registered in the admin and no page created one, so until
+this existed a new blank could only come from a migration or the Square sync.
+Adding the first new silk in a year meant opening a shell — and an invoice
+carrying something the catalogue had never heard of had nowhere to put it.
+
+The picker lists every blank grouped by the table it sits on, **retired ones
+included, listed apart rather than hidden**: retire-don't-delete means the row
+is still pointed at by every sale and production run it was part of, and a
+retired blank nobody can find is one somebody makes a second copy of.
+
+**The shelf is not on the editor.** An opening count is offered once, at
+creation, and then the field is gone — not greyed out, gone, because a
+disabled box still reads as *this is where that is changed*. Counting happens
+on `private/raw-inventory/`, where two columns say plainly which question is
+being answered, and a third box on a third page writing the same number is
+the second door that leaves two of them disagreeing.
+
+Three other fields are deliberately absent. `invoice_description` is written
+by confirming an invoice line and never typed. `square_item_id` belongs to
+the sync — typing one by hand is how a variation ends up pointed at the wrong
+shelf, and the sync repairs nothing it did not write. `counted_at` is a
+record of somebody physically counting, and a form that could set it could
+claim a count nobody did.
+
+**An empty cost is taken, not refused.** `price` is not nullable, so a gap
+becomes zero — and the picker names the uncosted blanks rather than counting
+them, because those are rows somebody has to go and fix and a bare number
+sends nobody anywhere. "I don't know what this costs yet" is most of a first
+pass.
+
+### The rows a blank implies, all made from the blank that implies them
+
+**Some blanks are one row and some are two, and which is which is invisible
+on the blank.** A plain silk veil is one `RawProduct`. A veil that also comes
+fancy is two, because the fancy version is its own blank with its own cost. A
+yarn sold undyed is a `RawProduct` *and* a `FinishedProduct` with no recipe,
+because the pile and the thing Square sells are different objects.
+
+Neither second row could be made from a page. `scarves/blanks.py` now owns
+both, and the editor offers each as a checkbox on the blank that implies it.
+
+**"It also comes in a fancy version" makes the fancy blank and links it.**
+The old shape asked for the fancy one to be created first — marked made-here
+— and then for somebody to come back and point the plain one at it. That is
+the app's bookkeeping in a particular order, announced nowhere, and what it
+produced was an empty dropdown that reads as *this is broken* rather than *do
+the other one first*.
+
+Making it eagerly is safe, and the asymmetry is the argument: a fancy blank
+nobody sells has par 0, no stock and no colorways — it appears on no
+production list (nothing can dye it) and asks for no order (nothing buys
+it). The cost of the missing row is a page that looks broken; the cost of a
+spare one is a line in a picker. Its `price` is zero on purpose and is not a
+gap: a fancy blank has no supplier, and what one costs is the plain blank's
+cost plus `fancying_cost`, derived by `blank_cost`.
+
+The dropdown survives for one job — pointing at a fancy blank that exists and
+is unlinked — and is offered **only when there is such a blank**, since an
+empty select is the thing that read as broken.
+
+**"Also sold exactly as it arrives, undyed" makes the sellable row.** This
+was the other question with no answer on any page: an undyed yarn needed
+`manage.py create_passthrough_products`, which is not a door. Ticking it
+creates the null-recipe `FinishedProduct`, priced at the blank's
+`suggested_price` — or at a conspicuous **$1.00** when there isn't one, the
+same rule and the same reasoning the command has always used, now shared
+rather than copied. A deliberate zero is honoured, because a giveaway is a
+real product; only a missing price is replaced.
+
+Note what ticking it does *not* say. The blank stays **bought from a
+supplier** and stays dyeable: selling a yarn undyed is a fact about a
+colorway with no recipe, never about the blank. That is the same confusion
+the origin radio above exists to prevent, arriving from the other side.
+
+**"Make it in these colourways" is the expensive one, and the reason this
+section exists.** `CLAUDE.md` says a new product is almost never a new
+*style*, it is another colour of something that already exists — and the
+corollary is what happens when a genuinely new blank does arrive: it needs a
+finished product *per colourway*, and there are a few hundred. Forty of
+those typed by hand is a job that gets half done.
+
+Everything about each row is already decided by the blank, which is what
+makes it bookkeeping rather than a decision: the name is `{blank} -
+{colourway}`, par is `finished_par_default`, display slots is
+`display_slots_default`, price is the blank's `suggested_price` (or the same
+conspicuous $1), and the SKU fills itself in `FinishedProduct.save()`.
+
+**Checkboxes with the recipe's dyes beside each name**, not a multi-select.
+Two reasons, and the first is the one that matters: a multi-select loses
+thirty picks to one stray click with nothing said, which is the
+silent-destructive failure this app keeps designing away from — and its only
+warning is a modifier key nobody has been told about. Every click here is
+independent.
+
+The second is that a colourway is a name like `Babs` or `Forest Fire`, which
+says nothing about what it looks like to anybody who has not dyed it. So each
+recipe's dyes show as a chip each, **in the recipe's own order and never
+blended into one average** — a scarf shows each dye distinctly and flows
+between them, so an averaged swatch would be a colour that is not on the
+product. A dye with no hex gets hatching rather than a guess, the rule
+`.dyechip` follows everywhere. A recipe with no dyes on file says so rather
+than rendering blank, because silence there reads as a colourway with no
+colour instead of a gap in the dye book — production has dyes on most active
+recipes, so this is the exception there; a development copy of the database
+is usually half empty and looks much worse than the real thing.
+
+Measured rather than assumed: 162 colourways render in **3 queries** (two
+prefetch levels, flat in the number of rows) and 91 KB, 12.7 KB gzipped.
+
+Two things it deliberately does *not* do. **Retired colourways are not
+offered** — a colour somebody decided to stop making, offered again on a new
+blank, is the retired-recipe failure with a fresh door onto it. And
+**`oven_dyed` is left off on every one**: it is a typed flag about this
+blank in this colour, the same colour is oven in one yarn and not in
+another, and inheriting it from another blank's row would be a guess that
+reads as a fact.
+
+The save says what it did — *2 colourways made, 1 already existed* — because
+a form that quietly creates forty products is a form nobody can check, and
+the skipped count matters as much as the made one: picking a colourway the
+blank already has is the ordinary way somebody adds the next few.
+
+**No box ever un-makes anything.** Unticking does not delete a fancy blank, a
+sellable row or a colourway — those are rows with history, and retiring is
+how something goes away.
+
+### One flag, two readings: where a blank comes from
+
+`made_in_a_dye_bath` is the **fancy marker and nothing else**, and the
+catalogue says so plainly: every undyed yarn has it **True**. Those blanks
+are dyed into colorways *and* separately sold exactly as they arrive — and
+the second half is a colorway with no recipe (see *Undyed stock* below),
+never a statement about the blank.
+
+The editor first asked it as a checkbox, *a dye bath can produce this*. For
+`Superwash Merino Zebra DK — 10 x 100g SKEINS`, sold undyed, the honest
+answer to that question looks like **no**. Answering it that way would have
+marked the yarn fancy, dropped it off every production list, and routed its
+baths to a counterpart blank that does not exist — silently, and with the
+page agreeing.
+
+So the question is asked as what it actually decides, with two named origins:
+
+- **Bought from a supplier** — it arrives on a delivery, and dye baths make
+  colorways of it. Nearly everything.
+- **Made here from another blank** — a bought one with extra work added,
+  which today means the fancy veils.
+
+Nobody calls Superwash Merino Zebra DK *made here from another blank*. The
+ambiguity is gone because the words no longer mention dyeing — and the
+picker's badge moved the same way, from *no bath makes this* (true of the
+blank, and sounding true of every undyed yarn) to *made here, not bought*.
+
+**The fancy pairing has an order, and the form now says it.** The dropdown
+can only offer blanks already marked made-here, so the fancy one is created
+first and the plain one is pointed at it afterwards. With none on file the
+field used to render as an empty select, which reads as *this is broken*
+rather than *do the other one first*; it now says which, and is disabled
+until there is something to choose. A made-here blank is not asked the
+question at all: a veil becomes a fancy veil, and a fancy veil becomes
+nothing.
+
+That also makes "a blank can't be its own fancy version" **structural** — it
+is excluded from its own queryset and the field is absent on the blanks that
+could self-reference — so the `clean()` check for it was removed rather than
+left as code that can never run. A guard that cannot fire reads as the thing
+keeping the rule true.
+
+### Booking one into existence off an invoice
+
+An invoice line that matches nothing gets **new blank from this line**,
+prefilled from the line and opened in a new tab — the tab because leaving the
+review page would lose every other correction typed into it. The parameters
+are named after the fields they fill (`?name=&price=&supplier=`), so the link
+still reads a year later.
+
+`invoice_description` rides along hidden and is applied on save, which keeps
+the promise that only a confirmation writes it: creating the blank *is* the
+confirmation. The line is then matched exactly, before any reading, every
+time it arrives again.
+
+**The name is trimmed and the wording is not**, which is the whole
+distinction between the two fields. `Angel DK - 10 x 100g SKEINS` is how
+many came in a box; that name would go on reference sheets, barcode labels
+and the Square till, where the pack size is noise on all three and wrong the
+day the supplier changes it. So `invoiceread.product_name` takes a trailing
+pack clause off the *name* prefill, and the wording keeps every character —
+it is a key, and a tidied copy would quietly stop matching.
+
+The trim needs a separator before the count, which is what keeps it off the
+one case that must survive: `Machine Hemmed 8mm Habotai Scarves 21" x 76"
+Circle` has an `x` and two numbers and is a **size**, not a pack. Strip that
+and the blank loses the thing that tells it from every other habotai. It
+errs toward trimming otherwise — a wrong trim costs one correction in a box
+somebody is already looking at, a missed one costs a pack size printed on a
+hundred labels.
+
 ## `?supply=1`: the two columns the page printed and could not fill
 
 `private/raw-inventory/<category>/?supply=1` is the third mode, beside
@@ -165,17 +364,319 @@ almost nothing. That is a different argument from a correctness fix, and
 overselling it is how a nice-to-have gets built ahead of something that
 matters.
 
-It belongs with **invoice ingestion** when that happens, because an invoice
-line *is* the pack — quantity, total, and a per-unit that derives rather
-than being typed — so the fact lands as a by-product of a job somebody
-already wants done. Building it alone would be a schema change bought with
-data entry, for a number that is currently right.
+It belonged with **invoice ingestion**, and that has now happened — see
+*Invoices* below. A `SupplierInvoiceLine` carries the quantity, the total and
+a per-unit that derives rather than being typed, so the pack lands as a
+by-product exactly as predicted. Note what that did *not* change: no field
+was added to `RawProduct`, and `price` still means one thing, what one costs
+to buy again today.
 
-**Delivery history** is the other half of that and is also deferred. It
-collides with a decision this file already records — the raw bill writes no
-`InventoryLog`, because raw stock is an opening balance rather than a ledger
-of movements — so adding it is a reversal to argue for on its own, not a
-detail to smuggle in beside a contact field.
+**Delivery history** is the other half of that and is still not a ledger. A
+booked invoice records what one document moved, which is genuinely more than
+was there before — but it is the *document's* record, kept because a cost
+needs a basis and a delivery needs an identity. It is not an `InventoryLog`
+for raw stock, nothing reconstructs `number_on_hand` from it, and a shelf
+topped up through the bill form still leaves no trace anywhere. Raw stock
+remains an opening balance that gets counted and topped up. Reversing that
+is a decision to argue for on its own.
+
+## Invoices: the one place a cost and a delivery share a button
+
+`private/invoices/` takes a supplier's invoice — a PDF, a photo of the
+paper, or text pasted out of the email — reads it, and hands back a page of
+rows to confirm. Booking it writes the unit cost onto each blank; the
+quantity reaches the shelf when the goods do, which is the same click if they
+are already here and a second one later if they are not (see *Ordered, then
+received*).
+
+**That pairing is a deliberate exception to the rule two sections up**, which
+splits the bill, par and supply into three modes precisely so that a number
+typed beside the wrong button can't be lost. Here they share one Save, and
+what makes that safe is not carefulness — it is the **order number**.
+
+### The order number is the whole design
+
+Everything this shop orders arrives with one. It is the only fact that makes
+a bill *identifiable* rather than just a list of quantities, and a received
+quantity is a delta:
+
+- a delta is only ever as good as the certainty it hasn't been applied
+  before;
+- raw stock is the one pile nothing recounts on its own (see `counted_at`
+  above), so a double-booked delivery does not heal;
+- it would sit there inflating the shelf until somebody walked it with a
+  clipboard, and then under-order for a season.
+
+So the number is required to book, normalised (`  w2d-1183 ` and `W2D-1183`
+are one order), and a second attempt at one already booked stops the page
+dead with a banner that names the first: when it was booked, how many lines,
+and a link to it.
+
+**It is loud, not locked.** A tick on the banner books it anyway. Two
+suppliers can pick the same number, a number can be mistyped, an order can
+genuinely be re-sent — and a page that simply refuses gets worked around by
+typing a `-2` on the end, which teaches nobody anything and leaves the app
+believing a fiction. The property that was needed is that it cannot happen
+*quietly*.
+
+### What is on order is not under par
+
+**Par is an order signal, not a stock reading.** A blank whose replacement is
+on a supplier's van is not under par in any way that should make a page
+flash: a second order will not make the first arrive faster. (Better shipping
+might — and that is a new order, placed deliberately, not a signal firing
+again.) So `RawProduct.raw_shortage` subtracts `on_order`, exactly as
+`production.in_flight` subtracts baths already on a sheet. However it got
+claimed, it is accounted for.
+
+**It is not added to `number_on_hand`, and that line is the important one.**
+That number is what a production run claims its blanks from, so yarn in
+transit must stay out of it or the dye room gets sent after skeins that are
+not in the building. On order and on the shelf are different facts, and only
+one of them can start a bath.
+
+**The risk this takes on is an order that never arrives** — the signal would
+stay suppressed for good, silently, which is the worst shape a bug can take
+here. Two things answer it, and neither is automatic. Every page printing a
+shortage prints what is holding it down — *250 on order since 11 Sep*, and
+*past their usual lead time* when the supplier's `lead_time_days` says so; a
+null lead time claims nothing, since nobody has said. And when it really is
+not coming, `written_off_on` closes it and hands the signal back (above).
+
+That amber note is the whole guard, and it is the right shape: a suppressed
+signal with a visible reason is advice, and one without is the `par` mistake
+wearing a delivery note.
+
+### Ordered, then received or never — three dates, not a status
+
+**Most of these documents are order confirmations, not delivery notes.** The
+paste that proved the reader was `Order #135819 Sep 14`, sent the day it was
+placed. Booking one used to put the goods on the shelf the moment it was
+read, and `number_on_hand` is what a production run **claims its blanks
+from** — so the dye room could be sent to start baths against 350 skeins
+still in a van. That is the same coupling *Display capacity is not demand*
+exists to keep broken, arriving by a different door.
+
+So a booking splits in two, and the split follows what is actually knowable:
+
+- **The cost lands at order time**, always. It is the replacement cost — what
+  one would cost to buy again today — and it is true the moment the order is
+  placed. Holding it back until the box arrives would leave the catalogue
+  quoting a price nobody charges any more.
+- **The stock lands when the box does.** One click on the invoice card
+  replays the lines somebody already settled, and adds them.
+
+**`received_on` is a nullable date, not a status field**, because every other
+not-yet-happened in this app is one: a null `booked_at` is a draft, a null
+`counted_at` is a shelf nobody counted, a null `lead_time_days` is nobody
+having said. A date answers *when* as well as *whether*, which an enum never
+can.
+
+**There is a third ending, and it is a third date rather than a status.** An
+order can also never arrive — lost, undeliverable, cancelled — and
+`written_off_on` records that, with a free-text `written_off_note` for why.
+It closes the order and **moves no stock**, which is exactly why it cannot
+be folded into `received_on`: a received date says goods are on a shelf, and
+putting one there would claim a delivery that never happened. Two mutually
+exclusive events, each with its own date; `SupplierInvoice.state` derives
+the word from them so a status and a date can never disagree.
+
+**What the write-off really undoes is the suppression.** An open order takes
+a blank's shortage off the reorder page (below), so one that is never coming
+would hold that signal down for good — a page that looks fine and an order
+nobody places. Nothing expires an order on its own, because a rule deciding
+when an order is dead would be a rule deciding to reorder; a person presses
+it, and the confirmation names which blanks just went back below par.
+
+The costs stand when an order is written off. They were true when it was
+placed and are still what the supplier charges — `price` is the replacement
+cost, not a record of this document — and unwinding them would revert to a
+price nobody can name.
+
+**Receiving a written-off order clears the write-off**, because a parcel
+turning up three weeks after it was given up on is completely ordinary. Same
+button, no undo step first.
+
+The question is asked **once, on the review page, as a radio** — not two
+submit buttons. Pressing Enter in a text field submits a form without any
+button's value, and the two answers differ by whether a shelf moves; a
+control that can silently fail to be sent is not where that question belongs.
+
+Receiving is its own endpoint and refuses a second go the way booking does:
+the order number guards the document, `received_on` guards the event.
+
+**A short delivery is adjusted on the way in.** Ordered 80 and received 50
+are both true, so the line keeps both: `quantity` is what the document
+billed, `received_quantity` is what reached the shelf, and null means all of
+it — the ordinary case, and why it is nullable rather than a copy written on
+every line.
+
+This paragraph used to say the opposite: mark it received and correct the
+shelf on `private/raw-inventory/` afterwards, on the grounds that a
+partial-receipt flow would be "a second way to write the same number". That
+was wrong, and worth recording as wrong. It is the *same* door with the
+right number in it — the absolute-count argument is about healing what went
+unrecorded afterwards, not about refusing a figure somebody is standing
+there holding. What the old rule actually built was a step that has to be
+remembered to be correct, which `CLAUDE.md` says never to add: mark 80,
+then remember to go to another page and set the shelf to 50. The second half
+is the half that gets skipped, and the shelf is then wrong with nothing
+saying so.
+
+**The boxes stay out of the way until asked for**, because the whole order
+usually turns up. *Some of it didn't turn up* is a plain link to `?adjust=1`
+with `hx-get` layered on — the pattern `production_run_detail` already uses —
+so a blocked script costs a page load rather than the feature. It does not
+change what Save means; it changes the numbers Save is given. One unreadable
+figure receives nothing, the bill form's bargain.
+
+**Nothing tracks the refund or the outstanding 30.** That is settled with the
+supplier by a person. What the app needs is a shelf that matches the room —
+and the order stops holding the reorder signal down, so the 30 that never
+came shows up as an ordinary shortage.
+
+**What this now makes answerable, and is not built:** *what is on order*.
+`SupplierInvoice.is_on_order` and the picker's own section are the whole of
+it today. A reorder page that said "38 to order — 100 already coming since
+14 Sep" is the obvious next use and a real one, since ordering against a
+number that ignores what is already in transit is how a thing gets ordered
+twice. It is not built because nothing has asked for it yet.
+
+### Replacement cost, and nothing more elaborate
+
+`RawProduct.price` means **what one would cost to buy again today**. An
+invoice overwrites it flat. There is no weighted average, no FIFO layer, no
+cost history to reconstruct: if it cost a dollar and costs two now, the
+shelf is worth two and the dollar is not a number anything here reads.
+
+The only trace of the change is on the line — `previous_price` beside
+`unit_cost` — and that exists so the page can print *was $24.99* next to the
+new figure. A cost you cannot check is the `par` failure again.
+
+**The per-unit figure is derived, not typed.** Line total over quantity, to
+the cent, because the pack is what the document actually states. A printed
+unit price is only a fallback for when the total or the quantity can't be
+read.
+
+### The reading is advice, and is built to be argued with
+
+The model gets the document and the catalogue of active blanks, and answers
+one question per line: which of these is this, how many, at what each. That
+is all. Then:
+
+- every figure lands in a box, and **the invoice's own wording for the line
+  is printed beside the match** — a suggestion whose evidence is hidden is
+  not something anybody can agree or disagree with;
+- a line it couldn't match comes through as *not matched* with a dropdown,
+  never as a guess;
+- **removing a row is unticking it**, not a delete button: a row that
+  vanishes is indistinguishable from a click that never arrived, on a list
+  somebody is checking against paper;
+- five spare rows at the bottom take the lines it missed, so a bad reading
+  is never the end of the job;
+- a reading that fails completely — no key, a bad photo, an API having an
+  afternoon — still opens the same form with the spare rows. **The worst
+  case of the whole feature is the job as it was done before it existed.**
+
+There is deliberately no confidence score and no second pass. A reading that
+is 80% right and openly editable gets read; one that is 95% right and arrives
+looking settled gets rubber-stamped.
+
+### `invoice_description`: the one fact no reading can reach
+
+`Machine Hemmed 8mm Habotai Scarves 21" x 76" Circle` is an **Infinity**.
+Nothing derives that. Not the name, not the fibre, not any amount of
+cleverness — it is a fact somebody knows about their own catalogue, and the
+only honest way to get it is to be told.
+
+But it only has to be told **once**, and once told it is worth more than a
+reading: an exact match is a certainty where a model is a suggestion. So
+`RawProduct.invoice_description` holds the supplier's own wording, and
+`invoiceread.known_match` applies it **before** the model's answer is
+believed — where the two disagree, the remembered one wins.
+
+**Nothing types it in**, which is the part worth keeping. It is written by
+confirming an invoice line against a blank — the choice somebody was making
+anyway — so the field is `editable=False` and the recording is a by-product
+of a job already being done. The page says *remembered from a past invoice*
+beside those rows, because a remembered match and a read one deserve
+different amounts of checking and a row that doesn't say which gets neither.
+
+Three rules hold it together:
+
+- **Exact or nothing.** Normalised for case, runs of spaces and the two kinds
+  of quote mark — the same order arriving once as a PDF and once as an email
+  is the case that actually turns up — and nothing else. No fuzzy matching,
+  no scoring, no nearest neighbour: *a wrong match here arrives looking
+  unremarkable and gets confirmed*, which is worse than the dropdown it
+  saved.
+- **One wording belongs to one blank.** Confirming it against a blank takes
+  it off whatever else held it, so a mis-match heals the next time somebody
+  gets it right. Two blanks both claiming a line would make the suggestion
+  depend on row order.
+- **A blank description forgets nothing.** Clearing the box means "I have
+  nothing to say about the wording", not "discard what you knew".
+
+The wordings are also handed to the model with the catalogue. That is
+redundant for the exact matches, which are applied afterwards regardless —
+it is there for the *near* misses, where a supplier reworded the line by
+one word and the alias no longer fires.
+
+### A draft has moved nothing
+
+An unconfirmed invoice is a draft (`booked_at` is null) with its rows parked
+in the database rather than a session, so a refresh or a night's sleep
+doesn't lose the corrections. It sets no cost and moves no stock, the picker
+says so, and discarding one really does delete it — the `CLAUDE.md`
+exception for a row with no history to protect.
+
+Two smaller decisions worth not re-litigating. **Nothing is booked unless
+every ticked line reads**, the bill form's refusal for the bill form's
+reason. And **booking never touches `counted_at`**: a delivery note is a
+claim about a change, a count is a measurement, and only one of them means
+somebody looked at a shelf.
+
+### Pasted text is a first-class door
+
+Most of these orders are an email long before they are ever a file. Getting
+a screenshot off a phone and into a file picker is more work than select-all
+and copy, and text is the easiest of the three to read — no photograph, no
+scan, no column that wrapped. Paste whatever came, headers and signature
+included; it is kept on the invoice as the basis, the way a document is.
+
+### Which model, and how to find out
+
+`settings.CLAUDE_MODEL` (env `CLAUDE_MODEL`) picks it; the default is
+`claude-opus-5`. This runs on a one-page document a couple of times a month,
+so a year of it costs less than one mis-booked delivery, and reading a table
+off a photograph and matching it to a catalogue is where a better model earns
+its keep.
+
+`manage.py read_invoice --model <id>` reads one document with a different one
+without changing the setting, which is how to answer "is a cheaper one good
+enough" off real paperwork rather than by arguing about it. It prints the
+tokens every time and a dollar figure when it knows the rate — **with the
+rate and the month it came from printed beside it**, because a hardcoded
+price table goes stale silently and an unlabelled price is a number somebody
+quotes back a year later.
+
+Measured on one real 8-line Wool2Dye4 order: **Opus ≈ $0.045**, **Sonnet ≈
+$0.022**, both reading it correctly. Haiku read a 3-line order correctly for
+about a third of Sonnet's tokens.
+
+**`effort` is learned rather than listed.** Haiku 4.5 rejects the parameter
+where the 5-family takes it, and a hardcoded table of which model accepts
+which parameter is wrong the week after it is written — so a model that
+refuses costs one retry the first time and skips it thereafter. Before that,
+picking a cheaper model silently turned the whole feature off: every read
+came back as an error, and the page said only that something had gone wrong.
+
+### Trying it without building a habit on it
+
+`manage.py read_invoice <path>` reads a file — PDF, photo, or a `.txt` of a
+pasted email — and prints what came back. It writes no row. That is the
+bench for deciding whether the reading is worth confirming, which is a
+question about real invoices rather than about code.
 
 ## Par on a blank is two numbers, and only one of them is stored
 
