@@ -1299,21 +1299,49 @@ def card_backfill(request, pk):
                     )
                 )
 
+        # Back to the stack, not to the card just finished. A card is done in
+        # one pass — it is in your hand, you type its column, you put it down
+        # — so landing back on it asks somebody to find their way to the next
+        # one from a page about the last one. The message names the product,
+        # so the confirmation survives the move, and the index's typed count
+        # for that row has just gone up.
+        #
+        # Only the success path leaves. A refused card stays put with its
+        # rows to fix, and so does an empty submit, which is a slip rather
+        # than a finished card.
         messages.success(
             request,
             f"Added {len(entries)} entr{'y' if len(entries) == 1 else 'ies'} "
             f"from {product.name}'s card. Current stock is unchanged.",
         )
-        return redirect("card_backfill", pk=pk)
+        return redirect("card_backfill_index")
+
+    # Every production entry that still stands, however it was written — not
+    # just the ones typed off a card. The page exists to stop a bath going in
+    # twice, and a bath recorded live at the time is exactly as much of a
+    # duplicate as one typed from the card yesterday; showing only the typed
+    # ones answers "have I transcribed this card" when the question in front
+    # of somebody holding it is "is this date already in".
+    #
+    # `reversals__isnull=True` for the same reason `producedsince.entries`
+    # uses it: the question is never whether a row was written, it is whether
+    # one still stands. A bath that was recorded and then taken back is a
+    # bath that did not happen, so it must not sit here reading as already
+    # entered.
+    recorded = list(
+        product.inventory_logs
+        .filter(log_type=InventoryLog.PRODUCTION, reversals__isnull=True)
+        .order_by("-created_at", "-pk")
+    )
+    for log in recorded:
+        # Flagged here rather than compared in the template, so the one place
+        # that knows which source is history-only stays one place.
+        log.from_card = log.source == InventoryLog.SOURCE_CARD_BACKFILL
 
     return render(request, "scarves/card_backfill.html", {
         "product": product,
         "per_bath": per_bath,
         "rows": range(CARD_ROWS),
-        "existing": (
-            product.inventory_logs
-            .filter(date_precision__in=[InventoryLog.DAY, InventoryLog.MONTH])
-            .order_by("-created_at")
-        ),
+        "recorded": recorded,
         "today": timezone.localdate(),
     })

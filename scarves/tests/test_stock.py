@@ -20,7 +20,8 @@ from django.db.models import ProtectedError
 from django.test import TestCase, override_settings
 from django.urls import NoReverseMatch, reverse
 from .. import (
-    closing, colorbands, crew, fancy, nav, photowalk, production, rawdemand,
+    closing, colorbands, crew, fancy, ledger, nav, photowalk, producedsince,
+    production, rawdemand,
     restock, sales, seasonreport, seasons, sheetscan, skus, slowsellers,
     timesheets, weather,
 )
@@ -313,6 +314,88 @@ class CardBackfillTests(TestCase):
         # The history counts it, but current stock still doesn't.
         self.assertEqual(recipe.context["produced"], 10)
         self.assertEqual(recipe.context["on_hand"], 7)
+
+    def test_production_recorded_at_the_time_also_shows_on_the_card(self):
+        """It is all production — a bath is a duplicate whoever typed it.
+
+        Listing only the card-typed rows answered "have I transcribed this
+        card" when the question somebody holding one asks is "is this date
+        already in".
+        """
+        ledger.move(
+            self.product, 5,
+            log_type=InventoryLog.PRODUCTION,
+            source=InventoryLog.SOURCE_RECIPE_PAGE,
+            notes="1 dye bath × 5.",
+        )
+
+        response = self.client.get(self.url)
+        self.assertEqual(len(response.context["recorded"]), 1)
+        self.assertContains(response, "Recorded at the time")
+        self.assertContains(response, "Recipe page")
+
+    def test_the_two_ways_in_are_told_apart(self):
+        ledger.move(
+            self.product, 5,
+            log_type=InventoryLog.PRODUCTION,
+            source=InventoryLog.SOURCE_PRODUCTION_SHEET,
+        )
+        self.client.post(self.url, {"date_0": "9/2024", "baths_0": "1"})
+
+        response = self.client.get(self.url)
+        self.assertEqual(len(response.context["recorded"]), 2)
+        self.assertContains(response, "Typed from the card")
+        self.assertContains(response, "Recorded at the time")
+
+    def test_a_retracted_bath_is_not_shown_as_already_recorded(self):
+        """A bath that was taken back did not happen, so the card entry for
+        it is not a duplicate."""
+        log = ledger.move(
+            self.product, 5,
+            log_type=InventoryLog.PRODUCTION,
+            source=InventoryLog.SOURCE_RECIPE_PAGE,
+        )
+        producedsince.retract(log)
+
+        response = self.client.get(self.url)
+        self.assertEqual(list(response.context["recorded"]), [])
+
+    def test_sales_and_recounts_stay_off_the_card(self):
+        """The card records baths. A recount is not an arrival — the same
+        line `private/produced-since/` draws."""
+        ledger.move(
+            self.product, -2,
+            log_type=InventoryLog.SALE,
+            source=InventoryLog.SOURCE_SQUARE_WEBHOOK,
+        )
+        ledger.count(
+            self.product, 9, source=InventoryLog.SOURCE_SUNDAY_CLOSE,
+        )
+
+        response = self.client.get(self.url)
+        self.assertEqual(list(response.context["recorded"]), [])
+
+    def test_a_finished_card_hands_back_the_stack(self):
+        """One pass per card, so the next thing wanted is the next card."""
+        landed = self.client.post(
+            self.url, {"date_0": "9/2024", "baths_0": "1"}, follow=True
+        )
+        self.assertEqual(
+            landed.redirect_chain, [(reverse("card_backfill_index"), 302)]
+        )
+
+        # The confirmation has to survive the move, or the page you land on
+        # says nothing about the card you just typed.
+        self.assertContains(landed, "Added 1 entry")
+        self.assertContains(landed, self.product.name)
+
+    def test_a_card_that_was_refused_keeps_you_on_it(self):
+        """Rows to fix are on this page; nothing was recorded to move on from."""
+        refused = self.client.post(self.url, {"date_0": "sometime", "baths_0": "1"})
+        self.assertRedirects(refused, self.url)
+
+        empty = self.client.post(self.url, {})
+        self.assertRedirects(empty, self.url)
 
     def test_the_index_counts_progress_through_the_stack(self):
         self.assertEqual(

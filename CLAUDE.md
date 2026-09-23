@@ -343,6 +343,18 @@ thing: baths dyed now, stock moves. It links to the cards where the
 disclosure used to be, because removing an option without saying where it went
 leaves somebody hunting a page that no longer has it.
 
+**The card page lists what is already on file, whatever wrote it.** It used
+to list only the back-dated rows it had written itself, which answers *have I
+transcribed this card* — but the question in front of somebody holding one is
+*is this date already in*, and a bath recorded live at the time is exactly as
+much of a duplicate as one typed off the card yesterday. It now shows every
+standing `PRODUCTION` row for that product, with a column saying which of the
+two ways it arrived. Retracted rows are dropped (`reversals__isnull=True`),
+because a bath that was taken back did not happen and its card entry is not a
+duplicate. Sales and recounts stay off it for the reason they stay off
+`private/produced-since/`: a page answering *did I dye this* must not also be
+answering *did somebody find a bag of it in a cupboard*.
+
 **The card is the unit of digitising, and one product at a time is the
 feature.** Cards get typed up as they are handled on the way back, one in the
 hand at a time — so the page asking for exactly that card's dates and bath
@@ -351,7 +363,11 @@ improvement is to let a whole dye session go in at once, across the two or
 three blanks it covered; **don't build it.** Recovering which entries on which
 cards belonged to one session means collating dates across a stack by hand
 before typing anything, which is more work than the typing and produces a
-grouping nothing downstream reads. Write the dates off the card and move on.
+grouping nothing downstream reads. Write the dates off the card and move on. Submitting one **hands back the stack** rather than the card just
+finished — it is a single pass, and the next thing wanted is the next card.
+The success message names the product so the confirmation survives the move;
+a refused card and an empty submit both stay put, having nothing to move on
+from.
 
 ## Display capacity is not demand
 

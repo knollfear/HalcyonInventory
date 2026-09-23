@@ -24,6 +24,9 @@
   }
   td.when { white-space: nowrap; }
   .approx { font-size: 11px; color: #8a5a00; margin-left: 6px; }
+  .from-card { color: #667; }
+  .from-live { color: #2e7d52; font-weight: 600; }
+  tr.live td { background: #f6faf7; }
 {% endblock %}
 
 {% block content %}
@@ -94,30 +97,55 @@
     page will only ever show the month back — no day gets invented.
   </p>
 
-  {% if existing %}
-    <h2>Already typed up</h2>
+  {% comment %}
+  Everything already on file, not just what was typed off a card — the
+  question somebody holding a card asks is "is this date already in", and a
+  bath recorded live at the time counts against that just as much. The How
+  column is what separates the two, so nothing here reads as card work that
+  wasn't.
+  {% endcomment %}
+  <h2>Production already recorded</h2>
+  {% if recorded %}
+    <p class="muted small">
+      Every dye bath this product has on file, whichever page wrote it.
+      Don't type a date that's already here.
+    </p>
     <div class="card">
       <table>
         <thead>
           <tr>
             <th>When</th>
             <th class="num">Made</th>
+            <th>How</th>
             <th>Note</th>
           </tr>
         </thead>
         <tbody>
-          {% for log in existing %}
-            <tr>
+          {% for log in recorded %}
+            <tr{% if not log.from_card %} class="live"{% endif %}>
               <td class="when">
                 {{ log.when }}
                 {% if log.date_precision == "month" %}<span class="approx">month only</span>{% endif %}
               </td>
               <td class="num">+{{ log.quantity }}</td>
+              <td class="small">
+                {% if log.from_card %}
+                  <span class="from-card">Typed from the card</span>
+                {% else %}
+                  <span class="from-live">Recorded at the time</span>
+                  <span class="muted">· {{ log.get_source_display|default:"source not recorded" }}</span>
+                {% endif %}
+              </td>
               <td class="small muted">{{ log.notes }}</td>
             </tr>
           {% endfor %}
         </tbody>
       </table>
     </div>
+  {% else %}
+    <p class="muted small">
+      Nothing on file for this product yet — no card entries, and nothing
+      recorded at the time either.
+    </p>
   {% endif %}
 {% endblock %}
