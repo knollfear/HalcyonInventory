@@ -354,12 +354,13 @@ same fix.
 
 ### `rawdemand` had to learn about it too
 
-`_entered_production` counts PRODUCTION rows, and a retraction is an
-ADJUSTMENT it never reads — so without an exclusion an undone bath would go on
-reporting itself as dyed on the raw shelf's forecast, where the date of the
-last one is what decides when to reorder. Anything new that reads these rows
-inherits the same obligation: **the question is never "was a production row
-written", it is "does one still stand".**
+`rawdemand._entered_production` counted PRODUCTION rows for the raw page's
+*Entered, 8wk* column, and a retraction is an ADJUSTMENT it never read — so
+without an exclusion an undone bath went on reporting itself as dyed on the
+raw shelf's forecast. The column and the function are gone now (see *Par on a
+blank* in `docs/claude/stock.md`), but the obligation is not: anything new
+that reads these rows inherits it. **The question is never "was a production
+row written", it is "does one still stand".**
 
 ## Production sheets: paper to the dye room, one scan back
 
@@ -542,7 +543,7 @@ that lands at the end:
 
 **So `number_on_hand` means unclaimed yarn, not skeins on the shelf.** The two
 differ by whatever is on open sheets, and the gap between planning a bath and
-dyeing it is never more than about a week. `private/raw-inventory/?par=1`
+dyeing it is never more than about a week. `private/raw-inventory/?plan=1`
 prints the claimed figure beside the count, so a number that fell without a
 delivery or a recount has its reason on the row. The shelf total is not
 printed: nobody acts on it, and a blank reading empty is far more likely to be

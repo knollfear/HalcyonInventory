@@ -151,7 +151,6 @@ from .stock import (  # noqa: F401
     fancy_convert,
     raw_inventory_index,
     raw_inventory_view,
-    raw_par_save,
     raw_supply_save,
     supplier_detail,
     supplier_index,

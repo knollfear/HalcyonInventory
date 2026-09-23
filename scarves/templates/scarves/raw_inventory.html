@@ -23,6 +23,11 @@
      ragged and the one row you were aiming at moved as you scrolled to it. */
   th.entry, td.entry { text-align: left; white-space: nowrap; }
   tr.bad { background: #fdf3f2; }
+  /* A row to look at on the plan-an-order table: below par, or short of
+     what the rest of the season is on track to sell. Amber like `.late`,
+     because it is something to look at rather than something decided. */
+  tr.order { background: #fff6e0; }
+  tr.order td:first-child { font-weight: 600; }
   td.bad-why { font-size: 13px; color: #8a2f2a; }
   /* A mode switch is a set of alternatives with the one in force filled, not
      an action — the same control the recipe page's par pills wear. */
@@ -78,7 +83,9 @@
       What each one costs you, and where it gets reordered from. Biggest
       earner first — so an hour spent here starts with the line that pays for
       it and stops wherever it runs out.
-    {% elif par_mode %}
+    {% elif plan_mode %}
+      What to order. A row lights up when the shelf is below par, or below
+      what the rest of the season is on track to sell.
       {% if dyed_table %}
         Par is the floor — what stays on the shelf so the dye room never stops.
       {% else %}
@@ -87,7 +94,7 @@
         not by a bath.
       {% endif %}
       It is not the season's requirement, which is the
-      <strong>rest of season</strong> column beside it. Don't add them.
+      <strong>to order</strong> column. Don't add them.
     {% else %}
       Review par levels and book stock in. This page is only for the
       {{ category.name }} supplier.
@@ -117,20 +124,18 @@
       a photo, or the text out of the email, and sets the cost and the
       delivery together.
     </p>
-  {% elif par_mode %}
+  {% elif plan_mode %}
     {% comment %}
     The basis, printed, because advice you cannot inspect is a decision in
-    disguise — and the two soft spots in this particular basis are worth
-    naming out loud rather than discovering later.
+    disguise — and the one soft spot in this particular basis is worth naming
+    out loud rather than discovering later.
     {% endcomment %}
     <p class="note">
-      <strong>Nothing here proposes a par.</strong> The columns are what there
-      is to judge by. <em>On pace</em> projects units from the share of a
-      season the weekends already banked took in earlier years — so it is only
-      as good as the seasons behind it, and the count of those is printed with
-      it. <em>Entered</em> is production somebody typed up, not production that
-      happened: a quiet week there is a week nobody entered, and never a reason
-      to order less.
+      <strong>Nothing here places an order.</strong> <em>On track for</em> is a
+      straight line — this season's sales per faire day so far, times the
+      faire days left — so early in the run one weekend swings it, and a wet
+      one pulls it down. The two numbers it is made from are printed under
+      it. Par is set on the blank's own page; the link is under each figure.
     </p>
   {% else %}
   <p class="small">
@@ -153,10 +158,10 @@
     being two ways to read the table, and leaving by a Done beside an unsaved
     form discards a retuned row on the click that felt like keeping it.
     {% endcomment %}
-    <a class="chip {% if not par_mode %}on{% endif %}"
+    <a class="chip {% if not plan_mode and not supply_mode %}on{% endif %}"
        href="{% url 'raw_inventory' category.id %}">Receive stock</a>
-    <a class="chip {% if par_mode %}on{% endif %}"
-       href="{% url 'raw_inventory' category.id %}?par=1">Set par</a>
+    <a class="chip {% if plan_mode %}on{% endif %}"
+       href="{% url 'raw_inventory' category.id %}?plan=1">Plan an order</a>
     <a class="chip {% if supply_mode %}on{% endif %}"
        href="{% url 'raw_inventory' category.id %}?supply=1">Cost &amp; supplier</a>
   </div>
@@ -274,26 +279,24 @@
       <span class="note">Blank rows are left alone. Nothing saves unless every line reads.</span>
     </div>
     </form>
-  {% elif par_mode %}
-    <form method="post" action="{% url 'raw_par_save' category.id %}">
-    {% csrf_token %}
+  {% elif plan_mode %}
     <div class="card">
       <table>
         <thead>
           <tr>
             <th>Raw Product</th>
             <th class="num">On hand</th>
-            <th class="entry">Par</th>
-            <th class="num">Entered, 8wk</th>
+            <th class="num">Par</th>
             <th class="num">Sold this season</th>
-            <th class="num">On pace for</th>
-            <th class="num">Already dyed</th>
-            <th class="num">Rest of season</th>
+            <th class="num">On track for</th>
+            {% if dyed_table %}<th class="num">Already dyed</th>{% endif %}
+            <th class="num">To order</th>
+            <th>Reorder from</th>
           </tr>
         </thead>
         <tbody>
           {% for o in outlooks %}
-            <tr>
+            <tr{% if o.needs_order %} class="order"{% endif %}>
               <td>{{ o.blank.name }}</td>
               <td class="num">
                 {{ o.raw_on_hand }}
@@ -317,22 +320,8 @@
                 {% endif %}
                 {% comment %}
                 How old the count is, said plainly on the row, because this is
-                the one pile in the app nothing recounts on its own.
-
-                **A date, not a verdict.** This used to badge a count as stale
-                whenever a bath had been entered since — which was meaningful
-                while raw fell at reporting time, and stopped being meaningful
-                the day a run claimed its blanks at creation: the skeins leave
-                the count when the sheet is made, so a later entry says nothing
-                about the count and the number already has the claim off it.
-                It fired on counts two days old and hand-corrected, which is a
-                warning on permanently and therefore a warning read never.
-
-                What it was reaching for is baths dyed outside a sheet, and
-                that is precisely what nothing here can see. So the row says
-                when somebody last looked and leaves the judgement where it
-                belongs. Never counted is still worth flagging: that one is a
-                fact, not an inference.
+                the one pile in the app nothing recounts on its own. A date,
+                not a verdict — the argument is on `Outlook.never_counted`.
                 {% endcomment %}
                 {% if o.never_counted %}
                   <div class="sub stale">never counted</div>
@@ -340,11 +329,16 @@
                   <div class="sub">counted {{ o.blank.counted_at|timesince }} ago</div>
                 {% endif %}
               </td>
-              <td class="entry">
-                <input type="number" name="par_{{ o.blank.pk }}" min="0" step="1"
-                       placeholder="{{ o.blank.par_level }}"
-                       aria-label="Par for {{ o.blank.name }}"
-                       class="count-input">
+              <td class="num">
+                {% comment %}
+                Printed, not typed. The box that used to be here wrote the
+                floor beside its evidence, and the person doing the ordering
+                asked for it to go: this table is for deciding what to buy,
+                and par is a rare decision made on the blank's own page. The
+                link keeps the door in sight without putting a form under the
+                figure.
+                {% endcomment %}
+                {{ o.blank.par_level }}
                 {% if o.floor_short %}
                   <div class="sub short">{{ o.floor_short }} below</div>
                 {% endif %}
@@ -360,31 +354,39 @@
                     {% endif %}
                   </div>
                 {% endif %}
+                <div class="sub"><a href="{% url 'blank_edit' o.blank.pk %}">set par</a></div>
               </td>
-              <td class="num">{{ o.dyed_recently }}</td>
               <td class="num">{{ o.sold }}</td>
               <td class="num">
                 {% comment %}
-                A blank with no complete prior season gets a dash, never a
-                zero: "nothing more will sell" and "nothing here can say" are
-                different answers and only one is a reason not to order.
+                A blank before the first counted faire day gets a dash, never
+                a zero: "nothing more will sell" and "nothing here can say"
+                are different answers and only one is a reason not to order.
+                The rate and the day count print under the figure so it can
+                be checked in somebody's head.
                 {% endcomment %}
                 {% if o.remaining is None %}
                   —
-                  <div class="sub">no season to project from</div>
+                  <div class="sub">no faire day counted yet</div>
                 {% else %}
                   {{ o.remaining }}
                   <div class="sub">
-                    from {{ o.prior_seasons }} prior season{{ o.prior_seasons|pluralize }}
+                    {% if o.days_left %}
+                      {{ o.per_day|floatformat:1 }}/day × {{ o.days_left }} day{{ o.days_left|pluralize }} left
+                    {% else %}
+                      season over
+                    {% endif %}
                   </div>
                 {% endif %}
               </td>
-              <td class="num">
-                {{ o.finished_on_hand }}
-                {% if o.finished_unsold %}
-                  <div class="sub">{{ o.finished_unsold }} in colorways that haven't sold</div>
-                {% endif %}
-              </td>
+              {% if dyed_table %}
+                <td class="num">
+                  {{ o.finished_on_hand }}
+                  {% if o.finished_unsold %}
+                    <div class="sub">{{ o.finished_unsold }} in colorways that haven't sold</div>
+                  {% endif %}
+                </td>
+              {% endif %}
               <td class="num">
                 {% if o.shortfall is None %}
                   —
@@ -413,20 +415,33 @@
                   <div class="sub">{{ o.owned }} owned</div>
                 {% endif %}
               </td>
+              <td class="order-link">
+                {% comment %}
+                The links live here, on the table that decides what to buy,
+                rather than on the bill — a delivery note is typed off the
+                paper in the other hand and never needs a link. The blank's
+                own product pages win, one numbered link per listing; a blank
+                bought from a person at the next stall links to their card,
+                which is where the phone number is. The preference is
+                `RawProduct.reorder_link` rather than an `{% if %}` here, so
+                this and the supplier card cannot drift.
+                {% endcomment %}
+                {% with link=o.blank.reorder_link %}
+                  {% if link.0 == 'product' %}
+                    <a href="{{ link.1 }}" target="_blank">{{ link.2 }}</a>
+                    {% for u in o.blank.extra_order_urls %}
+                      <a href="{{ u }}" target="_blank" class="more-link" title="another listing">{{ forloop.counter|add:1 }}</a>
+                    {% endfor %}
+                  {% elif link.0 == 'supplier' %}
+                    <a href="{{ link.1 }}">{{ link.2 }}</a>
+                  {% endif %}
+                {% endwith %}
+              </td>
             </tr>
           {% endfor %}
         </tbody>
       </table>
     </div>
-    <div class="savebar">
-      <button class="btn" type="submit">Save par</button>
-      <span class="note">
-        Blank rows are left alone. 0 means no par is set.
-        <strong>Rest of season</strong> is what the forecast wants less
-        everything already owned, dyed or not — it is not added to par.
-      </span>
-    </div>
-    </form>
   {% else %}
     <form method="post">
     {% csrf_token %}
@@ -438,8 +453,6 @@
             <th>On Hand</th>
             <th>Par</th>
             <th>Shortage</th>
-            <th>Cost</th>
-            <th>Reorder from</th>
             <th class="entry">Received</th>
             <th class="entry">Counted</th>
           </tr>
@@ -480,31 +493,6 @@
                   {% endwith %}
                 {% endif %}
               </td>
-              <td>
-                {% if p.price %}
-                  ${{ p.price }}
-                {% endif %}
-              </td>
-              <td class="order-link">
-                {% comment %}
-                A link either way. The blank's own product page wins, so the
-                25 blanks that have one keep their single click to the thing
-                being ordered; everything else links to its supplier's card,
-                which is where a person's phone number lives. The preference
-                is `RawProduct.reorder_link` rather than an `{% if %}` here,
-                so the two pages printing this column cannot drift.
-                {% endcomment %}
-                {% with link=p.reorder_link %}
-                  {% if link.0 == 'product' %}
-                    <a href="{{ link.1 }}" target="_blank">{{ link.2 }}</a>
-                    {% for u in p.extra_order_urls %}
-                      <a href="{{ u }}" target="_blank" class="more-link" title="another listing">{{ forloop.counter|add:1 }}</a>
-                    {% endfor %}
-                  {% elif link.0 == 'supplier' %}
-                    <a href="{{ link.1 }}">{{ link.2 }}</a>
-                  {% endif %}
-                {% endwith %}
-              </td>
               <td class="entry">
                 {% comment %}
                 Signed on purpose: a return to the supplier is a delivery note
@@ -530,7 +518,7 @@
             saying which one is a hunt.
             {% endcomment %}
             {% if why %}
-              <tr class="bad"><td colspan="8" class="bad-why">{{ p.name }}: {{ why }}</td></tr>
+              <tr class="bad"><td colspan="6" class="bad-why">{{ p.name }}: {{ why }}</td></tr>
             {% endif %}
             {% endwith %}
           {% endfor %}

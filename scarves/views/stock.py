@@ -75,9 +75,10 @@ def raw_inventory_index(request):
 
 @page_meta(
     title="Raw Inventory (by category)",
-    description="Raw products for a single category, highlighting items below "
-                "par so you know what to order. Book a delivery or a shelf "
-                "count for the whole category in one save.",
+    description="Raw products for a single category. Book a delivery or a "
+                "shelf count for the whole category in one save, or switch "
+                "to Plan an order to see what is below par or short of the "
+                "season, with the links to buy it.",
     category="Inventory",
     # Reached from the picker above, which is what the site map lists. A route
     # needing a category id can only ever be a dead card there.
@@ -146,14 +147,20 @@ def raw_inventory_view(request, category_id):
             "errors": {},
         })
 
-    par_mode = request.GET.get("par") == "1"
-    if par_mode:
+    # **Planning an order is a read.** It used to be the par-setting mode,
+    # with a box per blank that wrote `par_level` beside the evidence — and
+    # the person doing the ordering asked for the boxes to go. Par is set on
+    # the blank's own page now (`blank_edit`), one door rather than two, and
+    # this table is what it always mostly was: the shelf, the floor, what
+    # sold, what the rest of the season is on track to sell, and where to
+    # click to buy more. The row lights up when either number says to look.
+    if request.GET.get("plan") == "1":
         outlooks = rawdemand.rows(products)
         return render(request, "scarves/raw_inventory.html", {
             "category": category,
             "products": products,
             "all_categories": RawProductCategory.objects.all().order_by("name"),
-            "par_mode": True,
+            "plan_mode": True,
             "outlooks": outlooks,
             # Whether anything on this table is dyed at all, so the page can
             # say what the floor is protecting. Notions are bought and resold
@@ -194,82 +201,10 @@ def raw_inventory_view(request, category_id):
         "category": category,
         "products": products,
         "all_categories": RawProductCategory.objects.all().order_by("name"),
-        "par_mode": False,
+        "plan_mode": False,
         "typed": typed,
         "errors": errors,
     })
-
-
-@require_POST
-@login_required
-def raw_par_save(request, category_id):
-    """Set the working floor on a category's blanks, one save for the lot.
-
-    **The floor is what has to stay on the shelf so the dye room never
-    stops** — a level you stay above, not a season's requirement, which is
-    derived beside it and never written here. `rawdemand` has the argument for
-    keeping the two apart.
-
-    Until this the only door was the Django admin, so `par_level` sat at 100
-    on every blank in the shop: a uniform remnant reading as a decision, which
-    is the failure this codebase has already had once with `FinishedProduct.par`
-    and named at length. The evidence to choose against is printed beside each
-    box and **nothing here proposes a number.**
-
-    The rules are the raw-inventory form's own, so one page keeps one
-    behaviour: absolute rather than a delta, the whole form read before any of
-    it is written, and a box that does not read changes nothing. A blank box
-    means untouched — which differs from the recipe page, where every product
-    renders a box every time and an empty one could only be a mistake. Here a
-    category runs to forty blanks and a visit usually means to change one.
-
-    Writes no `InventoryLog` and moves no stock. A floor is a target, not a
-    shelf.
-    """
-    category = get_object_or_404(RawProductCategory, pk=category_id)
-    products = list(
-        RawProduct.objects.active().filter(category=category).order_by("name")
-    )
-    back = f"{reverse('raw_inventory', args=[category.pk])}?par=1"
-
-    changes = []
-    for product in products:
-        raw_value = (request.POST.get(f"par_{product.pk}") or "").strip()
-        if not raw_value:
-            continue
-        if not raw_value.isdigit():
-            messages.error(
-                request,
-                f"“{raw_value}” isn't a par for {product.name} — nothing was "
-                "changed. Par is a whole number, and 0 means no par is set.",
-            )
-            return redirect(back)
-        par = int(raw_value)
-        if par != product.par_level:
-            changes.append((product, product.par_level, par))
-
-    if not changes:
-        messages.info(request, "Every par is already what the form says.")
-        return redirect(back)
-
-    with transaction.atomic():
-        for product, _old, par in changes:
-            product.par_level = par
-            # Not a bare `update()`: `mirror_passthrough_stock` hangs off this
-            # model's `post_save`, and one pile with two rows counting it is
-            # the failure the raw page's own save note describes.
-            product.save(update_fields=["par_level"])
-
-    # Named one by one with the number it moved from, like the recipe page's:
-    # nothing records a par change, so the message is the only confirmation
-    # that the row which moved is the row you meant.
-    messages.success(
-        request,
-        "Par updated: "
-        + ", ".join(f"{p.name} {old} → {new}" for p, old, new in changes)
-        + ".",
-    )
-    return redirect(back)
 
 
 #: What each written field is called in the save message. Named rather

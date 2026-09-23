@@ -298,8 +298,8 @@ stock the other way, and leaves the first row exactly as written — the same
 bargain `closing.undo` makes. Two consequences worth knowing before touching
 anything that reads these rows. **The question is never "was a production row
 written", it is "does one still stand"** (`reversals__isnull=True`), and
-`labels.produced_since` and `rawdemand._entered_production` both had to learn
-that. And **the retraction is invisible on the page that offers it** — both
+`labels.produced_since` had to learn that (so did a raw-page column since
+removed). And **the retraction is invisible on the page that offers it** — both
 rows drop out of the list rather than one showing struck through, which
 inverts the usual rule about vanishing rows on purpose; the argument is in
 `docs/claude/production.md` and it is about what a correction costs the person

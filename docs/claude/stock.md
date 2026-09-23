@@ -699,20 +699,32 @@ question about real invoices rather than about code.
 
 ## Par on a blank is two numbers, and only one of them is stored
 
-`private/raw-inventory/<category>/?par=1` is the second mode of the page — a
-box per blank that writes `par_level`, beside the evidence for choosing what
-to type. Until it existed the only door was the Django admin, and the number
-showed it: **`par_level` was 100 on all 26 blanks**, a uniform remnant reading
-off the page as though somebody had decided it. Exactly what
-`FinishedProduct.par` was before it got `?par=1` on the recipe page, and the
-same fix, for the same reason — see *The app advises, a person decides* in
-`CLAUDE.md`.
+`private/raw-inventory/<category>/?plan=1` is the second mode of the page —
+**Plan an order**: the shelf, the floor, what sold, what the rest of the
+season is on track to sell, what that leaves to buy, and the links to buy it
+from. A row lights up when the shelf is below par or short of the season
+(`Outlook.needs_order`), so a forty-row table can be read for the rows that
+matter. It writes nothing.
 
-The mode is a mode for the structural reason the recipe page's is: par boxes
-and delivery boxes in one table means a par typed in and then abandoned by
-pressing **Save this bill**, written nowhere and said nothing about. Separate
-endpoints, and both directions are pinned — posting `par_` to the bill form
-does nothing, and posting `received_` to the par form does nothing.
+**It used to be the par-setting mode**, a box per blank writing `par_level`
+beside the evidence for choosing it, and the boxes went on 22 September 2026
+because the person taking over the ordering asked for them to go: this table
+is for deciding what to buy, and a form under every figure was in the way of
+that. The reason the boxes existed still holds — until they did the only door
+was the Django admin, and **`par_level` was 100 on all 26 blanks**, a uniform
+remnant reading off the page as though somebody had decided it — but the door
+is `private/raw-inventory/blank/<id>/` now, which has a par field of its own,
+and each row's figure links to it. One door rather than two. Par is a rare
+decision; ordering is a weekly one.
+
+Two columns went with the form. **Cost and *Reorder from* came off the bill
+mode**: a delivery note is typed off the paper in the other hand and never
+needs a link, and the links are on the tab where the order is placed.
+**The *Entered, 8wk* column came off the plan mode**: it counted production
+rows written in the last eight weeks, which measured typing rather than
+dyeing, and nobody reading the page could say what it was for. The lesson it
+carried — a retracted bath is not a bath, `reversals__isnull=True` — lives
+with `labels.produced_since` and in `CLAUDE.md`.
 
 **The two numbers.** Both get called par and they are not the same:
 
@@ -733,12 +745,34 @@ where every product renders a box each visit so an empty one could only be a
 slip. Here a category runs to forty blanks and a visit means to change one.
 `0` is still a real answer, and it is how you say there is no par.
 
-### What the forecast is, and the two soft spots printed beside it
+### What the forecast is, and the soft spot printed beside it
+
+**On track for is a straight line: sales per faire day so far this season,
+times the faire days left.** It replaced the share-of-season model
+`seasonreport` draws its dashed tail with — what fraction of a complete prior
+season the banked weekends took, applied to this season — which is the
+better estimator and was unreadable here. Half the catalogue had no complete
+prior season and printed a dash; the other half printed a number nobody
+could check against anything. A rate times a day count is arithmetic the
+person ordering can do in their head, and both factors print under the
+figure (`2.0/day × 6 days left`). The cost is that early in the run one
+weekend swings it, and a wet weekend pulls it down — said on the page,
+because the person reading it knows which weekend it was.
+
+The denominator is faire days rather than calendar days (two a week, three
+on Labor Day weekend), and **only the days of weekends actually imported**:
+a weekend nobody has loaded would otherwise divide the rate by days it has
+no sales for. A weekend where *this* blank sold none still counts — that is
+a measurement. The days to come are every traded day after today, whatever
+has been imported. Before the first counted day the column is a dash, not a
+zero; after the run it is 0, which is the honest answer to "how many more
+this season" and the wrong question to ask in December. Next season's order
+is a different calculation, and not built.
 
 The reorder question for anything dyed is not "how many will we sell" but
 "how many will we **dye**", and those differ by everything already on a peg.
-So the season column is `forecast − (raw on hand + claimed + finished on
-hand)`, in baths and dollars as well as units.
+So the *to order* column is `on track for − (raw on hand + claimed + finished
+on hand)`, in baths and dollars as well as units.
 
 **Claimed yarn is added back here and nowhere else.** A blank on an open sheet
 has left `raw on hand` — see *The blanks come off when the run is made* in

@@ -31,24 +31,37 @@ two came apart for real in 2025, when a mid-season reprice lifted takings
 while silk lost about a fifth of its unit velocity — a dollar-shaped forecast
 would have ordered against the price change.
 
-**Nothing here proposes a par.** The columns are evidence for a person
-choosing one: what sold, what the rest of the season is on pace to sell, what
+**Nothing here places an order.** The columns are evidence for a person
+deciding one: what sold, what the rest of the season is on track to sell, what
 is already dyed, and what is on the shelf. A rule that turned those into a
-number would be the production-from-display-capacity failure with a supplier
-invoice at the end of it.
+purchase would be the production-from-display-capacity failure with a supplier
+invoice at the end of it. What the page *does* do is light a row up when the
+shelf is below par or below what the rest of the season is on track to sell —
+`Outlook.needs_order` — so a forty-row table can be read for the rows that
+matter.
+
+**The projection is a straight line, on purpose.** Sales per faire day so far
+this season, times the faire days left. It used to be the share-of-season
+model `seasonreport` draws its dashed tail with — what fraction of a complete
+prior season the banked weekends took, applied to this season — which is the
+better estimator and was unreadable on this page: half the catalogue had no
+complete prior season and printed a dash, and the other half printed a number
+nobody could check against anything. A rate times a day count is something
+the person ordering can do in their head, and the two factors are printed
+under it. The cost is that early in the run one weekend swings it and a wet
+weekend pulls it down; the person reading it knows which weekend it was.
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from datetime import timedelta
 from decimal import Decimal
 
 from django.utils import timezone
 
 from . import production, seasonreport, slowsellers
-from .models import Faire, FinishedProduct, InventoryLog, RawProduct
+from .models import Faire, FaireDay, FinishedProduct, RawProduct
 
 
 @dataclass
@@ -60,8 +73,12 @@ class Outlook:
     #: None when there is nothing to project *from*, which is not zero — see
     #: `units_outlook`. The page prints the difference.
     remaining: int | None = None
-    basis_weekends: int = 0
-    prior_seasons: int = 0
+    #: The two factors behind `remaining`, printed under it so the figure can
+    #: be checked in somebody's head. `per_day` is None before the first
+    #: faire day has been counted.
+    per_day: Decimal | None = None
+    days_elapsed: int = 0
+    days_left: int = 0
     finished_on_hand: int = 0
     finished_unsold: int = 0
     #: Whether anything made from this blank is dyed at all. A passthrough —
@@ -78,10 +95,6 @@ class Outlook:
     #: reported. Already subtracted from `raw_on_hand`, and printed beside it
     #: so a count that fell without a delivery has its reason on the row.
     claimed: int = 0
-    dyed_recently: int = 0
-    #: When the most recent production row for this blank was written, at any
-    #: depth of history — `dyed_recently` only looks back `RECENT_WEEKS`.
-    last_entry: object = None
 
     @property
     def raw_on_hand(self):
@@ -157,6 +170,18 @@ class Outlook:
         return Decimal(self.shortfall) * (self.blank.blank_cost or Decimal(0))
 
     @property
+    def needs_order(self):
+        """Whether the row should light up on the plan-an-order table.
+
+        Below the floor, or short of what the rest of the season is on track
+        to sell. Either alone is a reason to look; neither is an order — the
+        person reads the row and decides, which is the whole bargain of this
+        module. `floor_short` is already net of anything on order, so a blank
+        with a hundred on a supplier's van does not light up twice.
+        """
+        return self.floor_short > 0 or (self.shortfall or 0) > 0
+
+    @property
     def floor_short(self):
         """How far below the working floor the shelf is. Never the season.
 
@@ -218,24 +243,34 @@ class Outlook:
 
 
 def units_outlook(blanks, today=None):
-    """`{blank_id: (sold, remaining, basis_weekends, prior_seasons)}`.
+    """`{blank_id: (sold, remaining, per_day, days_elapsed, days_left)}`.
 
-    The projection is `seasonreport`'s own: what share of a season the
-    weekends already banked took in prior complete seasons, applied to what
-    this season has banked. Re-derived on units here rather than reusing
-    `_project` because that one spreads money across the weekends still to
-    come for the chart to draw; this needs one scalar and no side effects.
+    Sold so far this season, divided by the faire days it took, times the
+    faire days still to come. One straight line per blank, from this season
+    only — see the module docstring for what it replaced and why.
 
-    **A blank with no prior complete season gets `None`, not a number.** Every
-    yarn colorway's history starts in 2025 and the silk's runs back to 2021,
-    so half the catalogue would otherwise be projected off a single season and
-    half off five, printed in the same column at the same weight.
-    `prior_seasons` rides along so the page can say which it is.
+    **The denominator is faire days, not calendar days**, because the stall
+    trades two days a week and three on Labor Day weekend. Only the days of
+    weekends that have actually been imported count: a weekend nobody has
+    loaded yet would otherwise divide the rate by days it has no sales for.
+    The days to come are every traded day after today, whatever has been
+    imported — those are the days the order has to cover.
+
+    `remaining` is None before the first faire day is counted, because a
+    rate over zero days is not a rate. It is 0 once the run is over, which
+    is the honest answer to "how many more this season" and the wrong
+    question to be asking in December — next season's order is a different
+    calculation and not built.
     """
     today = today or timezone.localdate()
     faire = Faire.objects.order_by("-year").first()
     if faire is None:
         return {}
+    days = list(
+        FaireDay.objects.filter(faire=faire, traded=True)
+        .values_list("date", "weekend")
+    )
+    to_come = sum(1 for when, _ in days if when > today)
 
     out = {}
     for blank in blanks:
@@ -244,32 +279,17 @@ def units_outlook(blanks, today=None):
         if focus is None:
             continue
         banked_numbers = {w.number for w in focus.weekends if w.has_data}
-        banked = int(sum(w.units for w in focus.weekends if w.has_data))
-        priors = [
-            s for s in seasons
-            if s.year < faire.year and s.is_complete and s.units
-        ]
-        to_come = [w for w in focus.weekends if w.to_come]
-        out[blank.pk] = (banked, None, len(banked_numbers), len(priors))
-        if not (priors and to_come and banked):
-            continue
-
-        shares = []
-        for season in priors:
-            part = sum(
-                w.units for w in season.weekends if w.number in banked_numbers
-            )
-            shares.append(Decimal(part) / Decimal(season.units))
-        share = sum(shares) / len(shares)
-        if not share:
-            continue
-        projected = Decimal(banked) / share
-        out[blank.pk] = (
-            banked,
-            int(round(projected - Decimal(banked))),
-            len(banked_numbers),
-            len(priors),
+        banked = int(focus.units)
+        elapsed = sum(
+            1 for when, number in days
+            if when <= today and number in banked_numbers
         )
+        if not elapsed:
+            out[blank.pk] = (banked, None, None, 0, to_come)
+            continue
+        per_day = Decimal(banked) / Decimal(elapsed)
+        remaining = int(round(per_day * to_come))
+        out[blank.pk] = (banked, remaining, per_day, elapsed, to_come)
     return out
 
 
@@ -303,39 +323,6 @@ def _finished_by_blank(blanks, sold_recipes):
     return on_hand, unsold, dyed
 
 
-def _entered_production(blanks, since):
-    """Units entered as production per blank, and when the last one landed.
-
-    Named for what it measures. These rows are written when somebody types a
-    session up, not when the dye was mixed — the dye room works in bursts and
-    the typing happens afterwards, sometimes weeks afterwards — so a quiet
-    fortnight here is a fortnight nobody entered, which is not the same claim
-    as a fortnight nobody dyed. The column is labelled *entered* on the page
-    for that reason, and a week of zeroes is never a reason to order less.
-
-    **An entry taken back is not an entry.** A retraction on
-    `private/produced-since/` writes an ADJUSTMENT, which this query never
-    reads, so without the exclusion an undone bath would go on reporting
-    itself here as dyed — and the date of the last one is what decides when
-    to reorder.
-    """
-    units = {blank.pk: 0 for blank in blanks}
-    last = {blank.pk: None for blank in blanks}
-    rows = (
-        InventoryLog.objects
-        .filter(log_type=InventoryLog.PRODUCTION,
-                reversals__isnull=True,
-                finished_product__raw_product__in=blanks)
-        .values_list("finished_product__raw_product_id", "quantity", "created_at")
-    )
-    for blank_id, quantity, created_at in rows:
-        if created_at >= since:
-            units[blank_id] = units.get(blank_id, 0) + (quantity or 0)
-        if last.get(blank_id) is None or created_at > last[blank_id]:
-            last[blank_id] = created_at
-    return units, last
-
-
 def _claimed(blanks):
     """Claimed units per blank, zero-filled for every blank asked about.
 
@@ -345,12 +332,6 @@ def _claimed(blanks):
 
     claimed = production.claimed_units(blanks)
     return {blank.pk: claimed.get(blank.pk, 0) for blank in blanks}
-
-
-#: How far back the *entered* column looks. Long enough to span the gap
-#: between dyeing something and typing it up, which is the thing being
-#: measured whether anybody means it to be or not.
-RECENT_WEEKS = 8
 
 
 def rows(blanks, today=None):
@@ -364,8 +345,6 @@ def rows(blanks, today=None):
     sold_recipes = slowsellers.sold_by_recipe(rng)
     outlooks = units_outlook(blanks, today=today)
     finished, unsold, dyed = _finished_by_blank(blanks, sold_recipes)
-    since = timezone.now() - timedelta(weeks=RECENT_WEEKS)
-    entered, last_entry = _entered_production(blanks, since)
     claimed = _claimed(blanks)
     # One query for the whole page rather than `is_bought_in` per blank —
     # this runs over a whole category.
@@ -377,19 +356,20 @@ def rows(blanks, today=None):
 
     out = []
     for blank in blanks:
-        sold, remaining, weekends, priors = outlooks.get(blank.pk, (0, None, 0, 0))
+        sold, remaining, per_day, elapsed, left = outlooks.get(
+            blank.pk, (0, None, None, 0, 0)
+        )
         out.append(Outlook(
             blank=blank,
             sold=sold,
             remaining=remaining,
-            basis_weekends=weekends,
-            prior_seasons=priors,
+            per_day=per_day,
+            days_elapsed=elapsed,
+            days_left=left,
             finished_on_hand=finished.get(blank.pk, 0),
             finished_unsold=unsold.get(blank.pk, 0),
             is_dyed=blank.pk in dyed,
             is_bought=blank.pk not in made_here,
             claimed=claimed.get(blank.pk, 0),
-            dyed_recently=entered.get(blank.pk, 0),
-            last_entry=last_entry.get(blank.pk),
         ))
     return out

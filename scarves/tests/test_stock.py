@@ -1845,13 +1845,13 @@ class PassthroughFromUnidentifiedSaleTests(TestCase):
         )
 
 
-class RawParAndOutlookTests(TestCase):
-    """The floor, the season's requirement, and why they are two columns.
+class PlanAnOrderTests(TestCase):
+    """The category page's second tab: what to buy, and where to click.
 
-    `par_level` sat at 100 on every blank in the shop because the only door to
-    it was the Django admin — the same uniform remnant `FinishedProduct.par`
-    was before it got one, and the same failure: a number nobody chose, read
-    off a page as though somebody had.
+    It used to be the par-setting mode — a box per blank writing `par_level`
+    beside the evidence for choosing it — and the person doing the ordering
+    asked for the boxes to go. Par is set on the blank's own page now; this
+    tab reads, lights up the rows worth looking at, and carries the links.
     """
 
     def setUp(self):
@@ -1859,6 +1859,7 @@ class RawParAndOutlookTests(TestCase):
         self.blank = RawProduct.objects.create(
             name="Homespun", category=self.category, price=Decimal("6.71"),
             number_on_hand=165, par_level=100, number_per_dye_bath=4,
+            order_url="https://a.test/homespun\nhttps://b.test/homespun",
         )
         self.other = RawProduct.objects.create(
             name="Noble", category=self.category, price=Decimal("9.14"),
@@ -1867,72 +1868,190 @@ class RawParAndOutlookTests(TestCase):
         User.objects.create_user("staff", "s@example.test", "pw")
         self.client.login(username="staff", password="pw")
         self.url = reverse("raw_inventory", args=[self.category.pk])
-        self.par_url = reverse("raw_par_save", args=[self.category.pk])
+        self.plan = f"{self.url}?plan=1"
 
-    def test_the_par_form_writes_the_floor(self):
-        self.client.post(self.par_url, {f"par_{self.blank.pk}": "80"})
+    def _row(self, body, name):
+        """The `<tr>` holding `name`, so a class can be asserted per row."""
+        rows = re.findall(r"<tr[^>]*>.*?</tr>", body, re.S)
+        return next(r for r in rows if name in r)
 
-        self.blank.refresh_from_db()
-        self.assertEqual(self.blank.par_level, 80)
+    def test_plan_mode_reads_and_offers_no_boxes(self):
+        page = self.client.get(self.plan).content.decode()
 
-    def test_a_blank_box_leaves_the_row_alone(self):
-        """A category runs to forty blanks and a visit means to change one."""
-        self.client.post(self.par_url, {
-            f"par_{self.blank.pk}": "80", f"par_{self.other.pk}": "",
-        })
-
-        self.other.refresh_from_db()
-        self.assertEqual(self.other.par_level, 100)
-
-    def test_zero_is_a_real_answer(self):
-        """0 is how you say there is no par, and `raw_shortage` reads it."""
-        self.client.post(self.par_url, {f"par_{self.blank.pk}": "0"})
-
-        self.blank.refresh_from_db()
-        self.assertEqual(self.blank.par_level, 0)
-        self.assertEqual(self.blank.raw_shortage, 0)
-
-    def test_one_bad_box_changes_nothing(self):
-        self.client.post(self.par_url, {
-            f"par_{self.blank.pk}": "80", f"par_{self.other.pk}": "lots",
-        })
-
-        self.blank.refresh_from_db()
-        self.other.refresh_from_db()
-        self.assertEqual(self.blank.par_level, 100)
-        self.assertEqual(self.other.par_level, 100)
-
-    def test_writing_par_moves_no_stock_and_logs_nothing(self):
-        self.client.post(self.par_url, {f"par_{self.blank.pk}": "80"})
-
-        self.blank.refresh_from_db()
-        self.assertEqual(self.blank.number_on_hand, 165)
-        self.assertEqual(InventoryLog.objects.count(), 0)
-
-    def test_posting_a_par_to_the_bill_form_does_nothing(self):
-        """The two forms share a table, and that is only safe while neither
-        endpoint reads the other's fields."""
-        self.client.post(self.url, {f"par_{self.blank.pk}": "80"})
-
-        self.blank.refresh_from_db()
-        self.assertEqual(self.blank.par_level, 100)
-
-    def test_posting_a_delivery_to_the_par_form_does_nothing(self):
-        self.client.post(self.par_url, {f"received_{self.blank.pk}": "12"})
-
-        self.blank.refresh_from_db()
-        self.assertEqual(self.blank.number_on_hand, 165)
-
-    def test_par_mode_renders_the_evidence_and_not_the_bill(self):
-        page = self.client.get(self.url, {"par": "1"}).content.decode()
-        self.assertIn("On pace for", page)
-        self.assertIn(f'name="par_{self.blank.pk}"', page)
+        self.assertIn("On track for", page)
+        self.assertIn("Plan an order", page)
+        self.assertNotIn(f'name="par_{self.blank.pk}"', page)
         self.assertNotIn(f'name="received_{self.blank.pk}"', page)
+        self.assertNotIn("Entered", page)
+
+    def test_par_is_printed_with_the_door_to_change_it(self):
+        """Not editable here, but never out of reach: a figure that looks
+        like a fact with no way to disagree is the par mistake."""
+        page = self.client.get(self.plan).content.decode()
+
+        row = self._row(page, "Homespun")
+        self.assertIn("100", row)
+        self.assertIn(reverse("blank_edit", args=[self.blank.pk]), row)
+
+    def test_the_par_form_is_gone(self):
+        with self.assertRaises(NoReverseMatch):
+            reverse("raw_par_save", args=[self.category.pk])
+
+    def test_a_shelf_below_par_lights_up_and_one_above_does_not(self):
+        self.blank.number_on_hand = 60
+        self.blank.save(update_fields=["number_on_hand"])
+
+        page = self.client.get(self.plan).content.decode()
+
+        self.assertIn('class="order"', self._row(page, "Homespun"))
+        self.assertNotIn('class="order"', self._row(page, "Noble"))
+
+    def test_a_shelf_short_of_the_season_lights_up(self):
+        """Above par and still lit: the floor is not the season."""
+        outlook = rawdemand.Outlook(blank=self.blank, remaining=500)
+        self.assertTrue(outlook.needs_order)
+        with mock.patch.object(rawdemand, "rows", return_value=[outlook]):
+            page = self.client.get(self.plan).content.decode()
+
+        self.assertIn('class="order"', self._row(page, "Homespun"))
+
+    def test_a_shelf_covered_both_ways_stays_quiet(self):
+        outlook = rawdemand.Outlook(blank=self.blank, remaining=100)
+        self.assertFalse(outlook.needs_order)
+
+    def test_the_links_are_on_the_plan_tab_and_off_the_bill(self):
+        """A bill is typed off the paper in the other hand and never needs a
+        link; the order is placed from here."""
+        plan = self.client.get(self.plan).content.decode()
+        bill = self.client.get(self.url).content.decode()
+
+        self.assertIn('href="https://a.test/homespun"', plan)
+        self.assertIn('href="https://b.test/homespun"', plan)
+        self.assertNotIn("https://a.test/homespun", bill)
+        self.assertNotIn("<th>Cost</th>", bill)
+        self.assertNotIn("Reorder from", bill)
 
     def test_the_default_mode_is_still_the_bill(self):
         page = self.client.get(self.url).content.decode()
         self.assertIn(f'name="received_{self.blank.pk}"', page)
-        self.assertNotIn(f'name="par_{self.blank.pk}"', page)
+        self.assertNotIn("On track for", page)
+
+
+class OnTrackForTests(TestCase):
+    """Sales per faire day so far, times the faire days left.
+
+    A straight line from this season only, replacing the share-of-prior-season
+    model that printed a dash for half the catalogue and an uncheckable number
+    for the rest. The two factors are carried so the page can print them.
+    """
+
+    def setUp(self):
+        self.category = RawProductCategory.objects.create(name="Yarn")
+        self.blank = RawProduct.objects.create(
+            name="Homespun", category=self.category, price=Decimal("6.71"),
+        )
+        self.faire = Faire.objects.create(slug="labor-day-run", year=2026)
+        # Two weekends banked (four days), three to come (six days).
+        self.today = date(2026, 9, 2)
+        self.days = []
+        for weekend, saturday in enumerate(
+            [date(2026, 8, 22), date(2026, 8, 29), date(2026, 9, 5),
+             date(2026, 9, 12), date(2026, 9, 19)], start=1,
+        ):
+            for offset in (0, 1):
+                when = saturday + timedelta(days=offset)
+                FaireDay.objects.create(faire=self.faire, date=when, weekend=weekend)
+                self.days.append(when)
+
+    def _sell(self, when, quantity, blank=None):
+        sale = Sale.objects.create(order_id=f"O{when}{quantity}", sold_at=timezone.now())
+        SaleLine.objects.create(
+            sale=sale, line_key=f"k{when}{quantity}",
+            sold_at=timezone.make_aware(datetime.combine(when, time(12))),
+            item_name="Homespun", raw_product=blank or self.blank,
+            quantity=quantity, gross_cents=100,
+        )
+
+    def test_rate_times_days_left(self):
+        for when in self.days[:4]:
+            self._sell(when, 2)                       # 8 units over 4 days
+
+        sold, remaining, per_day, elapsed, left = rawdemand.units_outlook(
+            [self.blank], today=self.today
+        )[self.blank.pk]
+
+        self.assertEqual((sold, elapsed, left), (8, 4, 6))
+        self.assertEqual(per_day, Decimal(2))
+        self.assertEqual(remaining, 12)
+
+    def test_a_weekend_nobody_imported_is_not_in_the_denominator(self):
+        """Dividing by days with no sales loaded would halve the rate and
+        under-order by the same."""
+        for when in self.days[:2]:
+            self._sell(when, 2)                       # weekend 1 only
+
+        _, remaining, per_day, elapsed, left = rawdemand.units_outlook(
+            [self.blank], today=self.today
+        )[self.blank.pk]
+
+        self.assertEqual(elapsed, 2)
+        self.assertEqual(per_day, Decimal(2))
+        self.assertEqual(remaining, 12)
+
+    def test_a_weekend_where_this_blank_sold_none_still_counts(self):
+        """Imported and took zero of this one is a measurement, and it
+        belongs in the rate."""
+        other = RawProduct.objects.create(
+            name="Noble", category=self.category, price=Decimal("9.14"),
+        )
+        for when in self.days[:2]:
+            self._sell(when, 2)
+        for when in self.days[2:4]:
+            self._sell(when, 5, blank=other)          # weekend 2: Noble only
+
+        _, remaining, per_day, elapsed, _ = rawdemand.units_outlook(
+            [self.blank], today=self.today
+        )[self.blank.pk]
+
+        self.assertEqual(elapsed, 4)
+        self.assertEqual(per_day, Decimal(1))
+        self.assertEqual(remaining, 6)
+
+    def test_before_the_first_counted_day_there_is_no_line(self):
+        """A rate over zero days is not a rate, and None is not zero."""
+        sold, remaining, per_day, elapsed, left = rawdemand.units_outlook(
+            [self.blank], today=date(2026, 8, 20)
+        )[self.blank.pk]
+
+        self.assertIsNone(remaining)
+        self.assertIsNone(per_day)
+        self.assertEqual(left, 10)
+        self.assertIsNone(rawdemand.rows([self.blank], today=date(2026, 8, 20))[0].shortfall)
+
+    def test_after_the_run_nothing_more_will_sell_this_season(self):
+        for when in self.days:
+            self._sell(when, 1)
+
+        _, remaining, _, elapsed, left = rawdemand.units_outlook(
+            [self.blank], today=date(2026, 10, 1)
+        )[self.blank.pk]
+
+        self.assertEqual((elapsed, left, remaining), (10, 0, 0))
+
+    def test_the_page_prints_the_two_factors(self):
+        User.objects.create_user("staff", "s@example.test", "pw")
+        self.client.login(username="staff", password="pw")
+        outlook = rawdemand.Outlook(
+            blank=self.blank, sold=8, remaining=12,
+            per_day=Decimal(2), days_elapsed=4, days_left=6,
+        )
+        with mock.patch.object(rawdemand, "rows", return_value=[outlook]):
+            page = self.client.get(
+                reverse("raw_inventory", args=[self.category.pk]) + "?plan=1"
+            ).content.decode()
+
+        self.assertIn("2.0/day", page)
+        self.assertIn("6 days left", page)
 
 
 class RawCountFreshnessTests(TestCase):
@@ -2009,7 +2128,7 @@ class RawCountFreshnessTests(TestCase):
         self.blank.counted_at = timezone.now() - timedelta(days=2)
         self.blank.save(update_fields=["counted_at"])
 
-        body = self.client.get(f"{self.url}?par=1").content.decode()
+        body = self.client.get(f"{self.url}?plan=1").content.decode()
 
         self.assertNotIn("never counted", body)
         self.assertIn("counted", body)
@@ -2323,7 +2442,7 @@ class SupplierTests(TestCase):
         self.assertEqual(blank.extra_order_urls, ["https://a.test/2", "https://a.test/3"])
 
         body = self.client.get(
-            reverse("raw_inventory", args=[self.category.pk])
+            reverse("raw_inventory", args=[self.category.pk]) + "?plan=1"
         ).content.decode()
         self.assertIn('href="https://a.test/1"', body)
         self.assertIn('href="https://a.test/3"', body)
@@ -2352,11 +2471,11 @@ class SupplierTests(TestCase):
         blank.refresh_from_db()
         self.assertEqual(blank.order_urls, [])
 
-    def test_the_bill_page_prints_a_persons_name_where_a_link_would_go(self):
+    def test_the_plan_tab_prints_a_persons_name_where_a_link_would_go(self):
         self._blank("Yarn bowl", supplier=self.person)
 
         body = self.client.get(
-            reverse("raw_inventory", args=[self.category.pk])
+            reverse("raw_inventory", args=[self.category.pk]) + "?plan=1"
         ).content.decode()
 
         self.assertIn("Wild Yam Pottery", body)
@@ -2527,8 +2646,8 @@ class NotionsOnTheReorderPageTests(TestCase):
         )
         self.url = reverse("raw_inventory", args=[self.category.pk])
 
-    def _par_page(self, **kwargs):
-        """The par view with one outlook of our choosing.
+    def _plan_page(self, **kwargs):
+        """The plan-an-order view with one outlook of our choosing.
 
         Patched rather than seeded: `rawdemand` projects off whole prior
         seasons, and what is being pinned here is how the page words an
@@ -2537,7 +2656,7 @@ class NotionsOnTheReorderPageTests(TestCase):
         kwargs.setdefault("is_dyed", False)
         outlook = rawdemand.Outlook(blank=self.blank, **kwargs)
         with mock.patch.object(rawdemand, "rows", return_value=[outlook]):
-            return self.client.get(f"{self.url}?par=1").content.decode()
+            return self.client.get(f"{self.url}?plan=1").content.decode()
 
     def test_a_shortfall_is_priced_and_never_counted_in_baths(self):
         """`number_per_dye_bath` carries its default of 4 on every blank, so
@@ -2545,7 +2664,7 @@ class NotionsOnTheReorderPageTests(TestCase):
         row read "0 baths · $684" beside a yarn bowl, which is zero of a
         thing that does not happen, on the page whose job is to say what to
         buy."""
-        body = self._par_page(remaining=40)
+        body = self._plan_page(remaining=40)
 
         self.assertIn("38 short", body)
         self.assertIn("38 to order", body)
@@ -2554,7 +2673,7 @@ class NotionsOnTheReorderPageTests(TestCase):
     def test_the_floor_is_not_described_as_feeding_the_dye_room(self):
         """It is the sentence somebody reads to decide what number to type,
         and no par on this table has ever kept a dye room going."""
-        body = self._par_page(remaining=40)
+        body = self._plan_page(remaining=40)
 
         self.assertNotIn("dye room never stops", body)
         self.assertIn("table never runs", body)
@@ -2568,7 +2687,7 @@ class NotionsOnTheReorderPageTests(TestCase):
         )
         outlook = rawdemand.Outlook(blank=dyed, is_dyed=True, remaining=50)
         with mock.patch.object(rawdemand, "rows", return_value=[outlook]):
-            body = self.client.get(f"{self.url}?par=1").content.decode()
+            body = self.client.get(f"{self.url}?plan=1").content.decode()
 
         self.assertIn("10 baths", body)
         self.assertIn("dye room never stops", body)

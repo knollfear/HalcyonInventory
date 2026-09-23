@@ -62,16 +62,11 @@ urlpatterns = [
     # Save, because what gets typed into it is a supplier's bill and a bill
     # is one document. `raw_inventory` itself takes the POST.
     #
-    # Par has its own, because it is the page's other mode and the two forms
-    # must not share a button: one endpoint per meaning.
-    path(
-        "private/raw-inventory/<int:category_id>/par/",
-        views.raw_par_save,
-        name="raw_par_save",
-    ),
-    # And supply its own again, for the third meaning: what a blank costs and
-    # where it is reordered from. POST-only like the par form, so no
-    # `@page_meta` — the mode is reached with `?supply=1` on the page itself.
+    # The par form that used to sit here is gone: par is set on the blank's
+    # own page, and `?plan=1` on the category page is a read. Supply keeps
+    # its own endpoint, for the other meaning: what a blank costs and where
+    # it is reordered from. POST-only, so no `@page_meta` — the mode is
+    # reached with `?supply=1` on the page itself.
     path(
         "private/raw-inventory/<int:category_id>/supply/",
         views.raw_supply_save,
