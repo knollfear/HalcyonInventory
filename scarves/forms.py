@@ -772,6 +772,21 @@ class ProductionSheetForm(forms.Form):
         empty_label="Everything",
         label="Just one category?",
     )
+    #: **A second par, tried on rather than written.** The list is ranked on
+    #: what a colorway sold and filtered on a par that is the same number
+    #: for nearly everything, so the best seller sits one above par and
+    #: never reaches the list it would top. This measures every product
+    #: against twice a day's sales plus one instead. Nothing is stored:
+    #: `FinishedProduct.par` is untouched, and unticking it is the old way.
+    demand_par = forms.BooleanField(
+        required=False,
+        label="Set par from sales",
+        help_text=(
+            "Instead of the stored par, judge each product against twice "
+            "what it sells in a faire day, rounded up, plus one. Sales are "
+            "this season's; the stored par is not changed."
+        ),
+    )
     include_overshoot = forms.BooleanField(
         required=False,
         label="Include ones a bath would take past par",

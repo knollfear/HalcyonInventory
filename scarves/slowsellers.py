@@ -154,6 +154,16 @@ def _lines(rng):
     return lines
 
 
+def days_with_sales(rng):
+    """The calendar days inside the range on which anything at all was rung up.
+
+    The denominator for a per-day figure that has to be honest about missing
+    exports: a faire day nobody has imported yet has no lines, and counting
+    it would read it as a day nothing sold.
+    """
+    return set(_lines(rng).dates("sold_at", "day"))
+
+
 def sold_units(rng):
     """`{finished_product_id: units}` for everything that sold in the range."""
     return {

@@ -3833,3 +3833,145 @@ class SoldOnThisBlankIsOnTheRowTests(TestCase):
                 for p in group["items"]}
 
         self.assertIn(self.stocked.pk, rows)
+
+
+class ParFromSalesTests(TestCase):
+    """A second par, tried on rather than written: twice a day's sales plus one.
+
+    The list ranks on what a colorway sold and filters on a par that is the
+    same number for nearly everything, and the two disagree about what
+    matters: a best seller sitting one above par 8 is not short, so it never
+    reaches the list it would top. The tick measures every product against
+    `ceil(2 × units per faire day) + 1` instead. Nothing is stored, and
+    unticking it is exactly the old page.
+    """
+
+    def setUp(self):
+        self.client.force_login(User.objects.create_user("staff", password="pw"))
+        self.url = reverse("production_needed")
+        today = timezone.localdate()
+        self.faire = Faire.objects.create(slug="labor-day-run", year=today.year)
+        self.days = [today - timedelta(days=2), today - timedelta(days=1)]
+        for when in self.days:
+            FaireDay.objects.create(faire=self.faire, date=when, weekend=1)
+        # Sells ten a day and sits one *above* par — invisible to the old rule.
+        self.star = make_bathable(
+            make_recipe("Ember"), "Heavenly", on_hand=9, par=8, bath=4
+        )
+        # Sells nothing and has nothing — the old rule's favourite.
+        self.dud = make_bathable(
+            make_recipe("Wasteland"), "Homespun", on_hand=0, par=8, bath=4
+        )
+        for when in self.days:
+            self._sell(self.star, 10, when)
+
+    def _sell(self, product, units, when):
+        at = timezone.make_aware(datetime.combine(when, time(12, 0)))
+        sale = Sale.objects.create(
+            order_id=f"o{product.pk}-{when}", sold_at=at,
+            source=Sale.SOURCE_SQUARE_API,
+        )
+        SaleLine.objects.create(
+            sale=sale, line_key=f"k{product.pk}-{when}", sold_at=at,
+            item_name=product.raw_product.name, price_point=product.recipe.name,
+            quantity=units, finished_product=product,
+            raw_product=product.raw_product, source=Sale.SOURCE_SQUARE_API,
+        )
+
+    def _rows(self, **params):
+        groups = self.client.get(self.url, params).context["groups"]
+        return {fp.name: fp for g in groups for fp in g["items"]}
+
+    def test_the_formula(self):
+        # 20 sold over 2 faire days = 10 a day; 2 × 10 + 1.
+        demand = production.demand_par()
+
+        self.assertEqual(demand.days, 2)
+        self.assertEqual(demand.target(self.star), 21)
+        # ceil(0) + 1: a colorway that sold nothing still asks for one.
+        self.assertEqual(demand.target(self.dud), 1)
+
+    def test_a_day_with_no_sales_recorded_is_not_a_day(self):
+        """A weekend nobody has imported yet must not drag the rate down."""
+        FaireDay.objects.create(
+            faire=self.faire, date=timezone.localdate(), weekend=2
+        )
+
+        self.assertEqual(production.demand_par().days, 2)
+
+    def test_the_star_only_reaches_the_list_when_par_comes_from_sales(self):
+        self.assertNotIn(self.star.name, self._rows())
+
+        rows = self._rows(demand_par=1)
+
+        self.assertIn(self.star.name, rows)
+        self.assertEqual(rows[self.star.name].target_par, 21)
+        self.assertEqual(rows[self.star.name].net_shortage, 12)
+
+    def test_unticked_is_the_old_page(self):
+        rows = self._rows()
+
+        self.assertEqual(rows[self.dud.name].target_par, 8)
+        self.assertEqual(rows[self.dud.name].net_shortage, 8)
+
+    def test_the_stored_par_is_never_written(self):
+        self.client.get(self.url, {"demand_par": 1})
+        self.star.refresh_from_db()
+
+        self.assertEqual(self.star.par, 8)
+
+    def test_the_sheet_plans_against_it(self):
+        old = production.plan_baths(10)
+        self.assertNotIn(self.star.pk, {b.product.pk for b in old})
+
+        baths = production.plan_baths(10, demand_par=production.demand_par())
+
+        # Short by 12, four to a bath.
+        self.assertEqual(
+            sum(1 for b in baths if b.product.pk == self.star.pk), 3
+        )
+        # Short by one, which a bath of four overshoots — off the default
+        # sheet exactly as a stored-par shortage of one would be.
+        self.assertNotIn(self.dud.pk, {b.product.pk for b in baths})
+
+    def test_the_sheet_form_takes_the_same_tick(self):
+        url = reverse("production_sheet_index")
+
+        without = self.client.get(url, {"baths": 10}).context["rows"]
+        self.assertNotIn(self.star.pk, {r["product"].pk for r in without})
+
+        response = self.client.get(url, {"baths": 10, "demand_par": 1})
+        rows = {r["product"].pk: r for r in response.context["rows"]}
+
+        self.assertEqual(rows[self.star.pk]["baths"], 3)
+        self.assertContains(response, "2 faire days with sales recorded")
+
+    def test_the_basis_is_printed(self):
+        response = self.client.get(self.url, {"demand_par": 1})
+
+        self.assertContains(response, "2 faire days")
+        self.assertContains(response, "Par (from sales)")
+
+    def test_nothing_to_divide_by_is_the_stored_par_and_says_so(self):
+        FaireDay.objects.all().delete()
+
+        self.assertFalse(production.demand_par().available)
+        response = self.client.get(self.url, {"demand_par": 1})
+
+        self.assertContains(response, "nothing to divide by")
+        rows = {fp.name: fp for g in response.context["groups"]
+                for fp in g["items"]}
+        self.assertEqual(set(rows), set(self._rows()))
+        self.assertEqual(rows[self.dud.name].target_par, 8)
+
+    def test_a_bagged_bath_comes_back_judged_the_same_way(self):
+        response = self.client.post(
+            reverse("record_dye_bath", args=[self.star.pk]),
+            {"next": self.url, "demand_par": "1"},
+            HTTP_HX_REQUEST="true",
+        )
+
+        fp = response.context_data["fp"]
+        self.assertEqual(fp.target_par, 21)
+        self.assertEqual(fp.net_shortage, 12 - 4)
+        self.assertContains(response, 'name="demand_par"')

@@ -91,11 +91,18 @@ def production_needed_view(request):
     rng = slowsellers.season_range({})
     sold = slowsellers.sold_by_recipe(rng)
 
+    # `?demand_par=1` judges every product against twice a day's sales plus
+    # one instead of its stored par — the same tick the sheet form has, under
+    # the same name, so a link off one page means the same thing on the
+    # other. The stored par is not written; untick and it is the old page.
+    demand = production.demand_par() if request.GET.get("demand_par") else None
+
     products = production.candidates(
         category=category,
         include_overshoot=True,
         order=production.ORDER_SOLD,
         oven=None,
+        demand_par=demand,
     )
 
     by_recipe = {}
@@ -154,6 +161,10 @@ def production_needed_view(request):
         "selected_category_id": category.pk if category else None,
         "sort": sort,
         "range": rng,
+        # The object rather than a flag, so the page can say what the number
+        # it is showing was divided by — advice you cannot inspect is a
+        # decision in disguise, and this one is a formula.
+        "demand_par": demand,
         # So the page can say it is netting off printed sheets rather than
         # leaving somebody to wonder why a colorway went quiet.
         "in_flight_total": sum(g["in_flight"] for g in groups),
@@ -200,14 +211,19 @@ def record_dye_bath(request, pk):
         # forgetting one is silent. `annotate_flight` sets the first three;
         # `sold_here` is attached by `candidates()` on the page path and has
         # to be set by hand here, since this row never went through it.
-        production.annotate_flight([finished_product])
+        # The row carries the page's par mode as a hidden input, so a bath
+        # bagged on a "par from sales" page comes back judged the same way.
+        demand = (
+            production.demand_par() if request.POST.get("demand_par") else None
+        )
+        production.annotate_flight([finished_product], demand_par=demand)
         finished_product.sold_here = production.sold_per_blank().get(
             finished_product.pk, 0
         )
         return TemplateResponse(
             request,
             "scarves/partials/production_needed_row.html",
-            {"fp": finished_product},
+            {"fp": finished_product, "demand_par": demand},
         )
 
     # Normal browser POST: message + redirect
@@ -286,6 +302,13 @@ def sheet_list(form):
         # link somebody can send.
         without_blanks=form.cleaned_data.get("without_blanks"),
         without_dyes=form.cleaned_data.get("without_dyes"),
+        # Judged against twice a day's sales plus one rather than the stored
+        # par, when ticked. Only the suggestion reads it: once `items` exists
+        # the list is the list, and a pick is somebody deciding.
+        demand_par=(
+            production.demand_par()
+            if form.cleaned_data.get("demand_par") else None
+        ),
     )
     # Back to one row per colorway. `suggest` returns a bath at a time
     # because that is what the paper prints; the list is edited per colorway,
@@ -636,6 +659,11 @@ def production_sheet_index(request):
     return render(request, template, {
         "form": form,
         "oven": oven,
+        # So the suggestion can say which par it was measured against.
+        "demand_par": (
+            production.demand_par()
+            if form.is_bound and form.data.get("demand_par") else None
+        ),
         "sheet_url": sheet_url,
         "oven_trays": production.OVEN_TRAYS,
         "tray_gap": tray_gap,

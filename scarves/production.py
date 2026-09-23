@@ -52,6 +52,7 @@ from .models import (
     OVERDUE_AFTER,
     CloseRun,
     CloseRunRow,
+    FaireDay,
     FinishedProduct,
     InventoryLog,
     ProductionRun,
@@ -233,6 +234,80 @@ ORDER_SOLD = "sold"
 ORDER_PAR = "par"
 
 
+#: Par from sales, in one line: twice a day's sales, rounded up, plus one.
+#: The multiple is the buffer and the one is the floor — a colorway that has
+#: sold nothing still asks for one, so it can be on the table to be bought.
+DEMAND_PAR_MULTIPLE = 2
+DEMAND_PAR_FLOOR = 1
+
+
+@dataclass
+class DemandPar:
+    """A par derived from this season's sales, offered beside the stored one.
+
+    **This is the checkbox, not a new par.** Nothing here writes
+    `FinishedProduct.par`; the stored number stays the deliberate human
+    decision it always was, and this is a second reading of the same
+    shelf that the planner and `private/production-needed/` can be asked to
+    use instead. Untick it and the old arithmetic is exactly what it was.
+
+    Why it exists: the pages rank on sales *pooled by colorway* and then
+    filter on a par that is flat across the catalogue, and the two do not
+    agree about what matters. A best seller sitting one above par 8 is not
+    short, so it never reaches the list it would top; a colorway that sold
+    three all season is short by the same rule and does. A par that moves
+    with what sold is what makes the ranking and the membership say the same
+    thing, which is the incoherence this is trying on for size.
+
+    The formula is `ceil(2 × units per faire day) + 1`, per finished product
+    rather than pooled — par is per product, and it is the product's own
+    shelf that goes empty. The denominator is faire days with sales recorded,
+    so a weekend not yet imported does not drag the rate down, and a day the
+    faire did not open (`FaireDay.traded`) does not count either.
+
+    `available` is false before the first faire day has sales, and then the
+    stored par is used and the page says so. A rate over zero days is not a
+    rate, and a sheet that silently fell back to the other number would be a
+    filter working invisibly.
+    """
+
+    days: int
+    sold: dict
+    label: str
+
+    @property
+    def available(self) -> bool:
+        return self.days > 0
+
+    def target(self, product) -> int:
+        """The par this product is planned against."""
+        if not self.available:
+            return product.par or 0
+        units = self.sold.get(product.pk, 0)
+        return ceil(DEMAND_PAR_MULTIPLE * units / self.days) + DEMAND_PAR_FLOOR
+
+
+def demand_par():
+    """`DemandPar` over the running season — the same range every other
+    "what sold" figure here reads, from the same sale lines.
+
+    Days are counted rather than taken from the calendar: a traded faire day
+    inside the range on which at least one line was recorded. That is the
+    honest denominator when the last weekend's export has not landed yet —
+    dividing by days with no data would read them as days nothing sold.
+    """
+    rng = slowsellers.season_range({})
+    faire_days = FaireDay.objects.filter(traded=True)
+    if rng.start:
+        faire_days = faire_days.filter(date__gte=rng.start)
+    if rng.end:
+        faire_days = faire_days.filter(date__lte=rng.end)
+    traded = set(faire_days.values_list("date", flat=True))
+    days = len(traded & slowsellers.days_with_sales(rng))
+    return DemandPar(days=days, sold=slowsellers.sold_units(rng),
+                     label=rng.label)
+
+
 def _pks(things):
     """`{pk, ...}` from model instances or ids, whichever the caller has."""
     return {thing if isinstance(thing, int) else thing.pk
@@ -274,8 +349,15 @@ def blocked_reasons(product, without_blanks=None, without_dyes=None):
 
 
 def candidates(category=None, include_overshoot=False, order=ORDER_SOLD,
-               oven=False, without_blanks=None, without_dyes=None):
+               oven=False, without_blanks=None, without_dyes=None,
+               demand_par=None):
     """Products worth putting on a sheet, most urgent first.
+
+    `demand_par` is a `DemandPar` when the caller ticked *par from sales*:
+    every product is then measured against `ceil(2 × a day's sales) + 1`
+    instead of its stored par, and the SQL prefilter below is skipped
+    because the target is per product and computed in Python. `None` — or a
+    `DemandPar` with no days to divide by — is the stored par, unchanged.
 
     The default is `FinishedProduct.behind_a_bath` — products where a whole
     bath still lands at or under par, which is where a session's work is
@@ -315,6 +397,11 @@ def candidates(category=None, include_overshoot=False, order=ORDER_SOLD,
     # paper is exactly what a stockout disproves.
     stockout = stockout_baths()
 
+    # A demand par with nothing to divide by is the stored par, and it is
+    # dropped here so every branch below asks one question of one object.
+    if demand_par is not None and not demand_par.available:
+        demand_par = None
+
     # `dyeable()` is the whole of "what a bath can make": no undyed
     # passthrough (ordered, not dyed — without that the sheet put "4 × " with
     # no colorway on it), no retired colorway (a retired *product* dropped out
@@ -323,14 +410,15 @@ def candidates(category=None, include_overshoot=False, order=ORDER_SOLD,
     # but a shortage of one is not answered by dyeing).
     qs = (
         FinishedProduct.objects.dyeable()
-        .filter(
-            Q(par__gt=0, number_on_hand__lt=F("par")) | Q(pk__in=stockout)
-        )
         .select_related("raw_product", "raw_product__category", "recipe")
         # The dye plan walks every recipe on the sheet; without this it is a
         # query per bath.
         .prefetch_related("recipe__recipe_dyes__dye__brand")
     )
+    if demand_par is None:
+        qs = qs.filter(
+            Q(par__gt=0, number_on_hand__lt=F("par")) | Q(pk__in=stockout)
+        )
     if oven is not None:
         # The microwave and the oven are two sessions, never one sheet.
         # `None` is the reporting case, which wants both.
@@ -338,7 +426,7 @@ def candidates(category=None, include_overshoot=False, order=ORDER_SOLD,
     if category is not None:
         qs = qs.filter(raw_product__category=category)
 
-    if not include_overshoot:
+    if not include_overshoot and demand_par is None:
         # The SQL form of behind_a_bath, matching the production page's own
         # expression — Greatest keeps a bath size of 0 from making it true
         # for everything, the same `or 1` the model property uses.
@@ -354,7 +442,8 @@ def candidates(category=None, include_overshoot=False, order=ORDER_SOLD,
     # it. Doing it here rather than in a Subquery keeps one copy of the
     # arithmetic, which the sort and `plan_baths` both read.
     wanted = []
-    for product in annotate_flight(qs, stockout=stockout):
+    for product in annotate_flight(qs, stockout=stockout,
+                                   demand_par=demand_par):
         if not product.net_shortage:
             continue
         if not include_overshoot and not product.behind_a_bath_net:
@@ -402,8 +491,13 @@ def candidates(category=None, include_overshoot=False, order=ORDER_SOLD,
     )
 
 
-def annotate_flight(products, claimed=None, stockout=None):
+def annotate_flight(products, claimed=None, stockout=None, demand_par=None):
     """Set `in_flight`, `net_shortage` and `behind_a_bath_net` on each product.
+
+    Also `target_par`: the par the shortage was measured against, which is
+    the stored one unless `demand_par` is a `DemandPar` with days to divide
+    by. The row prints that rather than `par` so what it shows is what it
+    was judged on.
 
     **One definition of "what is still short", for every page that asks.**
     `private/production-needed/` used to carry its own SQL version — a plain
@@ -437,7 +531,16 @@ def annotate_flight(products, claimed=None, stockout=None):
         # `ceil((n + b) / b) == ceil(n / b) + 1` for any n. So the rule is
         # denominated in the only unit that exists, with nothing to round.
         product.stockout_bonus = stockout.get(product.pk, 0)
-        target = (product.par or 0) + product.stockout_bonus
+        # The stored par unless the caller asked for the one from sales —
+        # and then the bonus still rides on top, because a counted zero is
+        # an observed event and the rate is an estimate; the two do not
+        # substitute for each other.
+        product.target_par = (
+            demand_par.target(product)
+            if demand_par is not None and demand_par.available
+            else (product.par or 0)
+        )
+        target = product.target_par + product.stockout_bonus
         product.net_shortage = max(
             target - product.number_on_hand - product.in_flight, 0
         )
@@ -585,7 +688,8 @@ class Suggestion:
 
 
 def suggest(limit, category=None, include_overshoot=False, order=ORDER_SOLD,
-            oven=False, without_blanks=None, without_dyes=None):
+            oven=False, without_blanks=None, without_dyes=None,
+            demand_par=None):
     """`plan_baths`, plus what the day's shortages took off the list.
 
     Only shortages that would have *reached* the sheet are reported as
@@ -595,7 +699,7 @@ def suggest(limit, category=None, include_overshoot=False, order=ORDER_SOLD,
     """
     by_recipe = {}
     for product in candidates(category, include_overshoot, order, oven,
-                              without_blanks, without_dyes):
+                              without_blanks, without_dyes, demand_par):
         # `net_shortage`, not `shortage`: what is already out being dyed has
         # been taken off, so a sheet asks for the baths still missing rather
         # than reprinting the ones on last week's paper.
@@ -621,7 +725,8 @@ def suggest(limit, category=None, include_overshoot=False, order=ORDER_SOLD,
 
 
 def plan_baths(limit, category=None, include_overshoot=False, order=ORDER_SOLD,
-               oven=False, without_blanks=None, without_dyes=None):
+               oven=False, without_blanks=None, without_dyes=None,
+               demand_par=None):
     """The next `limit` baths, grouped so consecutive rows share a dye pot.
 
     Baths of the same recipe sit together because that is how the work is
@@ -633,7 +738,7 @@ def plan_baths(limit, category=None, include_overshoot=False, order=ORDER_SOLD,
     was asked for a number of baths and it delivers exactly that number.
     """
     return suggest(limit, category, include_overshoot, order, oven,
-                   without_blanks, without_dyes).baths
+                   without_blanks, without_dyes, demand_par).baths
 
 
 def baths_from_picks(picks):

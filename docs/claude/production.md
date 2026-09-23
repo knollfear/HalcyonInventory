@@ -222,6 +222,75 @@ A colorway that sold nothing is ranked last, never hidden. It may simply be
 new — 2026 is year one for colorway data — and this page is not where that
 gets decided.
 
+### "Set par from sales": a second par, tried on rather than written
+
+**The tick on both pages, `demand_par=1`, judges every product against
+`ceil(2 × units per faire day) + 1` instead of its stored par.** It is
+`production.DemandPar`, and `candidates()` takes one as `demand_par`.
+Nothing is stored — `FinishedProduct.par` is untouched, the recipe page's
+par editor is still the only door to that number — and unticking it is the
+old page to the byte. It exists to see what the other arithmetic would say,
+side by side with the arithmetic already in use, so it is a checkbox and not
+a migration.
+
+**What it is answering.** The pages above rank on sales pooled by colorway
+and then filter on a par that is the same number for nearly everything, and
+the two do not agree about what matters. A best seller sitting one above
+par 8 is not short, so it never reaches the list it would top; a colorway
+that sold three all season is short by the same rule and does. Ranking on
+sales was the fix for par being untrusted, but it only reorders what the
+par filter let through, and the filter is where the best seller was lost.
+A par that moves with what sold is what makes membership and ordering say
+the same thing.
+
+What is deliberately kept, and why:
+
+- **Per product, not pooled.** Par is per product and it is the product's
+  own shelf that goes empty. The *ordering* stays pooled by recipe — a bath
+  is planned in colorway units — so the two figures on a row still mean
+  what they meant.
+- **The floor is one.** `ceil(0) + 1`: a colorway that sold nothing asks
+  for one, so it can be on the table to be bought. A bath overshoots that
+  by construction, so on the default sheet it drops out exactly as a
+  stored-par shortage of one does, and `include_overshoot` brings it back
+  the same way.
+- **The denominator is faire days with sales recorded**
+  (`slowsellers.days_with_sales` ∩ traded `FaireDay`s in the season range),
+  not calendar days and not the calendar's faire days. A weekend whose
+  export has not landed would otherwise read as two days nothing sold and
+  halve every rate. Zero days is *not available*: the stored par is used
+  and both pages say so in words, because a sheet that silently fell back
+  to the other number is a filter working invisibly.
+- **The stockout bonus still rides on top.** A counted zero on a Sunday
+  night is an observed event and the rate is an estimate; one does not
+  substitute for the other, and the row still prints the bonus as its own
+  line.
+- **The SQL prefilter is skipped.** The target is per product and computed
+  in Python, so `candidates()` walks every dyeable product in that mode —
+  a few hundred rows, once. The `behind_a_bath` prefilter goes with it, and
+  `annotate_flight` answers both from the target.
+
+**`target_par` is what the row prints, in both modes.** `annotate_flight`
+sets it to whichever par the shortage was judged on, so what the row shows
+is what it was measured against — and the row that used to print
+`par_level` and render blank now prints this. On the sheet a hand-picked
+row never went through the planner and shows the stored par; `firstof`
+falls through to it, which is safe only because a demand par is never zero.
+
+**The known trap is the same one `oven` has: the flag has to travel.** The
+sort pills carry it, the category select is in the same form, and
+`partials/production_needed_row.html` posts it as a hidden input with
+*Bagged a bath* so the swapped-in row is judged the way the rows around it
+were — drop that and a bagged bath comes back measured against the stored
+par in the middle of a list measured against sales. On the sheet only the
+suggest form needs it: once `items` exists the list is the list.
+
+This sits beside, not against, the argument under *A Sunday-night zero adds
+a bath*. That measured a *weekend* of projected demand against par and found
+it crossed a bath boundary four times in 333; this asks a different question
+— two days of cover plus one, per product — and whether that question is a
+better one is what having both on a checkbox is for.
+
 ### Recording a bath that a sheet already claimed
 
 Two pages book a bath after the fact rather than off a sheet: the recipe
@@ -1048,7 +1117,10 @@ all four have no par set at all. Heavenly Cabernet at 6.4 units of cover and
 at 10 units availability-corrected both round to two baths, which is what par
 already said. So the obvious feature — derive a per-product target from the
 sales rate — is not weak here, it is *unrepresentable*, and the arithmetic
-that proves it is the reason this is a bath rule instead.
+that proves it is the reason this is a bath rule instead. (The *Set par
+from sales* tick, above, is that feature offered as a comparison rather
+than a rule: it writes nothing, and it is measured at twice a day plus one
+rather than a weekend against par, which is a different quantity.)
 
 Adding exactly `bath_size` adds exactly one bath, always, since
 `ceil((n + b) / b) == ceil(n / b) + 1`. Nothing rounds.

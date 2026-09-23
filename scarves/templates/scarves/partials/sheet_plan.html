@@ -64,6 +64,25 @@ sends somebody to the shelf for the wrong things.
       {% endfor %}
       {% if rows %}
       <hr>
+      {% if demand_par %}
+        {% comment %}
+        The basis of the par column, printed where it is used. A par that
+        came out of arithmetic looks at least as much like a fact as one
+        somebody typed, so what it was divided by has to be on the page or
+        there is nothing to disagree with.
+        {% endcomment %}
+        <p class="muted">
+          {% if demand_par.available %}
+            Suggested against par from sales: twice a day's sales, rounded
+            up, plus one — over
+            {{ demand_par.days }} faire day{{ demand_par.days|pluralize }} with sales recorded.
+            The stored par is not changed.
+          {% else %}
+            You asked for par from sales, but no faire day has sales recorded
+            yet, so this was suggested against the stored par.
+          {% endif %}
+        </p>
+      {% endif %}
       <table class="rows">
         <thead>
           <tr>
@@ -121,7 +140,15 @@ sends somebody to the shelf for the wrong things.
               <td class="num">{{ row.makes }}</td>
               <td class="num">{{ row.product.number_on_hand }}</td>
               <td class="num">{{ row.sold_here }}</td>
-              <td class="num">{{ row.product.par }}</td>
+              {% comment %}
+              The par this row was suggested against, when it was suggested:
+              `target_par` is set by the planner and is the stored par unless
+              "Set par from sales" was ticked. A hand-picked row never went
+              through the planner and shows the stored one. The demand par is
+              never 0 (it floors at one), so `firstof` falling through to
+              `par` only ever happens when the two are the same number.
+              {% endcomment %}
+              <td class="num">{% firstof row.product.target_par row.product.par %}</td>
               <td class="num">
                 {% comment %}
                 A server-rendered link to the list without this row, so

@@ -58,6 +58,7 @@
      why as clearly as one that shrank. */
   .soldout { font-size: 11px; color: #9a3412; font-weight: 600; }
   .netnote { font-size: 12px; color: #667; margin: 0 0 14px; }
+  .filter-bar .tick { display: inline-flex; align-items: center; gap: 6px; margin-left: 14px; }
 {% endblock %}
 
 {% block head %}
@@ -76,6 +77,20 @@
       {% endfor %}
     </select>
     <input type="hidden" name="sort" value="{{ sort }}">
+    {% comment %}
+    A second par, tried on rather than written. The list ranks on what a
+    colorway sold and filters on a par that is the same number for nearly
+    everything, so a best seller one above par 8 never reaches the list it
+    would top. Ticked, every product is judged against twice a day's sales
+    plus one instead; the stored par is untouched and unticking is the old
+    page. Same name as the sheet form's tick, so a link means the same thing
+    on both.
+    {% endcomment %}
+    <label class="tick">
+      <input type="checkbox" name="demand_par" value="1"
+             {% if demand_par %}checked{% endif %} onchange="this.form.submit()">
+      Set par from sales
+    </label>
   </form>
 
   {% comment %}
@@ -90,15 +105,35 @@
   {% endcomment %}
   <div class="pills">
     <a class="pill {% if sort == 'sold' %}on{% endif %}"
-       href="?{% if selected_category_id %}category={{ selected_category_id }}&{% endif %}sort=sold">
+       href="?{% if selected_category_id %}category={{ selected_category_id }}&{% endif %}{% if demand_par %}demand_par=1&{% endif %}sort=sold">
       Best sellers first
     </a>
     <a class="pill {% if sort == 'shortage' %}on{% endif %}"
-       href="?{% if selected_category_id %}category={{ selected_category_id }}&{% endif %}sort=shortage">
+       href="?{% if selected_category_id %}category={{ selected_category_id }}&{% endif %}{% if demand_par %}demand_par=1&{% endif %}sort=shortage">
       Furthest below par first
     </a>
     <span class="pill-note">sales over {{ range.label|lower }}</span>
   </div>
+
+  {% if demand_par %}
+    {% comment %}
+    The formula, and what it was divided by, printed where the number is
+    used. A par that came out of arithmetic looks exactly as much like a
+    fact as one somebody typed — more, if anything — so the basis has to be
+    on the page or there is nothing to disagree with.
+    {% endcomment %}
+    <p class="netnote">
+      {% if demand_par.available %}
+        Par below is <strong>twice a day's sales, rounded up, plus one</strong>
+        — each product's own sales over
+        {{ demand_par.days }} faire day{{ demand_par.days|pluralize }} with sales recorded
+        ({{ demand_par.label|lower }}). The stored par is not changed.
+      {% else %}
+        No faire day has sales recorded yet, so there is nothing to divide by:
+        the stored par is what's shown below.
+      {% endif %}
+    </p>
+  {% endif %}
 
   {% if in_flight_total %}
     {% comment %}
@@ -187,14 +222,14 @@
               <th>Category</th>
               <th>Base (Raw)</th>
               <th class="num">On Hand</th>
-              <th class="num">Par</th>
+              <th class="num">Par{% if demand_par and demand_par.available %} (from sales){% endif %}</th>
               <th class="num">Shortage</th>
               <th>Actions</th>
             </tr>
           </thead>
           <tbody>
             {% for fp in g.items %}
-              {% include "scarves/partials/production_needed_row.html" with fp=fp %}
+              {% include "scarves/partials/production_needed_row.html" with fp=fp demand_par=demand_par %}
             {% endfor %}
           </tbody>
         </table>

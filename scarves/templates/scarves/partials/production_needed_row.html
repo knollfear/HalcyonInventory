@@ -36,11 +36,13 @@ than erroring.
     <div class="soldhere">{{ fp.sold_here }} sold here</div>
   </td>
   {% comment %}
-  `par`, not `par_level` — par_level is RawProduct's field name. This column
-  rendered empty for as long as it existed: Django resolves a missing
-  attribute to the empty string rather than complaining.
+  `target_par`, which `annotate_flight` sets: the stored par, or the one from
+  sales when the page was asked for that. What the row shows is what its
+  shortage was judged on. (It used to print `par_level`, RawProduct's field
+  name, and rendered empty for as long as it existed — Django resolves a
+  missing attribute to the empty string rather than complaining.)
   {% endcomment %}
-  <td class="num">{{ fp.par }}</td>
+  <td class="num">{{ fp.target_par }}</td>
   <td class="num shortage">
     {{ fp.net_shortage }}
     {% if fp.stockout_bonus %}
@@ -72,6 +74,12 @@ than erroring.
     >
       {% csrf_token %}
       <input type="hidden" name="next" value="{{ request.get_full_path }}">
+      {% comment %}
+      The page's par mode, so the swapped-in row is judged the way the rows
+      around it were. Dropped, a bagged bath would come back measured against
+      the stored par in the middle of a list measured against sales.
+      {% endcomment %}
+      {% if demand_par %}<input type="hidden" name="demand_par" value="1">{% endif %}
       {% comment %}
       "Bagged", not "Dye bath": this button puts the units straight into
       stock, so it means the bath has been accepted into inventory — dyed,

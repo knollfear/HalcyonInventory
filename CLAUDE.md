@@ -478,12 +478,20 @@ an estimate was the one most in need of a human.**
 par* in `docs/claude/recipes.md`. It is the smallest possible fix and it is
 the one that was missing: a box per blank, absolute like every other
 correction here, and nothing anywhere proposing what to type in it. Note what
-it deliberately is *not*. It does not compute a par from a sales rate, from
-`display_slots`, or from anything else — a derived par would put capacity
-back on the path to production, which is the coupling half this file exists
-to keep broken. What sold this season prints beside the box because a
-decision you cannot check is not a decision; what to do about it is the
-person's.
+it deliberately is *not*. It does not compute a par from `display_slots`
+or from anything else about the furniture — a par derived from capacity
+would put capacity back on the path to production, which is the coupling
+half this file exists to keep broken. What sold this season prints beside
+the box because a decision you cannot check is not a decision; what to do
+about it is the person's.
+
+**A par from *sales* is a different thing, and it exists as a tick rather
+than a number.** *Set par from sales* on `private/production-needed/` and
+the sheet picker judges every product against twice a day's sales plus one
+instead of the stored par, writes nothing, and says on the page what it
+divided by. Unticked is the old arithmetic exactly. See *"Set par from
+sales"* in `docs/claude/production.md` for why the sold ranking and the
+flat par filter were disagreeing about the best seller.
 
 Two things follow, and both are cheap:
 
