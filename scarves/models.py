@@ -432,13 +432,22 @@ class RawProduct(models.Model):
             "'made in a dye bath'."
         ),
     )
-    order_url = models.URLField(
+    order_url = models.TextField(
         blank=True,
         help_text=(
             "The product page for this exact blank, when there is one. Not "
             "the supplier — that is `supplier`, and it is a separate "
             "question: this is 'where do I buy this thing', that is 'who "
-            "from'."
+            "from'.\n\n"
+            "**One per line, because one blank is often bought from several "
+            "listings.** The yarn cutters are four Amazon pages that all "
+            "ring as one product — the crew cannot tell them apart at the "
+            "till and nobody needs them to — so splitting the product to "
+            "hold four links would invent four counts nobody records. The "
+            "first line is the headline link (`reorder_link`); the rest are "
+            "`extra_order_urls`. Kept as lines in one column rather than a "
+            "table of links: the listing itself carries the price and the "
+            "picture, and the invoice records what was actually paid."
         ),
     )
     supplier = models.ForeignKey(
@@ -579,11 +588,33 @@ class RawProduct(models.Model):
         The preference lives here rather than in each template that prints
         it, so the two pages showing this column cannot drift apart.
         """
-        if self.order_url:
-            return ("product", self.order_url, "Supplier page")
+        urls = self.order_urls
+        if urls:
+            return ("product", urls[0], "Supplier page")
         if self.supplier_id:
             return ("supplier", self.supplier.get_absolute_url(), self.supplier.name)
         return None
+
+    @staticmethod
+    def split_order_urls(text) -> list:
+        """One URL per line, blank lines and surrounding space dropped.
+
+        The one reading of the column, so the form, the supply-mode save and
+        the two properties below cannot disagree about what a line is.
+        """
+        return [line.strip() for line in (text or "").splitlines() if line.strip()]
+
+    @property
+    def order_urls(self) -> list:
+        """Every place this blank is bought from, first line first."""
+        return self.split_order_urls(self.order_url)
+
+    @property
+    def extra_order_urls(self) -> list:
+        """The listings after the headline one, for the pages that print
+        the reorder column: a product bought from four Amazon pages shows
+        one link and three small numbered ones beside it."""
+        return self.order_urls[1:]
 
     @property
     def bath_size(self) -> int:

@@ -325,6 +325,25 @@ field pretending to be a URL: `private/suppliers/<id>/` carries the contact,
 and `private/suppliers/` is its picker, per the rule that a parameterised
 page always gets one.
 
+**One blank, several listings — `order_url` is one per line.** The yarn
+cutters are the case: three or four Amazon listings, $1 to $3 each, sold
+for $7 and indistinguishable at the till. The crew ring every one as *yarn
+cutter* whatever the till offers, so a product per listing would produce
+four counts nobody records and one real total — the number that looks
+precise and was never rung is exactly what this app is built to avoid. One
+product, then, and the column widens to hold a line per listing.
+`RawProduct.order_urls` is the list, `reorder_link` is the first line as it
+always was, and `extra_order_urls` are the rest, printed as small numbered
+links beside *Supplier page* on the two pages that carry the column. The
+blank editor takes the lines in a textarea and refuses any that is not a
+link, naming it. The `?supply=1` box **adds** a link rather than replacing
+the list, because that box is for filling a gap in a hurry and typing a
+fifth must not throw away four — the editor is where a wrong one comes
+out. Not a table of links with a label and a price: the listing itself
+carries both, and the invoice records what was actually paid. If a listing
+ever earns its own row — customers asking for one cutter by look — it gets
+one, the way a colorway does.
+
 **Retire, don't delete.** `supplier` is `PROTECT`, like everything else that
 records what happened. A supplier with blanks pointing at it is one you have
 bought from.

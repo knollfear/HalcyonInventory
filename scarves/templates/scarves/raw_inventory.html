@@ -16,6 +16,7 @@
      shows eight characters of one is a box you cannot check. */
   .supply-input { width: 22em; max-width: 100%; padding: 4px 6px; font: inherit; }
   .order-link { font-size: 13px; }
+  .order-link .more-link { margin-left: 4px; padding: 0 5px; border: 1px solid #ccd; border-radius: 3px; text-decoration: none; }
   /* Left, unlike the figure columns, because this column holds a *control*
      and a row with no "below" badge is narrower than one with it — right
      alignment slid those inputs sideways, so a column of forty boxes came out
@@ -210,14 +211,24 @@
                        class="count-input">
               </td>
               <td class="entry">
+                {% comment %}
+                One box that *adds* a link. A blank bought from several
+                listings keeps every one, and the blank editor is where a
+                wrong one comes out — this page is for filling gaps in a
+                hurry, not for curating.
+                {% endcomment %}
+                {% with urls=r.blank.order_urls %}
                 <input type="url" name="url_{{ r.blank.pk }}"
-                       placeholder="{% if r.blank.order_url %}{{ r.blank.order_url }}{% else %}https://…{% endif %}"
+                       placeholder="{% if urls %}add another: https://…{% else %}https://…{% endif %}"
                        value="{{ entry.url|default_if_none:'' }}"
                        aria-label="Supplier link for {{ r.blank.name }}"
                        class="supply-input">
-                {% if r.blank.order_url %}
-                  <div class="sub"><a href="{{ r.blank.order_url }}" target="_blank">open current</a></div>
+                {% if urls %}
+                  <div class="sub">
+                    {% for u in urls %}<a href="{{ u }}" target="_blank">{% if forloop.first %}open current{% else %}{{ forloop.counter }}{% endif %}</a>{% if not forloop.last %} · {% endif %}{% endfor %}
+                  </div>
                 {% endif %}
+                {% endwith %}
               </td>
               <td class="entry">
                 {% comment %}
@@ -486,6 +497,9 @@
                 {% with link=p.reorder_link %}
                   {% if link.0 == 'product' %}
                     <a href="{{ link.1 }}" target="_blank">{{ link.2 }}</a>
+                    {% for u in p.extra_order_urls %}
+                      <a href="{{ u }}" target="_blank" class="more-link" title="another listing">{{ forloop.counter|add:1 }}</a>
+                    {% endfor %}
                   {% elif link.0 == 'supplier' %}
                     <a href="{{ link.1 }}">{{ link.2 }}</a>
                   {% endif %}

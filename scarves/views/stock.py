@@ -364,8 +364,14 @@ def raw_supply_save(request, category_id):
                     f"https:// on the front."
                 )
                 continue
-            if url_raw != product.order_url:
-                fields["order_url"] = url_raw
+            # **Added, not swapped.** This box is for filling a gap in a
+            # hurry, and a blank bought from several listings has several
+            # lines here. Typing a fifth must not throw away the four; the
+            # blank editor is where a wrong one gets taken out. A link it
+            # already has is a no-op rather than a duplicate.
+            current = product.order_urls
+            if url_raw not in current:
+                fields["order_url"] = "\n".join(current + [url_raw])
 
         if fields:
             changes.append((product, fields))

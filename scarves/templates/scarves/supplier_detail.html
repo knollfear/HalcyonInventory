@@ -77,8 +77,8 @@
             <td class="num">{{ b.number_on_hand }}</td>
             <td class="num">{{ b.par_level }}</td>
             <td>
-              {% if b.order_url %}
-                <a href="{{ b.order_url }}" target="_blank">order this</a>
+              {% if b.order_urls %}
+                {% for u in b.order_urls %}<a href="{{ u }}" target="_blank">{% if forloop.first %}order this{% else %}{{ forloop.counter }}{% endif %}</a>{% if not forloop.last %} · {% endif %}{% endfor %}
               {% else %}
                 <span class="muted">—</span>
               {% endif %}

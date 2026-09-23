@@ -3,6 +3,8 @@ from datetime import timedelta
 from decimal import Decimal
 
 from django import forms
+from django.core.exceptions import ValidationError
+from django.core.validators import URLValidator
 from django.db import transaction
 from django.utils import timezone
 
@@ -1889,7 +1891,7 @@ class RawProductForm(forms.ModelForm):
             "is_active": "Still bought and used",
             "price": "What one costs you",
             "suggested_price": "What a finished one sells for",
-            "order_url": "The page you reorder it from",
+            "order_url": "The pages you reorder it from",
             "sku": "Supplier's item number",
             "made_in_a_dye_bath": "A dye bath can produce this",
             "number_per_dye_bath": "How many go in one bath",
@@ -1912,7 +1914,11 @@ class RawProductForm(forms.ModelForm):
                 "different answers, and the stock valuation says which."
             ),
             "supplier": "Who you buy it from, which is not the same as where.",
-            "order_url": "The product page for this exact blank, not the shop's front page.",
+            "order_url": (
+                "The product page for this exact blank, not the shop's front "
+                "page. One per line if you buy it from more than one listing — "
+                "the first is the one the reorder column links to."
+            ),
             "number_per_dye_bath": "Five skeins, four scarves — whatever fits the pot.",
             "fancy_counterpart": (
                 "Set this on the plain blank, pointing at the fancy one. It "
@@ -1942,6 +1948,30 @@ class RawProductForm(forms.ModelForm):
                 "item is the group and this blank is one of its variations."
             ),
         }
+
+        widgets = {
+            "order_url": forms.Textarea(attrs={"rows": 3, "placeholder": "https://…"}),
+        }
+
+    def clean_order_url(self):
+        """Every line has to be a link, and the offending one is named.
+
+        A textarea will take anything, and a line that is not a URL renders
+        as a dead link on the reorder column — which looks like a working
+        page until somebody clicks it on the day they need to order. Blank
+        lines and stray spaces are dropped rather than refused, because
+        pasting four links out of a browser produces both.
+        """
+        lines = RawProduct.split_order_urls(self.cleaned_data.get("order_url"))
+        validator = URLValidator()
+        for line in lines:
+            try:
+                validator(line)
+            except ValidationError:
+                raise ValidationError(
+                    f"“{line}” isn't a link. It needs the https:// on the front."
+                )
+        return "\n".join(lines)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

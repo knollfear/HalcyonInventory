@@ -2218,6 +2218,39 @@ class SupplyModeTests(TestCase):
         self.bowl.refresh_from_db()
         self.assertEqual(self.bowl.price, Decimal("0"))
 
+    def test_a_link_typed_here_is_added_to_the_ones_it_has(self):
+        """The yarn cutters are four listings on one product. This box is
+        for filling a gap in a hurry, so typing a fifth must not throw the
+        four away; the blank editor is where a wrong one comes out."""
+        self.bowl.order_url = "https://a.test/1\nhttps://a.test/2"
+        self.bowl.save(update_fields=["order_url"])
+
+        self.client.post(self.save, {f"url_{self.bowl.pk}": "https://a.test/3"})
+
+        self.bowl.refresh_from_db()
+        self.assertEqual(
+            self.bowl.order_urls,
+            ["https://a.test/1", "https://a.test/2", "https://a.test/3"],
+        )
+
+    def test_a_link_it_already_has_is_not_added_twice(self):
+        self.bowl.order_url = "https://a.test/1"
+        self.bowl.save(update_fields=["order_url"])
+
+        self.client.post(self.save, {f"url_{self.bowl.pk}": "https://a.test/1"})
+
+        self.bowl.refresh_from_db()
+        self.assertEqual(self.bowl.order_urls, ["https://a.test/1"])
+
+    def test_every_listing_is_offered_beside_the_box(self):
+        self.bowl.order_url = "https://a.test/1\nhttps://a.test/2"
+        self.bowl.save(update_fields=["order_url"])
+
+        body = self.client.get(self.url).content.decode()
+
+        self.assertIn('href="https://a.test/1"', body)
+        self.assertIn('href="https://a.test/2"', body)
+
 
 class SupplierTests(TestCase):
     """Who a blank is bought from, as one row rather than twenty-five copies.
@@ -2271,6 +2304,53 @@ class SupplierTests(TestCase):
         """None, so "nobody said" is distinguishable from "somebody said
         nothing" — only one of those is a gap to go and fill."""
         self.assertIsNone(self._blank("Mystery").reorder_link)
+
+    def test_one_blank_bought_from_four_listings_keeps_one_row(self):
+        """Yarn cutters: four Amazon pages that all ring as one product, so
+        a product per listing would be four counts nobody records. The
+        first line stays the headline link, the rest are printed beside
+        it, and blank lines from a paste are dropped rather than refused."""
+        blank = self._blank(
+            "Yarn cutter", supplier=self.shop,
+            order_url="https://a.test/1\n\n  https://a.test/2 \nhttps://a.test/3\n",
+        )
+
+        self.assertEqual(
+            blank.order_urls,
+            ["https://a.test/1", "https://a.test/2", "https://a.test/3"],
+        )
+        self.assertEqual(blank.reorder_link[1], "https://a.test/1")
+        self.assertEqual(blank.extra_order_urls, ["https://a.test/2", "https://a.test/3"])
+
+        body = self.client.get(
+            reverse("raw_inventory", args=[self.category.pk])
+        ).content.decode()
+        self.assertIn('href="https://a.test/1"', body)
+        self.assertIn('href="https://a.test/3"', body)
+
+        body = self.client.get(
+            reverse("supplier_detail", args=[self.shop.pk])
+        ).content.decode()
+        self.assertIn('href="https://a.test/1"', body)
+        self.assertIn('href="https://a.test/3"', body)
+
+    def test_the_editor_refuses_a_line_that_is_not_a_link_and_names_it(self):
+        """A dead link on the reorder column looks like a working page
+        until the day somebody needs to order."""
+        blank = self._blank("Yarn cutter", supplier=self.shop)
+
+        response = self.client.post(reverse("blank_edit", args=[blank.pk]), {
+            "name": "Yarn cutter", "category": self.category.pk,
+            "is_active": "on", "price": "1", "par_level": "0",
+            "finished_par_default": "0", "display_slots_default": "0",
+            "order_url": "https://a.test/1\namazon.com/dp/xyz",
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("amazon.com/dp/xyz", response.content.decode())
+        self.assertIn("isn&#x27;t a link", response.content.decode())
+        blank.refresh_from_db()
+        self.assertEqual(blank.order_urls, [])
 
     def test_the_bill_page_prints_a_persons_name_where_a_link_would_go(self):
         self._blank("Yarn bowl", supplier=self.person)
