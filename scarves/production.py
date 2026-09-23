@@ -269,6 +269,15 @@ class DemandPar:
     stored par is used and the page says so. A rate over zero days is not a
     rate, and a sheet that silently fell back to the other number would be a
     filter working invisibly.
+
+    **Two things the stored-par arithmetic does are switched off here.** The
+    ordering is shortage from this par and nothing else — the sales are
+    already in the number, so ranking on them a second time would count
+    them twice, and "empty shelf first" is what the floor of one is for.
+    And the Sunday-night stockout bonus is not added: a sell-out is a sales
+    event and this par is built from sales. (The bonus itself is on the
+    chopping block — the user's words, 2026-09-22: it made sense in our
+    heads. It stays in the stored-par path until somebody removes it.)
     """
 
     days: int
@@ -477,6 +486,15 @@ def candidates(category=None, include_overshoot=False, order=ORDER_SOLD,
         # is where the skipping happens, and it says how many it skipped.
         product.blocked_by = blocked_reasons(product, out_blanks, out_dyes)
 
+    if demand_par is not None:
+        # The sales are already in the par, so the order is how far below it
+        # a product is and nothing else. `order` is ignored on purpose: sales
+        # first would count them twice, and `_urgency`'s empty-shelf-first
+        # would put a colorway that sold nothing (par 1, none on hand) ahead
+        # of the best seller twelve short. The floor of one is what keeps
+        # the empty shelf on the list at all.
+        return sorted(wanted, key=lambda p: (-p.net_shortage, p.name))
+
     if order == ORDER_PAR:
         return sorted(wanted, key=_urgency)
 
@@ -530,15 +548,13 @@ def annotate_flight(products, claimed=None, stockout=None, demand_par=None):
         # Adding exactly `bath_size` adds exactly one bath, always:
         # `ceil((n + b) / b) == ceil(n / b) + 1` for any n. So the rule is
         # denominated in the only unit that exists, with nothing to round.
-        product.stockout_bonus = stockout.get(product.pk, 0)
-        # The stored par unless the caller asked for the one from sales —
-        # and then the bonus still rides on top, because a counted zero is
-        # an observed event and the rate is an estimate; the two do not
-        # substitute for each other.
+        from_sales = demand_par is not None and demand_par.available
+        # The stored par unless the caller asked for the one from sales. The
+        # stockout bonus rides on the stored par only: a sell-out is a sales
+        # event, and a par built from sales has already counted it.
+        product.stockout_bonus = 0 if from_sales else stockout.get(product.pk, 0)
         product.target_par = (
-            demand_par.target(product)
-            if demand_par is not None and demand_par.available
-            else (product.par or 0)
+            demand_par.target(product) if from_sales else (product.par or 0)
         )
         target = product.target_par + product.stockout_bonus
         product.net_shortage = max(

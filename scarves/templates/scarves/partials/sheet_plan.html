@@ -76,7 +76,8 @@ sends somebody to the shelf for the wrong things.
             Suggested against par from sales: twice a day's sales, rounded
             up, plus one — over
             {{ demand_par.days }} faire day{{ demand_par.days|pluralize }} with sales recorded.
-            The stored par is not changed.
+            Ordered furthest below that par first, without the close's
+            sold-out bath. The stored par is not changed.
           {% else %}
             You asked for par from sales, but no faire day has sales recorded
             yet, so this was suggested against the stored par.

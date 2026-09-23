@@ -3964,6 +3964,39 @@ class ParFromSalesTests(TestCase):
         self.assertEqual(set(rows), set(self._rows()))
         self.assertEqual(rows[self.dud.name].target_par, 8)
 
+    def test_the_order_is_shortage_from_that_par_and_nothing_else(self):
+        """The sales are in the par, so sold-first would count them twice —
+        and empty-shelf-first would put a colorway that sold nothing (par 1,
+        none on hand) above the best seller twelve short."""
+        rows = list(self._rows(demand_par=1))
+        self.assertEqual(rows[0], self.star.name)
+
+        # The sheet makes the same call whatever `order` says.
+        baths = production.plan_baths(
+            10, include_overshoot=True, order=production.ORDER_SOLD,
+            demand_par=production.demand_par(),
+        )
+        self.assertEqual(baths[0].product.pk, self.star.pk)
+
+        # And the pills are not offered: there is one order.
+        response = self.client.get(self.url, {"demand_par": 1, "sort": "sold"})
+        self.assertEqual(response.context["sort"], "shortage")
+        self.assertNotContains(response, "Best sellers first")
+
+    def test_the_stockout_bonus_is_not_added_on_this_view(self):
+        """A sell-out is a sales event, and this par is built from sales."""
+        run = CloseRun.objects.create(day=timezone.localdate())
+        CloseRunRow.objects.create(
+            run=run, finished_product=self.dud,
+            on_hand_before=0, display_slots=self.dud.display_slots, counted=0,
+        )
+
+        self.assertEqual(self._rows()[self.dud.name].stockout_bonus, 4)
+
+        rows = self._rows(demand_par=1)
+        self.assertEqual(rows[self.dud.name].stockout_bonus, 0)
+        self.assertEqual(rows[self.dud.name].net_shortage, 1)
+
     def test_a_bagged_bath_comes_back_judged_the_same_way(self):
         response = self.client.post(
             reverse("record_dye_bath", args=[self.star.pk]),

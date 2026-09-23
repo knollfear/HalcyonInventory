@@ -784,7 +784,9 @@ class ProductionSheetForm(forms.Form):
         help_text=(
             "Instead of the stored par, judge each product against twice "
             "what it sells in a faire day, rounded up, plus one. Sales are "
-            "this season's; the stored par is not changed."
+            "this season's; the stored par is not changed. Ordered furthest "
+            "below that par first, whatever is chosen above, and without "
+            "the close's sold-out bath — the sales are already in the number."
         ),
     )
     include_overshoot = forms.BooleanField(

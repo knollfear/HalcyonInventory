@@ -103,6 +103,18 @@
   Neither pill filters. Every group is listed either way, so the choice
   changes what gets read first and never what exists.
   {% endcomment %}
+  {% if demand_par and demand_par.available %}
+    {% comment %}
+    No pills: with par from sales the sales are already in the number, so
+    the only order that doesn't count them twice is shortage from that par.
+    Said rather than shown as a pill with one option.
+    {% endcomment %}
+    <p class="netnote">
+      Ordered furthest below par first — the sales are in the par, so that
+      is the whole of the priority. The close's sold-out bath is not added
+      on this view.
+    </p>
+  {% else %}
   <div class="pills">
     <a class="pill {% if sort == 'sold' %}on{% endif %}"
        href="?{% if selected_category_id %}category={{ selected_category_id }}&{% endif %}{% if demand_par %}demand_par=1&{% endif %}sort=sold">
@@ -114,6 +126,7 @@
     </a>
     <span class="pill-note">sales over {{ range.label|lower }}</span>
   </div>
+  {% endif %}
 
   {% if demand_par %}
     {% comment %}

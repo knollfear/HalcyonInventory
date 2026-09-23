@@ -148,7 +148,18 @@ def production_needed_view(request):
     # group is listed either way, so the sort changes what is read first and
     # never what exists.
     sort = "shortage" if request.GET.get("sort") == "shortage" else "sold"
-    if sort == "sold":
+    if demand is not None and demand.available:
+        # With par from sales the sales are already in the number, so the
+        # order is shortage from that par and the pills are not offered —
+        # `candidates()` makes the same call for the sheet, and the two
+        # pages have to agree about what "the first twenty" are. Within a
+        # group the rows arrive in that order already; re-sorting them here
+        # would put an empty shelf that sold nothing above the best seller.
+        sort = "shortage"
+        for g in groups:
+            g["items"].sort(key=lambda p: (-p.net_shortage, p.name))
+        groups.sort(key=lambda g: (-g["total_shortage"], g["recipe_name"]))
+    elif sort == "sold":
         groups.sort(key=lambda g: (-g["units_sold"], -g["total_shortage"],
                                    g["recipe_name"]))
     else:

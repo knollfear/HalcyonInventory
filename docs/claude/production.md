@@ -261,10 +261,19 @@ What is deliberately kept, and why:
   halve every rate. Zero days is *not available*: the stored par is used
   and both pages say so in words, because a sheet that silently fell back
   to the other number is a filter working invisibly.
-- **The stockout bonus still rides on top.** A counted zero on a Sunday
-  night is an observed event and the rate is an estimate; one does not
-  substitute for the other, and the row still prints the bonus as its own
-  line.
+- **The order is shortage from that par, and `order` is ignored.** The
+  sales are already in the number, so ranking on them again counts them
+  twice — and `_urgency`'s empty-shelf-first would put a colorway that
+  sold nothing (par 1, none on hand) above the best seller twelve short.
+  The floor of one is what keeps the empty shelf on the list at all; it is
+  not what puts it first. `private/production-needed/` drops its sort pills
+  in this mode and says why, so the two pages still agree about what "the
+  first twenty" are.
+- **The stockout bonus is not added.** A sell-out is a sales event and this
+  par is built from sales. The first cut stacked it on the argument that a
+  counted zero is an observation where the rate is an estimate; the user
+  took it off the same day — see the note under *A Sunday-night zero adds
+  a bath*.
 - **The SQL prefilter is skipped.** The target is per product and computed
   in Python, so `candidates()` walks every dyeable product in that mode —
   a few hundred rows, once. The `behind_a_bath` prefilter goes with it, and
@@ -1101,6 +1110,12 @@ suggestion cheerfully offers the colorways she just said she had no yarn
 for. `_without()` is the one to check first.
 
 ### A Sunday-night zero adds a bath — the one demand signal in the planner
+
+**On the chopping block.** User, 2026-09-22: *"I think that was a failed
+experiment if I am honest. It made sense in our heads. Let's leave it, but
+it is on the chopping block."* It still runs on the stored-par path and is
+switched off under *Set par from sales*. Nothing below has been re-argued;
+read it as the reasoning that was, and don't extend it.
 
 `production.stockout_baths()` reads the **latest** close and adds one bath to
 every product answered at `counted == 0`. That is the whole of the planner's
