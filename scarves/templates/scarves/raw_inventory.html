@@ -167,8 +167,13 @@
   </div>
 
   <div class="category-nav">
+    {% comment %}
+    The mode rides along. Planning an order is a walk across the tables —
+    silk, then yarn, then notions — and a link that dropped back to the bill
+    on every hop made the tab something to re-pick three times.
+    {% endcomment %}
     {% for cat in all_categories %}
-      <a href="{% url 'raw_inventory' cat.id %}"
+      <a href="{% url 'raw_inventory' cat.id %}{% if plan_mode %}?plan=1{% elif supply_mode %}?supply=1{% endif %}"
          class="{% if cat.id == category.id %}current{% endif %}">{{ cat.name }}</a>
     {% endfor %}
   </div>

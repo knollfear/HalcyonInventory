@@ -1936,6 +1936,22 @@ class PlanAnOrderTests(TestCase):
         self.assertIn(f'name="received_{self.blank.pk}"', page)
         self.assertNotIn("On track for", page)
 
+    def test_switching_category_keeps_the_tab(self):
+        """Planning an order is a walk across the tables, and a link that
+        dropped back to the bill on every hop made the tab something to
+        re-pick three times."""
+        silk = RawProductCategory.objects.create(name="Silk")
+        silk_url = reverse("raw_inventory", args=[silk.pk])
+
+        plan = self.client.get(self.plan).content.decode()
+        supply = self.client.get(f"{self.url}?supply=1").content.decode()
+        bill = self.client.get(self.url).content.decode()
+
+        self.assertIn(f'href="{silk_url}?plan=1"', plan)
+        self.assertIn(f'href="{silk_url}?supply=1"', supply)
+        self.assertIn(f'href="{silk_url}"', bill)
+        self.assertNotIn(f'href="{silk_url}?', bill)
+
 
 class OnTrackForTests(TestCase):
     """Sales per faire day so far, times the faire days left.
