@@ -91,11 +91,14 @@ def production_needed_view(request):
     rng = slowsellers.season_range({})
     sold = slowsellers.sold_by_recipe(rng)
 
-    # `?demand_par=1` judges every product against twice a day's sales plus
-    # one instead of its stored par — the same tick the sheet form has, under
-    # the same name, so a link off one page means the same thing on the
-    # other. The stored par is not written; untick and it is the old page.
-    demand = production.demand_par() if request.GET.get("demand_par") else None
+    # Three pills, one question. `sales_par` judges every product against
+    # twice a day's sales plus one instead of its stored par and orders by
+    # that shortage — the third choice of the sheet form's "which shortages
+    # first", so the two pages offer the same three answers. The stored par
+    # is not written; the other two pills are the old page.
+    sorts = {"sold": "sold", "shortage": "shortage", "sales_par": "sales_par"}
+    sort = sorts.get(request.GET.get("sort"), "sold")
+    demand = production.demand_par() if sort == "sales_par" else None
 
     products = production.candidates(
         category=category,
@@ -147,23 +150,22 @@ def production_needed_view(request):
     # The old ordering stays one click away, and neither is a filter — every
     # group is listed either way, so the sort changes what is read first and
     # never what exists.
-    sort = "shortage" if request.GET.get("sort") == "shortage" else "sold"
     if demand is not None and demand.available:
         # With par from sales the sales are already in the number, so the
-        # order is shortage from that par and the pills are not offered —
-        # `candidates()` makes the same call for the sheet, and the two
-        # pages have to agree about what "the first twenty" are. Within a
-        # group the rows arrive in that order already; re-sorting them here
+        # order is shortage from that par — `candidates()` makes the same
+        # call for the sheet, and the two pages have to agree about what
+        # "the first twenty" are. Re-sorting a group's rows on `_urgency`
         # would put an empty shelf that sold nothing above the best seller.
-        sort = "shortage"
         for g in groups:
             g["items"].sort(key=lambda p: (-p.net_shortage, p.name))
         groups.sort(key=lambda g: (-g["total_shortage"], g["recipe_name"]))
-    elif sort == "sold":
-        groups.sort(key=lambda g: (-g["units_sold"], -g["total_shortage"],
+    elif sort == "shortage":
+        groups.sort(key=lambda g: (-g["has_behind"], -g["total_shortage"],
                                    g["recipe_name"]))
     else:
-        groups.sort(key=lambda g: (-g["has_behind"], -g["total_shortage"],
+        # `sold`, and `sales_par` with nothing to divide by: the page has
+        # said it fell back to the stored par, and this is its default order.
+        groups.sort(key=lambda g: (-g["units_sold"], -g["total_shortage"],
                                    g["recipe_name"]))
 
     context = {
@@ -300,11 +302,12 @@ def sheet_list(form):
     if not form.cleaned_data.get("baths"):
         return [], []
 
+    order = form.cleaned_data.get("order") or production.ORDER_SOLD
     plan = production.suggest(
         form.cleaned_data["baths"],
         category=form.cleaned_data.get("category"),
         include_overshoot=form.cleaned_data["include_overshoot"],
-        order=form.cleaned_data.get("order") or production.ORDER_SOLD,
+        order=order,
         # The pot and the oven suggest from disjoint sets, and the form knows
         # which one it is because the route told it.
         oven=form.is_oven_run,
@@ -313,12 +316,13 @@ def sheet_list(form):
         # link somebody can send.
         without_blanks=form.cleaned_data.get("without_blanks"),
         without_dyes=form.cleaned_data.get("without_dyes"),
-        # Judged against twice a day's sales plus one rather than the stored
-        # par, when ticked. Only the suggestion reads it: once `items` exists
-        # the list is the list, and a pick is somebody deciding.
+        # The third order judges against twice a day's sales plus one
+        # rather than the stored par. Only the suggestion reads it: once
+        # `items` exists the list is the list, and a pick is somebody
+        # deciding.
         demand_par=(
             production.demand_par()
-            if form.cleaned_data.get("demand_par") else None
+            if order == production.ORDER_SALES_PAR else None
         ),
     )
     # Back to one row per colorway. `suggest` returns a bath at a time
@@ -673,7 +677,9 @@ def production_sheet_index(request):
         # So the suggestion can say which par it was measured against.
         "demand_par": (
             production.demand_par()
-            if form.is_bound and form.data.get("demand_par") else None
+            if form.is_bound
+            and form.data.get("order") == production.ORDER_SALES_PAR
+            else None
         ),
         "sheet_url": sheet_url,
         "oven_trays": production.OVEN_TRAYS,

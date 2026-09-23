@@ -366,19 +366,6 @@ the preview is deliberately a GET and the print button is the only POST.
             <div class="help">{{ form.include_overshoot.help_text }}</div>
           </div>
         </div>
-        {% comment %}
-        Same tick, same name, as on production-needed — a link off one page
-        means the same thing on the other, and "the first twenty on the list"
-        stays the picker's twenty. Only the suggestion reads it: once a list
-        exists it is the list, and a pick is somebody deciding.
-        {% endcomment %}
-        <div class="field tick">
-          {{ form.demand_par }}
-          <div>
-            <label for="{{ form.demand_par.id_for_label }}">{{ form.demand_par.label }}</label>
-            <div class="help">{{ form.demand_par.help_text }}</div>
-          </div>
-        </div>
       </div>
       {% comment %}
       **What she cannot dye today, said once and remembered by nobody.**

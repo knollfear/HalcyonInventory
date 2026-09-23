@@ -232,6 +232,12 @@ class Bath:
 #: either page to say so.
 ORDER_SOLD = "sold"
 ORDER_PAR = "par"
+#: The third answer to "which shortages first": judge every product against
+#: `DemandPar` and order by how far below *that* it is. One control with
+#: three answers on both pages — the first cut made this a checkbox beside
+#: the other two, and the user called that a disjointed experience: it is
+#: the same question, so it is the same control.
+ORDER_SALES_PAR = "sales_par"
 
 
 #: Par from sales, in one line: twice a day's sales, rounded up, plus one.

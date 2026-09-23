@@ -3836,14 +3836,16 @@ class SoldOnThisBlankIsOnTheRowTests(TestCase):
 
 
 class ParFromSalesTests(TestCase):
-    """A second par, tried on rather than written: twice a day's sales plus one.
+    """A third answer to "which shortages first": twice a day's sales plus one.
 
     The list ranks on what a colorway sold and filters on a par that is the
     same number for nearly everything, and the two disagree about what
     matters: a best seller sitting one above par 8 is not short, so it never
     reaches the list it would top. The tick measures every product against
-    `ceil(2 × units per faire day) + 1` instead. Nothing is stored, and
-    unticking it is exactly the old page.
+    `ceil(2 × units per faire day) + 1` instead, and orders by that shortage.
+    Nothing is stored, and the other two pills are exactly the old page. It is
+    a pill and a choice rather than a checkbox because it is the same question
+    as the other two.
     """
 
     def setUp(self):
@@ -3902,7 +3904,7 @@ class ParFromSalesTests(TestCase):
     def test_the_star_only_reaches_the_list_when_par_comes_from_sales(self):
         self.assertNotIn(self.star.name, self._rows())
 
-        rows = self._rows(demand_par=1)
+        rows = self._rows(sort="sales_par")
 
         self.assertIn(self.star.name, rows)
         self.assertEqual(rows[self.star.name].target_par, 21)
@@ -3915,7 +3917,7 @@ class ParFromSalesTests(TestCase):
         self.assertEqual(rows[self.dud.name].net_shortage, 8)
 
     def test_the_stored_par_is_never_written(self):
-        self.client.get(self.url, {"demand_par": 1})
+        self.client.get(self.url, {"sort": "sales_par"})
         self.star.refresh_from_db()
 
         self.assertEqual(self.star.par, 8)
@@ -3940,14 +3942,14 @@ class ParFromSalesTests(TestCase):
         without = self.client.get(url, {"baths": 10}).context["rows"]
         self.assertNotIn(self.star.pk, {r["product"].pk for r in without})
 
-        response = self.client.get(url, {"baths": 10, "demand_par": 1})
+        response = self.client.get(url, {"baths": 10, "order": "sales_par"})
         rows = {r["product"].pk: r for r in response.context["rows"]}
 
         self.assertEqual(rows[self.star.pk]["baths"], 3)
         self.assertContains(response, "2 faire days with sales recorded")
 
     def test_the_basis_is_printed(self):
-        response = self.client.get(self.url, {"demand_par": 1})
+        response = self.client.get(self.url, {"sort": "sales_par"})
 
         self.assertContains(response, "2 faire days")
         self.assertContains(response, "Par (from sales)")
@@ -3956,7 +3958,7 @@ class ParFromSalesTests(TestCase):
         FaireDay.objects.all().delete()
 
         self.assertFalse(production.demand_par().available)
-        response = self.client.get(self.url, {"demand_par": 1})
+        response = self.client.get(self.url, {"sort": "sales_par"})
 
         self.assertContains(response, "nothing to divide by")
         rows = {fp.name: fp for g in response.context["groups"]
@@ -3968,7 +3970,7 @@ class ParFromSalesTests(TestCase):
         """The sales are in the par, so sold-first would count them twice —
         and empty-shelf-first would put a colorway that sold nothing (par 1,
         none on hand) above the best seller twelve short."""
-        rows = list(self._rows(demand_par=1))
+        rows = list(self._rows(sort="sales_par"))
         self.assertEqual(rows[0], self.star.name)
 
         # The sheet makes the same call whatever `order` says.
@@ -3978,10 +3980,11 @@ class ParFromSalesTests(TestCase):
         )
         self.assertEqual(baths[0].product.pk, self.star.pk)
 
-        # And the pills are not offered: there is one order.
-        response = self.client.get(self.url, {"demand_par": 1, "sort": "sold"})
-        self.assertEqual(response.context["sort"], "shortage")
-        self.assertNotContains(response, "Best sellers first")
+        # One control, three answers — the third pill is lit, not a tick.
+        response = self.client.get(self.url, {"sort": "sales_par"})
+        self.assertEqual(response.context["sort"], "sales_par")
+        self.assertContains(response, "Use par")
+        self.assertNotContains(response, 'type="checkbox" name="demand_par"')
 
     def test_the_stockout_bonus_is_not_added_on_this_view(self):
         """A sell-out is a sales event, and this par is built from sales."""
@@ -3993,7 +3996,7 @@ class ParFromSalesTests(TestCase):
 
         self.assertEqual(self._rows()[self.dud.name].stockout_bonus, 4)
 
-        rows = self._rows(demand_par=1)
+        rows = self._rows(sort="sales_par")
         self.assertEqual(rows[self.dud.name].stockout_bonus, 0)
         self.assertEqual(rows[self.dud.name].net_shortage, 1)
 

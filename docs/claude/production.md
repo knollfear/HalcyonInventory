@@ -206,10 +206,11 @@ something this page's default ordering is the thing to revisit; until then it
 still ranks on sales, because the ordering is a statement about how much par
 has been dialled in and not about how much it *could* be.
 
-**Furthest below par first is one click away, and neither ordering filters.**
-Every colorway is listed either way, so the choice changes what gets read
-first and never what exists — a page that hid the quiet ones would be making
-the retirement decision on its own.
+**Use par is one click away, and neither ordering filters.** Every colorway
+is listed either way, so the choice changes what gets read first and never
+what exists — a page that hid the quiet ones would be making the retirement
+decision on its own. The third pill, *Par from sales*, is the one that
+changes the par as well as the order; it has its own section below.
 
 The figure is `slowsellers.sold_by_recipe`, the same function
 `private/slow-sellers/` reports from, **pooled across every blank a colorway
@@ -222,16 +223,25 @@ A colorway that sold nothing is ranked last, never hidden. It may simply be
 new — 2026 is year one for colorway data — and this page is not where that
 gets decided.
 
-### "Set par from sales": a second par, tried on rather than written
+### "Par from sales": a second par, tried on rather than written
 
-**The tick on both pages, `demand_par=1`, judges every product against
-`ceil(2 × units per faire day) + 1` instead of its stored par.** It is
-`production.DemandPar`, and `candidates()` takes one as `demand_par`.
+**The third answer to "which shortages first" — `?sort=sales_par` on
+`private/production-needed/`, `order=sales_par` on the sheet form — judges
+every product against `ceil(2 × units per faire day) + 1` instead of its
+stored par, and orders by that shortage.** It is `production.DemandPar`,
+`ORDER_SALES_PAR`, and `candidates()` takes the object as `demand_par`.
 Nothing is stored — `FinishedProduct.par` is untouched, the recipe page's
-par editor is still the only door to that number — and unticking it is the
-old page to the byte. It exists to see what the other arithmetic would say,
-side by side with the arithmetic already in use, so it is a checkbox and not
-a migration.
+par editor is still the only door to that number — and the other two
+answers are the old page to the byte. It exists to see what the other
+arithmetic would say, side by side with the arithmetic already in use, so
+it is a pill and not a migration.
+
+**It is a pill beside *Best sellers first* and *Use par*, not a checkbox
+beside them.** The first cut was a tick, and the user called that a
+disjointed experience: it silently overrode the order select above it and
+sat in a different control from the two answers it was a third of. One
+question, three answers, one control — on both pages, so a link off one
+means the same on the other.
 
 **What it is answering.** The pages above rank on sales pooled by colorway
 and then filter on a par that is the same number for nearly everything, and
@@ -266,9 +276,8 @@ What is deliberately kept, and why:
   twice — and `_urgency`'s empty-shelf-first would put a colorway that
   sold nothing (par 1, none on hand) above the best seller twelve short.
   The floor of one is what keeps the empty shelf on the list at all; it is
-  not what puts it first. `private/production-needed/` drops its sort pills
-  in this mode and says why, so the two pages still agree about what "the
-  first twenty" are.
+  not what puts it first. Choosing this pill *is* choosing that order, on
+  both pages, so they still agree about what "the first twenty" are.
 - **The stockout bonus is not added.** A sell-out is a sales event and this
   par is built from sales. The first cut stacked it on the argument that a
   counted zero is an observation where the rate is an estimate; the user
@@ -278,6 +287,10 @@ What is deliberately kept, and why:
   in Python, so `candidates()` walks every dyeable product in that mode —
   a few hundred rows, once. The `behind_a_bath` prefilter goes with it, and
   `annotate_flight` answers both from the target.
+
+**With nothing to divide by the pill falls back to the stored par**, says
+so, and the page takes its default order (best sellers first) rather than
+inventing a shortage order off a number the pill did not promise.
 
 **`target_par` is what the row prints, in both modes.** `annotate_flight`
 sets it to whichever par the shortage was judged on, so what the row shows
@@ -1114,7 +1127,7 @@ for. `_without()` is the one to check first.
 **On the chopping block.** User, 2026-09-22: *"I think that was a failed
 experiment if I am honest. It made sense in our heads. Let's leave it, but
 it is on the chopping block."* It still runs on the stored-par path and is
-switched off under *Set par from sales*. Nothing below has been re-argued;
+switched off under *Par from sales*. Nothing below has been re-argued;
 read it as the reasoning that was, and don't extend it.
 
 `production.stockout_baths()` reads the **latest** close and adds one bath to

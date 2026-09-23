@@ -485,13 +485,15 @@ half this file exists to keep broken. What sold this season prints beside
 the box because a decision you cannot check is not a decision; what to do
 about it is the person's.
 
-**A par from *sales* is a different thing, and it exists as a tick rather
-than a number.** *Set par from sales* on `private/production-needed/` and
-the sheet picker judges every product against twice a day's sales plus one
-instead of the stored par, writes nothing, and says on the page what it
-divided by. Unticked is the old arithmetic exactly. See *"Set par from
-sales"* in `docs/claude/production.md` for why the sold ranking and the
-flat par filter were disagreeing about the best seller.
+**A par from *sales* is a different thing, and it exists as a third
+ordering rather than a number.** *Par from sales*, beside *Best sellers
+first* and *Use par* on `private/production-needed/` and in the sheet
+picker's "which shortages first", judges every product against twice a
+day's sales plus one instead of the stored par, orders by that shortage,
+writes nothing, and says on the page what it divided by. The other two
+answers are the old arithmetic exactly. See *"Par from sales"* in
+`docs/claude/production.md` for why the sold ranking and the flat par
+filter were disagreeing about the best seller.
 
 Two things follow, and both are cheap:
 

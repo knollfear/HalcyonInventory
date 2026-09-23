@@ -58,7 +58,6 @@
      why as clearly as one that shrank. */
   .soldout { font-size: 11px; color: #9a3412; font-weight: 600; }
   .netnote { font-size: 12px; color: #667; margin: 0 0 14px; }
-  .filter-bar .tick { display: inline-flex; align-items: center; gap: 6px; margin-left: 14px; }
 {% endblock %}
 
 {% block head %}
@@ -77,20 +76,6 @@
       {% endfor %}
     </select>
     <input type="hidden" name="sort" value="{{ sort }}">
-    {% comment %}
-    A second par, tried on rather than written. The list ranks on what a
-    colorway sold and filters on a par that is the same number for nearly
-    everything, so a best seller one above par 8 never reaches the list it
-    would top. Ticked, every product is judged against twice a day's sales
-    plus one instead; the stored par is untouched and unticking is the old
-    page. Same name as the sheet form's tick, so a link means the same thing
-    on both.
-    {% endcomment %}
-    <label class="tick">
-      <input type="checkbox" name="demand_par" value="1"
-             {% if demand_par %}checked{% endif %} onchange="this.form.submit()">
-      Set par from sales
-    </label>
   </form>
 
   {% comment %}
@@ -100,33 +85,29 @@
   season outranking one that sold forty, purely for crossing an arbitrary
   line first. Sales are measured.
 
-  Neither pill filters. Every group is listed either way, so the choice
-  changes what gets read first and never what exists.
+  The first two pills only reorder; every group is listed either way. The
+  third changes the par as well: each product is judged against twice a
+  day's sales plus one, ordered by that shortage, without the close's
+  sold-out bath — the sales are already in the number. Three answers to
+  one question, so one control: the first cut put the third on a checkbox
+  beside these two, which was a disjointed way to say the same thing. The
+  sheet form's "which shortages first" offers the same three.
   {% endcomment %}
-  {% if demand_par and demand_par.available %}
-    {% comment %}
-    No pills: with par from sales the sales are already in the number, so
-    the only order that doesn't count them twice is shortage from that par.
-    Said rather than shown as a pill with one option.
-    {% endcomment %}
-    <p class="netnote">
-      Ordered furthest below par first — the sales are in the par, so that
-      is the whole of the priority. The close's sold-out bath is not added
-      on this view.
-    </p>
-  {% else %}
   <div class="pills">
     <a class="pill {% if sort == 'sold' %}on{% endif %}"
-       href="?{% if selected_category_id %}category={{ selected_category_id }}&{% endif %}{% if demand_par %}demand_par=1&{% endif %}sort=sold">
+       href="?{% if selected_category_id %}category={{ selected_category_id }}&{% endif %}sort=sold">
       Best sellers first
     </a>
     <a class="pill {% if sort == 'shortage' %}on{% endif %}"
-       href="?{% if selected_category_id %}category={{ selected_category_id }}&{% endif %}{% if demand_par %}demand_par=1&{% endif %}sort=shortage">
-      Furthest below par first
+       href="?{% if selected_category_id %}category={{ selected_category_id }}&{% endif %}sort=shortage">
+      Use par
+    </a>
+    <a class="pill {% if sort == 'sales_par' %}on{% endif %}"
+       href="?{% if selected_category_id %}category={{ selected_category_id }}&{% endif %}sort=sales_par">
+      Par from sales
     </a>
     <span class="pill-note">sales over {{ range.label|lower }}</span>
   </div>
-  {% endif %}
 
   {% if demand_par %}
     {% comment %}
@@ -140,7 +121,9 @@
         Par below is <strong>twice a day's sales, rounded up, plus one</strong>
         — each product's own sales over
         {{ demand_par.days }} faire day{{ demand_par.days|pluralize }} with sales recorded
-        ({{ demand_par.label|lower }}). The stored par is not changed.
+        ({{ demand_par.label|lower }}) — and the list is ordered furthest
+        below that par first, without the close's sold-out bath. The stored
+        par is not changed.
       {% else %}
         No faire day has sales recorded yet, so there is nothing to divide by:
         the stored par is what's shown below.
