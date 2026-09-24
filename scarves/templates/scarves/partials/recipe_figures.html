@@ -17,6 +17,18 @@ a one-product list.
     <div class="value">{{ sold }}</div>
     <div class="label">sold, all time</div>
   </div>
+  {% comment %}
+  Its own figure, never folded into *produced*: that one counts what has
+  actually been made, and a total mixing the two would be the ledger quietly
+  including a bath still in a pot. Printed only when there is one, because a
+  zero here would read as a claim nobody has made rather than as no claim.
+  {% endcomment %}
+  {% if claimed %}
+    <div class="figure">
+      <div class="value">{{ claimed }}</div>
+      <div class="label">on a sheet, not yet made</div>
+    </div>
+  {% endif %}
   <div class="figure">
     <div class="value">{{ scope_count }}</div>
     <div class="label">finished product{{ scope_count|pluralize }}</div>

@@ -98,6 +98,12 @@
   }
   .type.production { color: #2e7d52; border-color: #bcd8c6; background: #f1f8f3; }
   .type.sale { color: #8a2f2a; border-color: #f0c8c4; background: #fdf2f1; }
+  /* A bath on a sheet: in the list, and visibly not one of the movements.
+     Neither green nor red, because nothing has gone either way yet — the same
+     quiet the in-flight badge uses on the pages that plan. */
+  .type.claim { color: #6b7280; border-color: #d3d7dd; background: #f7f8fa; }
+  tr.claimed { background: #fbfcfd; }
+  .qty.pending { color: #6b7280; font-weight: 600; font-size: 12px; }
   .when { white-space: nowrap; font-size: 13px; color: #555; }
   .approx { font-size: 11px; color: #8a5a00; margin-left: 6px; }
   .ref { font-family: var(--mono); font-size: 11px; color: #667; }

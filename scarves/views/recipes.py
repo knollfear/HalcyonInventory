@@ -1,5 +1,6 @@
 """Colorways: dye entry, the rainbow bands, the showcase, the recipe page, par, and the kanban cards."""
 from urllib.parse import urlencode
+from collections import Counter
 from datetime import date, datetime, time
 from io import BytesIO
 
@@ -964,8 +965,26 @@ def _recipe_history(request, recipe, products):
     def _qty(log_type):
         return (by_type.get(log_type) or {}).get("qty") or 0
 
+    # **Baths already claimed by a sheet, in the same list.** The history is
+    # `InventoryLog` — what moved — and a planned bath has moved no finished
+    # stock, so it is correctly absent from it. But somebody investigating a
+    # colorway wants one place to look, and "six short" beside a history with
+    # no production row reads as *nobody has planned this* when two baths are
+    # on paper. So the claims are rendered as rows in the same table, marked as
+    # not recorded, and the ledger stays a ledger: the figures above count log
+    # rows only, and nothing here writes one. See `production.Claim` for why a
+    # claim must not become an `InventoryLog` row.
+    #
+    # Fetched for every product and filtered in Python: the chips need a count
+    # per product, and a colorway is a handful of blanks.
+    all_claims = production.claim_rows(products)
+    claims = [c for c in all_claims if c.product in scope]
+    claim_counts = Counter(c.product.pk for c in all_claims)
+
     # How many rows each chip stands for, in one grouped query rather than
-    # one per product.
+    # one per product. Claims are added because a chip counts the rows it will
+    # *show*, and these are rows it shows — a chip promising 42 that lands on
+    # a list of 40 is the page contradicting itself either way round.
     chip_counts = {
         row["finished_product"]: row["n"]
         for row in (
@@ -975,6 +994,8 @@ def _recipe_history(request, recipe, products):
             .annotate(n=Count("id"))
         )
     }
+    for pk, n in claim_counts.items():
+        chip_counts[pk] = chip_counts.get(pk, 0) + n
     page_url = reverse("recipe_detail", args=[recipe.pk])
     swap_url = reverse("recipe_history", args=[recipe.pk])
     chips = [
@@ -993,6 +1014,11 @@ def _recipe_history(request, recipe, products):
 
     return {
         "logs": logs,
+        "claims": claims,
+        # Printed as a figure of its own rather than added to `produced`,
+        # which is what has actually been made. A number that mixed the two
+        # would be the ledger's total quietly including a bath still in a pot.
+        "claimed": sum(c.units for c in claims),
         "truncated": truncated,
         "log_limit": RECIPE_LOG_LIMIT,
         "focus": focus,

@@ -487,12 +487,42 @@ def covered_by_claims(category=None, oven=None, demand_par=None):
     return covered
 
 
-def open_claims(products):
-    """`{finished_product_id: [run, ...]}` — which live sheet is asking.
+@dataclass
+class Claim:
+    """One product's outstanding baths on one sheet.
 
-    The rows `in_flight()` totals, kept whole instead of summed, because a
+    **A claim is already a record, which is the answer to "should a claim
+    write an `InventoryLog` row?" — it doesn't need to.** The row on the sheet
+    carries the product, the units, the sheet and the day it was planned, and
+    it is never edited: it ends up accepted, cancelled or overdue. What was
+    missing was a page *reading* it, not a write. Which also means every sheet
+    printed before this existed is described by it, rather than the app
+    starting to tell the truth from the next run onwards.
+
+    The reason it must **not** be an `InventoryLog` row is what those rows are
+    for: the log is the account of the number, every row a movement that sums
+    into `number_on_hand` (`ledger.move` writes the two together, and nothing
+    may write one without the other). A claim has moved no finished stock — a
+    bath can still be cancelled, or come out short. Putting it in the ledger
+    would print barcode labels for scarves that do not exist
+    (`labels.produced_since`), offer *take it back* for a bath that never
+    happened (`private/produced-since/`), and count a planned bath as a
+    duplicate of a card entry (`private/cards/`). Every reader of that table
+    would need to learn to subtract it.
+    """
+
+    product: object
+    run: object
+    baths: int
+    units: int
+
+
+def claim_rows(products):
+    """Every outstanding claim on these products, newest sheet first.
+
+    The rows `in_flight()` totals, kept whole rather than summed, because a
     page saying a bath is already marked for production has to say *where* to
-    go and look at it. One query for a page's worth.
+    go and look at it — and, on the recipe page, when it was asked for.
 
     Same filter as `in_flight()` deliberately — pending rows on `counted`
     sheets — so the units a page prints and the sheet it names can never
@@ -500,7 +530,8 @@ def open_claims(products):
     """
     products = list(products)
     if not products:
-        return {}
+        return []
+    by_pk = {p.pk: p for p in products}
     rows = (
         ProductionRunRow.objects.filter(
             finished_product__in=products,
@@ -509,13 +540,37 @@ def open_claims(products):
             run__in=counted_runs().values("pk"),
         )
         .select_related("run")
-        .order_by("run__pk")
     )
-    claims = {}
+    # One `Claim` per (product, sheet): two baths of a colorway are two rows
+    # on one sheet, and "sheet #21, sheet #21" is a link printed twice.
+    grouped = {}
     for row in rows:
-        seen = claims.setdefault(row.finished_product_id, [])
-        if row.run not in seen:
-            seen.append(row.run)
+        key = (row.finished_product_id, row.run_id)
+        claim = grouped.get(key)
+        if claim is None:
+            grouped[key] = Claim(
+                product=by_pk[row.finished_product_id], run=row.run,
+                baths=1, units=row.quantity or 0,
+            )
+        else:
+            claim.baths += 1
+            claim.units += row.quantity or 0
+    return sorted(
+        grouped.values(),
+        key=lambda c: (c.run.created_at, c.product.name),
+        reverse=True,
+    )
+
+
+def open_claims(products):
+    """`{finished_product_id: [run, ...]}` — which live sheet is asking.
+
+    `claim_rows` with the units dropped, for the pages that only need to name
+    the sheet. One definition of the query, two shapes of the answer.
+    """
+    claims = {}
+    for claim in claim_rows(products):
+        claims.setdefault(claim.product.pk, []).append(claim.run)
     return claims
 
 

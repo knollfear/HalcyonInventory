@@ -551,6 +551,50 @@ Par mode does not print it. That table has no shortage column and its job is
 one number in a box; a third figure beside a decision about demand is the
 noise *Editing par* below is shaped to avoid.
 
+#### The claim is a row in the history too, and it is *not* an `InventoryLog`
+
+Asked directly: *"Can an inventory log be written when production is claimed?
+I get that it wouldn't help for now, but it would heal on the next production
+run."* No — and nothing needs to be, which is the better half of the answer.
+
+**A `ProductionRunRow` is already the record.** It carries the product, the
+units, the sheet and the day it was planned, and it is never edited: it ends
+up accepted, cancelled or overdue. So reading it describes **every sheet
+already printed**, rather than the app starting to tell the truth from the
+next run onwards.
+
+**Why it must not become a log row.** `InventoryLog` is the account of the
+number — every row a movement that sums into `number_on_hand`, written by
+`ledger.move` together with the stock change it explains. A claim has moved no
+finished stock and may still be cancelled or come out short. In that table it
+would print barcode labels for scarves that do not exist
+(`labels.produced_since` reads standing `PRODUCTION` rows), offer *take it
+back* for a bath that never happened (`private/produced-since/`), and count as
+a duplicate of a kanban-card date (`private/cards/`). Every reader of the
+ledger would have to learn to subtract it — which is the shape of bug this
+codebase keeps naming, one table meaning two things.
+
+**So the page merges them and the row says which it is**: the claims render
+above the movements, as `On a sheet · 8 to come · sheet #21 · 2 baths, nothing
+recorded yet`, with no signed quantity and the sheet linked. `production.
+claim_rows` is the one query (`open_claims` is it with the units dropped), one
+`Claim` per *(product, sheet)* because two baths of a colorway are two rows on
+one sheet and a link printed twice is a link checked twice.
+
+Two invariants the merge has to keep, both already rules on this page.
+**Every figure above the history counts ledger rows only** — `produced` is
+what has been made, and a claim folded into it would be the ledger quietly
+including a bath still in a pot — so the claim gets a figure of its own, *on a
+sheet, not yet made*, printed only when there is one. And **each chip counts
+the rows it will show**, so the claims are added to the chip counts: a chip
+promising three that lands on a list of two contradicts itself whichever
+direction the miscount runs.
+
+The reason it is worth the merge at all, in the user's words: *"if I am
+investigating something, having all of the data in one place is good."* A
+history showing six short and no production row reads as *nobody has planned
+this*, while two baths sit on paper in the dye room.
+
 ### Editing par: a mode, and the only place par has ever been editable
 
 `?par=1` turns the finished-products table from the production form into a par

@@ -52,7 +52,7 @@ The figures and the focus note ride out-of-band with it; see
     </div>
   {% endif %}
 
-  {% if logs %}
+  {% if logs or claims %}
     <div class="card">
       <table>
         <thead>
@@ -65,6 +65,37 @@ The figures and the focus note ride out-of-band with it; see
           </tr>
         </thead>
         <tbody>
+          {% comment %}
+          **Baths on a sheet, above the movements, marked as not yet.** The
+          rows below are `InventoryLog` — the account of the number, every one
+          of them something that happened. A claim has moved nothing and may
+          still be cancelled or come out short, so it is not one of those and
+          must never be written as one (`production.Claim` has the list of
+          pages that would break). But the question somebody is holding when
+          they open this page is "what is happening to this colorway", and a
+          history that shows six short and no production row reads as *nobody
+          has planned this* while two baths sit on paper.
+
+          So they share the table and the row says which it is: no signed
+          quantity, a sheet to go and look at, and the day it was planned.
+          {% endcomment %}
+          {% for claim in claims %}
+            <tr class="claimed">
+              <td class="when">
+                {{ claim.run.created_at|date:"d M Y" }}
+                <span class="approx">planned</span>
+              </td>
+              <td>{{ claim.product.name }}</td>
+              <td><span class="type claim">On a sheet</span></td>
+              <td class="num"><span class="qty pending">{{ claim.units }} to come</span></td>
+              <td class="small">
+                <a href="{% url 'production_run_detail' claim.run.pk %}">sheet #{{ claim.run.pk }}</a>
+                <span class="muted">
+                  · {{ claim.baths }} bath{{ claim.baths|pluralize }}, nothing recorded yet
+                </span>
+              </td>
+            </tr>
+          {% endfor %}
           {% for log in logs %}
             <tr>
               {% comment %}
@@ -100,14 +131,15 @@ The figures and the focus note ride out-of-band with it; see
   {% else %}
     <p class="empty">
       {% if focus %}
-        Nothing recorded for {{ focus.name }} yet.
+        Nothing recorded for {{ focus.name }} yet, and nothing on a sheet.
         <a href="{{ all_url }}"
            hx-get="{{ all_history_url }}" hx-target="#history"
            hx-swap="innerHTML" hx-push-url="{{ all_url }}"
            hx-indicator="#history-loading">The rest of the colorway</a>
         may have moved.
       {% else %}
-        No inventory movement recorded for this recipe's products yet.
+        No inventory movement recorded for this recipe's products yet,
+        and nothing on a sheet.
       {% endif %}
     </p>
   {% endif %}

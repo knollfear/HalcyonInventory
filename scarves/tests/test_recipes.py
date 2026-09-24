@@ -2572,3 +2572,151 @@ class RecipePageSaysWhatIsClaimedTests(TestCase):
 
         self.assertNotContains(response, "marked for production")
         self.assertContains(response, "Save par")
+
+
+class ClaimsShareTheHistoryTests(TestCase):
+    """A bath on a sheet appears in the history, marked as not yet made.
+
+    The user's question was whether a claim should *write* an `InventoryLog`
+    row — *"I get that it wouldn't help for now, but it would heal on the next
+    production run."* It shouldn't, and it doesn't have to: a
+    `ProductionRunRow` already records the product, the units, the sheet and
+    the day, so reading it works for sheets printed before this existed rather
+    than from the next run onwards.
+
+    Why it must not be a log row: that table is the account of the number —
+    every row a movement summing into `number_on_hand`, written by
+    `ledger.move` together with the stock change. A claim has moved nothing and
+    may be cancelled or come out short. In the ledger it would print barcode
+    labels for scarves that don't exist, offer *take it back* for a bath that
+    never happened, and count as a duplicate of a kanban card entry.
+
+    So: same table, different row, and the figures above stay ledger-only.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user("staff", password="pw")
+        self.client.force_login(self.user)
+        self.recipe = make_recipe("J Purple")
+        self.product = make_bathable(self.recipe, "J Purple Homespun",
+                                     on_hand=2, par=8, bath=4)
+        self.other = make_bathable(self.recipe, "J Purple Noble",
+                                   on_hand=8, par=8, bath=5)
+        self.page = reverse("recipe_detail", args=[self.recipe.pk])
+
+    def _claim(self, product, baths):
+        self.client.post(reverse("production_sheet_index"),
+                         {"items": f"{product.pk}:{baths}"})
+        return ProductionRun.objects.latest("pk")
+
+    def test_a_claimed_bath_is_a_row_in_the_history(self):
+        run = self._claim(self.product, 2)
+
+        response = self.client.get(self.page)
+
+        claims = response.context["claims"]
+        self.assertEqual([(c.product.pk, c.baths, c.units) for c in claims],
+                         [(self.product.pk, 2, 8)])
+        self.assertEqual([c.run.pk for c in claims], [run.pk])
+        self.assertContains(response, "On a sheet")
+        self.assertContains(response, "8 to come")
+        self.assertContains(response, "2 baths, nothing recorded yet")
+
+    def test_one_row_per_sheet_not_per_bath(self):
+        """Two baths of a colorway are two rows on one sheet, and printing the
+        sheet twice is a link you check twice."""
+        self._claim(self.product, 3)
+
+        self.assertEqual(len(self.client.get(self.page).context["claims"]), 1)
+
+    def test_two_sheets_are_two_rows(self):
+        first = self._claim(self.product, 1)
+        second = self._claim(self.product, 1)
+
+        claims = self.client.get(self.page).context["claims"]
+
+        self.assertEqual({c.run.pk for c in claims}, {first.pk, second.pk})
+
+    def test_nothing_is_written_to_the_ledger(self):
+        """The whole argument in one assertion: planning writes no movement."""
+        self._claim(self.product, 2)
+
+        self.assertEqual(
+            InventoryLog.objects.filter(finished_product=self.product).count(), 0
+        )
+        self.assertEqual(self.client.get(self.page).context["produced"], 0)
+
+    def test_the_figures_above_do_not_count_it(self):
+        """`produced` is what has been made. A claim in that total would be the
+        ledger quietly including a bath still in a pot."""
+        self._claim(self.product, 2)
+
+        context = self.client.get(self.page).context
+
+        self.assertEqual(context["produced"], 0)
+        self.assertEqual(context["claimed"], 8)
+        self.assertContains(self.client.get(self.page), "on a sheet, not yet made")
+
+    def test_the_chip_count_includes_the_rows_it_will_show(self):
+        """A chip promising 3 that lands on a list of 2 is the page
+        contradicting itself, which is the rule these counts already follow."""
+        self._claim(self.product, 2)
+
+        chips = {c["product"].pk: c["count"]
+                 for c in self.client.get(self.page).context["chips"]}
+
+        self.assertEqual(chips[self.product.pk], 1)
+        self.assertEqual(chips[self.other.pk], 0)
+
+    def test_the_product_filter_reaches_the_claims(self):
+        """Every figure and every row above the history follows the chip, or
+        the page shows a colorway-wide claim over a one-product list."""
+        self._claim(self.product, 2)
+
+        shown = self.client.get(self.page, {"product": self.other.pk})
+
+        self.assertEqual(shown.context["claims"], [])
+        self.assertEqual(shown.context["claimed"], 0)
+        self.assertNotContains(shown, "On a sheet")
+
+    def test_the_swapped_fragment_says_the_same_thing(self):
+        """The chips swap rather than navigate, so the fragment and the page
+        have to agree about what the filter means."""
+        self._claim(self.product, 2)
+
+        fragment = self.client.get(
+            reverse("recipe_history", args=[self.recipe.pk]),
+            {"product": self.product.pk},
+        )
+
+        self.assertContains(fragment, "On a sheet")
+        self.assertContains(fragment, "8 to come")
+
+    def test_an_accepted_bath_becomes_a_movement_and_stops_being_a_claim(self):
+        """The row does not appear twice: accepting it writes the log row that
+        replaces it, which is the whole distinction the two rows draw."""
+        run = self._claim(self.product, 1)
+        production.apply_row(run.rows.get(finished_product=self.product),
+                             yielded=4)
+
+        context = self.client.get(self.page).context
+
+        self.assertEqual(context["claims"], [])
+        self.assertEqual(context["produced"], 4)
+        self.assertEqual(context["claimed"], 0)
+
+    def test_a_cancelled_bath_leaves_no_trace_in_the_history(self):
+        run = self._claim(self.product, 1)
+        row = run.rows.get(finished_product=self.product)
+        row.cancelled_at = timezone.now()
+        row.save(update_fields=["cancelled_at"])
+
+        response = self.client.get(self.page)
+
+        self.assertEqual(response.context["claims"], [])
+        self.assertNotContains(response, "On a sheet")
+
+    def test_an_empty_history_says_there_is_no_paper_either(self):
+        """"Nothing recorded" used to be the whole answer, and it is now half
+        of one — the reader's next question is whether anybody has planned it."""
+        self.assertContains(self.client.get(self.page), "nothing on a sheet")
