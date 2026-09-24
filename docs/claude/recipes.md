@@ -520,6 +520,37 @@ reload, and the sendable-link property is the reason the filter is in the
 query string at all. The chips keep their `href`, so with the script blocked
 they are the ordinary links they always were.
 
+### The shortage is the shelf's, and the claim is said under it
+
+The Shortage column is `par - number_on_hand` and **that number does not move
+for paper**: two on the shelf against a par of eight is six short whatever is
+in the dye room, and this is the page where that reading has to survive,
+because it is the one a person standing at the display can check.
+
+It was the only number here, though, and that was the gap. `private/
+production-needed/` has netted printed sheets off since it started reading
+`candidates()`; this page never learned, so a colorway whose entire shortage
+was already claimed read exactly like one nobody had planned — and this is the
+page somebody lands on from a link or a search. Homespun J Purple was the live
+case: six short, two baths of four already on sheet #21, and nothing anywhere
+on the page saying so.
+
+So both are printed, the shelf's shortage as the figure and the claim under
+it: `8 marked for production on sheet #21`, then either `2 still short after
+it` or `nothing left to plan`. The sheet is a link, because a claim you cannot
+go and look at is a number that has to be trusted.
+
+**Nothing new is written when a run is created to make this work.** A
+`ProductionRunRow` *is* the claim (*Two signals propose, one claim decides* in
+`CLAUDE.md`), so this reads sheets that already exist, including ones printed
+before it was built. `production.open_claims` names the sheet from the rows
+`in_flight()` totals — one query for the page, and the units and the link
+cannot disagree.
+
+Par mode does not print it. That table has no shortage column and its job is
+one number in a box; a third figure beside a decision about demand is the
+noise *Editing par* below is shaped to avoid.
+
 ### Editing par: a mode, and the only place par has ever been editable
 
 `?par=1` turns the finished-products table from the production form into a par

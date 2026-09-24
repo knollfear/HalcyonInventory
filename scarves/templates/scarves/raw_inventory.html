@@ -152,6 +152,26 @@
   </p>
   {% endif %}
 
+  {% if made_here %}
+    {% comment %}
+    Said in every mode, because a row that vanished with no explanation is a
+    row somebody goes looking for. A fancy blank is a plain one with line work
+    added: nothing orders one, nothing counts a shelf of them undyed, and its
+    cost is the plain blank's plus the line work. Both doors named, since
+    taking the rows off without saying where they went is the same failure as
+    leaving them here.
+    {% endcomment %}
+    <p class="note">
+      <strong>Not on this page:</strong> {{ made_here|join:", " }}. A fancy
+      blank is a plain one somebody added line work to, so no delivery of one
+      ever arrives and there is nothing here to receive, count or cost.
+      Turning stock into one is
+      <a href="{% url 'fancy_convert' %}">Fancy conversions</a>; what it is,
+      and what the line work costs, is on
+      <a href="{% url 'blank_index' %}">Blanks</a>.
+    </p>
+  {% endif %}
+
   <div class="modes">
     {% comment %}
     Both modes stay on screen. A lone "Edit par" says nothing about there

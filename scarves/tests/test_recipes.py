@@ -2472,3 +2472,103 @@ class ImportDyesTests(TestCase):
     def test_a_missing_file_is_an_error_not_an_empty_run(self):
         with self.assertRaises(CommandError):
             call_command("import_dyes", "/nope.json", "--brand", "X", stdout=StringIO())
+
+
+class RecipePageSaysWhatIsClaimedTests(TestCase):
+    """The colorway page had no idea a sheet existed.
+
+    Its Shortage column is the shelf's own arithmetic — par minus what is on
+    hand — and that number is right: two against a par of eight is six short
+    whatever paper is in the dye room. But it was the *only* number here, so a
+    colorway whose entire shortage was already on a sheet read exactly like one
+    nobody had planned, and the next person to look plans the bath again.
+
+    `private/production-needed/` has netted printed paper off since it started
+    reading `candidates()`. This page never learned, and it is the page
+    somebody lands on from a search or a link.
+
+    Nothing new is written at run creation for this: a `ProductionRunRow` *is*
+    the claim, so sheets printed before this existed are read the same way.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user("staff", password="pw")
+        self.client.force_login(self.user)
+        self.recipe = make_recipe("J Purple")
+        self.product = make_bathable(self.recipe, "J Purple Homespun",
+                                     on_hand=2, par=8, bath=4)
+        self.page = reverse("recipe_detail", args=[self.recipe.pk])
+
+    def _claim(self, baths):
+        self.client.post(reverse("production_sheet_index"),
+                         {"items": f"{self.product.pk}:{baths}"})
+        return ProductionRun.objects.latest("pk")
+
+    def test_the_shelf_shortage_is_unchanged_by_paper(self):
+        """Six short is a fact about the display, and this is the page where
+        that reading has to survive: a number that moved because somebody
+        printed something cannot be checked by looking at the shelf."""
+        self._claim(2)
+
+        response = self.client.get(self.page)
+        product = response.context["products"][0]
+
+        self.assertEqual(product.shortage, 6)
+        self.assertContains(response, "marked for production")
+
+    def test_the_claim_is_stated_with_its_sheet(self):
+        run = self._claim(2)
+
+        response = self.client.get(self.page)
+        product = response.context["products"][0]
+
+        self.assertEqual(product.in_flight, 8)
+        self.assertEqual([r.pk for r in product.claim_sheets], [run.pk])
+        self.assertContains(response, "8 marked for production")
+        self.assertContains(
+            response, reverse("production_run_detail", args=[run.pk])
+        )
+
+    def test_a_covered_shortage_says_there_is_nothing_left_to_plan(self):
+        self._claim(2)
+
+        self.assertContains(self.client.get(self.page), "nothing left to plan")
+
+    def test_a_partly_covered_shortage_says_what_is_left(self):
+        self._claim(1)
+
+        response = self.client.get(self.page)
+
+        self.assertEqual(response.context["products"][0].net_shortage, 2)
+        self.assertContains(response, "4 marked for production")
+        self.assertContains(response, "2 still short after it")
+
+    def test_nothing_is_said_when_no_sheet_asks_for_it(self):
+        response = self.client.get(self.page)
+
+        self.assertEqual(response.context["products"][0].in_flight, 0)
+        self.assertNotContains(response, "marked for production")
+
+    def test_an_accepted_bath_is_not_still_claimed(self):
+        """It is in `number_on_hand` now, so counting it here would say a bath
+        is coming that has already arrived."""
+        run = self._claim(2)
+        row = run.rows.filter(finished_product=self.product).first()
+        production.apply_row(row, yielded=4)
+
+        response = self.client.get(self.page)
+        product = response.context["products"][0]
+
+        self.assertEqual(product.in_flight, 4)
+        self.assertEqual(product.number_on_hand, 6)
+
+    def test_par_mode_is_untouched(self):
+        """Par mode's table has no shortage column, and its job is one number
+        in a box. A claim printed there would be a third figure beside a
+        decision about demand."""
+        self._claim(2)
+
+        response = self.client.get(f"{self.page}?par=1")
+
+        self.assertNotContains(response, "marked for production")
+        self.assertContains(response, "Save par")

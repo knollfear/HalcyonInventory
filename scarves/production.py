@@ -240,9 +240,22 @@ ORDER_PAR = "par"
 ORDER_SALES_PAR = "sales_par"
 
 
-#: Par from sales, in one line: twice a day's sales, rounded up, plus one.
-#: The multiple is the buffer and the one is the floor — a colorway that has
-#: sold nothing still asks for one, so it can be on the table to be bought.
+#: Par from sales, in one line: **a day's sales rounded up, at least one,
+#: doubled, plus one** — so the smallest par this can ask for is three.
+#:
+#: **The order of operations is the whole of it, and the first cut had it
+#: wrong.** Doubling first and rounding after (`ceil(2 × rate) + 1`) gave a
+#: colorway selling half a unit a day a par of 2, and two on a shelf is one
+#: sale away from a hole — the exact thing the buffer exists to prevent.
+#: Rounding the *rate* up first, with a floor of one unit a day, means every
+#: live colorway is planned against at least three: one to sell, one behind
+#: it, and one spare. The par then steps in twos, which is also how a shelf
+#: reads — a pair on the peg or nothing.
+#:
+#: The daily floor is what makes "sold nothing yet" ask for three rather than
+#: one, and that is deliberate: 2026 is year one for colorway data, and a
+#: colour nobody has bought may simply never have been on the table.
+DEMAND_PAR_DAILY_FLOOR = 1
 DEMAND_PAR_MULTIPLE = 2
 DEMAND_PAR_FLOOR = 1
 
@@ -265,9 +278,16 @@ class DemandPar:
     with what sold is what makes the ranking and the membership say the same
     thing, which is the incoherence this is trying on for size.
 
-    The formula is `ceil(2 × units per faire day) + 1`, per finished product
-    rather than pooled — par is per product, and it is the product's own
-    shelf that goes empty. The denominator is faire days with sales recorded,
+    The formula is `max(ceil(units per faire day), 1) × 2 + 1`, per finished
+    product rather than pooled — par is per product, and it is the product's
+    own shelf that goes empty. **The rate is rounded up before it is
+    doubled**, so the floor is three rather than two; the argument is on
+    `DEMAND_PAR_DAILY_FLOOR`, and it is about what two on a peg survives.
+
+    **A stored par of zero derives a par of zero.** Zero is the switch that
+    takes a product out of production planning — "we aren't making it to order
+    now" — and a second reading of the same shelf does not get to overrule
+    that. The floor applies to what is being made. The denominator is faire days with sales recorded,
     so a weekend not yet imported does not drag the rate down, and a day the
     faire did not open (`FaireDay.traded`) does not count either.
 
@@ -298,8 +318,26 @@ class DemandPar:
         """The par this product is planned against."""
         if not self.available:
             return product.par or 0
+        # **A stored par of zero is a decision, and this has to honour it.**
+        # Zero means "not making this to order now" — it is the filter that
+        # takes a product out of production planning everywhere else in the
+        # app — so a par derived from sales must read zero as zero rather than
+        # as an absence to fill in. The floor below is about how thin a shelf
+        # may get for something being made; it is not a reason to start making
+        # something that was taken off the list.
+        #
+        # Measured when this was wrong: 83 of the 100 shortages on the
+        # sales-par list were par-zero rows, all of them Infinity and Triangle
+        # Fringe colorways created as catalogue entries at par zero and never
+        # counted. The real list underneath was 17.
+        if not product.par:
+            return 0
         units = self.sold.get(product.pk, 0)
-        return ceil(DEMAND_PAR_MULTIPLE * units / self.days) + DEMAND_PAR_FLOOR
+        # Rounded up *before* it is doubled, and never below one a day. The
+        # other order of operations bottoms out at two, which is one sale from
+        # an empty peg — see the constants above.
+        rate = max(ceil(units / self.days), DEMAND_PAR_DAILY_FLOOR)
+        return rate * DEMAND_PAR_MULTIPLE + DEMAND_PAR_FLOOR
 
 
 def demand_par():
@@ -363,13 +401,131 @@ def blocked_reasons(product, without_blanks=None, without_dyes=None):
     return reasons
 
 
+def _needy(category, oven, stockout, demand_par):
+    """The population every shortage question is asked of, in one place.
+
+    `dyeable()` is the whole of "what a bath can make": no undyed passthrough
+    (ordered, not dyed — without that the sheet put "4 × " with no colorway on
+    it), no retired colorway (a retired *product* dropped out and a retired
+    *recipe* never did, so a dye room was sent to make a colour somebody had
+    decided to stop making), and no fancy veil (dyed, but a shortage of one is
+    not answered by dyeing).
+
+    Extracted because `covered_by_claims` has to ask about **the rows
+    `candidates` drops**, and a second spelling of the population is how the
+    two come to disagree about what was dropped — which is the failure this
+    whole area already exists to fix, one page further on.
+
+    The `par`/stockout prefilter is loose on purpose: in-flight baths only
+    ever make a product less needy, so this is a superset and the Python pass
+    in `annotate_flight` decides. It is skipped entirely for a demand par,
+    whose target is per product and computed there.
+    """
+    qs = (
+        FinishedProduct.objects.dyeable()
+        .select_related("raw_product", "raw_product__category", "recipe")
+        # The dye plan walks every recipe on the sheet; without this it is a
+        # query per bath.
+        .prefetch_related("recipe__recipe_dyes__dye__brand")
+    )
+    if demand_par is None:
+        qs = qs.filter(
+            Q(par__gt=0, number_on_hand__lt=F("par")) | Q(pk__in=stockout)
+        )
+    else:
+        # Exact rather than an optimisation: a derived par honours a stored
+        # zero (`DemandPar.target`), so a par-zero product can never come back
+        # short and there is nothing for the Python pass to decide. Without
+        # this the sales-par path walks the whole catalogue to discard 84 rows.
+        qs = qs.filter(par__gt=0)
+    if oven is not None:
+        # The microwave and the oven are two sessions, never one sheet.
+        # `None` is the reporting case, which wants both.
+        qs = qs.filter(oven_dyed=oven)
+    if category is not None:
+        qs = qs.filter(raw_product__category=category)
+    return qs
+
+
+def covered_by_claims(category=None, oven=None, demand_par=None):
+    """Products that would be short, but for paper already asking for them.
+
+    **The rows `candidates()` drops, and the reason a colorway goes quiet.**
+    A sheet that covers a shortage in full takes the row off the list
+    entirely — which is right, because there is nothing left to plan — but
+    from the page it is indistinguishable from a product that is fine. That
+    is the same confusion the in-flight badge was added to prevent, in the
+    one case the badge cannot reach: a row that isn't there carries no badge.
+
+    Same population and same arithmetic as `candidates`, from `_needy` and
+    `annotate_flight`, so what this names is exactly what that dropped.
+
+    `include_overshoot` has no counterpart here on purpose. A row whose net
+    shortage is a bath's worth of rounding is still *listed* by the page this
+    serves, so it is not quiet and does not belong in a list of things that
+    vanished.
+    """
+    stockout = stockout_baths()
+    if demand_par is not None and not demand_par.available:
+        demand_par = None
+
+    covered = []
+    for product in annotate_flight(
+        _needy(category, oven, stockout, demand_par),
+        stockout=stockout,
+        demand_par=demand_par,
+    ):
+        if not product.in_flight or product.net_shortage:
+            continue
+        # Short *before* the paper is what makes this a row that vanished.
+        # Without it a product sitting comfortably above par with a bath
+        # still open on a sheet would be reported as "covered", which says
+        # nothing happened to the list.
+        target = product.target_par + product.stockout_bonus
+        if target - product.number_on_hand > 0:
+            covered.append(product)
+    return covered
+
+
+def open_claims(products):
+    """`{finished_product_id: [run, ...]}` — which live sheet is asking.
+
+    The rows `in_flight()` totals, kept whole instead of summed, because a
+    page saying a bath is already marked for production has to say *where* to
+    go and look at it. One query for a page's worth.
+
+    Same filter as `in_flight()` deliberately — pending rows on `counted`
+    sheets — so the units a page prints and the sheet it names can never
+    describe different claims. `ClaimsAgreeWithInFlightTests` pins it.
+    """
+    products = list(products)
+    if not products:
+        return {}
+    rows = (
+        ProductionRunRow.objects.filter(
+            finished_product__in=products,
+            applied_log__isnull=True,
+            cancelled_at__isnull=True,
+            run__in=counted_runs().values("pk"),
+        )
+        .select_related("run")
+        .order_by("run__pk")
+    )
+    claims = {}
+    for row in rows:
+        seen = claims.setdefault(row.finished_product_id, [])
+        if row.run not in seen:
+            seen.append(row.run)
+    return claims
+
+
 def candidates(category=None, include_overshoot=False, order=ORDER_SOLD,
                oven=False, without_blanks=None, without_dyes=None,
                demand_par=None):
     """Products worth putting on a sheet, most urgent first.
 
     `demand_par` is a `DemandPar` when the caller ticked *par from sales*:
-    every product is then measured against `ceil(2 × a day's sales) + 1`
+    every product is then measured against `max(ceil(a day's sales), 1) × 2 + 1`
     instead of its stored par, and the SQL prefilter below is skipped
     because the target is per product and computed in Python. `None` — or a
     `DemandPar` with no days to divide by — is the stored par, unchanged.
@@ -417,29 +573,7 @@ def candidates(category=None, include_overshoot=False, order=ORDER_SOLD,
     if demand_par is not None and not demand_par.available:
         demand_par = None
 
-    # `dyeable()` is the whole of "what a bath can make": no undyed
-    # passthrough (ordered, not dyed — without that the sheet put "4 × " with
-    # no colorway on it), no retired colorway (a retired *product* dropped out
-    # and a retired *recipe* never did, so a dye room was sent to make a
-    # colour somebody had decided to stop making), and no fancy veil (dyed,
-    # but a shortage of one is not answered by dyeing).
-    qs = (
-        FinishedProduct.objects.dyeable()
-        .select_related("raw_product", "raw_product__category", "recipe")
-        # The dye plan walks every recipe on the sheet; without this it is a
-        # query per bath.
-        .prefetch_related("recipe__recipe_dyes__dye__brand")
-    )
-    if demand_par is None:
-        qs = qs.filter(
-            Q(par__gt=0, number_on_hand__lt=F("par")) | Q(pk__in=stockout)
-        )
-    if oven is not None:
-        # The microwave and the oven are two sessions, never one sheet.
-        # `None` is the reporting case, which wants both.
-        qs = qs.filter(oven_dyed=oven)
-    if category is not None:
-        qs = qs.filter(raw_product__category=category)
+    qs = _needy(category, oven, stockout, demand_par)
 
     if not include_overshoot and demand_par is None:
         # The SQL form of behind_a_bath, matching the production page's own

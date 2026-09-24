@@ -46,21 +46,31 @@ def raw_inventory_index(request):
     Carries the shortage counts rather than just naming the categories, so the
     page answers "where do I need to look" without a click.
     """
+    # The counts have to be the counts of the table they open, or the card
+    # promises a row that isn't there. Fancy blanks are off both — see
+    # `raw_inventory_view`. The ids are read first rather than joined into
+    # each annotation: three aggregates over a second multi-valued join is
+    # how a Sum quietly starts double-counting.
+    made_here = list(
+        RawProduct.objects.filter(plain_counterparts__isnull=False)
+        .values_list("pk", flat=True)
+        .distinct()
+    )
+    bought = Q(raw_products__is_active=True) & ~Q(raw_products__in=made_here)
     categories = (
         RawProductCategory.objects.annotate(
             product_count=Count(
                 "raw_products",
-                filter=Q(raw_products__is_active=True),
+                filter=bought,
                 distinct=True,
             ),
             on_hand=Sum(
                 "raw_products__number_on_hand",
-                filter=Q(raw_products__is_active=True),
+                filter=bought,
             ),
             below_par=Count(
                 "raw_products",
-                filter=Q(
-                    raw_products__is_active=True,
+                filter=bought & Q(
                     raw_products__par_level__gt=0,
                     raw_products__number_on_hand__lt=F("raw_products__par_level"),
                 ),
@@ -122,8 +132,9 @@ def raw_inventory_view(request, category_id):
     """
     category = get_object_or_404(RawProductCategory, pk=category_id)
     products = RawProduct.prime_on_order(
-        RawProduct.objects.active().filter(category=category).order_by("name")
+        _shelf(category).order_by("name")
     )
+    made_here = _made_here(category)
 
     # Setting the floor is a mode, the same bargain the recipe page's par mode
     # makes and for the same structural reason: par boxes and delivery boxes
@@ -143,6 +154,7 @@ def raw_inventory_view(request, category_id):
             "supply_mode": True,
             "supply_rows": _supply_rows(products),
             "suppliers": Supplier.objects.active().order_by("name"),
+            "made_here": made_here,
             "typed": {},
             "errors": {},
         })
@@ -172,6 +184,7 @@ def raw_inventory_view(request, category_id):
             # first dyed blank starts reading the other way with nothing to
             # change.
             "dyed_table": any(o.is_dyed for o in outlooks),
+            "made_here": made_here,
             "typed": {},
             "errors": {},
         })
@@ -202,9 +215,49 @@ def raw_inventory_view(request, category_id):
         "products": products,
         "all_categories": RawProductCategory.objects.all().order_by("name"),
         "plan_mode": False,
+        "made_here": made_here,
         "typed": typed,
         "errors": errors,
     })
+
+
+def _shelf(category):
+    """One category's blanks as this page means them: the ones you buy.
+
+    **A fancy blank has no shelf here.** It is a plain scarf somebody added
+    line work to, so no delivery of one ever arrives, nothing counts a pile
+    of them undyed, and its cost is the plain blank's plus `fancying_cost`
+    rather than anything a supplier charges. On the bill it was three rows
+    of boxes that could only ever be left empty; in *Plan an order* it was a
+    shortage annotated "made here, not ordered"; in *Cost & supplier* it was
+    a cost box beside a derived cost, which is the second door that leaves
+    two numbers disagreeing.
+
+    They are not lost, and the page says where they went: stock becomes a
+    fancy one on `private/fancy/`, and what one *is* — the line-work cost,
+    the par a colorway inherits — is on its own page under `private/blanks/`.
+
+    `bought_in()` keys on the fancy pairing, not on `made_in_a_dye_bath`;
+    the argument is on the queryset, and it is a blank that was mis-set for a
+    day rather than a hypothetical.
+    """
+    return RawProduct.objects.active().bought_in().filter(category=category)
+
+
+def _made_here(category):
+    """Names of this category's blanks the tables leave out, for the note.
+
+    Removing rows without saying so leaves somebody hunting a page that no
+    longer has them — and empty when a category has none, so nothing is
+    explained to a shelf of yarn that never had one.
+    """
+    return list(
+        RawProduct.objects.active()
+        .filter(category=category, plain_counterparts__isnull=False)
+        .order_by("name")
+        .values_list("name", flat=True)
+        .distinct()
+    )
 
 
 #: What each written field is called in the save message. Named rather
@@ -250,9 +303,7 @@ def raw_supply_save(request, category_id):
     supplier, not about a shelf.
     """
     category = get_object_or_404(RawProductCategory, pk=category_id)
-    products = list(
-        RawProduct.objects.active().filter(category=category).order_by("name")
-    )
+    products = list(_shelf(category).order_by("name"))
     back = f"{reverse('raw_inventory', args=[category.pk])}?supply=1"
 
     changes, errors = [], []
@@ -330,6 +381,7 @@ def raw_supply_save(request, category_id):
             "supply_mode": True,
             "supply_rows": _supply_rows(products),
             "suppliers": Supplier.objects.active().order_by("name"),
+            "made_here": _made_here(category),
             "typed": {
                 product.pk: {
                     "cost": (request.POST.get(f"cost_{product.pk}") or "").strip(),
@@ -462,9 +514,12 @@ def _supply_rows(products):
     rows = []
     for product in products:
         hit = found.get(product.pk) or {}
-        # `blank_cost` rather than `price`, so a fancy blank's derived cost
-        # is the one that shows — `price` is the supplier's number and a
-        # fancy veil has no supplier. See `FancyBlankCostHasOneHomeTests`.
+        # `blank_cost` rather than `price`, which is the one read of a cost
+        # anywhere in this app — `price` is only what a supplier charges. No
+        # fancy blank reaches this table any more (`_shelf`), so the two
+        # agree on every row here; reading `price` would still be the habit
+        # that let two copies of one cost drift apart. See
+        # `FancyBlankCostHasOneHomeTests`.
         cost = product.blank_cost or Decimal(0)
         ask = product.suggested_price
         rows.append({

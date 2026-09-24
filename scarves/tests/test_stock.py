@@ -2881,3 +2881,161 @@ class FancyBlankCostHasOneHomeTests(TestCase):
         """The plain half need not be on the page for the answer to hold."""
         outlook = rawdemand.rows([self.fancy])[0]
         self.assertFalse(outlook.is_bought)
+
+
+class FancyBlanksAreOffTheReorderPageTests(TestCase):
+    """`private/raw-inventory/` is what you buy, and nobody buys a fancy veil.
+
+    All three modes of that page ask a question about a supplier — book this
+    delivery, order this shortfall, what does one cost — and for a fancy blank
+    every one of them has no answer: it is a plain scarf somebody added line
+    work to. It sat on the bill anyway, as boxes that could only ever be left
+    empty, which is what this pins off.
+
+    **The test is the fancy pairing, not `made_in_a_dye_bath`.** That flag is
+    a typed answer and Cotton Pima DK carried it unchecked for a day — a
+    $6.80 yarn from Wool2dye4, forty on the shelf, nothing pointing at it.
+    Keyed on the flag, that row would have vanished from the page its
+    delivery gets booked on for as long as the mistake stood, and nothing
+    would have said so.
+    """
+
+    def setUp(self):
+        User.objects.create_user("staff", "s@example.test", "pw")
+        self.client.login(username="staff", password="pw")
+        self.category = RawProductCategory.objects.create(name="Silk")
+        self.plain = RawProduct.objects.create(
+            name="Rectangle Veil", category=self.category, price=Decimal("33.03"),
+            number_on_hand=150, par_level=100,
+        )
+        self.fancy = RawProduct.objects.create(
+            name="Fancy Veil", category=self.category, price=Decimal("0"),
+            made_in_a_dye_bath=False, fancying_cost=Decimal("25.00"),
+            par_level=0,
+        )
+        self.plain.fancy_counterpart = self.fancy
+        self.plain.save(update_fields=["fancy_counterpart"])
+        self.url = reverse("raw_inventory", args=[self.category.pk])
+
+    def _body(self, query=""):
+        return self.client.get(f"{self.url}{query}").content.decode()
+
+    def test_the_bill_does_not_offer_boxes_for_a_fancy_blank(self):
+        body = self._body()
+
+        self.assertIn(f'name="counted_{self.plain.pk}"', body)
+        self.assertNotIn(f'name="counted_{self.fancy.pk}"', body)
+        self.assertNotIn(f'name="received_{self.fancy.pk}"', body)
+
+    def test_planning_an_order_leaves_it_out(self):
+        """It used to appear with "made here, not ordered" against a
+        shortfall, which is a row whose only content is that it does not
+        belong on the page."""
+        body = self._body("?plan=1")
+
+        self.assertIn(reverse("blank_edit", args=[self.plain.pk]), body)
+        self.assertNotIn(reverse("blank_edit", args=[self.fancy.pk]), body)
+        self.assertNotIn("made here, not ordered", body)
+
+    def test_costing_a_shelf_leaves_it_out(self):
+        """Its cost is the plain blank's plus the line work, and a box that
+        writes `price` beside a derived figure is the second door that leaves
+        two numbers disagreeing."""
+        body = self._body("?supply=1")
+
+        self.assertIn(f'name="cost_{self.plain.pk}"', body)
+        self.assertNotIn(f'name="cost_{self.fancy.pk}"', body)
+
+    def test_the_page_says_where_the_rows_went(self):
+        """Taking rows away without saying so leaves somebody hunting a page
+        that no longer has them."""
+        body = self._body()
+
+        self.assertIn("Not on this page", body)
+        self.assertIn("Fancy Veil", body)
+        self.assertIn(reverse("fancy_convert"), body)
+        self.assertIn(reverse("blank_index"), body)
+
+    def test_a_category_with_none_explains_nothing(self):
+        yarn = RawProductCategory.objects.create(name="Yarn")
+        RawProduct.objects.create(
+            name="Homespun", category=yarn, price=Decimal("6.71"),
+        )
+
+        body = self.client.get(
+            reverse("raw_inventory", args=[yarn.pk])
+        ).content.decode()
+
+        self.assertNotIn("Not on this page", body)
+
+    def test_a_blank_no_bath_makes_is_still_bought_and_still_listed(self):
+        """Cotton Pima DK as it was mis-set: `made_in_a_dye_bath` unchecked, a
+        supplier, a listing and forty on the shelf. The flag answers "can a
+        bath produce this", which is a different question from "do you buy
+        it", and only the second one decides this page."""
+        cotton = RawProduct.objects.create(
+            name="Cotton Pima DK", category=self.category, price=Decimal("6.80"),
+            made_in_a_dye_bath=False, number_on_hand=40, par_level=10,
+            order_url="https://www.wool2dye4.com/Pima-Cotton-DK.html",
+        )
+
+        body = self._body()
+
+        self.assertIn(f'name="received_{cotton.pk}"', body)
+
+    def test_the_picker_counts_what_its_table_will_show(self):
+        """A card that promises a row the page does not have is worse than a
+        card that undercounts: the count is why somebody clicks."""
+        # A par it could never be short of, to prove the shortage count is
+        # reading the same table: a card flashing "1 below par" for a row the
+        # page will not show is an order nobody can place.
+        self.fancy.par_level = 5
+        self.fancy.save(update_fields=["par_level"])
+
+        page = self.client.get(reverse("raw_inventory_index"))
+        silk = {c.name: c for c in page.context["categories"]}["Silk"]
+
+        self.assertEqual(silk.product_count, 1)
+        self.assertEqual(silk.on_hand, 150)
+        self.assertEqual(silk.below_par, 0)
+
+    def test_the_shelf_total_on_the_card_excludes_it(self):
+        """A fancy blank's raw row is never written — production does not
+        take a raw unit for a fancy yield and a conversion moves finished
+        stock — so anything it holds is noise in a total."""
+        self.fancy.number_on_hand = 7
+        self.fancy.save(update_fields=["number_on_hand"])
+
+        silk = {
+            c.name: c
+            for c in self.client.get(
+                reverse("raw_inventory_index")
+            ).context["categories"]
+        }["Silk"]
+
+        self.assertEqual(silk.on_hand, 150)
+
+    def test_a_cost_posted_for_a_hidden_row_is_not_written(self):
+        """The save reads the table it rendered. A row nobody was offered is
+        a row nobody can set from here."""
+        self.client.post(
+            reverse("raw_supply_save", args=[self.category.pk]),
+            {f"cost_{self.fancy.pk}": "99.00"},
+        )
+
+        self.fancy.refresh_from_db()
+        self.assertEqual(self.fancy.price, Decimal("0"))
+
+    def test_bought_in_is_the_property_spelt_as_a_query(self):
+        """One definition of the concept, two shapes of it."""
+        listed = set(
+            RawProduct.objects.active().bought_in().values_list("pk", flat=True)
+        )
+        self.assertEqual(
+            listed,
+            {
+                p.pk
+                for p in RawProduct.objects.active()
+                if p.is_bought_in
+            },
+        )

@@ -505,7 +505,9 @@ about it is the person's.
 ordering rather than a number.** *Par from sales*, beside *Best sellers
 first* and *Use par* on `private/production-needed/` and in the sheet
 picker's "which shortages first", judges every product against twice a
-day's sales plus one instead of the stored par, orders by that shortage,
+day's sales rounded up, doubled, plus one — three at the least, and zero
+where par is zero, because par 0 means not making it — instead
+of the stored par, orders by that shortage,
 writes nothing, and says on the page what it divided by. The other two
 answers are the old arithmetic exactly. See *"Par from sales"* in
 `docs/claude/production.md` for why the sold ranking and the flat par
@@ -617,6 +619,15 @@ the only way this failure gets noticed.
 
 Prefer re-pointing a custom property (`--column`, `--accent`) over restating
 rules. Widths are per-page and expected to vary; colours generally aren't.
+
+**Shared behaviour goes in the layer, not in the page that needed it first.**
+`hide_toggle.html` is the worked example: a **hide** button that removes a card
+until the page is refreshed, as a checkbox and a label with no script and
+nothing stored. A page adopts it with `hideable` on the block and one include
+inside — the CSS is in `base_internal.html`, so the second page to want it
+cannot end up with a copy that behaves differently. Nothing brings a hidden
+row back on purpose: these lists are derived on every request, and a hidden row
+that survived a reload would be a stored decision nobody made.
 
 **Partials under `templates/scarves/partials/` extend nothing.** They're htmx
 swap targets and embed payloads, so they carry no shell and inherit styling

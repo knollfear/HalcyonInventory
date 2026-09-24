@@ -752,8 +752,9 @@ class ProductionSheetForm(forms.Form):
         ),
     )
     #: Three answers to one question, and the third changes the par as well
-    #: as the order: *Par from sales* judges each product against twice a
-    #: day's sales plus one, ordered furthest below that, without the
+    #: as the order: *Par from sales* judges each product against a day's
+    #: sales rounded up, doubled, plus one, ordered furthest below that,
+    #: without the
     #: close's sold-out bath. It is a choice here and a pill on
     #: production-needed rather than a checkbox beside them, because it is
     #: the same question — a tick that silently overrode the select above
@@ -770,8 +771,10 @@ class ProductionSheetForm(forms.Form):
         help_text=(
             "Sales are measured; par was never dialled in, so ordering by "
             "shortage ranks a session on a number nobody chose. Par from "
-            "sales judges each product against twice what it sells in a "
-            "faire day, rounded up, plus one, and orders by that shortage; "
+            "sales takes what it sells in a faire day, rounds that up to at "
+            "least one, doubles it and adds one — never less than three — and "
+            "orders by that shortage. A par of 0 still means not making it, so "
+            "those are left out either way; "
             "the stored par is not changed. This matches what "
             "production-needed lists, so asking for the first N baths gives "
             "the N you were just looking at."

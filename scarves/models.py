@@ -62,6 +62,27 @@ class FinishedProductQuerySet(ActiveQuerySet):
         return self.dyed().filter(raw_product__made_in_a_dye_bath=True)
 
 
+class RawProductQuerySet(ActiveQuerySet):
+    """The reorder pages' reading of a blank: one that arrives from somewhere.
+
+    `bought_in()` is the `is_bought_in` property spelt as a query, because
+    `private/raw-inventory/` asks it of a whole category at once and a
+    property cannot filter a table. One definition of the concept, in two
+    shapes — the property for a row, this for a page.
+
+    **Keyed on the fancy pairing rather than on `made_in_a_dye_bath`**, which
+    is the obvious-looking test and is wrong here. That flag answers "can a
+    bath produce this", and the answer is no for things nobody calls fancy:
+    Cotton Pima DK is unchecked, has a supplier, a listing, a cost and forty
+    on the shelf. Hiding it from the page a delivery gets booked on would be
+    a real shelf gone missing with nothing saying so, where the failure the
+    other way is a row too many on a list.
+    """
+
+    def bought_in(self):
+        return self.filter(plain_counterparts__isnull=True)
+
+
 class DyeBrand(models.Model):
     """
     Optional normalization of dye brands (Jacquard, Dharma, etc.)
@@ -563,7 +584,7 @@ class RawProduct(models.Model):
         ),
     )
 
-    objects = ActiveQuerySet.as_manager()
+    objects = RawProductQuerySet.as_manager()
 
     class Meta:
         ordering = ["category__name", "name"]
@@ -754,7 +775,10 @@ class RawProduct(models.Model):
         `fancy_counterpart`, rather than `made_in_a_dye_bath`, because that
         flag answers a different question — "can a bath produce this" — and a
         thing can fail it for reasons that have nothing to do with where it
-        came from.
+        came from — and unlike the pairing, the flag is a typed answer that can
+        simply be wrong: Cotton Pima DK carried it unchecked for a day while
+        being a $6.80 yarn from Wool2dye4 with forty on the shelf.
+        `RawProductQuerySet.bought_in` is this test over a whole page.
         """
         return not self.plain_counterparts.exists()
 

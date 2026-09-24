@@ -43,6 +43,39 @@ No `InventoryLog` is written here, which is unchanged rather than an omission
 introduced with the form. Raw stock is an opening balance that gets counted
 and topped up; the finished side is where provenance is tracked.
 
+### The fancy blanks are not on this page, in any of its three modes
+
+Every mode of `private/raw-inventory/` asks a question about a supplier —
+book this delivery, order this shortfall, what does one cost — and a fancy
+blank has no answer to any of them. It is a plain scarf somebody added line
+work to: no delivery of one ever arrives, nothing counts a pile of them
+undyed, and its cost is the plain blank's plus `fancying_cost`, derived by
+`blank_cost`. So it sat on the bill as a row of boxes that could only be left
+empty, on *Plan an order* as a shortage annotated *made here, not ordered*,
+and on *Cost & supplier* as a `price` box beside a number nothing reads —
+the second door that leaves two copies of one cost disagreeing.
+
+`views/stock.py::_shelf` is the one query all three modes and both saves go
+through, and the picker's counts are annotated the same way: **a card that
+promises a row the table will not show is worse than one that undercounts**,
+because the count is why somebody clicks. The page names the rows it leaves
+out and where they went — `private/fancy/` to turn stock into one,
+`private/blanks/` for what one *is* — since rows that vanish with no
+explanation are rows somebody goes hunting for.
+
+**The test is `bought_in()`, the fancy pairing, not `made_in_a_dye_bath`**,
+and that is not a stylistic choice. The flag answers *can a bath produce
+this*, which is a different question from *do you buy it* — and it is a typed
+answer, so it can be wrong in a way the pairing cannot. `Cotton Pima DK` was
+live with it unchecked and nothing pointing at it: a $6.80 yarn from
+Wool2dye4, a listing, forty on the shelf. It has since been set right, which
+is exactly the point — keyed on the flag, that row would have vanished from
+the page its delivery gets booked on for as long as the mistake stood, and
+nothing would have said so. Keyed on the pairing, the worst a mis-set row
+costs is one line too many on a list. The property
+(`RawProduct.is_bought_in`) and the queryset are the same test in two shapes,
+pinned together by `FancyBlanksAreOffTheReorderPageTests`.
+
 ## `private/raw-inventory/blank/`: what a blank *is*, which had no door
 
 `RawProduct` is not registered in the admin and no page created one, so until

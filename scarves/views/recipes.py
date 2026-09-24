@@ -853,6 +853,30 @@ def recipe_detail(request, pk):
             # reads. It is the number in the box in another unit, never a
             # recommendation about it.
             product.par_baths = round(product.par / product.bath_size, 1)
+    else:
+        # **What paper already asks for, beside the shortage it answers.**
+        # The Shortage column is the shelf's own arithmetic — par minus what
+        # is on hand — and it is right: two on the shelf against a par of
+        # eight is six short however many baths are in flight. But it was the
+        # only number here, so a colorway with its whole shortage already on
+        # a sheet read exactly like one nobody had planned, and the next
+        # person to look plans it again. `private/production-needed/` has
+        # netted paper off since it started reading `candidates()`; this page
+        # never learned, and it is the page somebody lands on from a search.
+        #
+        # Both numbers, not one: the shelf shortage stays the headline
+        # because it is what a person standing at the display can check, and
+        # the claim is said under it with the sheet named — a claim you
+        # cannot go and look at is a number that has to be trusted.
+        #
+        # It needs nothing new written at run creation. A `ProductionRunRow`
+        # *is* the claim (see *Two signals propose, one claim decides* in
+        # `CLAUDE.md`), so this reads sheets that already exist — including
+        # ones printed before this was built.
+        production.annotate_flight(products)
+        claims = production.open_claims(products)
+        for product in products:
+            product.claim_sheets = claims.get(product.pk, [])
 
     context = {"recipe": recipe, "products": products, "par_mode": par_mode}
     context.update(_recipe_history(request, recipe, products))

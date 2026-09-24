@@ -46,9 +46,6 @@
                color: #8a5a2b; background: #fdf4e8; border: 1px solid #e6cfae;
                border-radius: 999px; padding: 2px 9px; }
   .ovenbadge:hover { background: #f8e9d3; }
-  /* Quiet: a bath already on paper is the ordinary state of a working shop,
-     not an exception. It is here so a shortage that moved says why. */
-  .onpaper { font-size: 11px; color: #6b7280; font-weight: 400; }
   /* What this blank sold, under what it holds. Muted because it qualifies
      the row rather than competing with it — the same call the slow-sellers
      page makes putting its unattributed line under the table. */
@@ -86,8 +83,8 @@
   line first. Sales are measured.
 
   The first two pills only reorder; every group is listed either way. The
-  third changes the par as well: each product is judged against twice a
-  day's sales plus one, ordered by that shortage, without the close's
+  third changes the par as well: each product is judged against a day's
+  sales rounded up, doubled, plus one, ordered by that shortage, without the close's
   sold-out bath — the sales are already in the number. Three answers to
   one question, so one control: the first cut put the third on a checkbox
   beside these two, which was a disjointed way to say the same thing. The
@@ -118,8 +115,9 @@
     {% endcomment %}
     <p class="netnote">
       {% if demand_par.available %}
-        Par below is <strong>twice a day's sales, rounded up, plus one</strong>
-        — each product's own sales over
+        Par below is <strong>a day's sales rounded up, doubled, plus
+        one</strong> — never less than three, and a stored par of 0 still
+        means not making it, so those are left out — each product's own sales over
         {{ demand_par.days }} faire day{{ demand_par.days|pluralize }} with sales recorded
         ({{ demand_par.label|lower }}) — and the list is ordered furthest
         below that par first, without the close's sold-out bath. The stored
@@ -137,10 +135,35 @@
     (`production.candidates`), so printing a sheet moves these numbers. Said
     out loud because the alternative is somebody noticing a colorway went
     quiet and not knowing whether it was made, printed or dropped.
+
+    **It used to count only the rows that survived**, which is the one case
+    where this sentence could not do its job: a claim that covers a shortage
+    in full takes the row off the page, so the units that explain the biggest
+    change to the list were the units left out of the total. Sheet #21 claimed
+    68 and this line read "4".
     {% endcomment %}
     <p class="netnote">
       {{ in_flight_total }} unit{{ in_flight_total|pluralize }} already asked
       for on a printed sheet, and taken off the shortages below.
+    </p>
+  {% endif %}
+
+  {% if covered %}
+    {% comment %}
+    **The rows that are not here, named.** A shortage a sheet covers entirely
+    drops off — correctly, there is nothing left to plan — but a row that is
+    absent carries no badge, so from the page it is identical to a colorway
+    that is fine. This is that badge for the rows that cannot hold one, and
+    the sheet is linked because the reason somebody is looking is to check
+    whether the bath is really coming.
+    {% endcomment %}
+    <p class="netnote">
+      Not listed below, because a sheet already covers the whole shortage:
+      {% for c in covered %}
+        <a href="{% url 'recipe_detail' c.recipe_id %}">{{ c.recipe_name }}</a>
+        ({{ c.units }} on
+        {% for run in c.sheets %}{% if not forloop.first %}, {% endif %}<a href="{% url 'production_run_detail' run.pk %}">sheet #{{ run.pk }}</a>{% endfor %}){% if not forloop.last %}; {% endif %}
+      {% endfor %}.
     </p>
   {% endif %}
 
@@ -160,7 +183,16 @@
 
   {% if groups %}
     {% for g in groups %}
-      <div class="card">
+      {% comment %}
+      One card per colorway, and each one can be struck off the page — she
+      works down this list planning baths, and a list that only gets longer
+      is one you lose your place in. Nothing brings a row back but a refresh,
+      which is the right bargain here: the list is derived from the shelf on
+      every request, so a hidden row that survived a reload would be a
+      decision nobody made.
+      {% endcomment %}
+      <div class="card hideable">
+        {% include "scarves/partials/hide_toggle.html" with hide_id=g.recipe_id %}
         <div class="recipe-head">
           <span class="recipe-name">
             <a href="{% url 'recipe_detail' g.recipe_id %}">{{ g.recipe_name }}</a>

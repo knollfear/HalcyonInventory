@@ -92,7 +92,8 @@ def production_needed_view(request):
     sold = slowsellers.sold_by_recipe(rng)
 
     # Three pills, one question. `sales_par` judges every product against
-    # twice a day's sales plus one instead of its stored par and orders by
+    # a day's sales rounded up, doubled, plus one — at least three — instead
+    # of its stored par and orders by
     # that shortage — the third choice of the sheet form's "which shortages
     # first", so the two pages offer the same three answers. The stored par
     # is not written; the other two pills are the old page.
@@ -108,9 +109,7 @@ def production_needed_view(request):
         demand_par=demand,
     )
 
-    by_recipe = {}
-    for fp in products:
-        by_recipe.setdefault(fp.recipe_id, []).append(fp)
+    by_recipe = _by_recipe(products)
 
     groups = []
     for rid, fps in by_recipe.items():
@@ -168,6 +167,30 @@ def production_needed_view(request):
         groups.sort(key=lambda g: (-g["units_sold"], -g["total_shortage"],
                                    g["recipe_name"]))
 
+    # **The colorways that are not on the list because paper covers them.**
+    # A claim that answers a shortage in full takes the row off the page, and
+    # a row that is absent cannot carry the badge that explains it — so from
+    # the page it reads identically to a colorway that is fine, and the next
+    # person to look plans the bath again. Named here, once, with the sheet.
+    covered_products = production.covered_by_claims(
+        category=category, oven=None, demand_par=demand
+    )
+    claim_sheets = production.open_claims(covered_products)
+    covered = []
+    for rid, fps in _by_recipe(covered_products).items():
+        sheets = []
+        for fp in fps:
+            for run in claim_sheets.get(fp.pk, []):
+                if run not in sheets:
+                    sheets.append(run)
+        covered.append({
+            "recipe_id": rid,
+            "recipe_name": fps[0].recipe.name,
+            "units": sum(p.in_flight for p in fps),
+            "sheets": sheets,
+        })
+    covered.sort(key=lambda c: c["recipe_name"])
+
     context = {
         "groups": groups,
         "categories": RawProductCategory.objects.all().order_by("name"),
@@ -178,11 +201,29 @@ def production_needed_view(request):
         # it is showing was divided by — advice you cannot inspect is a
         # decision in disguise, and this one is a formula.
         "demand_par": demand,
+        "covered": covered,
         # So the page can say it is netting off printed sheets rather than
         # leaving somebody to wonder why a colorway went quiet.
-        "in_flight_total": sum(g["in_flight"] for g in groups),
+        #
+        # **Both halves, because the half that was missing is the one that
+        # matters.** This used to sum the listed groups only, so the claims
+        # that removed rows entirely — the biggest change a sheet makes to
+        # this page — were exactly the ones left out of the number explaining
+        # it. Sheet #21 claimed 68 units across ten colorways and this read 4.
+        "in_flight_total": (
+            sum(g["in_flight"] for g in groups)
+            + sum(c["units"] for c in covered)
+        ),
     }
     return render(request, "scarves/production_needed.html", context)
+
+
+def _by_recipe(products):
+    """`{recipe_id: [product, ...]}`, in the order the products arrived."""
+    grouped = {}
+    for product in products:
+        grouped.setdefault(product.recipe_id, []).append(product)
+    return grouped
 
 
 @require_POST
@@ -316,8 +357,8 @@ def sheet_list(form):
         # link somebody can send.
         without_blanks=form.cleaned_data.get("without_blanks"),
         without_dyes=form.cleaned_data.get("without_dyes"),
-        # The third order judges against twice a day's sales plus one
-        # rather than the stored par. Only the suggestion reads it: once
+        # The third order judges against a day's sales rounded up, doubled,
+        # plus one, rather than the stored par. Only the suggestion reads it: once
         # `items` exists the list is the list, and a pick is somebody
         # deciding.
         demand_par=(

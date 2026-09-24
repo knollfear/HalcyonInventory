@@ -3836,16 +3836,20 @@ class SoldOnThisBlankIsOnTheRowTests(TestCase):
 
 
 class ParFromSalesTests(TestCase):
-    """A third answer to "which shortages first": twice a day's sales plus one.
+    """A third answer to "which shortages first": a day's sales, doubled, +1.
 
     The list ranks on what a colorway sold and filters on a par that is the
     same number for nearly everything, and the two disagree about what
     matters: a best seller sitting one above par 8 is not short, so it never
     reaches the list it would top. The tick measures every product against
-    `ceil(2 × units per faire day) + 1` instead, and orders by that shortage.
-    Nothing is stored, and the other two pills are exactly the old page. It is
-    a pill and a choice rather than a checkbox because it is the same question
-    as the other two.
+    `max(ceil(units per faire day), 1) × 2 + 1` instead, and orders by that
+    shortage. Nothing is stored, and the other two pills are exactly the old
+    page. It is a pill and a choice rather than a checkbox because it is the
+    same question as the other two.
+
+    **The rate is rounded up before it is doubled**, which is the correction
+    made after the first cut shipped: doubling first bottomed the par out at
+    two, and two on a shelf is one sale from a hole.
     """
 
     def setUp(self):
@@ -3885,13 +3889,99 @@ class ParFromSalesTests(TestCase):
         return {fp.name: fp for g in groups for fp in g["items"]}
 
     def test_the_formula(self):
-        # 20 sold over 2 faire days = 10 a day; 2 × 10 + 1.
+        # 20 sold over 2 faire days = 10 a day; 10 × 2 + 1.
         demand = production.demand_par()
 
         self.assertEqual(demand.days, 2)
         self.assertEqual(demand.target(self.star), 21)
-        # ceil(0) + 1: a colorway that sold nothing still asks for one.
-        self.assertEqual(demand.target(self.dud), 1)
+        # The daily floor of one, doubled, plus one: a colorway that has sold
+        # nothing still asks for three, because year one of colorway data
+        # cannot tell "nobody wants it" from "it was never on the table".
+        self.assertEqual(demand.target(self.dud), 3)
+
+    def test_the_rate_is_rounded_up_before_it_is_doubled(self):
+        """The order of operations, pinned. A product selling one unit across
+        two faire days is half a unit a day: rounding the rate up first asks
+        for three, doubling first asked for two — and two on a shelf is one
+        sale from an empty peg, which is what the buffer is for."""
+        slow = make_bathable(make_recipe("Ember Slow"), "Noble",
+                             on_hand=0, par=8, bath=4)
+        self._sell(slow, 1, self.days[0])
+
+        self.assertEqual(production.demand_par().target(slow), 3)
+
+    def test_the_par_steps_in_twos(self):
+        """3, 5, 7 — a pair on the peg or nothing, which is how a shelf
+        reads. There is no par of four in this arithmetic."""
+        targets = []
+        for units, name in ((2, "Two a day"), (3, "Three a day")):
+            product = make_bathable(make_recipe(name), "Homespun",
+                                    on_hand=0, par=8, bath=4)
+            for when in self.days:
+                self._sell(product, units, when)
+            targets.append(production.demand_par().target(product))
+
+        self.assertEqual(targets, [5, 7])
+
+    def test_the_floor_is_three_for_everything_being_made(self):
+        """Nothing this arithmetic plans against can be lower, which is the
+        whole of the change: the least a colorway can ask for is one to sell,
+        one behind it and one spare."""
+        demand = production.demand_par()
+
+        for product in FinishedProduct.objects.dyeable().filter(par__gt=0):
+            self.assertGreaterEqual(demand.target(product), 3)
+
+    def test_a_stored_par_of_zero_derives_zero_not_the_floor(self):
+        """**Par 0 is the switch that says we aren't making this to order**,
+        and a second reading of the same shelf does not get to overrule it.
+        The floor is about how thin a shelf may get for something in
+        production, not a reason to restart something taken off the list."""
+        parked = make_bathable(make_recipe("Parked"), "Homespun",
+                               on_hand=0, par=0, bath=4)
+
+        self.assertEqual(production.demand_par().target(parked), 0)
+
+    def test_a_parked_colorway_is_not_on_the_list_at_all(self):
+        """The failure this fixes, measured on the live catalogue: 83 of the
+        100 shortages under this pill were par-zero rows — Infinity and
+        Triangle Fringe colorways entered as catalogue rows at par zero and
+        never counted. The 17 real ones were unreadable underneath them."""
+        parked = make_bathable(make_recipe("Parked"), "Parked Base",
+                               on_hand=0, par=0, bath=4)
+
+        rows = self._rows(sort="sales_par")
+
+        self.assertNotIn(parked.name, rows)
+        # And it is still on the stored-par page, where zero has always meant
+        # this: nothing has been hidden that used to be visible there.
+        self.assertNotIn(parked.name, self._rows(sort="par"))
+
+    def test_a_parked_colorway_is_not_called_covered_either(self):
+        """`covered_by_claims` shares the arithmetic, so a row that could
+        never be short cannot be reported as one a sheet is covering."""
+        parked = make_bathable(make_recipe("Parked"), "Homespun",
+                               on_hand=0, par=0, bath=4)
+        self.client.post(reverse("production_sheet_index"),
+                         {"items": f"{parked.pk}:1"})
+
+        covered = production.covered_by_claims(
+            oven=None, demand_par=production.demand_par()
+        )
+
+        self.assertNotIn(parked.pk, {p.pk for p in covered})
+
+    def test_nothing_walks_the_parked_rows_to_discard_them(self):
+        """The SQL says `par > 0` rather than letting the Python pass drop
+        them: on the live catalogue that is 84 rows fetched and annotated to
+        be thrown away, on the page somebody is waiting for."""
+        for i in range(3):
+            make_bathable(make_recipe(f"Parked {i}"), "Homespun",
+                          on_hand=0, par=0, bath=4)
+
+        qs = production._needy(None, None, {}, production.demand_par())
+
+        self.assertEqual(qs.filter(par=0).count(), 0)
 
     def test_a_day_with_no_sales_recorded_is_not_a_day(self):
         """A weekend nobody has imported yet must not drag the rate down."""
@@ -3998,7 +4088,9 @@ class ParFromSalesTests(TestCase):
 
         rows = self._rows(sort="sales_par")
         self.assertEqual(rows[self.dud.name].stockout_bonus, 0)
-        self.assertEqual(rows[self.dud.name].net_shortage, 1)
+        # The daily floor with nothing added to it: three, not three plus a
+        # bath for the sell-out.
+        self.assertEqual(rows[self.dud.name].net_shortage, 3)
 
     def test_a_bagged_bath_comes_back_judged_the_same_way(self):
         response = self.client.post(
@@ -4011,3 +4103,171 @@ class ParFromSalesTests(TestCase):
         self.assertEqual(fp.target_par, 21)
         self.assertEqual(fp.net_shortage, 12 - 4)
         self.assertContains(response, 'name="demand_par"')
+
+
+class QuietColorwaysAreNamedTests(TestCase):
+    """A shortage a sheet covers in full leaves the page — and says so.
+
+    Netting printed paper off the shortages is right, and the page has said so
+    since it started reading `candidates()`. But the sentence counted only the
+    rows that *survived*, and a claim big enough to remove a row entirely is
+    the biggest change a sheet makes to this page. So the case the sentence
+    exists for was the one case it could not describe: on the live catalogue,
+    sheet #21 claimed 68 units across ten colorways and the line read "4".
+
+    A row that is absent cannot carry the in-flight badge either, so from the
+    page a fully covered colorway is indistinguishable from one that is fine —
+    which is how the same bath gets planned twice.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user("staff", password="pw")
+        self.client.force_login(self.user)
+        self.covered = make_bathable(make_recipe("J Purple"), "J Purple Homespun",
+                                     on_hand=2, par=8, bath=4)
+        self.short = make_bathable(make_recipe("Ochre"), "Ochre Homespun",
+                                   on_hand=0, par=8, bath=4)
+
+    def _page(self):
+        return self.client.get(reverse("production_needed"))
+
+    def _claim(self, product, baths):
+        self.client.post(
+            reverse("production_sheet_index"),
+            {"items": f"{product.pk}:{baths}"},
+        )
+        return ProductionRun.objects.latest("pk")
+
+    def test_a_covered_colorway_is_named_with_its_sheet(self):
+        run = self._claim(self.covered, 2)
+
+        response = self._page()
+        covered = response.context["covered"]
+
+        self.assertEqual([c["recipe_name"] for c in covered], ["J Purple"])
+        self.assertEqual(covered[0]["units"], 8)
+        self.assertEqual([r.pk for r in covered[0]["sheets"]], [run.pk])
+        self.assertContains(response, "because a sheet already covers")
+        self.assertContains(response, reverse("production_run_detail", args=[run.pk]))
+
+    def test_the_total_counts_the_claims_that_removed_rows(self):
+        """The number that was wrong: 8 of these units are on a row that is
+        no longer printed, and they are the reason it isn't."""
+        self._claim(self.covered, 2)
+        self._claim(self.short, 1)
+
+        response = self._page()
+
+        self.assertEqual(response.context["in_flight_total"], 12)
+
+    def test_a_partly_covered_colorway_is_not_called_quiet(self):
+        """It is still on the list, with its own badge saying 4 on a sheet.
+        Naming it here as well would say a row vanished when it didn't."""
+        self._claim(self.short, 1)
+
+        response = self._page()
+
+        self.assertEqual(response.context["covered"], [])
+        self.assertContains(response, "4 on a sheet")
+
+    def test_nothing_is_said_when_no_paper_exists(self):
+        response = self._page()
+
+        self.assertEqual(response.context["covered"], [])
+        self.assertEqual(response.context["in_flight_total"], 0)
+        self.assertNotContains(response, "because a sheet already covers")
+
+    def test_a_product_above_par_with_an_open_bath_is_not_reported_covered(self):
+        """"Covered" means *a row went missing*. A product nobody was short of
+        has no row to miss, and calling its open bath a covered shortage would
+        describe a change to the list that never happened."""
+        comfortable = make_bathable(make_recipe("Sage"), "Sage Homespun",
+                                    on_hand=20, par=8, bath=4)
+        self._claim(comfortable, 1)
+
+        self.assertEqual(self._page().context["covered"], [])
+
+    def test_the_category_filter_reaches_the_covered_list(self):
+        """It is the filtered page's own arithmetic, not the catalogue's — a
+        strip naming colorways from a table you are not looking at is noise."""
+        self._claim(self.covered, 2)
+        other, _ = RawProductCategory.objects.get_or_create(name="Notions")
+
+        response = self.client.get(
+            f"{reverse('production_needed')}?category={other.pk}"
+        )
+
+        self.assertEqual(response.context["covered"], [])
+
+    def test_covered_reads_the_same_population_as_the_list(self):
+        """`_needy` is shared for this reason: the rows named as dropped have
+        to be rows this page would otherwise have shown."""
+        self._claim(self.covered, 2)
+
+        listed = {p.pk for p in production.candidates(include_overshoot=True,
+                                                      oven=None)}
+        covered = {p.pk for p in production.covered_by_claims(oven=None)}
+
+        self.assertEqual(listed & covered, set())
+        self.assertIn(self.covered.pk, covered)
+        self.assertIn(self.short.pk, listed)
+
+    def test_a_retired_colorway_is_not_reported_as_covered(self):
+        """`dyeable()` decides both halves, so nothing can be named quiet that
+        was never going to be listed."""
+        self._claim(self.covered, 2)
+        self.covered.recipe.is_active = False
+        self.covered.recipe.save(update_fields=["is_active"])
+
+        self.assertEqual(self._page().context["covered"], [])
+
+
+class ClaimsAgreeWithInFlightTests(TestCase):
+    """`open_claims` and `in_flight` must describe the same claim.
+
+    One counts, the other names the sheet. If they could disagree, a page
+    would print units from one and a link from the other — and the link is
+    what somebody goes and looks at.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user("staff", password="pw")
+        self.client.force_login(self.user)
+        self.product = make_bathable(make_recipe("Cabernet"), "Cabernet Wool",
+                                     on_hand=0, par=8, bath=4)
+
+    def test_the_units_named_are_the_units_counted(self):
+        self.client.post(reverse("production_sheet_index"),
+                         {"items": f"{self.product.pk}:2"})
+
+        runs = production.open_claims([self.product])[self.product.pk]
+        claimed = sum(
+            row.quantity
+            for run in runs
+            for row in run.rows.filter(finished_product=self.product)
+        )
+
+        self.assertEqual(claimed, production.in_flight()[self.product.pk])
+
+    def test_one_sheet_is_named_once_however_many_baths_it_holds(self):
+        """Two baths of a colorway are two rows on one sheet, and "sheet #4,
+        sheet #4" is a link printed twice."""
+        self.client.post(reverse("production_sheet_index"),
+                         {"items": f"{self.product.pk}:3"})
+
+        self.assertEqual(len(production.open_claims([self.product])[self.product.pk]), 1)
+
+    def test_a_cancelled_bath_is_no_longer_a_claim(self):
+        self.client.post(reverse("production_sheet_index"),
+                         {"items": f"{self.product.pk}:1"})
+        run = ProductionRun.objects.latest("pk")
+        row = run.rows.get(finished_product=self.product)
+        row.cancelled_at = timezone.now()
+        row.save(update_fields=["cancelled_at"])
+
+        self.assertEqual(production.open_claims([self.product]), {})
+        self.assertEqual(production.in_flight(), {})
+
+    def test_nothing_is_asked_of_the_database_for_no_products(self):
+        with self.assertNumQueries(0):
+            self.assertEqual(production.open_claims([]), {})

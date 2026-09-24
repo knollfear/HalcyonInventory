@@ -340,6 +340,28 @@
                   <td class="num">{{ p.par }}</td>
                   <td class="num">
                     {% if p.shortage %}<span class="short">{{ p.shortage }}</span>{% else %}—{% endif %}
+                    {% if p.in_flight %}
+                      {% comment %}
+                      **The shortage is the shelf's; the claim is said under
+                      it.** Two on hand against a par of eight is six short
+                      whatever paper exists, so that number does not move —
+                      but a colorway whose shortage is already on a sheet used
+                      to read exactly like one nobody had planned, which is
+                      how the same bath gets planned twice. The sheet is named
+                      rather than just counted: a claim you cannot go and look
+                      at is a number that has to be trusted.
+                      {% endcomment %}
+                      <div class="onpaper">
+                        {{ p.in_flight }} marked for production{% for run in p.claim_sheets %}{% if forloop.first %} on {% else %}, {% endif %}<a href="{% url 'production_run_detail' run.pk %}">sheet #{{ run.pk }}</a>{% endfor %}
+                      </div>
+                      <div class="onpaper">
+                        {% if p.net_shortage %}
+                          {{ p.net_shortage }} still short after it
+                        {% else %}
+                          nothing left to plan
+                        {% endif %}
+                      </div>
+                    {% endif %}
                   </td>
                   <td class="num">${{ p.price }}</td>
                   <td class="baths-col">

@@ -227,14 +227,63 @@ gets decided.
 
 **The third answer to "which shortages first" — `?sort=sales_par` on
 `private/production-needed/`, `order=sales_par` on the sheet form — judges
-every product against `ceil(2 × units per faire day) + 1` instead of its
-stored par, and orders by that shortage.** It is `production.DemandPar`,
+every product against `max(ceil(units per faire day), 1) × 2 + 1` instead
+of its stored par, and orders by that shortage.** It is `production.DemandPar`,
 `ORDER_SALES_PAR`, and `candidates()` takes the object as `demand_par`.
 Nothing is stored — `FinishedProduct.par` is untouched, the recipe page's
 par editor is still the only door to that number — and the other two
 answers are the old page to the byte. It exists to see what the other
 arithmetic would say, side by side with the arithmetic already in use, so
 it is a pill and not a migration.
+
+**The order of operations is the whole rule, and the first cut had it
+backwards.** It doubled the rate and rounded afterwards — `ceil(2 × rate) +
+1` — which put every colorway selling under half a unit a day on a par of
+**2**. Two on a shelf is one sale from a hole, which is the thing a buffer is
+for, so the arithmetic was quietly answering "how little can we get away
+with" on exactly the products with the least evidence behind them.
+
+It now rounds the *rate* up first and floors it at one unit a day:
+`max(ceil(units/days), 1) × 2 + 1`. Three consequences, all wanted:
+
+- **The floor is three, not two** — one to sell, one behind it, one spare.
+- **It steps in twos** (3, 5, 7 …), which is how a shelf reads: a pair on the
+  peg or nothing.
+- **A colorway that has sold nothing asks for three**, where it used to ask
+  for one. 2026 is year one for colorway data and a colour nobody bought may
+  never have been on the table — one unit was a par that guaranteed it stayed
+  untested.
+
+`DEMAND_PAR_DAILY_FLOOR`, `DEMAND_PAR_MULTIPLE` and `DEMAND_PAR_FLOOR` are
+the three numbers, named separately because they are three different claims:
+the least a live colorway sells, how many days of cover to carry, and the
+spare.
+
+**A stored par of zero derives zero, and that is not an exception to the
+floor — it is what zero means.** Par 0 is the switch that takes a product out
+of production planning: *we aren't making this to order now*. The recipe
+page's par editor says so, `candidates()` has always honoured it, and a
+second reading of the same shelf does not get to overrule it. The floor is
+about how thin a shelf may get for something that **is** being made; it is
+not a reason to restart something somebody took off the list.
+
+Getting that wrong was expensive to read and cheap to fix. With the floor
+applied to par-zero rows, **83 of the 100 shortages on this list were
+par-zero catalogue rows** — every Infinity colorway and 46 of 47 Triangle
+Fringe, entered at par zero the day those blanks were catalogued and never
+counted since. The real list underneath was **17 products, 18 baths**. The
+exclusion is in `DemandPar.target` and, as SQL, in `_needy` — exact rather
+than an optimisation, since a par-zero product can no longer come back short
+at all, and it saves annotating 84 rows to discard them.
+
+Worth knowing about those two blanks, because it is the state this uncovered
+rather than anything this pill caused: par 0 **and** nothing on hand **and**
+no pegs on the display map closes every correction route at once — the close
+skips the pair by design, `restock.board()` walks pegs they do not have, and
+stored-par planning excludes them. They are selling (41 units across 30
+colorways this season), so the stock physically exists and the app holds
+zero. One absolute count puts them back on the close for good; nothing
+automatic will do it for them.
 
 **It is a pill beside *Best sellers first* and *Use par*, not a checkbox
 beside them.** The first cut was a tick, and the user called that a
@@ -312,6 +361,65 @@ a bath*. That measured a *weekend* of projected demand against par and found
 it crossed a bath boundary four times in 333; this asks a different question
 — two days of cover plus one, per product — and whether that question is a
 better one is what having both on a checkbox is for.
+
+### The colorways that are missing, and the row that cannot carry a badge
+
+In-flight baths are subtracted here (see *In-flight baths are subtracted*
+under the sheet), and the page has always said so: *"44 units already asked
+for on a printed sheet, and taken off the shortages below"*, with a per-row
+`N on a sheet` under any shortage that moved. Both exist because a number that
+dropped silently reads as *nothing needed*.
+
+**Neither reaches the case that matters most.** A claim that covers a
+shortage *in full* takes the row off the page — correctly, there is nothing
+left to plan — and a row that is absent cannot carry a badge. Worse, the
+banner summed the badges of the rows that *survived*, so the units doing the
+most to the list were precisely the ones left out of the sentence explaining
+it. Live example: sheet #21 claimed 68 units across ten colorways, ten rows
+vanished, and the line read **4** — the one partly-covered row.
+
+From the page, a fully covered colorway is then indistinguishable from one
+that is fine. Somebody looks for J Purple, does not find it, and plans the
+bath again — the duplicate-sheet failure this whole area exists to prevent,
+arriving through the page instead of the query.
+
+So the banner counts every claim it netted off — listed rows *and* removed
+ones — and the removed colorways are **named under it with their sheet
+linked**: `Not listed below, because a sheet already covers the whole
+shortage: J Purple (8 on sheet #21)`. The link matters as much as the name,
+because the reason somebody is looking is to judge whether that bath is
+really coming, and `production.open_claims` is what answers *where* — the
+same rows `in_flight()` totals, kept whole instead of summed, so the units
+printed and the sheet named can never describe different claims.
+
+`production.covered_by_claims()` is that list, and it reads `_needy()` and
+`annotate_flight()` — the same population and the same arithmetic
+`candidates()` uses, extracted for exactly this reason. A second spelling of
+"which products are we asking about" is how the list of what was dropped
+comes to disagree with what was actually dropped. Two guards on the edges:
+a product comfortably above par with a bath still open is **not** reported
+(nothing went missing from the list, so there is nothing to explain), and
+`include_overshoot` has no counterpart here, because a row left short by a
+bath's worth of rounding is still printed and so was never quiet.
+
+### Any card can be struck off the page
+
+Every colorway card carries a **hide** button in its corner
+(`partials/hide_toggle.html`, rules in the house style). She works down this
+list planning baths, and a list that only ever grows is one you lose your
+place in.
+
+Nothing brings a row back but a refresh, and **that is the design rather than
+a shortcut**. The list is derived from the shelf on every request, so a hidden
+row that outlived the page would be a stored decision nobody made — and the
+first thing it would quietly hide is a colorway that had since gone short.
+It is a checkbox and a label, no script and nothing stored: `:has()` removes
+the card, and an `@supports` guard takes the button away rather than leaving a
+dead one where that selector is not understood.
+
+The pattern is deliberately page-agnostic — `hideable` on the block, one
+include inside it — because the next long list will want the same thing and a
+second hand-rolled copy is how two of them start behaving differently.
 
 ### Recording a bath that a sheet already claimed
 
@@ -1147,8 +1255,9 @@ already said. So the obvious feature — derive a per-product target from the
 sales rate — is not weak here, it is *unrepresentable*, and the arithmetic
 that proves it is the reason this is a bath rule instead. (The *Set par
 from sales* tick, above, is that feature offered as a comparison rather
-than a rule: it writes nothing, and it is measured at twice a day plus one
-rather than a weekend against par, which is a different quantity.)
+than a rule: it writes nothing, and it is measured at a day's sales rounded
+up and doubled plus one rather than a weekend against par, which is a
+different quantity.)
 
 Adding exactly `bath_size` adds exactly one bath, always, since
 `ceil((n + b) / b) == ceil(n / b) + 1`. Nothing rounds.

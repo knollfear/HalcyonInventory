@@ -50,6 +50,7 @@ from ..models import (
     sync_display_slots,
 )
 from .helpers import (
+    make_bathable,
     make_product,
     make_recipe,
 )
@@ -1102,3 +1103,80 @@ class ReportsAreTheirOwnCategoryTests(TestCase):
                     forbidden, source,
                     f"{module.__name__} should not write: {forbidden}",
                 )
+
+
+class HideUntilRefreshTests(TestCase):
+    """A card struck off a long list by looking at it, and nothing stored.
+
+    The control is a checkbox and its label — no script, no session, no query
+    parameter. **That a refresh brings everything back is the feature**, not a
+    shortcut: these lists are derived from the shelf on every request, so a
+    hidden row that outlived the page would be a stored decision nobody made,
+    and the first thing it would quietly hide is a colorway that had since gone
+    short.
+
+    The rules live in the house style so a page adopting the pattern adds no
+    CSS of its own — which is the whole point of it being a pattern.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("hider", "h@example.test", "pw")
+        self.client.force_login(self.user)
+        self.recipe = make_recipe("Cabernet")
+        self.product = make_bathable(self.recipe, "Cabernet Wool",
+                                     on_hand=0, par=8, bath=4)
+
+    def test_every_colorway_card_can_be_hidden(self):
+        second = make_bathable(make_recipe("Sage"), "Sage Wool",
+                              on_hand=0, par=8, bath=4)
+
+        body = self.client.get(reverse("production_needed")).content.decode()
+
+        self.assertEqual(body.count('class="card hideable"'), 2)
+        self.assertIn(f'id="hide-{self.recipe.pk}"', body)
+        self.assertIn(f'id="hide-{second.recipe.pk}"', body)
+        self.assertIn(f'for="hide-{self.recipe.pk}"', body)
+
+    def test_the_ids_are_unique_per_card(self):
+        """Two cards sharing an id means one click hides the wrong one — and
+        the label points at whichever the browser finds first."""
+        make_bathable(make_recipe("Sage"), "Sage Wool", on_hand=0, par=8, bath=4)
+        make_bathable(make_recipe("Ochre"), "Ochre Wool", on_hand=0, par=8, bath=4)
+
+        body = self.client.get(reverse("production_needed")).content.decode()
+        ids = re.findall(r'<input type="checkbox" id="(hide-[^"]+)"', body)
+
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertEqual(len(ids), 3)
+
+    def test_the_house_style_carries_the_rules(self):
+        """A page that had to bring its own `.hideable` CSS would be a pattern
+        in name only, and the second page to use it would drift."""
+        body = self.client.get(reverse("production_needed")).content.decode()
+
+        self.assertIn(".hideable:has(> .hider:checked)", body)
+        self.assertIn(".hide-btn", body)
+
+    def test_no_dead_button_where_the_selector_is_not_understood(self):
+        """`:has()` is what lets the label sit inside the block it removes. A
+        browser without it would render a button that does nothing, which is
+        worse than no button: it reads as the page ignoring a click."""
+        body = self.client.get(reverse("production_needed")).content.decode()
+
+        self.assertIn("@supports not selector(:has(*))", body)
+
+    def test_hiding_is_not_a_form_field_on_the_page(self):
+        """The checkbox sits outside every form on the card, so working down
+        the list cannot post a stray value with a recorded bath."""
+        body = self.client.get(reverse("production_needed")).content.decode()
+        card = body.split('class="card hideable"', 1)[1]
+        before_form = card.split("<form", 1)[0]
+
+        self.assertIn('id="hide-', before_form)
+
+    def test_it_does_not_print(self):
+        """Several of these pages are printed, and a `hide` pill on paper is
+        nothing to anybody."""
+        body = self.client.get(reverse("production_needed")).content.decode()
+
+        self.assertIn("@media print { .hide-btn { display: none; } }", body)
