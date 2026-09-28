@@ -177,9 +177,6 @@ so a new `@page_meta` page appears on it without an edit.
 Kept here deliberately, because the alternative to writing them down is
 rediscovering them:
 
-- **Raw stock has no ledger.** Finished stock moves through `scarves/ledger.py`
-  and nowhere else; undyed blanks still move in three hand-written places. The
-  replacement (`RawStockMove`) is designed and not built.
 - **No CI.** The suite runs locally in about three minutes and a pre-push hook
   gates `main`, which covers the case it exists for while the committer is one
   person. What a hook can't do is prove the tests ran on a machine that isn't
@@ -188,6 +185,15 @@ rediscovering them:
 - **A single replica, and no load to justify a second.**
 - **`ALLOWED_HOSTS = ["*"]`**, leaning on Railway's edge routing rather than
   saying which hosts are real.
+- **Nothing says when a raw count is due.** Undyed blanks heal the same way
+  finished stock does — *Receive stock* takes an absolute count beside the
+  delta, and records it even when it agrees, because the fact learned is that
+  the shelf was looked at today. What the page doesn't show is the *age* of
+  that count, so a number nobody has checked in two weeks reads exactly like
+  one checked this morning. Deliberately not a movement ledger: accounting is
+  external to this app, ordering is the only consumer of a raw number, and a
+  count heals whatever went unrecorded where a delta log only works if
+  everything before it was right.
 - **`secret/` is not a security boundary** and never claimed to be — it means
   unlisted, not protected. Since this repo is public, those routes are readable
   here, so the per-employee PIN inside each page is doing all of the actual
