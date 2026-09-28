@@ -144,14 +144,19 @@ def season_range(params):
     )
 
 
-def _lines(rng):
-    """Sale lines inside a range, on Square's own clock."""
-    lines = SaleLine.objects.filter(event_type=SaleLine.PAYMENT)
+def lines(rng):
+    """Sale lines inside a range, on Square's own clock.
+
+    Public because `dyebill` counts against it: the sold half of the dye
+    statements page has to mean exactly what this page's sold column means,
+    or the two answers to "what left the tent" drift apart.
+    """
+    found = SaleLine.objects.filter(event_type=SaleLine.PAYMENT)
     if rng.start:
-        lines = lines.filter(sold_at__date__gte=rng.start)
+        found = found.filter(sold_at__date__gte=rng.start)
     if rng.end:
-        lines = lines.filter(sold_at__date__lte=rng.end)
-    return lines
+        found = found.filter(sold_at__date__lte=rng.end)
+    return found
 
 
 def days_with_sales(rng):
@@ -161,14 +166,14 @@ def days_with_sales(rng):
     exports: a faire day nobody has imported yet has no lines, and counting
     it would read it as a day nothing sold.
     """
-    return set(_lines(rng).dates("sold_at", "day"))
+    return set(lines(rng).dates("sold_at", "day"))
 
 
 def sold_units(rng):
     """`{finished_product_id: units}` for everything that sold in the range."""
     return {
         row["finished_product"]: int(row["q"] or 0)
-        for row in _lines(rng)
+        for row in lines(rng)
         .filter(finished_product__isnull=False)
         .values("finished_product")
         .annotate(q=Sum("quantity"))
@@ -184,7 +189,7 @@ def sold_by_recipe(rng):
     orders by it disagrees with the page that reports it.
     """
     counted = (
-        _lines(rng)
+        lines(rng)
         .filter(finished_product__recipe__isnull=False)
         .values("finished_product__recipe")
         .annotate(q=Sum("quantity"))
@@ -307,11 +312,11 @@ def unattributed(rng, category=None):
     Matched on the blank, not the finished product, because that is all a line
     like this carries.
     """
-    lines = _lines(rng).filter(price_point__in=NO_COLORWAY)
+    found = lines(rng).filter(price_point__in=NO_COLORWAY)
     if category is not None:
-        lines = lines.filter(raw_product__category=category)
+        found = found.filter(raw_product__category=category)
     counted = (
-        lines.values("item_name")
+        found.values("item_name")
         .annotate(q=Sum("quantity"))
         .order_by("-q")
     )
@@ -349,14 +354,14 @@ def lopsided(rng, category=None):
     and only a person knows which shop they are in. Same call `colorbands`
     makes: fill the form in, a person decides.
     """
-    lines = _lines(rng).filter(raw_product__isnull=False).exclude(
+    found = lines(rng).filter(raw_product__isnull=False).exclude(
         price_point__in=NO_COLORWAY
     )
     if category is not None:
-        lines = lines.filter(raw_product__category=category)
+        found = found.filter(raw_product__category=category)
 
     counted = (
-        lines.values("raw_product__name", "raw_product", "price_point")
+        found.values("raw_product__name", "raw_product", "price_point")
         .annotate(q=Sum("quantity"))
         .order_by()
     )

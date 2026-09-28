@@ -908,6 +908,36 @@ somebody to the dye room to make something that arrives in a box; without the
 third you are offered a kanban card to backfill for a dye bath that never
 happened.
 
+**The other side of "loud beats silent" is that the loud thing is a 500, and
+it lands on somebody trying to do their job.** `bulk_inventory_update` was the
+worked case: the save loop already knew about passthroughs — `ledger.count`
+writes the number to the raw row and the comment there says so — but
+`build_bulk_inventory_form_class` labelled each field `fp.recipe.name`, so the
+page raised before rendering a row. Not only on notions, which is how it was
+found: an undyed yarn hangs off the *same* blank as that yarn's colorways, so
+picking the yarn raised too.
+
+**`FinishedProduct.variation_name` is the fix and the rule.** It is the app's
+one answer to "what distinguishes this row within its blank" — the colorway
+where there is one, the blank's name where there isn't — and it is never
+None. Anywhere a row is *displayed* rather than filtered, reach for it rather
+than `recipe.name`. `photowalk`, `skus` and `sales` already guard by hand;
+`admin`'s Square matcher had the same crash and now uses the property, where
+it is the more correct value anyway since it is scoring against Square's own
+variation names.
+
+**The column also has to say why it is empty.** The bulk table rendered
+`{{ fp.recipe.name }}` into a cell headed *Recipe*, which for a passthrough is
+silently blank — and a blank cell reads as a row that failed to load, not as
+one with nothing to put there. It says *no colorway — sold as it arrives*, and
+the heading is *Colorway*.
+
+**Why the suite missed it:** every bulk-inventory test builds its products
+with `make_recipe`. `make_undyed` existed and was used elsewhere in the same
+file; nothing had ever opened this page on a blank that had one.
+`BulkInventoryPassthroughTests` is the pin, and it covers both doors — the
+notion and the yarn with an undyed sibling.
+
 ### One pile, and only one row may count it
 
 This is the part that bites. For anything dyed, the raw blank and the finished

@@ -110,13 +110,27 @@ def stock_value(request):
     })
 
 
+def _statements_href(**params):
+    """`private/dye-statements/` carrying a range and nothing else.
+
+    The page has no other state to keep, which is the whole reason a pill can
+    be a plain link here where the sales report's has to rebuild the filters
+    and the sort.
+    """
+    pairs = [(k, v) for k, v in params.items() if v not in (None, "", 0)]
+    query = urlencode(pairs)
+    return reverse("dye_statements") + (f"?{query}" if query else "")
+
+
 @page_meta(
     title="Dye Statements",
     description="What each closed dye session was worth — baths, units, the "
                 "blanks at what they cost and the output at what it is priced "
                 "at, frozen when the session closed rather than re-read from "
-                "today's prices.",
+                "today's prices. Over any dates, with what sold over the same "
+                "ones beside it.",
     category="Reports",
+    note="?range=7|30|season|all or ?from=&to=",
 )
 @login_required
 def dye_statements(request):
@@ -129,11 +143,41 @@ def dye_statements(request):
     A bath whose entry was taken back afterwards is off the statement — the
     question is whether an entry still stands — and a bath accepted before the
     figures were kept is counted and left unvalued rather than valued at zero.
+
+    **The range is the whole of the page's state**, so a reading is a link
+    somebody can send — the same bargain `private/sales/` makes, in the same
+    parameters, and the window selects baths rather than whole sessions.
+
+    **What sold over the same dates is printed beside what was made, in units
+    only.** That is the question a date range makes askable and the statements
+    alone cannot answer: over these dates, did the dyed shelves gain or lose.
+    It is rendered as a direction the stock moved and never as a result — see
+    `Alongside` in `scarves/dyebill.py` for why the money on the two sides is
+    printed and never differenced, and why the figure is qualified rather
+    than presented as a reckoning of anybody's week.
     """
-    found = dyebill.statements()
+    rng = dyebill.resolve_range(request.GET)
+    found = dyebill.statements(rng)
+    made = dyebill.totals(found)
+    counter = dyebill.sold(rng)
+
     return render(request, "scarves/dye_statements.html", {
+        "range": rng,
+        "ranges": [
+            {
+                "key": key,
+                "label": label,
+                "on": rng.key == key,
+                # "Choose dates" is the form below rather than a link, so it
+                # is a pill that only ever shows state.
+                "href": None if key == "custom" else _statements_href(range=key),
+            }
+            for key, label in dyebill.RANGES
+        ],
         "statements": found,
-        "totals": dyebill.totals(found),
+        "totals": made,
+        "sold": counter,
+        "alongside": dyebill.alongside(made, counter),
     })
 
 

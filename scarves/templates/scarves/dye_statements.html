@@ -4,22 +4,26 @@ One statement per closed session. The figures are the ones frozen when each
 bath was accepted, so a reprint next spring says what the session was worth
 then — a bill is against the prices at the time. No labour line, because no
 rate has been agreed and a number in a column reads as a decision.
+
+The range is the whole of the page's state and rides in the query string, so
+a reading is a link somebody can send.
+
+**What sold over the same dates sits beside what was made, and must not be
+rendered as a contest.** No ranking, no colour on either side, no bar for one
+to be longer than the other, and none of ahead / behind / keeping up. The
+difference is stated as the direction the dyed shelves moved and qualified
+on the same line: a close, a recount and stock that went out unrung move the
+same shelves and are in neither column. Money is printed on both sides and
+never differenced — output is at the asking price and the till is net, so a
+subtraction there reads as a margin and is not one.
 {% endcomment %}
 
 {% block title %}Dye Statements{% endblock %}
-{% block heading %}Dye Statements{% endblock %}
+{% block heading %}Dye Statements — {{ range.label }}{% endblock %}
 
 {% block style %}
   {{ block.super }}
   :root { --column: 1060px; }
-
-  .headline { display: flex; flex-wrap: wrap; gap: 28px; margin: 4px 0 18px;
-              padding: 16px 18px; border: 1px solid #dde3ea; border-radius: 10px;
-              background: #f8fafc; }
-  .headline .fig .n { font-size: 28px; font-weight: 700; color: var(--accent);
-                      font-variant-numeric: tabular-nums; }
-  .headline .fig .n.quiet { font-size: 23px; color: #4b5563; }
-  .headline .fig .what { font-size: 12px; color: #667; }
 
   table.rows td.num, table.rows th.num { text-align: right;
       font-variant-numeric: tabular-nums; }
@@ -35,6 +39,52 @@ rate has been agreed and a number in a column reads as a decision.
   .none { color: #8a919c; }
   .caveat { font-size: 12px; color: #667; margin-top: 22px; line-height: 1.6; }
   .pending { font-size: 13px; color: #556; margin: 0 0 14px; }
+
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 4px 0 6px; }
+  .pill {
+      border: 1px solid #cbd6e2; border-radius: 999px; padding: 4px 12px;
+      text-decoration: none; font-size: 14px; background: #fff; color: inherit;
+  }
+  .pill.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .dates { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; margin: 10px 0 18px; }
+  .field { display: flex; flex-direction: column; gap: 3px; }
+  .field label { font-size: 12px; color: #667; }
+  .field input[type="date"] {
+      font: inherit; padding: 5px 8px; border: 1px solid #cfd6de;
+      border-radius: 6px; background: #fff;
+  }
+  button.go {
+      font: inherit; padding: 6px 14px; border-radius: 6px; cursor: pointer;
+      border: 1px solid var(--accent); background: var(--accent); color: #fff;
+  }
+
+  /* The two movements over the window. Same border, same type size, same
+     colour on both headline numbers, side by side in one row — nothing here
+     may render one side as bigger, better or first. The dye room panel
+     carries three money lines and the till one carries one because this is a
+     statements page and that is its subject, not because it wins anything.
+     See the comment at the top of this file. */
+  .movements { display: flex; flex-wrap: wrap; gap: 14px; margin: 4px 0 6px; }
+  .movements .side {
+      flex: 1 1 260px; padding: 14px 16px; border: 1px solid #dde3ea;
+      border-radius: 10px; background: #fff;
+  }
+  /* A label, not a section heading — the layer's h2 rule carries a rule
+     underneath it, which here would draw a lid over one panel and read as
+     emphasis on whichever came first. */
+  .movements h2 {
+      font-size: 12px; text-transform: uppercase; letter-spacing: .05em;
+      color: #667; margin: 0 0 8px; font-weight: 700;
+      border-bottom: 0; padding-bottom: 0;
+  }
+  .movements .n { font-size: 26px; font-weight: 700; color: #33404f;
+                  font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .movements .what { font-size: 12px; color: #667; }
+  .movements .also { font-size: 12px; color: #667; margin-top: 8px; }
+  .movements .also b { font-variant-numeric: tabular-nums; }
+  .shelves { font-size: 13px; color: #445; line-height: 1.6; margin: 0 0 18px;
+             max-width: 78ch; }
+  .shelves b { font-variant-numeric: tabular-nums; }
 {% endblock %}
 
 {% block content %}
@@ -45,24 +95,116 @@ rate has been agreed and a number in a column reads as a decision.
     baths are accepted.
   </p>
 
-  <div class="headline">
-    <div class="fig">
-      <div class="n">${{ totals.retail|floatformat:0 }}</div>
-      <div class="what">made, at the asking price</div>
+  {% comment %}
+  The whole of the page's state, so a range is a link that can be sent. The
+  keys are the sales report's, so a window picked there means the same window
+  here.
+  {% endcomment %}
+  <div class="toolbar">
+    {% for r in ranges %}
+      {% if r.href %}
+        <a class="pill{% if r.on %} on{% endif %}" href="{{ r.href }}">{{ r.label }}</a>
+      {% else %}
+        <span class="pill{% if r.on %} on{% endif %}">{{ r.label }}</span>
+      {% endif %}
+    {% endfor %}
+  </div>
+
+  <form class="dates" method="get" action="">
+    <div class="field">
+      <label for="from">From</label>
+      <input type="date" id="from" name="from"
+             value="{% if range.key == 'custom' and range.start %}{{ range.start|date:'Y-m-d' }}{% endif %}">
     </div>
-    <div class="fig">
-      <div class="n quiet">${{ totals.cost|floatformat:0 }}</div>
-      <div class="what">blanks it went through</div>
+    <div class="field">
+      <label for="to">To</label>
+      <input type="date" id="to" name="to"
+             value="{% if range.key == 'custom' and range.end %}{{ range.end|date:'Y-m-d' }}{% endif %}">
     </div>
-    <div class="fig">
-      <div class="n quiet">${{ totals.value_added|floatformat:0 }}</div>
-      <div class="what">added by the dyeing, before any rate is applied</div>
+    <button class="go" type="submit">Use these dates</button>
+  </form>
+
+  {% comment %}
+  The two movements of the same shelves over the same dates. Two panels of
+  identical weight, in one row, with no ordering a reader can take as a
+  ranking — and no arithmetic between the money columns, which are on
+  different bases.
+  {% endcomment %}
+  <div class="movements">
+    <div class="side">
+      <h2>Out of the dye room</h2>
+      <div class="n">{{ totals.yielded }}</div>
+      <div class="what">
+        units, from {{ totals.baths }} bath{{ totals.baths|pluralize }}
+        over {{ totals.runs }} session{{ totals.runs|pluralize }}
+      </div>
+      <div class="also"><b>${{ totals.retail|floatformat:0 }}</b> at the asking price</div>
+      <div class="also"><b>${{ totals.cost|floatformat:0 }}</b> in blanks it went through</div>
+      <div class="also">
+        <b>${{ totals.value_added|floatformat:0 }}</b> added by the dyeing,
+        before any rate is applied
+      </div>
     </div>
-    <div class="fig">
-      <div class="n quiet">{{ totals.baths }}</div>
-      <div class="what">baths over {{ totals.runs }} session{{ totals.runs|pluralize }}, {{ totals.yielded }} units</div>
+    <div class="side">
+      <h2>Over the counter</h2>
+      <div class="n">{{ sold.units }}</div>
+      <div class="what">units of dyed stock rung up with a colorway</div>
+      <div class="also"><b>${{ sold.net|floatformat:0 }}</b> taken, net of discounts</div>
     </div>
   </div>
+
+  {% comment %}
+  Nothing on either side is not a reading of level; it is a window with
+  nothing in it, and the note under the table already says so. A sentence
+  about shelves that did not move would be the page inventing a finding.
+  {% endcomment %}
+  {% if totals.yielded or sold.units %}
+  <p class="shelves">
+    {% if alongside.direction == "level" %}
+      The same number came out of the pots as went over the counter over these
+      dates
+    {% else %}
+      That leaves the dyed shelves <b>{{ alongside.size }}</b>
+      unit{{ alongside.size|pluralize }} {{ alongside.direction }} over these
+      dates
+    {% endif %}
+    — by these two movements and nothing else. A Sunday close, a recount, a
+    bath nobody wrote down and stock that went out unrung all move the same
+    shelves and are in neither column.
+    {% if sold.colourless %}
+      Another <b>{{ sold.colourless }}</b>
+      unit{{ sold.colourless|pluralize }} of dyed styles rang up on a flat
+      price button with no colorway attached; those are real sales the count
+      above leaves out, because nothing says which colorway they were.
+    {% endif %}
+    {% if totals.retail and sold.net %}
+      The two money figures are not subtracted from each other: one is what the
+      output is priced at and the other is what the till actually took, so the
+      difference would read as a margin and is not one.
+    {% endif %}
+  </p>
+  {% endif %}
+
+  {% comment %}
+  A trading day nobody has imported and a trading day nothing sold on are the
+  same zero in the sold column, and they read oppositely. Naming the gap is
+  the whole mitigation — the season page's warning, here.
+  {% endcomment %}
+  {% if sold.missing_days %}
+    <p class="shelves">
+      {% if sold.missing_days == sold.trading_days %}
+        None of the <b>{{ sold.trading_days }}</b> trading
+        day{{ sold.trading_days|pluralize }} in this window have any
+      {% else %}
+        <b>{{ sold.missing_days }}</b> of the {{ sold.trading_days }} trading
+        days in this window have no
+      {% endif %}
+      sales on file at all. That is almost always an export
+      nobody has loaded rather than a day nothing sold, and until it is loaded
+      the counter side above reads low — and the shelves, therefore, fuller
+      than they were.
+    </p>
+  {% endif %}
 
   {% if totals.unpriced %}
     <p class="pending">
@@ -127,7 +269,15 @@ rate has been agreed and a number in a column reads as a decision.
       </tbody>
     </table>
   {% else %}
-    <p class="note">No session has had a bath accepted yet.</p>
+    <p class="note">
+      {% if range.is_all_time %}
+        No session has had a bath accepted yet.
+      {% else %}
+        No bath was accepted between these dates. That is a window with no
+        sessions checked in, not a book with none in it — the pills above
+        widen it.
+      {% endif %}
+    </p>
   {% endif %}
 
   <p class="caveat">
@@ -142,6 +292,13 @@ rate has been agreed and a number in a column reads as a decision.
     of real work does not read as though it earned nothing — but the row itself
     still carries no money, and the estimate is marked wherever it is printed.
     Everything unmarked is what that session was actually worth on the day.
+    <br>
+    <strong>A session is dated by when its baths were checked in.</strong>
+    Nothing records when a pot was lit, so a session dyed on Saturday and
+    reported on Monday falls on the Monday, and a sheet worked across a
+    boundary reports on each side the baths that were accepted there. What
+    sold is on Square’s own clock instead, which is the one that does not
+    move when an export is loaded late.
     <br>
     <strong>Added is not profit and not yet a wage.</strong> It is the asking
     price of what came out less what the blanks cost — the dye, the labour and

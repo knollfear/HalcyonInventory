@@ -136,7 +136,12 @@ def preview_square_match(modeladmin, request, queryset):
                 var_ranked = sorted(
                     sq_variations,
                     key=lambda v: -_match_score(
-                        fp.recipe.name,
+                        # `variation_name`, because a passthrough has a null
+                        # recipe and because this is scoring against Square's
+                        # own variation names — which is the question that
+                        # property answers. `recipe.name` raised here on any
+                        # blank carrying an undyed sibling.
+                        fp.variation_name,
                         v["item_variation_data"].get("name", "")
                     )
                 )

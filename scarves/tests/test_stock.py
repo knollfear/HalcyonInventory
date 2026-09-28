@@ -1309,6 +1309,83 @@ class RetireDontDeleteTests(TestCase):
         self.product.delete()
 
         self.assertEqual(FinishedProduct.objects.count(), 0)
+class BulkInventoryPassthroughTests(TestCase):
+    """A row with no colorway reaches this page, and used to raise on the way in.
+
+    A passthrough's `recipe` is null and that null is the marker — see *Undyed
+    stock* in `docs/claude/stock.md`. The save loop already knew: `ledger.count`
+    writes a passthrough's number to the raw row, and the comment there says so.
+    The **form label** did not, so `build_bulk_inventory_form_class` read
+    `fp.recipe.name` and a notion, or any yarn blank carrying an undyed
+    sibling, was a 500 before the page rendered a single row.
+
+    It survived the suite because every bulk-inventory test above builds its
+    products with `make_recipe`, so nothing had ever opened this page on a
+    blank that has one of these — the fixture existed (`make_undyed`) and was
+    never pointed here.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user("staff-pass", password="pw")
+        self.client.force_login(self.user)
+
+    def _get(self, product):
+        return self.client.get(
+            reverse("bulk_inventory_update"),
+            {"raw_ids": str(product.raw_product_id)},
+        )
+
+    def test_a_notion_opens_the_page_instead_of_raising(self):
+        notion = make_undyed("Yarn Bowl", category_name="Notions", on_hand=6)
+
+        response = self._get(notion)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Yarn Bowl")
+
+    def test_a_blank_carrying_an_undyed_sibling_opens_too(self):
+        """The wider half of the same bug. An undyed yarn hangs off the same
+        blank as that yarn's colorways, so this was not only a notions page
+        problem — picking the yarn itself raised."""
+        undyed = make_undyed("Heavenly", on_hand=5)
+        FinishedProduct.objects.create(
+            name="Heavenly Rainbow", raw_product=undyed.raw_product,
+            recipe=make_recipe("Rainbow"), price="39.00",
+        )
+
+        response = self._get(undyed)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Rainbow")
+
+    def test_the_colorway_cell_says_why_it_is_empty(self):
+        """It rendered blank before, which reads as a row that failed to load
+        rather than one with nothing to put there."""
+        notion = make_undyed("Stitch Markers", category_name="Notions", on_hand=3)
+
+        self.assertContains(self._get(notion), "no colorway")
+
+    def test_counting_one_writes_to_the_row_that_holds_the_pile(self):
+        """The reason the page has to accept these at all. A passthrough's
+        count lives on the raw product, and writing the finished mirror would
+        snap back on the next save."""
+        notion = make_undyed("Yarn Bowl", category_name="Notions", on_hand=6)
+
+        self.client.post(
+            f"{reverse('bulk_inventory_update')}"
+            f"?raw_ids={notion.raw_product_id}",
+            {f"count_{notion.pk}": "9", "reason_preset": "Recount", "reason": ""},
+        )
+
+        notion.raw_product.refresh_from_db()
+        notion.refresh_from_db()
+        self.assertEqual(notion.raw_product.number_on_hand, 9)
+        self.assertEqual(notion.number_on_hand, 9)
+        log = InventoryLog.objects.get()
+        self.assertEqual(log.source, InventoryLog.SOURCE_BULK_UPDATE)
+        self.assertIn("Recount", log.notes)
+
+
 class BulkInventoryReasonTests(TestCase):
     """A bulk count says why it moved, at whichever grain fits.
 

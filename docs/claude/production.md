@@ -719,6 +719,67 @@ today's prices, and blind to yield on purpose), so the size of a session is
 readable before anybody lights a pot. That is where a rate would eventually
 say what the work pays before it starts.
 
+### The statement page takes dates, and the window is on the bath
+
+`private/dye-statements/` answers over a range, in `private/sales/`'s own
+parameters (`?range=`, `?from=`, `?to=`, plus `season`), so a window picked on
+one report page means the same window here and a reading is a link somebody
+can send. The default is the one thing that differs: the sales page opened
+cold means today, and this one means every session on file — which is what it
+answered before it had a filter at all, and re-answering a bookmark silently
+is not a thing a page gets to do.
+
+**The window selects rows by `accepted_at`, not runs by their last accept.**
+A sheet worked across a boundary reports on each side the baths that were
+checked in there. Dating a whole sheet by its closing bath would land ten
+days of work on one afternoon, which is the `import_square_sales` failure —
+Monday carrying Saturday — arriving at the other end of the shop. What it
+cannot fix is that `accepted_at` is when a bath was *reported*: nothing
+records when a pot was lit, so a Saturday session checked in on Monday is a
+Monday, and the page says so rather than implying a precision it hasn't got.
+
+### What sold sits beside what was made, and is not a scoreboard
+
+A date range makes one question askable that the statements alone cannot
+answer — over these dates, did the dyed shelves gain or lose — so `sold(rng)`
+prints the till's side of the same window. **This is a fact about stock and
+an emotionally charged one**, because the two columns are two people's weeks
+to anybody who works here. Four rules keep the page from being read as a
+verdict, and they are pinned in `AlongsideTests` rather than left to taste:
+
+- **Units are compared; money is not.** Units are the same thing counted
+  twice, so `made − sold` is real. The money is two bases — output at the
+  **asking** price, the till at **net** — and a difference between them reads
+  as a margin and is not one. `Alongside` therefore carries units and nothing
+  else, which is what makes the wrong figure impossible to render by accident.
+- **The difference is a direction the stock moved.** Fuller, lighter or level,
+  qualified on the same line: a close, a recount, a bath nobody wrote down and
+  stock that went out unrung all move the same shelves and are in neither
+  column. Not ahead, behind, keeping up or short.
+- **Nothing is ranked or coloured.** Two panels of the same weight, side by
+  side. The dye room's carries three money lines because this is a statements
+  page and that is its subject, not because it wins anything.
+- **A window with nothing on either side draws no conclusion.** Zero against
+  zero is not a reading of level; it is an empty window, and the note under
+  the table already says so.
+
+**Sold means a line that named a colorway** — one tying to a `FinishedProduct`
+with a recipe. `made_in_a_dye_bath` is the obvious test and the wrong one: it
+is true for notions and for undyed yarn, neither of which ever saw a pot, and
+both of which sell. Two blind spots follow and both are named on the page
+rather than worked around, because both run the same way — they make the
+counter side read low and therefore the shelves read fuller:
+
+- **`Sold.colourless`** — units of dyed styles rung on a flat price button.
+  Real sales, with nothing to say which colorway, so they are counted beside
+  the figure instead of into it. `slowsellers.unattributed`'s call, again.
+- **`Sold.missing_days`** — faire days inside the window marked `traded` with
+  no line against them at all. This is `Weekend.is_gap` arriving by another
+  door and it lands harder here: an export nobody loaded and a day nothing
+  sold are the same zero in one column, and only one of them is true. The
+  test is on the calendar rather than on whether any lines turned up, because
+  off season there is nothing to be missing and a zero is just a zero.
+
 ### The blanks come off when the run is made, not when the bath is reported
 
 **A run is an intent to make something, and the yarn it needs is spoken for

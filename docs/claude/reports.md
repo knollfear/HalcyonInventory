@@ -70,6 +70,24 @@ headings that mysteriously aren't links. An unreadable date contributes
 nothing and the heading states the range actually used, which is what stops
 the answer being mistaken for the question that was asked.
 
+### The range vocabulary is shared, and so are the two helpers behind it
+
+`?range=today|yesterday|7|30|all`, `?from=`, `?to=` — plus `season`, which
+`slowsellers.season_range` adds — mean the same window on every report page
+that takes dates, so a link built on one works on another. Two helpers exist
+to keep that true rather than nearly true: `sales.window()` turns a range into
+the half-open datetime pair, and `slowsellers.lines()` is the one definition
+of "sale lines inside a range, on Square's clock". `private/dye-statements/`
+is the third page on both, and two readings of "inside the window" that
+disagreed by a day would put a Sunday night's session on the wrong side of a
+boundary.
+
+**The default is per page and is not part of the vocabulary.** A till page
+opened cold means today; `private/slow-sellers/` means the running season,
+because a lifetime total buries a colour that has not sold *this* year;
+`private/dye-statements/` means every session on file. Each is the question
+that page is actually opened with.
+
 ## Slow sellers: a zero means two opposite things
 
 `private/slow-sellers/` is the other end of `private/sales/`, and a different

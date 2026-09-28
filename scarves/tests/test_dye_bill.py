@@ -9,18 +9,27 @@ error the moment a statement becomes a bill for the dyeing:
 - a bath from before the figures were kept being valued at zero rather than
   reported as unpriced.
 """
+import dataclasses
+import re
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
 from django.contrib.auth.models import User
 from django.test import TestCase
 from django.urls import reverse
+from django.utils import timezone
 
-from .. import dyebill, producedsince, production
+from .. import dyebill, producedsince, production, sales
 from ..models import (
+    Faire,
+    FaireDay,
     FinishedProduct,
     ProductionRun,
+    ProductionRunRow,
     RawProduct,
     RawProductCategory,
+    Sale,
+    SaleLine,
 )
 from .helpers import make_recipe
 
@@ -324,3 +333,301 @@ class StatementPageTests(TestCase):
         body = self.client.get(reverse("dye_statements")).content.decode()
 
         self.assertIn("no rate here", body)
+
+
+class WindowTests(TestCase):
+    """The date filter, and what it is drawn on.
+
+    The window selects **baths** by `accepted_at`, not whole runs by their
+    last accept. Getting that backwards would pile a sheet worked over ten
+    days onto one afternoon, which is the failure `import_square_sales`
+    already has at the other end of the shop.
+    """
+
+    def setUp(self):
+        category = RawProductCategory.objects.create(name="Yarn")
+        self.blank = RawProduct.objects.create(
+            name="Heavenly", category=category, price="10.00",
+            number_per_dye_bath=5, number_on_hand=200,
+        )
+        self.product = FinishedProduct.objects.create(
+            name="Heavenly Rainbow", raw_product=self.blank,
+            recipe=make_recipe("Rainbow"), price="30.00",
+        )
+        self.run = ProductionRun.objects.create()
+
+    def _bath_on(self, day):
+        row = production.open_rows(
+            self.run, [(self.product, self.product.bath_size)]
+        )[0]
+        production.apply_row(row)
+        when = timezone.make_aware(
+            datetime.combine(day, time(14, 0)), timezone.get_current_timezone()
+        )
+        ProductionRunRow.objects.filter(pk=row.pk).update(accepted_at=when)
+        return row
+
+    def test_a_bath_outside_the_window_is_not_on_the_page(self):
+        self._bath_on(date(2026, 9, 1))
+        rng = sales.resolve_range({"from": "2026-09-10", "to": "2026-09-20"})
+
+        self.assertEqual(dyebill.statements(rng), [])
+
+    def test_the_window_cuts_a_session_at_the_bath(self):
+        """One sheet, two baths, one on each side of the boundary. A range is
+        answered with the baths inside it and not with the whole sheet."""
+        self._bath_on(date(2026, 9, 1))
+        self._bath_on(date(2026, 9, 15))
+
+        self.assertEqual(dyebill.statements()[0].baths, 2)
+
+        rng = sales.resolve_range({"from": "2026-09-10", "to": "2026-09-20"})
+        inside = dyebill.statements(rng)
+        self.assertEqual(len(inside), 1)
+        self.assertEqual(inside[0].baths, 1)
+        self.assertEqual(dyebill.totals(inside).yielded, 5)
+
+    def test_the_last_day_of_the_window_is_whole(self):
+        """Half-open on the datetime, so a bath accepted at two in the
+        afternoon on the closing day is inside it."""
+        self._bath_on(date(2026, 9, 20))
+        rng = sales.resolve_range({"from": "2026-09-20", "to": "2026-09-20"})
+
+        self.assertEqual(dyebill.totals(dyebill.statements(rng)).baths, 1)
+
+    def test_a_bare_visit_still_means_every_session_on_file(self):
+        """The one place this page differs from `private/sales/`, which
+        defaults to today. Changing it would silently re-answer a bookmark."""
+        rng = dyebill.resolve_range({})
+
+        self.assertTrue(rng.is_all_time)
+
+    def test_the_range_keys_are_the_sales_report_s(self):
+        """A window picked on one report page means the same window here."""
+        rng = dyebill.resolve_range({"range": "30"})
+
+        self.assertEqual(rng.key, "30")
+        self.assertEqual(rng.start, timezone.localdate() - timedelta(days=29))
+
+
+class AlongsideTests(TestCase):
+    """What sold over the same dates, printed beside what was made.
+
+    Two rules are pinned here rather than left to the template, because both
+    are about what the page is allowed to claim: the money on the two sides
+    is never differenced, and the units that could not be attributed to a
+    colorway are named rather than quietly dropped.
+    """
+
+    def setUp(self):
+        self.client.force_login(User.objects.create_user("staff", password="pw"))
+        self.category = RawProductCategory.objects.create(name="Yarn")
+        self.blank = RawProduct.objects.create(
+            name="Heavenly", category=self.category, price="10.00",
+            number_per_dye_bath=5, number_on_hand=200,
+        )
+        self.product = FinishedProduct.objects.create(
+            name="Heavenly Rainbow", raw_product=self.blank,
+            recipe=make_recipe("Rainbow"), price="30.00",
+        )
+        self.day = timezone.now()
+
+    def _sell(self, units, product=None, blank=None, cents=0):
+        sale = Sale.objects.create(
+            order_id=f"o-{Sale.objects.count()}", sold_at=self.day,
+            source=Sale.SOURCE_SQUARE_API,
+        )
+        return SaleLine.objects.create(
+            sale=sale, line_key=f"k-{SaleLine.objects.count()}",
+            sold_at=self.day,
+            item_name=(blank or self.blank).name,
+            price_point="Rainbow" if product else "Regular Price",
+            quantity=units, gross_cents=cents, net_cents=cents,
+            finished_product=product,
+            raw_product=blank or self.blank,
+            source=Sale.SOURCE_SQUARE_API,
+        )
+
+    def _dye(self, baths=1):
+        run = ProductionRun.objects.create()
+        for row in production.open_rows(
+            run, [(self.product, self.product.bath_size)] * baths
+        ):
+            production.apply_row(row)
+
+    def test_it_counts_what_sold_with_a_colorway_on_it(self):
+        self._sell(3, product=self.product, cents=9000)
+        counter = dyebill.sold(sales.resolve_range({"range": "all"}))
+
+        self.assertEqual(counter.units, 3)
+        self.assertEqual(counter.net, Decimal("90.00"))
+
+    def test_a_flat_price_button_is_carried_separately_not_folded_in(self):
+        """Those units are dyed stock and nothing says which colorway, so they
+        are named beside the count rather than added to it — the same call
+        `slowsellers.unattributed` makes."""
+        self._sell(3, product=self.product, cents=9000)
+        self._sell(4)                      # no colorway rang up
+        counter = dyebill.sold(sales.resolve_range({"range": "all"}))
+
+        self.assertEqual(counter.units, 3)
+        self.assertEqual(counter.colourless, 4)
+
+    def test_a_notion_never_saw_a_pot_and_is_not_a_dyed_sale(self):
+        """`made_in_a_dye_bath` is the obvious test and the wrong one: it is
+        true for notions and for undyed yarn, neither of which came out of a
+        bath. Having a colorway on file is the test that means what is
+        wanted."""
+        notions = RawProductCategory.objects.create(name="Notions")
+        bowl = RawProduct.objects.create(
+            name="Yarn Bowl", category=notions, price="30.00",
+            number_on_hand=10,
+        )
+        FinishedProduct.objects.create(
+            name="Yarn Bowl", raw_product=bowl, recipe=None, price="30.00",
+        )
+        self._sell(6, blank=bowl, cents=18000)
+        counter = dyebill.sold(sales.resolve_range({"range": "all"}))
+
+        self.assertEqual(counter.units, 0)
+        self.assertEqual(counter.colourless, 0)
+
+    def test_the_difference_is_units_and_says_which_way_the_shelves_moved(self):
+        self._dye(baths=2)                              # 10 units made
+        self._sell(14, product=self.product, cents=42000)
+
+        rng = sales.resolve_range({"range": "all"})
+        made = dyebill.totals(dyebill.statements(rng))
+        alongside = dyebill.alongside(made, dyebill.sold(rng))
+
+        self.assertEqual(alongside.change, -4)
+        self.assertEqual(alongside.size, 4)
+        self.assertEqual(alongside.direction, "lighter")
+
+    def test_level_is_its_own_answer_rather_than_a_zero(self):
+        self._dye(baths=1)
+        self._sell(5, product=self.product, cents=15000)
+
+        rng = sales.resolve_range({"range": "all"})
+        made = dyebill.totals(dyebill.statements(rng))
+
+        self.assertEqual(
+            dyebill.alongside(made, dyebill.sold(rng)).direction, "level"
+        )
+
+    def test_the_page_prints_both_sides(self):
+        self._dye(baths=1)
+        self._sell(8, product=self.product, cents=24000)
+        body = self.client.get(reverse("dye_statements")).content.decode()
+
+        self.assertIn("Out of the dye room", body)
+        self.assertIn("Over the counter", body)
+        self.assertIn("lighter", body)
+
+    def test_the_difference_is_never_worded_as_a_result(self):
+        """The sentence says which way the shelves moved. It does not say
+        that either side won, fell short or failed to keep up — the figure is
+        a fact about stock, and the people it is about read this page."""
+        self._dye(baths=1)
+        self._sell(40, product=self.product, cents=120000)
+        body = self.client.get(reverse("dye_statements")).content.decode()
+
+        said = re.search(r'<p class="shelves">(.*?)</p>', body, re.S).group(1)
+        for word in ("winning", "ahead", "behind", "keeping up", "kept up",
+                     "shortfall", "failed", "only"):
+            self.assertNotIn(word, said.lower(), f"{word!r} is a verdict")
+
+    def test_the_two_money_figures_are_never_differenced(self):
+        """Output is at the asking price and the till is net of whatever it
+        actually went out at, so a difference between them reads as a margin
+        and is not one. The comparison carries units and nothing else, which
+        is what makes that impossible to render by accident."""
+        self._dye(baths=1)
+        self._sell(8, product=self.product, cents=20000)
+
+        rng = sales.resolve_range({"range": "all"})
+        alongside = dyebill.alongside(
+            dyebill.totals(dyebill.statements(rng)), dyebill.sold(rng)
+        )
+
+        self.assertEqual(
+            {f.name for f in dataclasses.fields(alongside)}, {"made", "sold"}
+        )
+
+    def test_a_window_with_no_session_says_so_without_claiming_the_book_is_empty(self):
+        self._dye(baths=1)
+        body = self.client.get(
+            reverse("dye_statements"), {"from": "2020-01-01", "to": "2020-01-31"}
+        ).content.decode()
+
+        self.assertIn("No bath was accepted between these dates", body)
+
+
+class MissingExportTests(TestCase):
+    """A trading day nobody imported is not a day nothing sold.
+
+    The two are the same zero in the sold column and read oppositely, and the
+    direction the mistake runs matters: an unloaded export makes the shelves
+    read fuller than they were, on the one figure on this page that is about
+    somebody's work.
+    """
+
+    def setUp(self):
+        self.client.force_login(User.objects.create_user("staff", password="pw"))
+        self.faire = Faire.objects.create(
+            name="Renaissance Faire", slug="ren", year=2026,
+        )
+        for day in (date(2026, 8, 29), date(2026, 8, 30)):
+            FaireDay.objects.create(
+                faire=self.faire, date=day, weekend=1, traded=True,
+            )
+        self.rng = sales.resolve_range({"from": "2026-08-29", "to": "2026-08-30"})
+
+    def test_a_traded_day_with_nothing_on_file_is_counted_as_a_gap(self):
+        counter = dyebill.sold(self.rng)
+
+        self.assertEqual(counter.trading_days, 2)
+        self.assertEqual(counter.missing_days, 2)
+
+    def test_a_window_with_no_faire_days_has_no_gaps_to_report(self):
+        """Off season there is nothing to import, so a zero is just a zero."""
+        counter = dyebill.sold(
+            sales.resolve_range({"from": "2026-02-01", "to": "2026-02-28"})
+        )
+
+        self.assertEqual(counter.trading_days, 0)
+        self.assertEqual(counter.missing_days, 0)
+
+    def test_a_day_that_was_struck_is_not_a_missing_export(self):
+        """`traded` is the denominator everywhere else and it is here too — a
+        washed-out day has no export to be waiting for."""
+        FaireDay.objects.filter(date=date(2026, 8, 30)).update(traded=False)
+
+        self.assertEqual(dyebill.sold(self.rng).missing_days, 1)
+
+    def test_the_page_says_so_rather_than_printing_a_bare_zero(self):
+        body = self.client.get(
+            reverse("dye_statements"), {"from": "2026-08-29", "to": "2026-08-30"}
+        ).content.decode()
+
+        self.assertIn("sales on file at all", body)
+        self.assertIn("reads low", body)
+        # And it says how many, so the reading can be weighed rather than
+        # just doubted.
+        self.assertIn("<b>2</b>", body)
+
+
+class EmptyWindowTests(TestCase):
+    """A window with nothing on either side is not a reading of level."""
+
+    def setUp(self):
+        self.client.force_login(User.objects.create_user("staff", password="pw"))
+
+    def test_it_draws_no_conclusion_about_shelves_that_did_not_move(self):
+        body = self.client.get(
+            reverse("dye_statements"), {"from": "2020-01-01", "to": "2020-01-31"}
+        ).content.decode()
+
+        self.assertNotIn("dyed shelves", body)
+        self.assertNotIn("came out of the pots", body)
+        self.assertIn("No bath was accepted between these dates", body)

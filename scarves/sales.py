@@ -141,8 +141,13 @@ def resolve_range(params):
     return DateRange("custom", start, end, label)
 
 
-def _window(rng):
+def window(rng):
     """The half-open datetime window a `DateRange` selects.
+
+    Public because it is not only this page's: `dyebill` selects baths by
+    `accepted_at` over the same ranges, and two readings of "inside the
+    window" that disagree by a day would put a Sunday night's session on the
+    wrong side of a boundary.
 
     Half-open on purpose: `created_at < midnight tomorrow` takes the whole of
     the last day whatever the clock says, where `<= end` on a date would drop
@@ -162,7 +167,7 @@ def _window(rng):
 def sale_logs(rng):
     """Every sale row in the range, before any grouping."""
     qs = InventoryLog.objects.filter(log_type=InventoryLog.SALE)
-    lower, upper = _window(rng)
+    lower, upper = window(rng)
     if lower:
         qs = qs.filter(created_at__gte=lower)
     if upper:

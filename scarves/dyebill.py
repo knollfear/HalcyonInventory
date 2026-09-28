@@ -58,6 +58,58 @@ Two rules keep that from quietly becoming a lie:
 The estimate moves whenever the price list does, which is correct for an
 estimate and would be a bug in a record. That difference is the whole reason
 the two are kept in separate fields rather than merged into one column.
+
+## The window is on the bath, not on the session
+
+`statements(rng)` selects **rows** by `accepted_at`, so a session straddling
+a boundary reports the baths that fall inside and says how many it is
+reporting. Filtering whole runs by their last accept would be simpler and
+wrong in the way this app cares about: a sheet worked over ten days would
+land all of it on the day the last bath was checked in, which is the
+`import_square_sales` failure — a Monday carrying Saturday's work — arriving
+at the other end of the shop.
+
+`accepted_at` is when the bath was *reported*, not when the pot was lit. A
+session dyed on Saturday and checked in on Monday is a Monday here, and the
+page says so; nothing in the app records when a bath was actually dyed.
+
+## What sold over the same window, and why nothing is subtracted from it
+
+`sold(rng)` is on this page because the question a date range makes askable
+is the one the statements alone cannot answer: over these dates, did the
+dyed shelves gain or lose. Two rules keep it from becoming a scoreboard:
+
+- **The units are compared and the money is not.** Units are the same thing
+  counted twice — one came out of a pot, one went over the counter — so
+  `made − sold` is a real figure about the shelves. The money is two
+  different bases: output is at the **asking** price, and the till took
+  **net**, after whatever it actually went out at. Subtracting one from the
+  other produces a number that looks like a margin and is not one, so the two
+  are printed and never differenced.
+- **The difference is a direction the stock moved, not a result.** It is
+  reported as the shelves ending fuller or lighter, which is what the
+  arithmetic says, and it is qualified: a close, a recount or a bath nobody
+  recorded moves the same stock and is not in either column.
+
+**Sold means a line that named a colorway**, i.e. one tying to a
+`FinishedProduct` with a recipe. That excludes notions and undyed
+passthroughs, which never saw a pot and would otherwise inflate the sold
+side — and it excludes the flat-price buttons, which did. So `Sold.colourless`
+counts the units of dyed styles that rang up with no colorway attached, and
+the page prints it beside the comparison: it is the one bias in here big
+enough to change the reading, and it runs against the dyeing. Same call
+`slowsellers.unattributed` makes — name the blind spot rather than work
+around it.
+
+**A trading day nobody has imported is a gap, not a day nothing sold.** This
+is `Weekend.is_gap` on the season page arriving by another door, and it lands
+harder here: the two failures look identical in the sold column and only one
+of them is true, so an export sitting unloaded quietly makes the shelves read
+fuller than they are. `Sold.missing_days` counts faire days inside the window
+marked traded with no line against them, and the page names them rather than
+quietly counting them as zero. Outside the faire there are no trading days to
+be missing, which is why the test is on the calendar and not on whether any
+lines turned up.
 """
 
 from __future__ import annotations
@@ -65,7 +117,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_HALF_UP
 
-from .models import ProductionRunRow
+from django.db.models import Sum
+
+from . import sales, slowsellers
+from .models import FaireDay, FinishedProduct, ProductionRunRow
 
 ZERO = Decimal("0")
 
@@ -223,12 +278,47 @@ class Statement:
         return _money(self.retail - self.cost)
 
 
-def statements(limit=None):
-    """A `Statement` per run that has closed baths, most recent first.
+#: The presets on `private/dye-statements/`, in the order they appear. Every
+#: key is `sales.resolve_range`'s (plus `season`, which is
+#: `slowsellers.season_range`'s), so a link built on one report page means the
+#: same window on this one.
+RANGES = [
+    ("7", "Last 7 days"),
+    ("30", "Last 30 days"),
+    ("season", "This season"),
+    ("all", "All time"),
+    ("custom", "Choose dates"),
+]
+
+
+def resolve_range(params):
+    """The window this page answers over, defaulting to every session on file.
+
+    The default is the one thing that differs from `private/sales/`, and it
+    differs because the pages are asked different questions. A till page
+    opened cold means today. Sessions happen weekly at best and run to a few
+    hundred baths in total, so a bare visit here means the whole book — which
+    is also what this page answered before it had a date filter at all, and
+    changing that under a bookmark would be a silent edit to somebody's page.
+    """
+    if not (params.get("range") or params.get("from") or params.get("to")):
+        return sales.DateRange("all", None, None, "All time")
+    if params.get("range") == "season":
+        return slowsellers.season_range(params)
+    return sales.resolve_range(params)
+
+
+def statements(rng=None, limit=None):
+    """A `Statement` per run with closed baths in the window, most recent first.
 
     One query for the rows, grouped in Python: a statement needs the rows
     themselves — a run is a handful of baths, and per-run aggregates in SQL
     would still have to come back to them to name the unpriced ones.
+
+    **The window selects baths, not runs**, so a session worked across a
+    boundary reports the part of itself that falls inside. See the module
+    docstring: dating a whole sheet by its last accept would pile ten days of
+    work onto one afternoon.
     """
     rows = (
         ProductionRunRow.objects
@@ -238,6 +328,12 @@ def statements(limit=None):
         .prefetch_related("applied_log__reversals")
         .order_by("-run_id", "order", "pk")
     )
+    if rng is not None:
+        lower, upper = sales.window(rng)
+        if lower:
+            rows = rows.filter(accepted_at__gte=lower)
+        if upper:
+            rows = rows.filter(accepted_at__lt=upper)
 
     found = {}
     for row in rows:
@@ -288,6 +384,130 @@ def totals(found):
         estimated_retail=_money(sum((s.estimated_retail for s in found), ZERO)),
         unpriced=sum(s.unpriced for s in found),
     )
+
+
+@dataclass
+class Sold:
+    """What went over the counter in the same window, as far as it is known.
+
+    `units` and `net` count only lines that named a colorway. `colourless` is
+    the rest of the dyed catalogue's sales — a flat price button on a style
+    that is only ever dyed — and it is carried separately rather than folded
+    in because nothing can say which colorway those units were, and because
+    it is the one number here big enough to change how the comparison reads.
+    """
+
+    units: int = 0
+    net: Decimal = ZERO
+    colourless: int = 0
+    #: Faire days inside the window that the shop traded.
+    trading_days: int = 0
+    #: How many of those have any sale line at all against them. Counted with
+    #: no product filter, because the question is whether the export arrived
+    #: and not whether it contained a colorway.
+    days_on_file: int = 0
+
+    @property
+    def missing_days(self):
+        """Trading days with nothing on file — almost certainly unimported.
+
+        Named rather than folded in, because a day nobody exported and a day
+        nothing sold are the same zero here and lead to opposite readings.
+        """
+        return max(self.trading_days - self.days_on_file, 0)
+
+
+def _dyed_blank_ids():
+    """Blanks that have at least one colorway, for the colourless count.
+
+    Not `made_in_a_dye_bath`, which answers a different question and answers
+    it yes for notions and for undyed yarn — both of which sell, neither of
+    which came out of a pot. Having a colorway on file is the test that means
+    what is wanted here.
+    """
+    return set(
+        FinishedProduct.objects
+        .filter(recipe__isnull=False, raw_product__isnull=False)
+        .values_list("raw_product_id", flat=True)
+    )
+
+
+def sold(rng):
+    """Dyed units rung up inside the window, on Square's own clock.
+
+    Reads `SaleLine` rather than `InventoryLog` for the reason
+    `slowsellers` does: `sold_at` is when the till took the money, where a
+    log row is stamped when it was written, so an export loaded on Monday
+    would land a Saturday's sales on the wrong side of a weekly boundary —
+    exactly the boundary this page's range is drawn on.
+    """
+    found = slowsellers.lines(rng)
+    counted = found.filter(finished_product__recipe__isnull=False).aggregate(
+        units=Sum("quantity"), net=Sum("net_cents"),
+    )
+    colourless = found.filter(
+        finished_product__isnull=True,
+        raw_product_id__in=_dyed_blank_ids(),
+    ).aggregate(units=Sum("quantity"))
+    traded = FaireDay.objects.filter(traded=True)
+    if rng.start:
+        traded = traded.filter(date__gte=rng.start)
+    if rng.end:
+        traded = traded.filter(date__lte=rng.end)
+    traded = set(traded.values_list("date", flat=True))
+
+    return Sold(
+        units=int(counted["units"] or 0),
+        net=_money(Decimal(counted["net"] or 0) / 100),
+        colourless=int(colourless["units"] or 0),
+        trading_days=len(traded),
+        days_on_file=len(traded & slowsellers.days_with_sales(rng)),
+    )
+
+
+@dataclass
+class Alongside:
+    """The dyeing and the till over one window, counted in units.
+
+    **Units only.** The money on each side is a different base — output is at
+    the asking price, the till is net of whatever it actually went out at —
+    so differencing the two would produce something that reads as a margin
+    and is not one. Units are the same thing counted twice and subtract
+    honestly.
+
+    What the difference is: **the direction the dyed shelves moved over these
+    dates, by these two movements alone.** A close, a recount, a bath nobody
+    recorded and stock that went out unrung all move the same shelves and are
+    in neither column. It is not a comparison of two people's weeks, and the
+    page must not render it as one.
+    """
+
+    made: int = 0
+    sold: int = 0
+
+    @property
+    def change(self):
+        """Signed, made first. Positive means the shelves ended fuller."""
+        return self.made - self.sold
+
+    @property
+    def size(self):
+        """The change without its sign, for a sentence that supplies one."""
+        return abs(self.change)
+
+    @property
+    def direction(self):
+        """`fuller`, `lighter` or `level` — what the template prints."""
+        if self.change > 0:
+            return "fuller"
+        if self.change < 0:
+            return "lighter"
+        return "level"
+
+
+def alongside(made, counter):
+    """The unit comparison, from a `Totals` and a `Sold`."""
+    return Alongside(made=made.yielded, sold=counter.units)
 
 
 @dataclass

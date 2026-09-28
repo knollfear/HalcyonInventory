@@ -89,7 +89,7 @@
           <table>
             <thead>
               <tr>
-                <th style="width: 26%;">Recipe</th>
+                <th style="width: 26%;">Colorway</th>
                 <th style="width: 10%;">Current</th>
                 <th style="width: 14%;">New count</th>
                 <th style="width: 30%;">Why (optional)</th>
@@ -99,7 +99,16 @@
             <tbody>
               {% for row in group.rows %}
                 <tr>
-                  <td>{{ row.fp.recipe.name }}</td>
+                  {% comment %}
+                  A passthrough has no colorway, and the cell said so by
+                  being empty — which reads as a row that failed to load
+                  rather than one that has nothing to put there.
+                  {% endcomment %}
+                  <td>
+                    {% if row.fp.recipe %}{{ row.fp.recipe.name }}
+                    {% else %}<span class="small muted">no colorway — sold as it arrives</span>
+                    {% endif %}
+                  </td>
                   <td>{{ row.fp.number_on_hand }}</td>
                   <td>
                     {{ row.field }}

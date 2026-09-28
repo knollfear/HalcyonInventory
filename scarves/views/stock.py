@@ -665,6 +665,15 @@ def build_bulk_inventory_form_class(finished_products):
     """
     Dynamically builds a Form with one optional count field per finished
     product: count_<fp_id>, pre-filled with its current on-hand value.
+
+    **`variation_name`, not `recipe.name`.** A passthrough has a null recipe
+    — that null is the marker, see *Undyed stock* in `docs/claude/stock.md` —
+    and it reaches this page like anything else: `ledger.count` already knows
+    to write a passthrough's number to the raw row, and the save loop says so.
+    Only the label did not, so picking a blank with an undyed sibling, or any
+    notion at all, raised on the way in. `variation_name` is the app's one
+    answer to "what distinguishes this row within its blank" and is never
+    None.
     """
     fields = {}
     for fp in finished_products:
@@ -672,7 +681,7 @@ def build_bulk_inventory_form_class(finished_products):
             required=False,
             min_value=0,
             initial=fp.number_on_hand,
-            label=fp.recipe.name,
+            label=fp.variation_name,
         )
         # Per row, because one save can hold two different stories — most of
         # the rack recounted, and one row that moved for its own reason. A
