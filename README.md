@@ -128,7 +128,7 @@ asymmetry is deliberate and documented in `start.sh` rather than tidied up.
 
 ## Backing up
 
-Railway's own backups and point-in-time recovery are a paid-plan feature this
+Railway's own backups and point-in-time recovery are features only available on a higher tier of paid-plan that this
 project isn't on, so dumps are pulled down to a machine in the house instead:
 
 ```sh
@@ -193,7 +193,6 @@ rediscovering them:
   here, so the per-employee PIN inside each page is doing all of the actual
   work. That was always the design; the repo being public makes it certain
   rather than likely.
-- **The dev compose file runs Postgres 15 against a production 16.**
 
 ## Why the docs read like that
 

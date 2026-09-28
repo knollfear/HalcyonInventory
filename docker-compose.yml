@@ -43,7 +43,19 @@ services:
 
 
   db:
-    image: postgres:15
+    # Matches production's major version, which is Postgres 16. This is where
+    # the 2,092 tests actually run, so a mismatch here means the gate on every
+    # push is validating against a different database engine than the one
+    # serving the shop — and the differences that matter between majors
+    # (planner behaviour, lock semantics, new reserved words) are exactly the
+    # kind that pass locally and fail once.
+    #
+    # Two siblings encode the same number and must move together on a Railway
+    # upgrade: PG_MAJOR in scripts/backup-db.sh, whose client refuses to dump
+    # a newer server, and this line. Bumping the major also means recreating
+    # the postgres_data volume below, because Postgres will not start on a
+    # data directory written by a different major version.
+    image: postgres:16
     container_name: postgres_db
     restart: always
     environment:
