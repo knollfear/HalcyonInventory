@@ -1,0 +1,60 @@
+#!/usr/bin/env sh
+#
+# Run the test suite before a push that would deploy.
+#
+# Install (or reinstall after a fresh clone — .git/hooks is not tracked):
+#     scripts/hooks/install.sh
+#
+# WHY THE PUSH AND NOT THE COMMIT
+# Railway deploys this repo's `main` branch to production. So the push is the
+# act with a consequence: a commit is private and can be amended, and charging
+# three minutes for one buys nothing. It also would not even cover the risk —
+# three clean commits can still push a bad merge resolution.
+#
+# Only a push touching `main` runs the suite. Everything else goes through
+# immediately, because nothing downstream is watching those refs.
+#
+# WHY IT FAILS CLOSED WHEN IT CANNOT RUN
+# If Docker is not up, the suite does not run, and the one thing this hook
+# exists to prevent is "the tests didn't run" being indistinguishable from
+# "the tests passed". So it blocks and says which of the two happened. The way
+# past it is deliberate and printed below rather than remembered:
+#
+#     git push --no-verify
+#
+# That escape is the point, not a leak. A gate you cannot open during a
+# Saturday at the stall is a gate that gets uninstalled.
+
+REMOTE_MAIN=0
+while read -r _local_ref local_sha remote_ref _remote_sha; do
+    # A branch deletion pushes the all-zero sha. Nothing to test.
+    case "$local_sha" in *[!0]*) ;; *) continue ;; esac
+    case "$remote_ref" in refs/heads/main) REMOTE_MAIN=1 ;; esac
+done
+
+[ "$REMOTE_MAIN" -eq 1 ] || exit 0
+
+echo "pre-push: this push updates main, which deploys. Running the suite..."
+
+if ! docker info >/dev/null 2>&1; then
+    echo ""
+    echo "  BLOCKED: Docker is not running, so the tests did not run."
+    echo "  Start Docker and push again, or bypass deliberately:"
+    echo "      git push --no-verify"
+    echo ""
+    exit 1
+fi
+
+START=$(date +%s)
+if docker compose -f docker-compose.yml -f docker-compose.test.yml \
+     run --rm web python manage.py test; then
+    echo "pre-push: suite passed in $(( $(date +%s) - START ))s. Pushing."
+    exit 0
+fi
+
+echo ""
+echo "  BLOCKED: tests failed, and this push would have deployed them."
+echo "  Fix them, or bypass deliberately:"
+echo "      git push --no-verify"
+echo ""
+exit 1
