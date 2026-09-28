@@ -294,14 +294,6 @@ urlpatterns = [
     # they have no accounts. So the return path is secret/ and its way in is
     # a token printed on the paper — scoped to one sheet rather than a
     # standing URL, and expiring in practice when the run is reported.
-    # Her door into the same machinery. The signal is Sunday night's stack of
-    # kanban cards rather than a par shortage; which close is query-string
-    # state, so there is one route and no picker to invent.
-    path(
-        "private/production-from-close/",
-        views.production_from_close,
-        name="production_from_close",
-    ),
     path(
         "private/production-sheet/",
         views.production_sheet_index,

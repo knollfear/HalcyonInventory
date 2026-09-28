@@ -107,7 +107,7 @@ and the link to hand over if the QR won't scan.
     {% endcomment %}
     {% if run.close_run %}
       From the cards of the
-      <a href="{% url 'production_from_close' %}?close={{ run.close_run.pk }}">close
+      <a href="{% url 'production_sheet_index' %}?from_close={{ run.close_run.pk }}">close
       of {{ run.close_run.day|date:"D d M Y" }}</a>.
     {% endif %}
   </p>

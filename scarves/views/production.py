@@ -327,9 +327,9 @@ def _crew_run_url(request, run):
 def sheet_list(form):
     """`([(product, baths)], skipped)` — the editable list, however it was seeded.
 
-    One list with two ways to fill it. `items` wins when present, so a
-    suggestion seeds the page and every edit after that is the list speaking
-    for itself. An old `?baths=20` link still resolves, and now comes back
+    One list with three ways to fill it — a close's cards, a par suggestion,
+    or picks. `items` wins when present, so a seed starts the page and every
+    edit after that is the list speaking for itself. An old `?baths=20` link still resolves, and now comes back
     editable rather than as something to look at.
 
     `skipped` is only ever from the suggestion. **A pick is somebody
@@ -340,6 +340,15 @@ def sheet_list(form):
     picked = form.cleaned_data.get("items")
     if picked:
         return picked, []
+    # The close's cards, a bath each, in the shelf's order. Before the par
+    # suggestion because it is the more specific ask — somebody chose a
+    # close — and never filtered on the ticks: a card is a finding about
+    # the shelf rather than a suggestion, so like a pick it is flagged and
+    # left for a person to strike.
+    seeded_from = form.cleaned_data.get("from_close")
+    if seeded_from:
+        pool, _listed = closeplan.partition(closeplan.cards(seeded_from))
+        return closeplan.seed(pool), []
     if not form.cleaned_data.get("baths"):
         return [], []
 
@@ -377,30 +386,50 @@ def sheet_list(form):
     return [(product, counts[product.pk]) for product in order], plan.skipped
 
 
-def _without(rows, product, oven=False, out_blanks=(), out_dyes=()):
+def _without(rows, product, carry):
     """`?items=` for the list minus one row, for that row's remove link.
 
     Server-rendered rather than built in the browser, so removing a row is an
     ordinary link that works with the script blocked — and the address it
     produces is the same sendable URL every other filter here uses.
 
-    **It has to carry `oven`.** The link is a whole new address rather than an
-    edit to the form, so anything not in it is dropped — and dropping this one
-    turns an oven run back into a dye-room sheet halfway through editing it,
-    with the only visible sign being the tray gauge disappearing.
+    **It has to carry everything the list form carries** (`carry`, built
+    once by `_carried`). The link is a whole new address rather than an edit
+    to the form, so anything not in it is dropped — and dropping `oven` turns
+    an oven run back into a dye-room sheet halfway through editing it, with
+    the only visible sign being the tray gauge disappearing.
     """
     params = {"items": [f"{p.pk}:{n}" for p, n in rows if p.pk != product.pk]}
-    if oven:
-        params["oven"] = "1"
-    # Same trap as `oven`, one field along: these ticks are not in the list
-    # form, so a link that drops them comes back with the panel cleared and
-    # the next "Suggest baths" quietly offering the colorways she just said
-    # she had no yarn for.
-    if out_blanks:
-        params["without_blanks"] = [str(raw.pk) for raw in out_blanks]
-    if out_dyes:
-        params["without_dyes"] = [str(dye.pk) for dye in out_dyes]
+    params.update(carry)
     return urlencode(params, doseq=True)
+
+
+def _carried(oven, out_blanks, out_dyes, close, reporting):
+    """What every round trip of the list has to bring back with it.
+
+    The same set the list form holds as hidden inputs, gathered here so the
+    ✕ links and the form cannot disagree about it.
+
+    - `oven`, or the sheet turns back into a dye-room sheet mid-edit.
+    - The "haven't got" ticks, or a link that drops them comes back with the
+      panel cleared and the next "Suggest baths" quietly offering the
+      colorways she just said she had no yarn for.
+    - `close`, or the list forgets which Sunday it came from and the close
+      stops being able to say "those five are on list A".
+    - `reporting`, or striking a row quietly flips "no paper" back to paper.
+    """
+    carry = {}
+    if oven:
+        carry["oven"] = "1"
+    if out_blanks:
+        carry["without_blanks"] = [str(raw.pk) for raw in out_blanks]
+    if out_dyes:
+        carry["without_dyes"] = [str(dye.pk) for dye in out_dyes]
+    if close:
+        carry["close"] = str(close.pk)
+    if reporting == ProductionRun.DIRECT:
+        carry["reporting"] = reporting
+    return carry
 
 
 def _tick_groups(things, ticked, group):
@@ -422,127 +451,26 @@ def _tick_groups(things, ticked, group):
     return groups
 
 
-# ---------------------------------------------------------------------------
-# From a Sunday close to a production list.
-#
-# The shop's own loop, which the app spent a long time not modelling: the crew
-# walk the display on Sunday night and end the evening holding a stack of
-# kanban cards, and that stack is the week's work order. `closeplan.py` has
-# the whole argument, including why par and the close can both propose without
-# competing — one claim, matched on finished product, whoever wrote it.
-# ---------------------------------------------------------------------------
-
-
-@page_meta(
-    title="Production From a Close",
-    description="Turn Sunday night's stack of kanban cards into a list of "
-                "baths to dye. Empty pegs and last-one-hanging first, then "
-                "best sellers. Cards already on a list drop off, so several "
-                "lists off one close can't plan the same thing twice.",
-    category="Production",
-    note="Plans from the latest close. Optional ?close=<id> for an older one.",
-)
-@login_required
-@require_http_methods(["GET", "POST"])
-def production_from_close(request):
-    """Her page, and the one the whole close was secretly for.
-
-    **Preview by GET, create by POST**, the same bargain the sheet picker
-    makes: browsing leaves nothing behind, and the moment a list exists so
-    does the claim on every card in it.
-
-    **Which close is query-string state** (`?close=`), defaulting to the
-    latest, so there is one route and no picker to invent — and an older
-    close is still plannable, because a card that never got made does not
-    stop being a card on Monday.
-
-    The choice of paper or no paper is asked *here*, once, and stored on the
-    run. That is the one thing about a list that cannot be both, and asking
-    it at creation is what keeps the run page from offering two doors every
-    time it is opened.
-    """
-    close = None
-    asked = (request.GET.get("close") or request.POST.get("close") or "").strip()
-    if asked.isdigit():
-        close = CloseRun.objects.filter(pk=int(asked)).first()
-    if close is None:
-        close = closeplan.latest_close()
-
-    if close is None:
-        return render(request, "scarves/production_from_close.html", {
-            "close": None,
-            "closes": [],
-        })
-
-    stack = closeplan.cards(close)
-    pool, listed = closeplan.partition(stack)
-
-    if request.method == "POST":
-        picks, problems = closeplan.parse_picks(request.POST, pool)
-        for problem in problems:
-            messages.error(request, problem)
-        if problems:
-            # Nothing recorded, and said out loud — a list that came back one
-            # row short with no explanation is worse than one refused.
-            messages.info(request, "Nothing was made into a list — fix those.")
-        elif not picks:
-            messages.info(
-                request,
-                "No baths entered, so no list was made. Put a number beside "
-                "the cards you are going to dye.",
-            )
-        else:
-            reporting = (
-                ProductionRun.DIRECT
-                if request.POST.get("reporting") == ProductionRun.DIRECT
-                else ProductionRun.PAPER
-            )
-            run = closeplan.make_list(close, picks, reporting=reporting)
-            baths = run.rows.count()
-            messages.success(
-                request,
-                f"List #{run.pk}: {baths} bath{'' if baths == 1 else 's'} "
-                f"across {len(picks)} "
-                f"colorway{'' if len(picks) == 1 else 's'}. "
-                + (
-                    "Print it when you are ready."
-                    if run.is_on_paper else
-                    "Say what you made on this page when the week is done."
-                ),
-            )
-            return redirect("production_run_detail", pk=run.pk)
-
-        return redirect(f"{reverse('production_from_close')}?close={close.pk}")
-
-    return render(request, "scarves/production_from_close.html", {
-        "close": close,
-        # Every close, so an older one is one click away. Short list by
-        # nature — one per weekend — so it needs no paging and no picker.
-        "closes": CloseRun.objects.order_by("-day")[:12],
-        "pool": pool,
-        "listed": listed,
-        "critical_count": sum(1 for card in pool if card.is_critical),
-        "lists": closeplan.lists_for(close),
-        "max_baths": closeplan.MAX_BATHS_PER_CARD,
-        "still_to_count": close.rows.filter(
-            outcome=CloseRunRow.PENDING
-        ).count(),
-        "paper": ProductionRun.PAPER,
-        "direct": ProductionRun.DIRECT,
-    })
-
-
 @page_meta(
     title="Production Sheet",
-    description="Print a dye-room worksheet: the next N baths to run, most "
-                "urgent first, with a QR code the crew scan afterwards to "
-                "say which ones they got through.",
+    description="Plan a dyeing session and print it: start from Sunday's "
+                "close, from what is below par, or from what you already "
+                "know you are dyeing — then edit the one list. Printed "
+                "sheets carry a QR code the crew scan to say which baths "
+                "they got through.",
     category="Production",
+    note="Optional ?from_close=<id> to start from an older close.",
 )
 @login_required
 @require_http_methods(["GET", "POST"])
 def production_sheet_index(request):
     """Plan the sheet, see exactly what it asks for, then print it.
+
+    **Three ways to start and one list.** Sunday night's cards, a par
+    suggestion, or picks — each is a first draft of the same editable list,
+    and none of them is a mode. The close used to have a page of its own,
+    and that was one task on two pages: the same list, the same claim and
+    the same print, with only the first draft different.
 
     Preview by GET, create by POST. A run only exists once somebody has
     decided to print one, so browsing the options leaves nothing behind —
@@ -574,30 +502,30 @@ def production_sheet_index(request):
                 messages.warning(request, "Nothing needs dyeing for those settings.")
                 return redirect(f"{sheet_url}?{request.POST.urlencode()}")
 
-            with transaction.atomic():
-                run = ProductionRun.objects.create(
-                    category=form.cleaned_data.get("category"),
-                    included_overshoot=form.cleaned_data["include_overshoot"],
-                    # Frozen onto the run for the reason the category and the
-                    # bath sizes are: a reprint has to say what the paper
-                    # said, and it is what the run page reads to decide what
-                    # may be added to this sheet later.
-                    oven=form.is_oven_run,
-                )
-                # Through `open_rows` rather than straight to `bulk_create`,
-                # because creating the run is what claims its yarn — see the
-                # note there. A sheet planned on Monday has to have moved the
-                # shelf before the next list is planned against it on Tuesday.
-                production.open_rows(
-                    run, [(bath.product, bath.quantity) for bath in baths]
-                )
-                # Nothing is retired here any more. Printing a sixth sheet
-                # used to close the oldest, which quietly decided that a
-                # session nobody had answered for never happened — and the
-                # baths on it stopped being asked for at the same moment,
-                # with nothing said. Old sheets now age out of the plan on
-                # their own and get named on the picker instead.
-
+            run = production.make_run(
+                rows,
+                # Where the first draft came from, so the close can say
+                # "those five are on list A". A list seeded from a close and
+                # then added to by hand is still that close's list.
+                close=(form.cleaned_data.get("close")
+                       or form.cleaned_data.get("from_close")),
+                # Asked once, here, and stored: which door the run page
+                # leads with. Blank is paper.
+                reporting=form.cleaned_data.get("reporting"),
+                category=form.cleaned_data.get("category"),
+                included_overshoot=form.cleaned_data["include_overshoot"],
+                # Frozen onto the run for the reason the category and the
+                # bath sizes are: a reprint has to say what the paper said,
+                # and it is what the run page reads to decide what may be
+                # added to this sheet later.
+                oven=form.is_oven_run,
+            )
+            # Nothing is retired here any more. Printing a sixth sheet used
+            # to close the oldest, which quietly decided that a session
+            # nobody had answered for never happened — and the baths on it
+            # stopped being asked for at the same moment, with nothing said.
+            # Old sheets now age out of the plan on their own and get named
+            # on the picker instead.
             return redirect("production_run_detail", pk=run.pk)
     else:
         form = ProductionSheetForm(request.GET or None)
@@ -609,6 +537,8 @@ def production_sheet_index(request):
 
     rows, skipped = [], []
     out_blanks, out_dyes = [], []
+    chosen_close, carried_close = None, None
+    reporting = ProductionRun.PAPER
     if form.is_bound and form.is_valid():
         rows, skipped = sheet_list(form)
         # Lists rather than querysets: they are walked several times below
@@ -616,7 +546,30 @@ def production_sheet_index(request):
         # two selects on every pass is a query per row for nothing.
         out_blanks = list(form.cleaned_data["without_blanks"])
         out_dyes = list(form.cleaned_data["without_dyes"])
+        # The close the list came from, if it came from one. Carried only
+        # while there is a list: striking the last row leaves nothing for a
+        # close to have been the source of.
+        chosen_close = (form.cleaned_data.get("close")
+                        or form.cleaned_data.get("from_close"))
+        if rows:
+            carried_close = chosen_close
+        reporting = form.cleaned_data.get("reporting") or ProductionRun.PAPER
     baths = production.baths_from_picks(rows)
+    carry = _carried(oven, out_blanks, out_dyes, carried_close, reporting)
+
+    # **The close panel.** The close a list came from, or else the latest,
+    # so a bare visit leads with Sunday's stack — during the nine weeks that
+    # is the question somebody opens this page with. Skipped on an htmx
+    # edit, which swaps only the list, unless the list needs the cards for
+    # its own rows.
+    panel_close = chosen_close if not _is_htmx(request) else carried_close
+    if panel_close is None and not _is_htmx(request):
+        panel_close = closeplan.latest_close()
+    stack = closeplan.cards(panel_close) if panel_close else []
+    pool, listed = closeplan.partition(stack)
+    card_for = (
+        {card.product.pk: card for card in stack} if carried_close else {}
+    )
 
     # The search is a plain GET form with htmx layered on, so with the script
     # blocked `q` lands in the URL and the results render inline from the very
@@ -796,11 +749,40 @@ def production_sheet_index(request):
                 # filter — the row stays on the sheet and says what is
                 # missing.
                 "blocked_by": row_flags(product),
-                "without": _without(rows, product, oven, out_blanks, out_dyes),
+                "without": _without(rows, product, carry),
+                # What Sunday counted, on a list that came from a close — the
+                # other half of the order it arrived in, printed so the
+                # ranking can be checked by looking.
+                "card": card_for.get(product.pk),
             }
             for product, n in rows
         ],
         "asked": form.is_bound and form.asked_anything,
+        "carried_close": carried_close,
+        # A close asked for whose every card is already on a list. Said as
+        # that, because "nothing is below par" is a different statement.
+        "close_all_listed": bool(
+            form.is_bound and form.is_valid()
+            and form.cleaned_data.get("from_close") and not rows
+        ),
+        "reporting": reporting,
+        "paper": ProductionRun.PAPER,
+        "direct": ProductionRun.DIRECT,
+        "close_panel": panel_close and {
+            "close": panel_close,
+            "pool": pool,
+            "listed": listed,
+            "critical_count": sum(1 for card in pool if card.is_critical),
+            "lists": closeplan.lists_for(panel_close),
+            # A pending row is "nobody looked", never a zero, so a
+            # part-walked close is missing cards and has to say so.
+            "still_to_count": panel_close.rows.filter(
+                outcome=CloseRunRow.PENDING
+            ).count(),
+            # Every recent close, so an older one is one click away. One a
+            # weekend, so it needs no paging.
+            "closes": CloseRun.objects.order_by("-day")[:12],
+        },
         "q": q,
         "search_results": search_products(q) if q else None,
         # Two lists, because they ask for different things. Live sheets are a

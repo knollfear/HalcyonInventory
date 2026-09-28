@@ -1358,6 +1358,37 @@ def _shift_blanks(totals, sign):
 
 
 @transaction.atomic
+def make_run(picks, *, close=None, reporting=ProductionRun.PAPER,
+             category=None, oven=False, included_overshoot=False):
+    """Create one production list from `[(product, baths), ...]`. Returns it.
+
+    **The one way a list gets made, however it was seeded.** A par
+    suggestion, a hand pick and a close's cards all end up here with the same
+    shape, which is what makes them three ways to start one list rather than
+    three planners — `close` only records where the first draft came from, so
+    the close can say "those five are on list A".
+
+    A row is a bath and the bath size is frozen onto it; baths of one recipe
+    sit together because one mix serves several pots. Both are
+    `baths_from_picks`, so the order printed is the order previewed.
+    """
+    run = ProductionRun.objects.create(
+        close_run=close,
+        reporting=reporting or ProductionRun.PAPER,
+        category=category,
+        included_overshoot=included_overshoot,
+        oven=oven,
+    )
+    # Through `open_rows` rather than straight to `bulk_create`, because
+    # creating the run is what claims its yarn — see the note there. A list
+    # planned on Monday has to have moved the shelf before the next one is
+    # planned against it on Tuesday.
+    open_rows(run, [(bath.product, bath.quantity)
+                    for bath in baths_from_picks(picks)])
+    return run
+
+
+@transaction.atomic
 def open_rows(run, plan):
     """Put `plan` on `run` as one row per bath, and claim the blanks. Returns them.
 

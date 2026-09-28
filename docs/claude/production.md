@@ -8,12 +8,13 @@ Part of the project guidance in `CLAUDE.md`, which carries the rules that apply 
 answers in this app to "what should we dye", they are both right, and the
 thing that stops them fighting is not a rule about which one wins.
 
-- **Par shortages.** `private/production-needed/` and
-  `private/production-sheet/` — what is below par, ranked on season sales,
-  printed as a dye-room worksheet. The sections below are all about this one.
-- **Sunday night's cards.** `private/production-from-close/` — the stack of
-  kanban tags the close leaves in somebody's hand, made into a list of baths.
-  `scarves/closeplan.py`.
+- **Par shortages.** `private/production-needed/`, and *Suggest dye baths*
+  on `private/production-sheet/` — what is below par, ranked on season sales,
+  printed as a dye-room worksheet. Most of the sections below are about this
+  one.
+- **Sunday night's cards.** *From Sunday's close* on the same page
+  (`?from_close=`) — the stack of kanban tags the close leaves in somebody's
+  hand, made into a list of baths. `scarves/closeplan.py`.
 
 **The close is the shop's own signal and it predates the app.** The crew walk
 the display on Sunday night, count what is there, and the evening ends holding
@@ -30,7 +31,7 @@ the claim.** A `ProductionRunRow` is: one row, one bath, matched on finished
 product, whoever wrote it. A card that lands on any list is accounted for and
 drops off the pool; a colorway already out on a par-based sheet never enters
 it; `production.in_flight` subtracts a close list's pending baths from the
-sheet picker without knowing where they came from. **However it got onto a
+par suggestion without knowing where they came from. **However it got onto a
 list, it is accounted for** — and that sentence is the whole division.
 
 Two consequences to hold onto:
@@ -38,19 +39,52 @@ Two consequences to hold onto:
 - **Don't add a third planner that keeps its own book.** Anything that plans a
   bath writes a `ProductionRunRow`, or it will quietly plan what somebody else
   already planned. The failure is silent and lands in the dye room.
-- **Don't make the two signals into modes.** Neither page hides the other and
-  neither one switches the app into a state; both link to the other and say
-  what the shared claim does. A mode would make somebody pick a loop before
-  knowing which one suits the week, and the answer is genuinely both — par at
-  a desk in the off season, cards in the nine weeks when the stall is open.
+- **Don't make the two signals into modes — or into two pages.** Neither
+  switches the app into a state: both are ways to start the one list on
+  `private/production-sheet/`, on screen together with the third (picking by
+  hand), and whichever seeded the list, the same editing takes over. A mode
+  would make somebody pick a loop before knowing which one suits the week,
+  and the answer is genuinely both — par at a desk in the off season, cards
+  in the nine weeks when the stall is open.
+
+  **Two pages was the same mistake at a larger size.** The close had its own
+  page, `private/production-from-close/`, with its own number box per card,
+  its own Make button and its own paper-or-not question, all ending at the
+  same `ProductionRun` the sheet made. Somebody sitting down to plan the
+  week had to choose a page first, and a list could not be started from the
+  cards and then topped up from par or by search, because those lived on the
+  other page. Merged, a close's cards are a seed like a suggestion is — a
+  bath of each, empty pegs first — and the sheet's strike, bump, add and
+  print are the only editing there is.
 
 The one thing that *is* a stored choice is **paper or not**, and it is per
 list rather than per person — see *A list is paper or it isn't* below.
 
-## `private/production-from-close/`: Sunday night's cards into baths
+## *From Sunday's close*: Sunday night's cards into baths
 
-`closeplan.cards(close)` is the stack; the page puts a number box beside each
-and makes a `ProductionRun` out of what gets typed.
+`closeplan.cards(close)` is the stack; `closeplan.seed` turns the unclaimed
+part of it into the first draft of the sheet's list, **one bath per card** in
+the shelf's order. The page this replaced asked for a number in an empty box
+beside each card instead, and almost every answer was 1 — forty blanks to
+fill reads as a form rather than a plan. Strike what you aren't dyeing, bump
+what wants two.
+
+**The seed and the carry are two fields.** `?from_close=` seeds; `close`
+rides the list as a hidden input (and in the ✕ links, via `_carried`) so the
+run it makes records `close_run`. One field doing both would re-seed the
+whole stack the moment the last row was struck, because an empty `items`
+is exactly what a seed looks like. The carry drops when the list empties —
+there is nothing left for a close to have been the source of.
+
+**The panel shows the latest close on a bare visit**, with its date on the
+button, because a list off a close a week stale is a list off last week's
+shelf and the date is the thing to see first. Older closes are one click
+each. It is hidden on an oven run: an oven session is planned to the box from
+oven colorways, and a close's cards are neither.
+
+**A seeded row says what Sunday counted** (`none left Sunday`, `1 hanging
+Sunday`), because the list's order came from that count and a ranking nobody
+can check by looking is one they have to trust.
 
 **The pool is frozen at the close.** A card is an answered `CloseRunRow` whose
 `counted` came in at or below the `display_slots` that row froze that night —
@@ -134,13 +168,18 @@ evening has to count.
 the pool naming the list it is on, because a card missing with nothing said
 reads exactly like a card that was never in the stack. And **adding one back
 deliberately is allowed** — *nothing gets planned twice unless she added it*
-is a statement about the default, not a refusal, and `make_list` checks
+is a statement about the default, not a refusal, and `make_run` checks
 nothing.
 
 ### A list is paper or it isn't, and that is asked once
 
 `ProductionRun.reporting` is `paper` or `direct`, chosen when the list is made
-and stored on the run.
+and stored on the run. It is a pill pair beside **Make this list** on the
+sheet, for every list however it was seeded — it used to be asked only of a
+close's lists, which made a par sheet paper by construction and nothing else.
+The radios belong to the list form by `form=`, so an htmx edit carries the
+choice and the view renders it back; `_carried` puts `direct` in the ✕ links
+for the same reason.
 
 **The reporting flow is identical either way** — the same rows, the same three
 end states, the same `accept_line`, the same page at
@@ -1094,7 +1133,7 @@ avoid repeating. The second is what keeps one renderer, so a swapped view
 cannot disagree with a refreshed one, the same call `production_needed.html`
 and `recipe_showcase.html` make about their rows.
 
-**Print submits the list form itself** (`formmethod="post"` on a button that
+**Make this list submits the list form itself** (`formmethod="post"` on a button that
 belongs to it), so whatever is in the count boxes right now is what gets
 printed. It used to be a second form carrying the server's copy, which meant
 a count typed but not yet synced never reached it — and an "Update the list"

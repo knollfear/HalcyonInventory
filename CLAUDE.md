@@ -422,9 +422,11 @@ describes one place.
 There are two answers in this app to "what should we dye", both are right, and
 what stops them fighting is **not** a rule about which one wins.
 
-- **Par shortages** — `private/production-needed/`, `private/production-sheet/`.
-- **Sunday night's cards** — `private/production-from-close/`, the stack of
-  kanban tags the close leaves in somebody's hand (`scarves/closeplan.py`).
+- **Par shortages** — `private/production-needed/`, and *Suggest dye baths*
+  on `private/production-sheet/`.
+- **Sunday night's cards** — *From Sunday's close* on the same page
+  (`?from_close=`), the stack of kanban tags the close leaves in somebody's
+  hand (`scarves/closeplan.py`).
 
 The close is the shop's own loop and it predates the app: the crew walk the
 display, count, and the week's work is whatever has an empty bag. The par
@@ -443,17 +445,23 @@ Three rules follow:
 - **Anything that plans a bath writes a `ProductionRunRow`.** A third planner
   keeping its own book will quietly plan what somebody else already planned,
   and the failure is silent and lands in the dye room. It goes through
-  `production.open_rows`, which is also what takes the bath's blanks off the
-  shelf — **the claim is on the yarn as well as on the planner, and it lands
+  `production.make_run` and `production.open_rows`, which is also what takes
+  the bath's blanks off the shelf — **the claim is on the yarn as well as on the planner, and it lands
   when the run is created, not when the dyeing is reported.** A run is an
   intent to make something; planning in passes and ordering with a lead time
   both need the shelf to know that on Monday. `number_on_hand` therefore means
   *unclaimed* yarn. See *The blanks come off when the run is made* in
   `docs/claude/production.md`.
-- **Don't make the two signals into modes.** Both pages link to the other and
-  say what the shared claim does. A mode asks somebody to pick a loop before
-  they know which suits the week, and the honest answer is both — par at a
-  desk off season, cards during the nine weeks the stall is open.
+- **Don't make the two signals into modes — or into two pages.** They
+  are two of the three ways to start the one list on
+  `private/production-sheet/` (the third is picking by hand), all on screen
+  at once, each a first draft the same editing takes over from. The close
+  used to have its own page, `private/production-from-close/`, and that
+  was one task split in two: the same list, the same claim, the same print,
+  only the first draft different — so somebody had to pick a page before
+  they had picked a loop. A mode asks the same thing, and the honest answer
+  is both — par at a desk off season, cards during the nine weeks the stall
+  is open.
 - **A bath recorded after the fact honours the claim first.** The recipe
   page's production form and *Bagged a bath* on `private/production-needed/`
   both go through `production.report`, which accepts this product's open

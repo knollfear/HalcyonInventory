@@ -16,6 +16,7 @@ from .labels import (
 from .skus import slug
 from .models import (  # RecipeDye is the through model
     UNCATEGORIZED_BRAND,
+    CloseRun,
     FinishedProduct,
     DisplayFixture,
     BoothPhoto,
@@ -26,6 +27,7 @@ from .models import (  # RecipeDye is the through model
     Recipe,
     RecipeDye,
     CatalogGroup,
+    ProductionRun,
     RawProduct,
     RawProductCategory,
     Supplier,
@@ -740,6 +742,26 @@ class ProductionSheetForm(forms.Form):
         help_text="Most urgent first — what a whole bath still leaves at or under par.",
     )
     items = PickedBathsField(required=False)
+    #: **The third way to start: Sunday night's cards.** `from_close` seeds
+    #: the list with that close's unclaimed cards, a bath each, and `close`
+    #: is what the list carries afterwards so the run it prints knows where
+    #: it came from. Two fields rather than one because they do different
+    #: jobs: a list that remembered its close by re-reading `from_close`
+    #: would re-seed the whole stack the moment its last row was struck,
+    #: since an empty `items` is exactly what a seed looks like.
+    from_close = forms.ModelChoiceField(
+        queryset=CloseRun.objects.all(), required=False,
+        widget=forms.HiddenInput,
+    )
+    close = forms.ModelChoiceField(
+        queryset=CloseRun.objects.all(), required=False,
+        widget=forms.HiddenInput,
+    )
+    #: Paper or not, asked once when the list is made and stored on the run.
+    #: Blank is paper, because every sheet before this existed was one.
+    reporting = forms.ChoiceField(
+        choices=ProductionRun.REPORTING_CHOICES, required=False,
+    )
     oven = forms.BooleanField(
         required=False,
         label="This is an oven run",
@@ -896,6 +918,7 @@ class ProductionSheetForm(forms.Form):
         """
         return bool(
             self.data.get("baths")
+            or self.data.get("from_close")
             or self.data.getlist("items")
             or self.data.get("add")
         )

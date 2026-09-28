@@ -167,6 +167,46 @@ the preview is deliberately a GET and the print button is the only POST.
      page under each heading, which is the divider the rule down the middle
      was doing by hand — so stacking needs nothing but the gap. */
   .start + .start { margin-top: 26px; }
+
+  /* The close's two facts, printed rather than implied: how many pegs were
+     empty, and which close. */
+  .gone { color: #8a2f2a; }
+  .closepicks { display: flex; flex-wrap: wrap; gap: 8px 14px;
+                align-items: center; }
+  .closepicks .older { font-size: 13px; color: #667; }
+  button.pill {
+      font: inherit; font-size: 12px; padding: 3px 10px; cursor: pointer;
+      border: 1px solid #cfd6de; border-radius: 999px; background: #fff;
+      color: var(--ink);
+  }
+  button.pill:hover { border-color: var(--accent); background: #eef2f7; }
+  .accounted { margin-top: 12px; font-size: 13px; }
+  .accounted > summary { cursor: pointer; color: #556; }
+  .accounted ul { margin: 8px 0; padding-left: 1.1rem; }
+  .accounted .muted { color: #78808c; font-size: 12px; }
+
+  /* A row that came off a close says what Sunday counted — the other half
+     of the order the list arrived in. */
+  .cardflag { display: inline-block; font-size: 11px; border-radius: 999px;
+              padding: 0 7px; margin-left: 4px; white-space: nowrap; }
+  .cardflag.none { color: #8a2f2a; background: #fdf2f1; border: 1px solid #f0c8c4; }
+  .cardflag.last { color: #8a5a1f; background: #fdf7ee; border: 1px solid #eedcc0; }
+  .cardflag.some { color: #667; background: #f4f6f8; border: 1px solid #e1e5ea; }
+
+  /* Paper or not. A pill pair rather than a checkbox, because it is a set of
+     two states and not an action. */
+  .modes { display: flex; margin: 14px 0 0; }
+  .modes label {
+      font-size: 13px; padding: 7px 13px; border: 1px solid #cfd6de;
+      background: #fff; cursor: pointer;
+  }
+  .modes label:first-child { border-radius: 8px 0 0 8px; }
+  .modes label:last-child { border-radius: 0 8px 8px 0; border-left: none; }
+  .modes input { position: absolute; opacity: 0; pointer-events: none; }
+  .modes label:has(input:checked) {
+      border-color: var(--accent); background: #eef2f7; color: var(--accent);
+      font-weight: 700;
+  }
   .start h2 { font-size: 15px; margin: 0 0 10px; }
 
   /* The width, spent on rows rather than a column of five. Two rows and not
@@ -230,22 +270,6 @@ the preview is deliberately a GET and the print button is the only POST.
     </p>
   {% endif %}
 
-  {% comment %}
-  The other signal, named here rather than left to be discovered. This page
-  plans from par; that one plans from Sunday night's physical walk. They do
-  not compete, because a `ProductionRunRow` is one claim matched on finished
-  product whoever wrote it — a card on a list never reaches this page's
-  suggestions, and a colorway suggested here drops off that page's pool.
-  Saying so is the point: two planning pages with no word between them is how
-  somebody assumes they have to pick one and then avoids both.
-  {% endcomment %}
-  <p class="lead">
-    Planning off the Sunday close instead?
-    <a href="{% url 'production_from_close' %}">Production from a close →</a>
-    Whatever lands on a list there is off the suggestions here, and the other
-    way round — nothing gets planned twice unless you add it.
-  </p>
-
   {% if overdue_runs %}
     {% comment %}
     The one list on this page that is asking for something, so it is first
@@ -306,9 +330,10 @@ the preview is deliberately a GET and the print button is the only POST.
   {% endif %}
 
   {% comment %}
-  Two ways to start and then one list. Either the app suggests baths from
-  what is below par, or you already know what you are dyeing — and both fill
-  the same list, which is editable from that point on either way.
+  Three ways to start and then one list. Sunday's close hands over its
+  cards, the app suggests baths from what is below par, or you already know
+  what you are dyeing — and all three fill the same list, which is editable
+  from that point on whichever way it began.
 
   Both are on screen, one under the other, rather than behind a mode switch,
   because they compose: suggest twenty, add the two you promised somebody,
@@ -317,6 +342,136 @@ the preview is deliberately a GET and the print button is the only POST.
   fields in both halves.
   {% endcomment %}
   <div class="starts">
+    {% comment %}
+    **Sunday night's cards, as the first of three ways to start.** It had a
+    page of its own and that was one task on two pages — the same list, the
+    same claim, the same print, with only the first draft different. So the
+    close is a seed like the other two: a bath of each unclaimed card, in the
+    shelf's order, and from there the ordinary list editing.
+
+    First because it is the shop's own loop — during the nine weeks it is
+    the question this page gets opened with — and because it is the only one
+    of the three with a date on it, which is the thing to see before
+    anything else: a list off a close that is a week stale is a list off
+    last week's shelf.
+    {% endcomment %}
+    {% comment %}
+    Not on an oven run: an oven session is planned to the box from oven
+    colorways, and a close's cards are neither — seeding from one would
+    quietly turn the sheet back into a dye-room sheet.
+    {% endcomment %}
+    {% if not oven %}
+    <div class="start fromclose">
+      <h2>From Sunday's close</h2>
+      {% if not close_panel %}
+        <p class="lead">
+          No close has been done yet, so there are no cards to start from.
+          The stack comes out of <a href="{% url 'close_index' %}">the Sunday
+          close</a>.
+        </p>
+      {% else %}
+        {% with cp=close_panel %}
+          <p class="lead">
+            The close of <strong>{{ cp.close.day|date:"D d M Y" }}</strong>
+            left <strong>{{ cp.pool|length }}</strong>
+            card{{ cp.pool|length|pluralize }} still to plan{% if cp.critical_count %},
+            <span class="gone">{{ cp.critical_count }} gone or down to the last one</span>{% endif %}.
+            Starting from it puts one bath of each on the list, empty pegs
+            first, then best sellers — strike what you are not doing, bump
+            what wants two.
+          </p>
+          {% if cp.still_to_count %}
+            {% comment %}
+            A pending row is "nobody looked", never a zero — so a part-walked
+            close has cards that were never asked about, and a plan built off
+            it is short by however many pegs got skipped. Said out loud,
+            because a list that reads as complete when a table's worth of rows
+            was never counted is the silence the close exists to break.
+            {% endcomment %}
+            <p class="warn-line">
+              {{ cp.still_to_count }} row{{ cp.still_to_count|pluralize }} on
+              that close {{ cp.still_to_count|pluralize:"was,were" }} never counted,
+              so any card among them is missing here.
+              <a href="{% url 'close_run' cp.close.token %}?mode=count">Finish
+              the count</a> if the evening was left part-done.
+            </p>
+          {% endif %}
+          {% comment %}
+          A GET form carrying the ticks, for the reason the Find box carries
+          them: a seed is a whole new address, and a tick it dropped would
+          come back cleared. It carries no `items`, which is what makes it
+          re-seed rather than do nothing — the list wins when it is there.
+          {% endcomment %}
+          <form method="get" class="closepicks">
+            {% for raw in out_blanks %}
+              <input type="hidden" name="without_blanks" value="{{ raw.pk }}">
+            {% endfor %}
+            {% for dye in out_dyes %}
+              <input type="hidden" name="without_dyes" value="{{ dye.pk }}">
+            {% endfor %}
+            {% if cp.pool %}
+              <button class="btn" type="submit" name="from_close" value="{{ cp.close.pk }}">
+                {% if cp.close.pk == cp.closes.0.pk %}From the most recent close{% else %}From the close{% endif %}
+                ({{ cp.close.day|date:"D d M" }})
+              </button>
+            {% else %}
+              <span class="muted">Every card off this close is on a list already.</span>
+            {% endif %}
+            {% if cp.closes|length > 1 %}
+              <span class="older">
+                or an earlier one:
+                {% for option in cp.closes %}
+                  {% if option.pk != cp.close.pk %}
+                    <button class="pill" type="submit" name="from_close"
+                            value="{{ option.pk }}">{{ option.day|date:"d M" }}</button>
+                  {% endif %}
+                {% endfor %}
+              </span>
+            {% endif %}
+          </form>
+          {% comment %}
+          **Claimed cards are listed, never hidden.** "Those five are gone"
+          has to be visible, or a card missing from the pool is
+          indistinguishable from a card that was never in the stack. Folded,
+          with the count in the summary, so the fact is never behind a click
+          and only the names are.
+          {% endcomment %}
+          {% if cp.listed or cp.lists %}
+            <details class="accounted">
+              <summary>
+                {{ cp.listed|length }} card{{ cp.listed|length|pluralize }}
+                already on a list{% if cp.lists %}, across
+                {{ cp.lists|length }} list{{ cp.lists|length|pluralize }}
+                made from this close{% endif %}
+              </summary>
+              {% if cp.listed %}
+                <ul>
+                  {% for card in cp.listed %}
+                    <li>
+                      {{ card.product.name }}
+                      <span class="muted">counted {{ card.counted }} — on
+                        {% for row in card.claimed_by %}<a href="{% url 'production_run_detail' row.run_id %}">#{{ row.run_id }}</a>{% if not forloop.last %}, {% endif %}{% endfor %}
+                      </span>
+                    </li>
+                  {% endfor %}
+                </ul>
+              {% endif %}
+              {% if cp.lists %}
+                <p class="muted">
+                  Lists from this close:
+                  {% for run in cp.lists %}
+                    <a href="{% url 'production_run_detail' run.pk %}">#{{ run.pk }}</a>
+                    ({% if run.is_closed %}finished{% else %}{{ run.pending_count }} still to make{% endif %}){% if not forloop.last %}, {% endif %}
+                  {% endfor %}
+                </p>
+              {% endif %}
+            </details>
+          {% endif %}
+        {% endwith %}
+      {% endif %}
+    </div>
+    {% endif %}
+
     <form method="get" class="start">
       <h2>Suggest dye baths to me</h2>
       {% comment %}

@@ -1,5 +1,12 @@
 """From a Sunday close to a production list, and back on Friday night.
 
+The close is the third way to start a list on `private/production-sheet/`,
+beside a par suggestion and a hand pick. It used to have a page of its own,
+`private/production-from-close/`, and that was one job split across two
+pages: the same list, the same claim, the same print — only the first draft
+differed. So it is a seed now (`seed`), and everything after the seed is the
+sheet's ordinary editing.
+
 This is the shop's own production loop, which the app spent a long time not
 modelling. **The signal is the close.** The crew walk the display on Sunday
 night, count what is there, and end the evening holding a stack of kanban
@@ -41,10 +48,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from django.db import transaction
-
 from . import production, slowsellers
-from .models import CloseRun, CloseRunRow, ProductionRun, ProductionRunRow
+from .models import CloseRun, CloseRunRow, ProductionRunRow
 
 
 #: A count at or below this is the top of the list.
@@ -60,12 +65,6 @@ from .models import CloseRun, CloseRunRow, ProductionRun, ProductionRunRow
 #: being a judgement about how much stock is enough, which is par's job and
 #: par is the number this whole page exists to route around.
 CRITICAL_AT = 1
-
-#: Per colorway on one list, and a typo guard rather than a policy — the same
-#: number and the same reasoning as `PickedBathsField.MAX_PER_ITEM`. Two
-#: digits in this box is almost always a number somebody meant to delete half
-#: of, and nothing real sits on the other side of the line.
-MAX_BATHS_PER_CARD = 10
 
 
 def latest_close():
@@ -249,93 +248,17 @@ def lists_for(close):
     )
 
 
-@transaction.atomic
-def make_list(close, picks, reporting=ProductionRun.PAPER, category=None):
-    """Create one production list from `{product: baths}`. Returns the run.
+def seed(pool):
+    """`[(product, 1), ...]` — the pool as the first draft of a list.
 
-    **A row is a bath, and the bath size is frozen onto it** — the same
-    promise the printed sheet makes. The list says `4 ×` twice for two baths
-    rather than `8 ×` once, because a bath is what somebody physically does
-    and it is the unit every end state downstream is written in.
-
-    Rows are numbered in the order the cards were listed, which is the order
-    on screen: critical first, then best sellers. `order` is a position on a
-    list somebody reads, so it has to match what they were reading.
-
-    Nothing here checks whether a product is already claimed. The page hides
-    claimed cards from the pool, and a pick that arrives anyway is somebody
-    who went and found it — *nothing gets planned twice unless she added it*
-    is a statement about the default, not a refusal.
+    **A bath each, in the shelf's order**, and everything after that is the
+    sheet's own editing: strike the ones you are not doing, bump the ones
+    that want two. The close page this replaced put an empty box beside every
+    card and asked for a number, which is the same decision made the long way
+    round — almost every answer was 1, and a list forty long with forty
+    blanks to fill reads as a form rather than a plan.
     """
-    run = ProductionRun.objects.create(
-        close_run=close,
-        reporting=reporting,
-        category=category,
-        # A close's cards are a physical finding, not a par shortage, so
-        # neither of the planner's two flags describes this list. Both stay
-        # at their defaults and mean what they say: no overshoot rule was
-        # applied because none was consulted, and an oven session is planned
-        # to the box on its own page.
-        included_overshoot=False,
-        oven=False,
-    )
-    # The close's list claims its yarn exactly as the planner's does. The two
-    # signals differ in where the cards came from and in nothing else — a
-    # `ProductionRunRow` is the claim whoever wrote it, and that has to be as
-    # true of the shelf as it is of the planner.
-    production.open_rows(
-        run, [(product, product.bath_size) for product, baths in _expand(picks)]
-    )
-    return run
-
-
-def _expand(picks):
-    """`{product: 3}` into three `(product, 1)` pairs, keeping the order.
-
-    One row per bath rather than one row carrying three, because every state
-    downstream is per bath: a row is accepted, cancelled, or short on its own,
-    and three baths of Cabernet where one pot failed is `5, 5, 0`. A quantity
-    of three on one row could not say that.
-    """
-    for product, baths in picks:
-        for _ in range(max(int(baths), 0)):
-            yield product, 1
-
-
-def parse_picks(data, pool):
-    """Read `baths_<pk>` off a POST against the cards on offer.
-
-    Scoped to `pool` rather than to the catalogue: this form is a list of
-    cards with a number beside each, so a key naming anything else is not a
-    pick somebody made on this page. Blank and zero both mean "not this one",
-    which is what an untouched box has to mean on a list forty long.
-
-    Returns `[(product, baths), ...]` in pool order, plus a list of
-    complaints. A bad number refuses rather than guessing — the same rule
-    `parse_card_date` follows — and refusing the whole submit rather than
-    silently dropping one row, because a list that came back one short with
-    no explanation is worse than one that came back rejected.
-    """
-    picks, problems = [], []
-    for card in pool:
-        raw = (data.get(f"baths_{card.product.pk}") or "").strip()
-        if not raw:
-            continue
-        if not raw.isdigit():
-            problems.append(
-                f"'{raw}' isn't a number of baths for {card.product.name}."
-            )
-            continue
-        baths = int(raw)
-        if baths > MAX_BATHS_PER_CARD:
-            problems.append(
-                f"{baths} baths of {card.product.name} is more than the "
-                f"{MAX_BATHS_PER_CARD} this list allows per colorway."
-            )
-            continue
-        if baths:
-            picks.append((card.product, baths))
-    return picks, problems
+    return [(card.product, 1) for card in pool]
 
 
 def add_bath(run, product):

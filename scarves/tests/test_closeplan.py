@@ -1,4 +1,8 @@
-"""`private/production-from-close/`: Sunday night's cards into baths to dye.
+"""Sunday night's cards into baths to dye, on `private/production-sheet/`.
+
+The close used to have a page of its own; it is now the first of three ways
+to start the one list on the production sheet (`?from_close=`), and these
+tests pin both the cards themselves and that seed.
 
 The shop's own production loop, which the app spent a long time not modelling.
 The crew walk the display on Sunday night, count what is there, and the evening
@@ -52,6 +56,11 @@ from .helpers import (
     make_recipe,
     make_undyed,
 )
+
+
+def make_list(close, picks, **kwargs):
+    """A list off `close`, the way the sheet's Make button makes one."""
+    return production.make_run(picks, close=close, **kwargs)
 
 
 def answer(run, product, counted):
@@ -236,7 +245,7 @@ class ClaimsTests(TestCase):
     def test_a_card_on_a_list_comes_off_the_pool(self):
         self.assertEqual(set(self._pool()), {self.a, self.b})
 
-        closeplan.make_list(self.run, [(self.a, 1)])
+        make_list(self.run, [(self.a, 1)])
 
         self.assertEqual(self._pool(), [self.b])
 
@@ -255,7 +264,7 @@ class ClaimsTests(TestCase):
         rows only. There the question is "how much is still out being dyed";
         here it is "is this card dealt with", and a card she made on Friday is
         the most dealt-with a card gets."""
-        run = closeplan.make_list(self.run, [(self.a, 1)])
+        run = make_list(self.run, [(self.a, 1)])
         production.apply_row(run.rows.get())
 
         self.assertEqual(self._pool(), [self.b])
@@ -263,7 +272,7 @@ class ClaimsTests(TestCase):
     def test_calling_a_bath_off_puts_the_card_back(self):
         """The bath never ran, so the card goes back in the pool — the same
         promise the crew's *not coming* button relies on."""
-        run = closeplan.make_list(self.run, [(self.a, 1)])
+        run = make_list(self.run, [(self.a, 1)])
         self.assertEqual(self._pool(), [self.b])
 
         production.cancel_row(run.rows.get())
@@ -286,7 +295,7 @@ class ClaimsTests(TestCase):
     def test_a_claimed_card_is_listed_rather_than_dropped(self):
         """A card missing with nothing said reads exactly like a card that
         was never in the stack."""
-        run = closeplan.make_list(self.run, [(self.a, 1)])
+        run = make_list(self.run, [(self.a, 1)])
 
         _, listed = closeplan.partition(closeplan.cards(self.run))
 
@@ -296,9 +305,9 @@ class ClaimsTests(TestCase):
     def test_adding_a_claimed_card_back_deliberately_is_allowed(self):
         """"Nothing gets planned twice unless she added it" is a statement
         about the default, not a refusal."""
-        closeplan.make_list(self.run, [(self.a, 1)])
+        make_list(self.run, [(self.a, 1)])
 
-        second = closeplan.make_list(self.run, [(self.a, 1)])
+        second = make_list(self.run, [(self.a, 1)])
 
         self.assertEqual(second.rows.count(), 1)
 
@@ -324,15 +333,15 @@ class FiveThenTenThenTheBalanceTests(TestCase):
         self.assertEqual(len(self._pool()), 20)
 
         first_five = [(card.product, 1) for card in self._pool()[:5]]
-        list_a = closeplan.make_list(self.close, first_five)
+        list_a = make_list(self.close, first_five)
         self.assertEqual(len(self._pool()), 15)
 
         next_ten = [(card.product, 1) for card in self._pool()[:10]]
-        list_b = closeplan.make_list(self.close, next_ten)
+        list_b = make_list(self.close, next_ten)
         self.assertEqual(len(self._pool()), 5)
 
         balance = [(card.product, 1) for card in self._pool()]
-        list_c = closeplan.make_list(self.close, balance)
+        list_c = make_list(self.close, balance)
         self.assertEqual(self._pool(), [])
 
         # Nothing planned twice: twenty cards, twenty baths, no product on two
@@ -346,8 +355,8 @@ class FiveThenTenThenTheBalanceTests(TestCase):
         )
 
     def test_the_lists_are_named_in_the_order_they_were_made(self):
-        a = closeplan.make_list(self.close, [(self.products[0], 1)])
-        b = closeplan.make_list(self.close, [(self.products[1], 1)])
+        a = make_list(self.close, [(self.products[0], 1)])
+        b = make_list(self.close, [(self.products[1], 1)])
 
         self.assertEqual(
             [run.pk for run in closeplan.lists_for(self.close)], [a.pk, b.pk]
@@ -370,7 +379,7 @@ class MakingTheListTests(TestCase):
     def test_three_baths_are_three_rows(self):
         """Every end state downstream is per bath: three baths where one pot
         failed is 5, 5, 0, which a single row of fifteen could not say."""
-        run = closeplan.make_list(self.close, [(self.product, 3)])
+        run = make_list(self.close, [(self.product, 3)])
 
         self.assertEqual(run.rows.count(), 3)
         self.assertEqual(
@@ -381,7 +390,7 @@ class MakingTheListTests(TestCase):
     def test_the_bath_size_is_frozen_onto_the_row(self):
         """The same promise the printed sheet makes — edit the bath size next
         week and this row still means what it said."""
-        run = closeplan.make_list(self.close, [(self.product, 1)])
+        run = make_list(self.close, [(self.product, 1)])
         RawProduct.objects.filter(pk=self.product.raw_product_id).update(
             number_per_dye_bath=99
         )
@@ -389,7 +398,7 @@ class MakingTheListTests(TestCase):
         self.assertEqual(run.rows.get().quantity, 5)
 
     def test_the_list_records_which_close_it_came_from(self):
-        run = closeplan.make_list(self.close, [(self.product, 1)])
+        run = make_list(self.close, [(self.product, 1)])
 
         self.assertEqual(run.close_run_id, self.close.pk)
         self.assertEqual(list(self.close.production_runs.all()), [run])
@@ -397,7 +406,7 @@ class MakingTheListTests(TestCase):
     def test_another_bath_appends_a_row(self):
         """"If I made more, let me say so." The list said one bath and the
         session ran two."""
-        run = closeplan.make_list(self.close, [(self.product, 1)])
+        run = make_list(self.close, [(self.product, 1)])
 
         closeplan.add_bath(run, self.product)
 
@@ -407,7 +416,7 @@ class MakingTheListTests(TestCase):
     def test_two_baths_of_one_colorway_are_one_question_to_answer(self):
         """`lines_for` folds them back: the crew are standing in front of one
         pile of ten, not two piles of five."""
-        run = closeplan.make_list(self.close, [(self.product, 2)])
+        run = make_list(self.close, [(self.product, 2)])
 
         lines = production.lines_for_run(run)
 
@@ -416,60 +425,30 @@ class MakingTheListTests(TestCase):
         self.assertEqual(lines[0].baths, 2)
 
 
-class ParsingPicksTests(TestCase):
-    """Blank means not this one; a bad number refuses rather than guessing."""
+class SeedTests(TestCase):
+    """The close as a first draft: a bath of each unclaimed card, in order."""
 
     def setUp(self):
         self.employee = make_employee("Close Walker")
-        self.a = make_close_product("Colour A", on_hand=0, slots=2)
+        self.a = make_close_product("Colour A", on_hand=2, slots=2)
         self.b = make_close_product("Colour B", on_hand=0, slots=2)
         self.close, _ = closing.run_for_today(employee=self.employee)
-        answer(self.close, self.a, 0)
+        answer(self.close, self.a, 2)
         answer(self.close, self.b, 0)
-        self.pool, _ = closeplan.partition(closeplan.cards(self.close))
 
-    def _parse(self, data):
-        return closeplan.parse_picks(data, self.pool)
+    def _seed(self):
+        pool, _listed = closeplan.partition(closeplan.cards(self.close))
+        return closeplan.seed(pool)
 
-    def test_an_untouched_box_is_not_a_pick(self):
-        picks, problems = self._parse({f"baths_{self.a.pk}": "2"})
+    def test_one_bath_of_each_in_the_shelfs_order(self):
+        """Almost every answer the old number boxes got was 1, so the seed
+        says 1 and the sheet's editing does the rest — empty peg first."""
+        self.assertEqual(self._seed(), [(self.b, 1), (self.a, 1)])
 
-        self.assertEqual(picks, [(self.a, 2)])
-        self.assertEqual(problems, [])
+    def test_a_claimed_card_is_not_seeded(self):
+        make_list(self.close, [(self.b, 1)])
 
-    def test_zero_is_not_a_pick_either(self):
-        picks, problems = self._parse({
-            f"baths_{self.a.pk}": "0", f"baths_{self.b.pk}": "1",
-        })
-
-        self.assertEqual(picks, [(self.b, 1)])
-        self.assertEqual(problems, [])
-
-    def test_a_number_that_isnt_one_is_refused(self):
-        picks, problems = self._parse({f"baths_{self.a.pk}": "two"})
-
-        self.assertEqual(picks, [])
-        self.assertEqual(len(problems), 1)
-
-    def test_a_slip_of_a_digit_is_refused(self):
-        """Two digits in this box is almost always a number somebody meant to
-        delete half of, and nothing real is on the other side of the line."""
-        picks, problems = self._parse({
-            f"baths_{self.a.pk}": str(closeplan.MAX_BATHS_PER_CARD + 5)
-        })
-
-        self.assertEqual(picks, [])
-        self.assertEqual(len(problems), 1)
-
-    def test_a_key_for_something_not_on_offer_is_ignored(self):
-        """This form is a list of cards with a number beside each, so a key
-        naming anything else is not a pick somebody made on this page."""
-        other = make_product(make_recipe("Elsewhere"), "Elsewhere", with_image=False)
-
-        picks, problems = self._parse({f"baths_{other.pk}": "3"})
-
-        self.assertEqual(picks, [])
-        self.assertEqual(problems, [])
+        self.assertEqual(self._seed(), [(self.a, 1)])
 
 
 class PaperOrNotTests(TestCase):
@@ -481,10 +460,10 @@ class PaperOrNotTests(TestCase):
         self.product = make_close_product("Cabernet Veil", on_hand=0, slots=2)
         self.close, _ = closing.run_for_today(employee=self.employee)
         answer(self.close, self.product, 0)
-        self.url = reverse("production_from_close")
+        self.url = reverse("production_sheet_index")
 
     def _make(self, **extra):
-        data = {"close": self.close.pk, f"baths_{self.product.pk}": "1"}
+        data = {"close": self.close.pk, "items": f"{self.product.pk}:1"}
         data.update(extra)
         self.client.post(self.url, data)
         return ProductionRun.objects.latest("pk")
@@ -532,26 +511,41 @@ class PaperOrNotTests(TestCase):
 
 
 class ThePageTests(TestCase):
-    """The picker, end to end."""
+    """The close as a way to start on the production sheet, end to end."""
 
     def setUp(self):
         self.client.force_login(User.objects.create_user("staff", password="pw"))
         self.employee = make_employee("Close Walker")
-        self.url = reverse("production_from_close")
+        self.url = reverse("production_sheet_index")
 
     def test_with_no_close_at_all_it_says_so(self):
         body = self.client.get(self.url).content.decode()
 
         self.assertIn("No close has been done yet", body)
 
-    def test_it_plans_from_the_latest_close_by_default(self):
+    def test_a_bare_visit_offers_the_latest_close_by_date(self):
         product = make_close_product("Cabernet Veil", on_hand=0, slots=2)
         close, _ = closing.run_for_today(employee=self.employee)
         answer(close, product, 0)
 
         body = self.client.get(self.url).content.decode()
 
-        self.assertIn(product.name, body)
+        self.assertIn("From the most recent close", body)
+        self.assertIn(f'name="from_close" value="{close.pk}"', body)
+
+    def test_starting_from_the_close_puts_its_cards_on_the_list(self):
+        product = make_close_product("Cabernet Veil", on_hand=0, slots=2)
+        close, _ = closing.run_for_today(employee=self.employee)
+        answer(close, product, 0)
+
+        body = self.client.get(
+            self.url, {"from_close": close.pk}
+        ).content.decode()
+
+        self.assertIn(f'value="{product.pk}:1"', body)
+        self.assertIn("none left Sunday", body)
+        # And the list carries the close from here on, so the run knows.
+        self.assertIn(f'name="close" value="{close.pk}"', body)
 
     def test_an_older_close_is_query_string_state(self):
         product = make_close_product("Last Week", on_hand=0, slots=2)
@@ -565,17 +559,43 @@ class ThePageTests(TestCase):
         )
         closing.run_for_today(employee=self.employee)
 
-        body = self.client.get(self.url, {"close": old.pk}).content.decode()
+        body = self.client.get(self.url, {"from_close": old.pk}).content.decode()
 
-        self.assertIn(product.name, body)
+        self.assertIn(f'value="{product.pk}:1"', body)
 
-    def test_making_a_list_lands_on_it(self):
+    def test_striking_a_row_keeps_the_close(self):
+        """The ✕ is a whole new address, so anything it does not carry is
+        dropped — and a list that forgot its close would print as par's."""
+        a = make_close_product("Colour A", on_hand=0, slots=2)
+        b = make_close_product("Colour B", on_hand=0, slots=2)
+        close, _ = closing.run_for_today(employee=self.employee)
+        answer(close, a, 0)
+        answer(close, b, 0)
+
+        body = self.client.get(
+            self.url, {"from_close": close.pk}
+        ).content.decode()
+
+        self.assertIn(f"close={close.pk}", body)
+
+    def test_striking_the_last_row_does_not_reseed_the_stack(self):
+        """Why the seed and the carry are two fields: an empty list carrying
+        the seed would bring every card straight back."""
+        product = make_close_product("Cabernet Veil", on_hand=0, slots=2)
+        close, _ = closing.run_for_today(employee=self.employee)
+        answer(close, product, 0)
+
+        body = self.client.get(self.url, {"close": close.pk}).content.decode()
+
+        self.assertNotIn(f'value="{product.pk}:1"', body)
+
+    def test_making_a_list_lands_on_it_and_records_the_close(self):
         product = make_close_product("Cabernet Veil", on_hand=0, slots=2)
         close, _ = closing.run_for_today(employee=self.employee)
         answer(close, product, 0)
 
         response = self.client.post(self.url, {
-            "close": close.pk, f"baths_{product.pk}": "2",
+            "close": close.pk, "items": f"{product.pk}:2",
         })
 
         run = ProductionRun.objects.latest("pk")
@@ -583,6 +603,14 @@ class ThePageTests(TestCase):
             response, reverse("production_run_detail", args=[run.pk])
         )
         self.assertEqual(run.rows.count(), 2)
+        self.assertEqual(run.close_run_id, close.pk)
+
+    def test_a_par_sheet_records_no_close(self):
+        product = make_close_product("Cabernet Veil", on_hand=0, slots=2)
+
+        self.client.post(self.url, {"items": f"{product.pk}:1"})
+
+        self.assertIsNone(ProductionRun.objects.get().close_run_id)
 
     def test_an_empty_submit_makes_nothing(self):
         product = make_close_product("Cabernet Veil", on_hand=0, slots=2)
@@ -611,12 +639,26 @@ class ThePageTests(TestCase):
         product = make_close_product("Cabernet Veil", on_hand=0, slots=2)
         close, _ = closing.run_for_today(employee=self.employee)
         answer(close, product, 0)
-        run = closeplan.make_list(close, [(product, 1)])
+        run = make_list(close, [(product, 1)])
 
         body = self.client.get(self.url).content.decode()
 
-        self.assertIn("Already accounted for", body)
+        self.assertIn("already on a list", body)
         self.assertIn(reverse("production_run_detail", args=[run.pk]), body)
+
+    def test_a_close_with_every_card_listed_says_so(self):
+        """Not "nothing is below par" — that is a different statement."""
+        product = make_close_product("Cabernet Veil", on_hand=0, slots=2)
+        close, _ = closing.run_for_today(employee=self.employee)
+        answer(close, product, 0)
+        make_list(close, [(product, 1)])
+
+        body = self.client.get(
+            self.url, {"from_close": close.pk}
+        ).content.decode()
+
+        self.assertIn("Every card off that close is on a list already", body)
+        self.assertNotIn("Nothing is below par", body)
 
 
 class TheTwoSignalsDoNotCompeteTests(TestCase):
@@ -645,7 +687,7 @@ class TheTwoSignalsDoNotCompeteTests(TestCase):
             "below par and sold out, so the planner wants it",
         )
 
-        closeplan.make_list(self.close, [(self.product, 4)])
+        make_list(self.close, [(self.product, 4)])
 
         self.assertNotIn(self.product, production.candidates())
 
@@ -674,7 +716,7 @@ class WhatTheListRecordsTests(TestCase):
         self.product.refresh_from_db()
         self.close, _ = closing.run_for_today(employee=self.employee)
         answer(self.close, self.product, 0)
-        self.run = closeplan.make_list(
+        self.run = make_list(
             self.close, [(self.product, 1)], reporting=ProductionRun.DIRECT
         )
 

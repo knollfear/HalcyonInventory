@@ -143,7 +143,8 @@ being counted.
 
 The stack of cards the evening ends with is the week's work order, and has
 been for years — everything gets dyed against it and the week ends with *which
-of those did I make*. `private/production-from-close/` is that loop, and it is
+of those did I make*. *From Sunday's close* on `private/production-sheet/` is
+that loop, and it is
 documented in `docs/claude/production.md` under *Two signals propose, one claim
 decides*. Read that before touching either end of it.
 

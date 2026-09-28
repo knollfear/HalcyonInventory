@@ -75,7 +75,6 @@ from .production import (  # noqa: F401
     PRODUCED_SINCE_PRESETS,
     produced_since_retract,
     produced_since_view,
-    production_from_close,
     production_needed_view,
     production_run,
     production_run_add_bath,

@@ -824,7 +824,7 @@ class OvenRunTests(TestCase):
         response = self.client.get(self.sheet_url, self._over_full())
 
         self.assertContains(response, "more than the oven holds")
-        self.assertContains(response, "Print this sheet")
+        self.assertContains(response, "Make this list")
 
     def test_the_count_box_cannot_offer_more_than_the_server_takes(self):
         """A client cap looser than the validating one is a number somebody
@@ -3045,12 +3045,12 @@ class TheListIsEditableHoweverItWasSeededTests(TestCase):
         response = self.client.get(self.url, {"baths": "20"})
 
         self.assertContains(response, "Stormy Sea")
-        self.assertContains(response, "Print this sheet")
+        self.assertContains(response, "Make this list")
 
     def test_a_bare_page_asks_nothing_and_says_nothing(self):
         response = self.client.get(self.url)
 
-        self.assertNotContains(response, "Print this sheet")
+        self.assertNotContains(response, "Make this list")
         self.assertNotContains(response, "Nothing is below par")
 class HandPickedSheetTests(TestCase):
     """Creating a run from colorways somebody chose, not from par.
