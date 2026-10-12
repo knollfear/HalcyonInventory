@@ -167,6 +167,15 @@ urlpatterns = [
     # `scarves/slowsellers.py` for why that matters more at this end.
     path("private/slow-sellers/", views.slow_sellers, name="slow_sellers"),
     path("private/seasons/", views.season_report, name="season_report"),
+    # One blank and every colour it comes in: sold, made and on hand side by
+    # side. The picker is the busiest blanks first — see
+    # `scarves/productline.py`.
+    path("private/lines/", views.product_line_index, name="product_line_index"),
+    path(
+        "private/lines/<int:raw_product_id>/",
+        views.product_line,
+        name="product_line",
+    ),
 
     # What the shelves are worth, at cost and at asking price. A valuation,
     # not a signal: nothing plans against it — see `scarves/stockvalue.py`.

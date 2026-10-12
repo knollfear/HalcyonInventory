@@ -114,6 +114,8 @@ from .reports import (  # noqa: F401
     SALES_COLUMNS,
     close_history,
     dye_statements,
+    product_line,
+    product_line_index,
     sales_report,
     season_report,
     slow_sellers,

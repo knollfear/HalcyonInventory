@@ -19,7 +19,7 @@ were about to make.
 | raw inventory, undyed yarn, notions, passthroughs, fancy veils, supplier invoices, `private/invoices/`, `private/stock-value/` | `docs/claude/stock.md` |
 | the display map, `DisplayFixture`, `secret/restock/` | `docs/claude/restock.md` |
 | `secret/close/`, `closing.py`, kanban tags | `docs/claude/close.md` |
-| top/slow sellers, `private/seasons/`, the faire calendar, weather | `docs/claude/reports.md` |
+| top/slow sellers, `private/lines/`, `private/seasons/`, the faire calendar, weather | `docs/claude/reports.md` |
 | `Sale`/`SaleLine`, importing history from Square | `docs/claude/sales-ledger.md` |
 | `sync_to_square`, variation order, prices, catalogue images | `docs/claude/square.md` |
 | hours, `secret/booth/`, unidentified sales, the handbook, the crew PIN | `docs/claude/crew.md` |
@@ -583,8 +583,8 @@ counts the pile.
 
 ## `Reports`: the pages that read and never write
 
-`Top Sellers`, `Slow Sellers`, `Season Pace` and `Close History` share a
-category because they are the same kind of page: they read, they render, and
+`Top Sellers`, `Slow Sellers`, `Product Lines`, `Season Pace` and `Close
+History` share a category because they are the same kind of page: they read, they render, and
 none of them writes a row. They used to sit under `Inventory` beside the
 pages that actually move stock — `Raw Inventory`, `Bulk Inventory Update`,
 `Sunday Close`, the restock board — which made one category mean two things

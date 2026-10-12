@@ -3,11 +3,13 @@ from urllib.parse import urlencode
 
 from django.contrib.auth.decorators import login_required
 from django.urls import reverse
-from django.shortcuts import render
+from django.shortcuts import get_object_or_404, render
 
 from ..sitemap import page_meta
 from ..models import CloseRun, RawProduct, RawProductCategory
-from .. import closing, dyebill, sales, seasonreport, slowsellers, stockvalue
+from .. import (
+    closing, dyebill, productline, sales, seasonreport, slowsellers, stockvalue,
+)
 from .. import seasons as seasons_mod
 
 
@@ -594,4 +596,125 @@ def sales_report(request):
         "filter_hidden": _hidden(base, "range", "from", "to", "sort", "dir"),
         "clear_href": _sales_href(dict(rng.querystring())),
         "any_filter": bool(q or category_id or raw_product_id),
+    })
+
+
+#: The ranges a line is read over. Season first because it is the default and
+#: the question — "this year" — and the rest are the shared vocabulary, so a
+#: link off the slow sellers works here.
+LINE_RANGES = [
+    ("season", "Season so far"),
+    ("30", "Last 30 days"),
+    ("7", "Last 7 days"),
+    ("all", "All time"),
+]
+
+#: The table, in reading order: the colour, what it did over the range, then
+#: what is there now. Every heading sorts.
+LINE_COLUMNS = [
+    ("name", "Colorway"),
+    ("sold", "Sold"),
+    ("sales", "Sales"),
+    ("last_sold", "Last sold"),
+    ("made", "Made"),
+    ("on_hand", "On hand / par"),
+    ("in_flight", "On a sheet"),
+]
+
+
+def _line_href(name, base, args=(), **overrides):
+    params = dict(base)
+    params.update(overrides)
+    pairs = [(k, v) for k, v in params.items() if v not in (None, "", 0)]
+    query = urlencode(pairs)
+    return reverse(name, args=args) + (f"?{query}" if query else "")
+
+
+@page_meta(
+    title="Product Lines",
+    description="Pick a blank — Artisan, a half circle veil — and see every "
+                "colour it comes in: what sold best and worst, what got made, "
+                "and what is on hand.",
+    category="Reports",
+    note="?range=season|30|7|all",
+)
+@login_required
+def product_line_index(request):
+    """The blanks, busiest first, so the handful that matter are on top."""
+    rng = slowsellers.season_range(request.GET)
+    base = dict(rng.querystring())
+    return render(request, "scarves/product_line_index.html", {
+        "range": rng,
+        "blanks": productline.blanks(rng),
+        "range_query": urlencode(base),
+        "ranges": [
+            {"key": key, "label": label, "on": rng.key == key,
+             "href": _line_href("product_line_index", {"range": key})}
+            for key, label in LINE_RANGES
+        ],
+    })
+
+
+@page_meta(
+    title="Product Line",
+    description="One blank's colorways ranked: sold, made, on hand.",
+    category="Reports",
+    show_in_index=False,
+)
+@login_required
+def product_line(request, raw_product_id):
+    """One blank, every colorway, sold beside made beside stock.
+
+    **Sold and made are printed and never differenced.** Over a few weeks the
+    gap is a direction the shelf moved, not a verdict on a colour, and a
+    column that did the subtraction would be read as one.
+
+    Nothing here plans or sets anything. A colour at the top with nothing on
+    hand is an argument for raising its par on the recipe page, which stays a
+    deliberate decision about demand.
+    """
+    blank = get_object_or_404(RawProduct, pk=raw_product_id)
+    rng = slowsellers.season_range(request.GET)
+
+    sort = request.GET.get("sort", "")
+    if sort not in productline.SORTS:
+        sort = productline.DEFAULT_SORT
+    direction = request.GET.get("dir", "")
+    if direction not in ("asc", "desc"):
+        direction = "desc" if sort in productline.DESCENDING_FIRST else "asc"
+
+    found = productline.sort_rows(
+        productline.rows(blank, rng), sort, descending=direction == "desc"
+    )
+
+    base = dict(rng.querystring())
+    base.update({"sort": sort, "dir": direction})
+    args = (blank.pk,)
+
+    columns = []
+    for key, label in LINE_COLUMNS:
+        if key == sort:
+            nxt = "asc" if direction == "desc" else "desc"
+        else:
+            nxt = "desc" if key in productline.DESCENDING_FIRST else "asc"
+        columns.append({
+            "key": key, "label": label, "sorted": key == sort,
+            "direction": direction if key == sort else "",
+            "href": _line_href("product_line", base, args, sort=key, dir=nxt),
+        })
+
+    return render(request, "scarves/product_line.html", {
+        "blank": blank,
+        "range": rng,
+        "rows": found,
+        "columns": columns,
+        "totals": productline.totals(found),
+        "unattributed": productline.unattributed(blank, rng),
+        "lopsided": productline.lopsided(blank, rng),
+        "ranges": [
+            {"key": key, "label": label, "on": rng.key == key,
+             "href": _line_href("product_line", base, args, range=key)}
+            for key, label in LINE_RANGES
+        ],
+        "picker_href": _line_href("product_line_index", {"range": rng.key}),
     })

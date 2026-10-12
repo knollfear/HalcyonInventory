@@ -1,0 +1,59 @@
+{% extends "scarves/base_internal.html" %}
+{% comment %}
+The picker for `private/lines/<blank>/`. Busiest blank first over the range,
+so the ten that matter sit at the top without anybody keeping a list.
+{% endcomment %}
+
+{% block title %}Product Lines{% endblock %}
+{% block heading %}Product Lines{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 820px; }
+  .pills { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 16px; }
+  .pill { font-size: 13px; text-decoration: none; padding: 5px 12px;
+          border: 1px solid #cfd6de; border-radius: 999px; color: var(--ink);
+          background: #fff; }
+  .pill.on { border-color: var(--accent); background: #eef2f7;
+             color: var(--accent); font-weight: 600; }
+  .wrap { overflow-x: auto; }
+  td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
+  .cat { font-size: 12px; color: #8a93a0; }
+  .none { color: #99a; }
+{% endblock %}
+
+{% block content %}
+  <p class="lead">
+    One blank and every colour it comes in. Busiest first over
+    {{ range.label|lower }}, by units Square rang up.
+  </p>
+
+  <div class="pills">
+    {% for r in ranges %}
+      <a class="pill {% if r.on %}on{% endif %}" href="{{ r.href }}">{{ r.label }}</a>
+    {% endfor %}
+  </div>
+
+  <div class="wrap">
+    <table class="rows">
+      <thead>
+        <tr><th>Blank</th><th class="n">Sold</th><th class="n">Colorways</th><th class="n">On hand</th></tr>
+      </thead>
+      <tbody>
+        {% for row in blanks %}
+          <tr>
+            <td>
+              <a href="{% url 'product_line' row.blank.pk %}?{{ range_query }}">{{ row.blank.name }}</a>
+              <span class="cat">{{ row.blank.category.name }}</span>
+            </td>
+            <td class="n {% if not row.sold %}none{% endif %}">{{ row.sold }}</td>
+            <td class="n">{{ row.colorways }}</td>
+            <td class="n">{{ row.on_hand }}</td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="4" class="empty">No blank has a colorway yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endblock %}

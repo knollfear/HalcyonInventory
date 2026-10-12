@@ -157,6 +157,45 @@ and a miscoded button produce identical figures, and only somebody who knows
 the shop can say which. Same call `colorbands` makes: fill the form in, a
 person decides.
 
+## Product lines: one blank held still, its colours ranked
+
+`private/lines/<blank>/` answers "how is the Artisan line doing" — which
+colours sell best and worst, which got made, what is left. The picker,
+`private/lines/`, lists blanks **busiest first over the range**, so the ten
+or so anybody follows float up on their own and nobody maintains a list of
+favourites. `scarves/productline.py` does the picking; nothing in it writes.
+
+It is the narrow half of `BLANK-DYEBATH` held still and the wide half
+ranked, which is why it exists beside `private/sales/?blank=` rather than
+being that filter: the sales page starts from what sold, so a colour that
+sold nothing has no row there, and on a per-blank reading the zeros are half
+the answer.
+
+**Three sources, deliberately, and each is the one another page already
+trusts for that question:**
+
+- **Sold** reads `SaleLine` through `slowsellers.lines()`, Square's clock —
+  the slow sellers' reasons, and the same definition of "sold in this range"
+  the dye statements use. Not `InventoryLog`, where an unidentified sale is
+  missing and turns a colour that sold into a dud.
+- **Made** is standing `PRODUCTION` rows (`reversals__isnull=True`), in
+  **units, not baths** — a recipe-page entry can carry several baths in one
+  row, so a bath count off rows would be a guess. The last one is printed
+  with `log.when`, so a card known to the month says the month.
+- **On hand / par / on a sheet** are now, whatever the range; `on a sheet`
+  is `production.in_flight()`, the planner's own number.
+
+Sold and made are printed and never differenced — over a few weeks the gap
+is which way the shelf moved, not a verdict on a colour. Every zero sold
+carries the stock beside it (*none to sell* when there is none), the colour-
+less units of the blank are printed under the table, and `lopsided()` is
+checked for this blank, because a per-blank colour ranking is exactly the
+page a miscoded button lies to.
+
+**Live colorways always appear; a retired one only if it sold or was made
+in the range.** A colour dropped last week still shows what it did; one
+dropped years ago does not pad the list.
+
 ## The faire calendar is a rule, not a table
 
 `scarves/seasons.py` holds it and `generate_faire` applies it:

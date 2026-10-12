@@ -1516,3 +1516,133 @@ class SeasonPaletteTests(TestCase):
         svg = response.context["chart"]
         self.assertIn('class="line', svg)
         self.assertNotIn("#", svg)
+
+
+class ProductLineTests(TestCase):
+    """One blank, every colorway: sold beside made beside stock.
+
+    The reasoning is in `scarves/productline.py`. What these pin is the
+    handful of ways the page could quietly answer a different question.
+    """
+
+    def setUp(self):
+        self.client.force_login(User.objects.create_user("staff", password="pw"))
+        self.best = make_bathable(make_recipe("Ember"), "Artisan Ember",
+                                  on_hand=3, par=8, bath=4)
+        self.blank = self.best.raw_product
+        self.dud = self._colorway("Wasteland", on_hand=9)
+        self.gone = self._colorway("Aegean", on_hand=0)
+        self.other = make_bathable(make_recipe("Ember2"), "Veil Ember",
+                                   on_hand=0, par=8, bath=4)
+        self.url = reverse("product_line", args=[self.blank.pk])
+
+    def _colorway(self, name, on_hand=0):
+        product = FinishedProduct.objects.create(
+            name=f"Artisan {name}", raw_product=self.blank,
+            recipe=make_recipe(name), price="30.00",
+            number_on_hand=on_hand, par=8,
+        )
+        return product
+
+    def _sell(self, product, units, colorway=None):
+        sale = Sale.objects.create(
+            order_id=f"o-{product.pk}-{units}-{timezone.now().timestamp()}",
+            sold_at=timezone.now(), source=Sale.SOURCE_SQUARE_API,
+        )
+        return SaleLine.objects.create(
+            sale=sale, line_key=f"k{product.pk}-{units}-{colorway}",
+            sold_at=timezone.now(), item_name=self.blank.name,
+            price_point=colorway if colorway is not None else product.recipe.name,
+            quantity=units, finished_product=product,
+            raw_product=product.raw_product, source=Sale.SOURCE_SQUARE_API,
+        )
+
+    def _make(self, product, units):
+        return InventoryLog.objects.create(
+            finished_product=product, log_type=InventoryLog.PRODUCTION,
+            quantity=units, source=InventoryLog.SOURCE_RECIPE_PAGE,
+        )
+
+    def _get(self, **params):
+        params.setdefault("range", "all")
+        return self.client.get(self.url, params)
+
+    def _row(self, response, product):
+        return next(r for r in response.context["rows"] if r.product == product)
+
+    def test_best_seller_first_and_every_colorway_listed(self):
+        self._sell(self.best, 5)
+        self._sell(self.dud, 1)
+
+        names = [r.name for r in self._get().context["rows"]]
+
+        self.assertEqual(names[0], "Ember")
+        self.assertEqual(set(names), {"Ember", "Wasteland", "Aegean"})
+
+    def test_only_this_blank(self):
+        self._sell(self.other, 7)
+
+        names = [r.name for r in self._get().context["rows"]]
+
+        self.assertNotIn("Ember2", names)
+
+    def test_sorting_turns_it_over(self):
+        self._sell(self.best, 5)
+        self._sell(self.dud, 1)
+
+        rows = self._get(sort="sold", dir="asc").context["rows"]
+
+        self.assertEqual(rows[-1].name, "Ember")
+
+    def test_a_retracted_bath_was_not_made(self):
+        self._make(self.best, 4)
+        taken_back = self._make(self.best, 4)
+        InventoryLog.objects.create(
+            finished_product=self.best, log_type=InventoryLog.ADJUSTMENT,
+            quantity=-4, reverses=taken_back,
+            source=InventoryLog.SOURCE_PRODUCTION_UNDO,
+        )
+
+        self.assertEqual(self._row(self._get(), self.best).made, 4)
+
+    def test_a_zero_with_nothing_on_hand_is_told_apart(self):
+        response = self._get()
+
+        self.assertTrue(self._row(response, self.gone).never_out)
+        self.assertFalse(self._row(response, self.dud).never_out)
+
+    def test_a_retired_colorway_shows_only_if_it_did_something(self):
+        self.dud.recipe.is_active = False
+        self.dud.recipe.save()
+
+        self.assertNotIn(self.dud, [r.product for r in self._get().context["rows"]])
+
+        self._sell(self.dud, 2)
+        row = self._row(self._get(), self.dud)
+        self.assertTrue(row.retired)
+
+    def test_colourless_sales_are_counted_not_guessed(self):
+        line = self._sell(self.best, 3, colorway="Regular")
+        SaleLine.objects.filter(pk=line.pk).update(finished_product=None)
+
+        response = self._get()
+
+        self.assertEqual(response.context["unattributed"], 3)
+        self.assertEqual(self._row(response, self.best).sold, 0)
+
+    def test_a_bath_on_a_live_sheet_is_shown(self):
+        run = production.make_run([(self.best, 1)])   # one bath of four
+
+        self.assertEqual(self._row(self._get(), self.best).in_flight, 4)
+        self.assertTrue(run.rows.exists())
+
+    def test_picker_lists_the_busiest_blank_first(self):
+        self._sell(self.other, 1)
+        self._sell(self.best, 6)
+
+        blanks = self.client.get(
+            reverse("product_line_index"), {"range": "all"}
+        ).context["blanks"]
+
+        self.assertEqual(blanks[0]["blank"], self.blank)
+        self.assertEqual(blanks[0]["sold"], 6)
