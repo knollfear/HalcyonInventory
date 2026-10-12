@@ -23,6 +23,14 @@ having is between them:
 - **On hand / par / on a sheet** is now, whatever the range says. A range
   selects activity; stock has no history here to select.
 
+**"On a sheet" is the yarn's answer, not the planner's.** `in_flight()`
+stops counting a sheet once it goes overdue, so the planner asks for the
+colour again — a judgement about what to dye next. This page prints it beside
+the undyed shelf, and those skeins came off that shelf when the sheet was made
+and stay off until it is reported or struck, overdue or not. So it reads the
+same rows `production.claimed_units` does, and undyed plus on a sheet is what
+somebody standing at the shelf and the dye room would count.
+
 Sold and made are printed and never differenced. The gap between them over a
 window is a direction the shelf moved, and a fact about a few weeks — the
 same bargain `dyebill.alongside` makes.
@@ -36,7 +44,9 @@ from datetime import datetime
 from django.db.models import Count, Max, Q, Sum
 
 from . import production, sales, slowsellers
-from .models import FinishedProduct, InventoryLog, RawProduct, SaleLine
+from .models import (
+    FinishedProduct, InventoryLog, ProductionRunRow, RawProduct, SaleLine,
+)
 
 
 @dataclass
@@ -134,11 +144,13 @@ def blanks(rng):
         .order_by()
         .distinct()
     )
+    sheets = production.claimed_units(list(found))
     out = [
         {"blank": blank, "sold": sold.get(blank.pk, 0),
          "made": made.get(blank.pk, 0),
          "colorways": blank.colorways, "on_hand": blank.on_hand or 0,
-         "undyed": blank.number_on_hand, "counted_at": blank.counted_at}
+         "undyed": blank.number_on_hand, "counted_at": blank.counted_at,
+         "on_sheets": sheets.get(blank.pk, 0)}
         for blank in found
     ]
     return sorted(out, key=lambda r: (-r["sold"], r["blank"].name.casefold()))
@@ -198,6 +210,23 @@ def _made(blank, rng):
     return out
 
 
+def _on_sheets(blank):
+    """`{finished_product_id: units}` planned on a sheet and not yet reported.
+
+    Per colorway, on exactly the rows `production.claimed_units` counts for
+    the blank, so the page's column adds up to the picker's figure.
+    """
+    pending = (
+        ProductionRunRow.objects
+        .filter(accepted_at__isnull=True, cancelled_at__isnull=True,
+                finished_product__raw_product=blank)
+        .values("finished_product")
+        .annotate(units=Sum("quantity"))
+        .order_by()
+    )
+    return {row["finished_product"]: row["units"] or 0 for row in pending}
+
+
 def rows(blank, rng):
     """Every colorway of the blank, with its range figures beside its stock.
 
@@ -211,7 +240,7 @@ def rows(blank, rng):
     """
     sold = _sold(blank, rng)
     made = _made(blank, rng)
-    flying = production.in_flight()
+    flying = _on_sheets(blank)
 
     catalogue = (
         FinishedProduct.objects.filter(raw_product=blank, recipe__isnull=False)

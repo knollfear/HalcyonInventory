@@ -31,7 +31,10 @@ so the ten that matter sit at the top without anybody keeping a list.
     <strong>Made</strong> is dye baths recorded over the same dates, in units,
     minus any taken back. <strong>Dyed on hand</strong> is the live colorways
     now; <strong>undyed blanks</strong> is the shelf not already claimed by a
-    production sheet, as of the last time somebody counted it.
+    production sheet, as of the last time somebody counted it, and
+    <strong>on a sheet</strong> is what those sheets took off it and has not
+    been reported yet — overdue sheets included, because that yarn is dyed or
+    still somewhere until somebody says which.
   </p>
 
   <div class="pills">
@@ -43,7 +46,7 @@ so the ten that matter sit at the top without anybody keeping a list.
   <div class="wrap">
     <table class="rows">
       <thead>
-        <tr><th>Blank</th><th class="n">Sold</th><th class="n">Made</th><th class="n">Colorways</th><th class="n">Dyed on hand</th><th class="n">Undyed blanks</th></tr>
+        <tr><th>Blank</th><th class="n">Sold</th><th class="n">Made</th><th class="n">Colorways</th><th class="n">Dyed on hand</th><th class="n">Undyed blanks</th><th class="n">On a sheet</th></tr>
       </thead>
       <tbody>
         {% for row in blanks %}
@@ -60,9 +63,10 @@ so the ten that matter sit at the top without anybody keeping a list.
               {{ row.undyed }}
               <div class="when">{% if row.counted_at %}counted {{ row.counted_at|date:"j M" }}{% else %}never counted{% endif %}</div>
             </td>
+            <td class="n {% if not row.on_sheets %}none{% endif %}">{{ row.on_sheets }}</td>
           </tr>
         {% empty %}
-          <tr><td colspan="6" class="empty">No blank has a colorway yet.</td></tr>
+          <tr><td colspan="7" class="empty">No blank has a colorway yet.</td></tr>
         {% endfor %}
       </tbody>
     </table>

@@ -1673,3 +1673,18 @@ class ProductLineTests(TestCase):
         # 3 + 9 + 0 dyed across the colorways; 100 undyed on the shelf.
         self.assertEqual(row["on_hand"], 12)
         self.assertEqual(row["undyed"], 100)
+
+    def test_an_overdue_sheet_still_holds_its_yarn(self):
+        run = production.make_run([(self.best, 1)])   # one bath of four
+        ProductionRun.objects.filter(pk=run.pk).update(
+            created_at=timezone.now() - production.OVERDUE_AFTER
+            - timedelta(days=1)
+        )
+
+        self.assertEqual(self._row(self._get(), self.best).in_flight, 4)
+        blanks = self.client.get(
+            reverse("product_line_index"), {"range": "all"}
+        ).context["blanks"]
+        self.assertEqual(
+            next(b["on_sheets"] for b in blanks if b["blank"] == self.blank), 4
+        )

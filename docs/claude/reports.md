@@ -192,8 +192,13 @@ trusts for that question:**
   **units, not baths** — a recipe-page entry can carry several baths in one
   row, so a bath count off rows would be a guess. The last one is printed
   with `log.when`, so a card known to the month says the month.
-- **On hand / par / on a sheet** are now, whatever the range; `on a sheet`
-  is `production.in_flight()`, the planner's own number.
+- **On hand / par / on a sheet** are now, whatever the range. `On a sheet`
+  is **the yarn's answer, not the planner's**: the rows
+  `production.claimed_units` reads, overdue sheets included. `in_flight()`
+  drops an overdue sheet so the planner asks for the colour again, but this
+  column sits beside the undyed shelf, and those skeins stay off it until the
+  sheet is reported or struck — so undyed plus on a sheet is what a person
+  would physically find. Picker and page read the same rows and add up.
 
 Sold and made are printed and never differenced — over a few weeks the gap
 is which way the shelf moved, not a verdict on a colour. Every zero sold
