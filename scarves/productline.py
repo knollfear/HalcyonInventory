@@ -92,6 +92,12 @@ def blanks(rng):
     opened is a different line from one that sold 368 and made nothing. It is
     `_production` — the same standing rows the blank's own page totals — so
     the picker and the page cannot disagree about a line.
+
+    **Dyed and undyed are two columns, never one sum.** Dyed is the live
+    colorways' stock, which the close and the restock walk keep recounting.
+    Undyed is the blank's shelf, *unclaimed* — a bath on a sheet has already
+    taken its yarn — and nothing recounts it on its own, so it travels with
+    `counted_at` and the page prints when somebody last looked.
     """
     made = {
         row["finished_product__raw_product"]: int(row["q"] or 0)
@@ -131,7 +137,8 @@ def blanks(rng):
     out = [
         {"blank": blank, "sold": sold.get(blank.pk, 0),
          "made": made.get(blank.pk, 0),
-         "colorways": blank.colorways, "on_hand": blank.on_hand or 0}
+         "colorways": blank.colorways, "on_hand": blank.on_hand or 0,
+         "undyed": blank.number_on_hand, "counted_at": blank.counted_at}
         for blank in found
     ]
     return sorted(out, key=lambda r: (-r["sold"], r["blank"].name.casefold()))

@@ -20,6 +20,7 @@ so the ten that matter sit at the top without anybody keeping a list.
   td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
   .cat { font-size: 12px; color: #8a93a0; }
   .none { color: #99a; }
+  .when { font-size: 12px; color: #8a93a0; white-space: nowrap; }
 {% endblock %}
 
 {% block content %}
@@ -28,7 +29,9 @@ so the ten that matter sit at the top without anybody keeping a list.
     {{ range.label|lower }}{% if range.start %} ({{ range.start|date:"j M" }} to
     {{ range.end|date:"j M Y" }}){% endif %}, by units Square rang up.
     <strong>Made</strong> is dye baths recorded over the same dates, in units,
-    minus any taken back.
+    minus any taken back. <strong>Dyed on hand</strong> is the live colorways
+    now; <strong>undyed blanks</strong> is the shelf not already claimed by a
+    production sheet, as of the last time somebody counted it.
   </p>
 
   <div class="pills">
@@ -40,7 +43,7 @@ so the ten that matter sit at the top without anybody keeping a list.
   <div class="wrap">
     <table class="rows">
       <thead>
-        <tr><th>Blank</th><th class="n">Sold</th><th class="n">Made</th><th class="n">Colorways</th><th class="n">On hand</th></tr>
+        <tr><th>Blank</th><th class="n">Sold</th><th class="n">Made</th><th class="n">Colorways</th><th class="n">Dyed on hand</th><th class="n">Undyed blanks</th></tr>
       </thead>
       <tbody>
         {% for row in blanks %}
@@ -53,9 +56,13 @@ so the ten that matter sit at the top without anybody keeping a list.
             <td class="n {% if not row.made %}none{% endif %}">{{ row.made }}</td>
             <td class="n">{{ row.colorways }}</td>
             <td class="n">{{ row.on_hand }}</td>
+            <td class="n">
+              {{ row.undyed }}
+              <div class="when">{% if row.counted_at %}counted {{ row.counted_at|date:"j M" }}{% else %}never counted{% endif %}</div>
+            </td>
           </tr>
         {% empty %}
-          <tr><td colspan="5" class="empty">No blank has a colorway yet.</td></tr>
+          <tr><td colspan="6" class="empty">No blank has a colorway yet.</td></tr>
         {% endfor %}
       </tbody>
     </table>

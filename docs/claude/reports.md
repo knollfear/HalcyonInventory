@@ -168,7 +168,11 @@ because the pair is the at-a-glance reading — and it is the same standing
 rows the blank's page totals (`_production`), so the two never disagree about
 a line. Both pages print the dates they cover: "season so far" starts on day 1
 of the faire, so a summer's pre-dyeing is outside it, and that is the first
-thing a low Made figure needs explained. `scarves/productline.py` does the
+thing a low Made figure needs explained. **Dyed and undyed stock are two
+columns, never summed**: dyed is the live colorways, which the close and the
+restock walk keep recounting; undyed is the blank's *unclaimed* shelf, which
+nothing recounts on its own, so it prints with `counted_at` — "never
+counted" included — rather than as a bare number that reads as measured. `scarves/productline.py` does the
 picking; nothing in it writes.
 
 It is the narrow half of `BLANK-DYEBATH` held still and the wide half

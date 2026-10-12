@@ -63,7 +63,8 @@ nobody could buy, not one nobody wanted.
   <div class="figures">
     <div class="fig"><div class="n">{{ totals.sold }}</div><div class="what">sold</div></div>
     <div class="fig"><div class="n quiet">{{ totals.made }}</div><div class="what">made</div></div>
-    <div class="fig"><div class="n quiet">{{ totals.on_hand }}</div><div class="what">on hand</div></div>
+    <div class="fig"><div class="n quiet">{{ totals.on_hand }}</div><div class="what">dyed on hand</div></div>
+    <div class="fig"><div class="n quiet">{{ blank.number_on_hand }}</div><div class="what">undyed blanks{% if blank.counted_at %}, counted {{ blank.counted_at|date:"j M" }}{% else %}, never counted{% endif %}</div></div>
     <div class="fig"><div class="n quiet">{{ totals.in_flight }}</div><div class="what">on a sheet</div></div>
     <div class="fig"><div class="n">{{ totals.sold_none }}</div><div class="what">of {{ totals.colorways }} colorways sold none</div></div>
     <div class="fig"><div class="n">{{ totals.never_out }}</div><div class="what">…and had none to sell</div></div>
