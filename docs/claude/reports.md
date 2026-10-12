@@ -163,7 +163,13 @@ person decides.
 colours sell best and worst, which got made, what is left. The picker,
 `private/lines/`, lists blanks **busiest first over the range**, so the ten
 or so anybody follows float up on their own and nobody maintains a list of
-favourites. `scarves/productline.py` does the picking; nothing in it writes.
+favourites. **Made sits beside Sold on the picker, over the same dates**,
+because the pair is the at-a-glance reading — and it is the same standing
+rows the blank's page totals (`_production`), so the two never disagree about
+a line. Both pages print the dates they cover: "season so far" starts on day 1
+of the faire, so a summer's pre-dyeing is outside it, and that is the first
+thing a low Made figure needs explained. `scarves/productline.py` does the
+picking; nothing in it writes.
 
 It is the narrow half of `BLANK-DYEBATH` held still and the wide half
 ranked, which is why it exists beside `private/sales/?blank=` rather than

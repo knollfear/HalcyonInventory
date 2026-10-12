@@ -1646,3 +1646,20 @@ class ProductLineTests(TestCase):
 
         self.assertEqual(blanks[0]["blank"], self.blank)
         self.assertEqual(blanks[0]["sold"], 6)
+
+    def test_picker_counts_made_over_the_same_dates(self):
+        self._make(self.best, 4)
+        self._make(self.dud, 4)
+        old = self._make(self.best, 4)
+        InventoryLog.objects.filter(pk=old.pk).update(
+            created_at=timezone.now() - timedelta(days=60)
+        )
+
+        def made(**params):
+            blanks = self.client.get(
+                reverse("product_line_index"), params
+            ).context["blanks"]
+            return next(b["made"] for b in blanks if b["blank"] == self.blank)
+
+        self.assertEqual(made(range="all"), 12)
+        self.assertEqual(made(range="30"), 8)

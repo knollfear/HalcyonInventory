@@ -46,7 +46,8 @@ nobody could buy, not one nobody wanted.
 
 {% block content %}
   <p class="lead">
-    Every colour of {{ blank.name }}. <strong>Sold</strong> is what Square rang
+    Every colour of {{ blank.name }}{% if range.start %}, {{ range.start|date:"j M" }}
+    to {{ range.end|date:"j M Y" }}{% endif %}. <strong>Sold</strong> is what Square rang
     up, on Square's clock; <strong>made</strong> is the dye baths recorded in
     the range, minus any taken back; stock and sheets are as of now.
     <a href="{{ picker_href }}">Another blank</a> ·

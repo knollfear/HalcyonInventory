@@ -86,7 +86,20 @@ def blanks(rng):
     Ordered by units sold over the range, so the ten that matter float to the
     top on their own and nobody keeps a list of favourites. A blank with no
     sales still appears — new, or out of season — under the ones that did.
+
+    **Made sits beside sold, over the same dates**, because the reading at a
+    glance is the pair: a line that sold 368 and made 313 since the faire
+    opened is a different line from one that sold 368 and made nothing. It is
+    `_production` — the same standing rows the blank's own page totals — so
+    the picker and the page cannot disagree about a line.
     """
+    made = {
+        row["finished_product__raw_product"]: int(row["q"] or 0)
+        for row in _production(rng)
+        .values("finished_product__raw_product")
+        .annotate(q=Sum("quantity"))
+        .order_by()
+    }
     sold = {
         row["raw_product"]: int(row["q"] or 0)
         for row in slowsellers.lines(rng)
@@ -117,6 +130,7 @@ def blanks(rng):
     )
     out = [
         {"blank": blank, "sold": sold.get(blank.pk, 0),
+         "made": made.get(blank.pk, 0),
          "colorways": blank.colorways, "on_hand": blank.on_hand or 0}
         for blank in found
     ]
@@ -142,6 +156,25 @@ def _sold(blank, rng):
     }
 
 
+def _production(rng):
+    """Standing production rows inside the range, every blank.
+
+    Standing means not taken back: a retracted bath did not happen. One
+    definition for the picker and the page, so a line's Made on one is its
+    Made on the other.
+    """
+    logs = InventoryLog.objects.filter(
+        log_type=InventoryLog.PRODUCTION,
+        reversals__isnull=True,
+    )
+    lower, upper = sales.window(rng)
+    if lower:
+        logs = logs.filter(created_at__gte=lower)
+    if upper:
+        logs = logs.filter(created_at__lt=upper)
+    return logs
+
+
 def _made(blank, rng):
     """`{finished_product_id: (units, latest standing log)}` in the range.
 
@@ -149,16 +182,7 @@ def _made(blank, rng):
     `log.when` — a card entry known only to the month must not be shown with
     the 1st as though somebody wrote that day down.
     """
-    logs = InventoryLog.objects.filter(
-        log_type=InventoryLog.PRODUCTION,
-        reversals__isnull=True,
-        finished_product__raw_product=blank,
-    )
-    lower, upper = sales.window(rng)
-    if lower:
-        logs = logs.filter(created_at__gte=lower)
-    if upper:
-        logs = logs.filter(created_at__lt=upper)
+    logs = _production(rng).filter(finished_product__raw_product=blank)
 
     out = {}
     for log in logs.order_by("-created_at", "-pk"):
