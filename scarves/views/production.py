@@ -87,9 +87,11 @@ def production_needed_view(request):
     # What each colorway has actually sold this season, pooled across its
     # blanks — the same figure `private/slow-sellers/` reports, from the same
     # function, because two answers to "what sold" is how the page that orders
-    # by it comes to disagree with the page that reports it.
+    # by it comes to disagree with the page that reports it. Within the
+    # category when one is picked, as `candidates()` and the slow-sellers
+    # page both pool it.
     rng = slowsellers.season_range({})
-    sold = slowsellers.sold_by_recipe(rng)
+    sold = slowsellers.sold_by_recipe(rng, category=category)
 
     # Three pills, one question. `sales_par` judges every product against
     # a day's sales rounded up, doubled, plus one — at least three — instead
@@ -155,9 +157,12 @@ def production_needed_view(request):
         # call for the sheet, and the two pages have to agree about what
         # "the first twenty" are. Re-sorting a group's rows on `_urgency`
         # would put an empty shelf that sold nothing above the best seller.
+        # Ties go to what sold rather than the alphabet, as they do there.
         for g in groups:
-            g["items"].sort(key=lambda p: (-p.net_shortage, p.name))
-        groups.sort(key=lambda g: (-g["total_shortage"], g["recipe_name"]))
+            g["items"].sort(key=lambda p: (-p.net_shortage, -p.sold_here,
+                                           p.name))
+        groups.sort(key=lambda g: (-g["total_shortage"], -g["units_sold"],
+                                   g["recipe_name"]))
     elif sort == "shortage":
         groups.sort(key=lambda g: (-g["has_behind"], -g["total_shortage"],
                                    g["recipe_name"]))

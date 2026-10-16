@@ -681,23 +681,36 @@ def candidates(category=None, include_overshoot=False, order=ORDER_SOLD,
         # is where the skipping happens, and it says how many it skipped.
         product.blocked_by = blocked_reasons(product, out_blanks, out_dyes)
 
+    # Pooled by recipe, because that is the unit a bath is planned in and the
+    # unit the other page reports — and within the category when the list is
+    # narrowed to one, so a silk sheet is not ranked on yarn sales.
+    sold = slowsellers.sold_by_recipe(slowsellers.season_range({}),
+                                      category=category)
+
     if demand_par is not None:
         # The sales are already in the par, so the order is how far below it
-        # a product is and nothing else. `order` is ignored on purpose: sales
-        # first would count them twice, and `_urgency`'s empty-shelf-first
-        # would put a colorway that sold nothing (par 1, none on hand) ahead
-        # of the best seller twelve short. The floor of one is what keeps
-        # the empty shelf on the list at all.
-        return sorted(wanted, key=lambda p: (-p.net_shortage, p.name))
+        # a product is first. `order` is ignored on purpose: sales first
+        # would count them twice, and `_urgency`'s empty-shelf-first would
+        # put a colorway that sold nothing (par 3, none on hand) ahead of the
+        # best seller twelve short.
+        #
+        # **Sales break the ties, not the alphabet.** "Already in the par"
+        # is only true above the one-a-day floor, and on silk almost nothing
+        # clears it: 14 faire days in, two silk products had sold more than
+        # one a day, so every other silk row came out at par 3 and the list
+        # was shortage-from-3 in alphabetical order — Mossy Knoll, which had
+        # sold none on that blank, above Uncut Gems. Where the par could not
+        # tell two rows apart, what sold still can.
+        return sorted(wanted, key=lambda p: (
+            -p.net_shortage, -sold.get(p.recipe_id, 0), -p.sold_here, p.name,
+        ))
 
     if order == ORDER_PAR:
         return sorted(wanted, key=_urgency)
 
     # Sales first, urgency as the tie-break — so an empty shelf still leads
     # among colorways that sell alike, and a colour nobody buys does not jump
-    # the queue for being emptier. Pooled by recipe, because that is the unit
-    # a bath is planned in and the unit the other page reports.
-    sold = slowsellers.sold_by_recipe(slowsellers.season_range({}))
+    # the queue for being emptier.
     return sorted(
         wanted,
         key=lambda p: (-sold.get(p.recipe_id, 0),) + _urgency(p),
@@ -1044,7 +1057,8 @@ def top_ups(current, gap, category=None, oven=True,
     if out_dyes:
         qs = qs.exclude(recipe__recipe_dyes__dye_id__in=out_dyes)
 
-    sold = slowsellers.sold_by_recipe(slowsellers.season_range({}))
+    sold = slowsellers.sold_by_recipe(slowsellers.season_range({}),
+                                      category=category)
     ranked = sorted(
         qs,
         # Sales pooled by colorway, then the name — deliberately *not*

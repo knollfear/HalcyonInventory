@@ -2837,6 +2837,71 @@ class ProductionNeededRanksOnSalesTests(TestCase):
         self._sell(self.mover, 40)
 
         self.assertIn("Wasteland", self._order())
+
+
+class ACategoryRanksOnItsOwnSalesTests(TestCase):
+    """A silk sheet is ranked on what sold as silk, not on the yarn.
+
+    Pooling across blanks is right for a colorway's dye pot, but a sheet
+    narrowed to one category was still pooling across all of them. Measured
+    on the live catalogue: Forest Fire led the silk list on 118 sold, 96 of
+    them skeins, and Golden Hour — 33, all silk, the real silk best seller —
+    came seventh.
+    """
+
+    def setUp(self):
+        self.client.force_login(User.objects.create_user("staff", password="pw"))
+        yarn = RawProductCategory.objects.create(name="Yarn")
+        # A yarn hit with a quiet silk side.
+        self.skein = make_bathable(make_recipe("Forest Fire"), "Homespun",
+                                   on_hand=0, par=8, bath=4)
+        RawProduct.objects.filter(pk=self.skein.raw_product_id).update(
+            category=yarn)
+        self.fire_silk = make_bathable(self.skein.recipe, "Shawl",
+                                       on_hand=0, par=8, bath=4)
+        # Sold only as silk, and more of it.
+        self.golden = make_bathable(make_recipe("Golden Hour"), "Rectangle",
+                                    on_hand=0, par=8, bath=4)
+        # `make_product` files every blank under Silk.
+        self.silk = self.golden.raw_product.category
+        self._sell(self.skein, 90)
+        self._sell(self.fire_silk, 5)
+        self._sell(self.golden, 30)
+
+    def _sell(self, product, units):
+        sale = Sale.objects.create(
+            order_id=f"o{product.pk}", sold_at=timezone.now(),
+            source=Sale.SOURCE_SQUARE_API,
+        )
+        SaleLine.objects.create(
+            sale=sale, line_key=f"k{product.pk}", sold_at=timezone.now(),
+            item_name=product.raw_product.name, price_point=product.recipe.name,
+            quantity=units, finished_product=product,
+            raw_product=product.raw_product, source=Sale.SOURCE_SQUARE_API,
+        )
+
+    def test_the_silk_sheet_leads_with_the_silk_seller(self):
+        baths = production.plan_baths(20, category=self.silk)
+
+        self.assertEqual(baths[0].recipe_name, "Golden Hour")
+
+    def test_unscoped_it_is_still_pooled_across_everything(self):
+        """A bath is planned in colorway units — the change is only what a
+        list narrowed to one category counts."""
+        baths = production.plan_baths(20)
+
+        self.assertEqual(baths[0].recipe_name, "Forest Fire")
+
+    def test_the_list_prints_and_ranks_on_the_same_silk_figure(self):
+        groups = self.client.get(
+            reverse("production_needed"), {"category": self.silk.pk}
+        ).context["groups"]
+
+        self.assertEqual(groups[0]["recipe_name"], "Golden Hour")
+        sold = {g["recipe_name"]: g["units_sold"] for g in groups}
+        self.assertEqual(sold["Forest Fire"], 5)
+
+
 class AddingAColorwayByNameTests(TestCase):
     """Clicking a search result puts it on the list.
 
@@ -4075,6 +4140,29 @@ class ParFromSalesTests(TestCase):
         self.assertEqual(response.context["sort"], "sales_par")
         self.assertContains(response, "Use par")
         self.assertNotContains(response, 'type="checkbox" name="demand_par"')
+
+    def test_ties_on_the_floor_go_to_what_sold_not_the_alphabet(self):
+        """On silk almost nothing clears one a day, so nearly every row sits
+        at the floor of three and the shortage cannot tell them apart. The
+        list used to fall back on the name — Mossy Knoll, which had sold none
+        on that blank, above Uncut Gems. What sold still can tell them apart."""
+        quiet = make_bathable(make_recipe("Aaa Quiet"), "Noble",
+                              on_hand=0, par=8, bath=4)
+        seller = make_bathable(make_recipe("Zed Seller"), "Artisan",
+                               on_hand=0, par=8, bath=4)
+        # Two over two days: one a day, still the floor of three.
+        self._sell(seller, 1, self.days[0])
+        self._sell(seller, 1, self.days[1])
+        demand = production.demand_par()
+        self.assertEqual(demand.target(quiet), demand.target(seller))
+
+        rows = list(self._rows(sort="sales_par"))
+        self.assertLess(rows.index(seller.name), rows.index(quiet.name))
+
+        # The sheet makes the same call, so the two still agree.
+        names = [b.recipe_name for b in production.plan_baths(
+            20, include_overshoot=True, demand_par=demand)]
+        self.assertLess(names.index("Zed Seller"), names.index("Aaa Quiet"))
 
     def test_the_stockout_bonus_is_not_added_on_this_view(self):
         """A sell-out is a sales event, and this par is built from sales."""

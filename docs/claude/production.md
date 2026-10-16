@@ -258,6 +258,14 @@ is dyed on** because that is the unit a bath is planned in. One answer to
 that reports it. It prints beside each colorway so the ranking can be checked
 by looking rather than trusted.
 
+**Narrowed to a category, it pools within it** — a silk list counts silk
+sales, the way `private/slow-sellers/` already did. Pooled across every
+category, the silk sheet was ranked on yarn: Forest Fire led it on 118 sold,
+96 of them skeins, while Golden Hour — 33, all silk, the actual silk best
+seller — came seventh. A colorway's pull as a skein says little about it as
+a veil. Unfiltered pages still pool across everything, since that is the
+unit the pot is.
+
 A colorway that sold nothing is ranked last, never hidden. It may simply be
 new — 2026 is year one for colorway data — and this page is not where that
 gets decided.
@@ -366,6 +374,18 @@ What is deliberately kept, and why:
   The floor of one is what keeps the empty shelf on the list at all; it is
   not what puts it first. Choosing this pill *is* choosing that order, on
   both pages, so they still agree about what "the first twenty" are.
+- **Ties go to what sold, never the alphabet.** "The sales are already in
+  the number" is only true above the one-a-day floor, and on silk almost
+  nothing clears it: 14 faire days into 2026, two silk products had sold
+  more than one a day, so every other silk row came out at par 3 and the
+  list read as shortage-from-3 in *alphabetical* order — Mossy Knoll, which
+  had sold none on that blank, above Uncut Gems. The tie-break is the
+  colorway's sales (within the category, as above), then the blank's own,
+  then the name. It reorders rows the par cannot tell apart and nothing
+  else, so it is not a second count of the sales. Raising the floor or
+  counting per week instead of per day was considered and rejected: with
+  the same formula either one only moves the floor, and a higher floor is
+  no more informative than this one.
 - **The stockout bonus is not added.** A sell-out is a sales event and this
   par is built from sales. The first cut stacked it on the argument that a
   counted zero is an observation where the rate is an estimate; the user

@@ -180,17 +180,26 @@ def sold_units(rng):
     }
 
 
-def sold_by_recipe(rng):
+def sold_by_recipe(rng, category=None):
     """`{recipe_id: units}` pooled across every blank a colorway is dyed on.
 
     The unit a dye bath is planned in, so it is also the unit a production
     list should be ordered by. Shared with `production_needed_view` rather
     than recomputed there — two answers to "what sold" is how a page that
     orders by it disagrees with the page that reports it.
+
+    **`category` pools within it, the way `colorway_rows` already does.**
+    Unscoped, a silk sheet was ranked on yarn: Forest Fire led it on 118
+    sold, 96 of them skeins, while Golden Hour — 33, every one silk, the
+    actual silk best seller — came seventh. A colorway's pull on one base
+    says little about another, so a list narrowed to a category ranks on
+    what sold in it.
     """
+    counted = lines(rng).filter(finished_product__recipe__isnull=False)
+    if category is not None:
+        counted = counted.filter(finished_product__raw_product__category=category)
     counted = (
-        lines(rng)
-        .filter(finished_product__recipe__isnull=False)
+        counted
         .values("finished_product__recipe")
         .annotate(q=Sum("quantity"))
         .order_by()
