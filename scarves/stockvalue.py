@@ -53,6 +53,7 @@ count means anything for anyway.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -88,6 +89,16 @@ class Row:
     #: Of `units`, how many are held by a planned-but-unreported bath. Part
     #: of the count here, unlike everywhere else that reads a shelf.
     claimed: int = 0
+    #: The name as printed under its category's heading, which already says
+    #: "Yarn" or "Silk" — set by `_group`.
+    label: str = ""
+
+    @property
+    def basis_note(self):
+        """The basis worth printing beside the price. A price somebody set is
+        the ordinary case and says nothing; only a derived one needs its
+        working shown."""
+        return "" if self.retail_basis == BASIS_SET else self.retail_basis
 
     @property
     def baths(self):
@@ -112,16 +123,8 @@ class Row:
         return self.units if self.unit_retail is None else 0
 
 
-@dataclass
-class Section:
-    """A heading, its rows, and the totals that go under them."""
-
-    key: str
-    title: str
-    blurb: str
-    rows: list = field(default_factory=list)
-    #: Whether a bath column means anything for these rows.
-    shows_baths: bool = True
+class _Sums:
+    """Column totals over `self.rows`, shared by a section and its groups."""
 
     @property
     def units(self):
@@ -142,6 +145,53 @@ class Section:
     @property
     def unpriced_units(self):
         return sum(row.unpriced_units for row in self.rows)
+
+
+@dataclass
+class Group(_Sums):
+    """One category's rows inside a section — the Yarn or the Silk."""
+
+    name: str
+    rows: list = field(default_factory=list)
+
+
+@dataclass
+class Section(_Sums):
+    """A heading, its rows, and the totals that go under them."""
+
+    key: str
+    title: str
+    blurb: str
+    rows: list = field(default_factory=list)
+    #: Whether a bath column means anything for these rows.
+    shows_baths: bool = True
+    #: `rows` again, split by category, in the order each first appears.
+    groups: list = field(default_factory=list)
+
+
+def _without_word(name, word):
+    """`name` less a leading or trailing `word` (or its plural).
+
+    Under a "Yarn" heading, "Heavenly Yarn" says yarn twice. Only the ends
+    are trimmed, so a name with the word in the middle is left as written,
+    and one that is nothing but the word keeps it rather than going blank.
+    """
+    w = re.escape(word)
+    trimmed = re.sub(
+        rf"^\s*{w}s?\b[\s\-–:]*|[\s\-–:]*\b{w}s?\s*$", "", name,
+        flags=re.IGNORECASE,
+    ).strip()
+    return trimmed or name
+
+
+def _group(section):
+    """Split a section's rows by category and label each row for its heading."""
+    groups = {}
+    for row in section.rows:
+        groups.setdefault(row.category, Group(name=row.category)).rows.append(row)
+        row.label = _without_word(row.name, row.category)
+    section.groups = list(groups.values())
+    return section
 
 
 def _catalogue_price(finished):
@@ -272,7 +322,7 @@ def sections():
             retail_basis=BASIS_SET,
         ))
 
-    return [undyed, dyed, bought]
+    return [_group(section) for section in (undyed, dyed, bought)]
 
 
 @dataclass

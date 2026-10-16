@@ -165,6 +165,40 @@ class StockValueTests(TestCase):
         self.assertEqual(totals.margin, Decimal("1332.00"))
 
 
+    def test_a_section_splits_by_category_and_each_part_adds_up(self):
+        RawProduct.objects.create(
+            name="Heavenly Yarn", category=self.yarn, price="4.00",
+            suggested_price="18.00", number_per_dye_bath=5, number_on_hand=12,
+        )
+        section = _section(stockvalue.sections(), "undyed")
+        groups = {g.name: g for g in section.groups}
+
+        self.assertEqual(set(groups), {"Silk", "Yarn"})
+        self.assertEqual(groups["Yarn"].units, 12)
+        self.assertEqual(groups["Yarn"].baths, 2)
+        self.assertEqual(groups["Yarn"].cost, Decimal("48.00"))
+        self.assertEqual(groups["Yarn"].retail, Decimal("216.00"))
+        self.assertEqual(
+            groups["Silk"].retail + groups["Yarn"].retail, section.retail
+        )
+        # Under a "Yarn" heading the row need not say yarn again.
+        self.assertEqual(groups["Yarn"].rows[0].label, "Heavenly")
+
+    def test_a_name_that_is_only_the_category_keeps_it(self):
+        self.assertEqual(stockvalue._without_word("Yarn", "Yarn"), "Yarn")
+        self.assertEqual(stockvalue._without_word("Undyed Yarns", "Yarn"), "Undyed")
+        self.assertEqual(
+            stockvalue._without_word("Sunrise Over Silk Scarf", "Silk"),
+            "Sunrise Over Silk Scarf",
+        )
+
+    def test_a_price_set_on_the_blank_says_nothing_about_its_basis(self):
+        row = _section(stockvalue.sections(), "undyed").rows[0]
+
+        self.assertEqual(row.retail_basis, stockvalue.BASIS_SET)
+        self.assertEqual(row.basis_note, "")
+
+
 class StockValuePageTests(TestCase):
     def setUp(self):
         self.client.force_login(User.objects.create_user("staff", password="pw"))
@@ -180,5 +214,5 @@ class StockValuePageTests(TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
         self.assertIn("Infinity Scarf", body)
-        self.assertIn("1560", body)   # at the asking price
+        self.assertIn("1,560", body)  # at the asking price, with its comma
         self.assertIn("312", body)    # at cost

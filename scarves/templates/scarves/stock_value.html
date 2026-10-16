@@ -27,7 +27,9 @@ happens to the pile — and nothing plans against that column.
   table.rows td.num, table.rows th.num { text-align: right;
       font-variant-numeric: tabular-nums; }
   table.rows tr.total td { font-weight: 700; border-top: 2px solid #cfd6de; }
-  .cat { font-size: 12px; color: #78808c; }
+  table.rows tr.group td { font-weight: 700; padding-top: 12px; }
+  table.rows td.indent { padding-left: 24px; }
+  table.rows tr.subtotal td { font-weight: 600; border-top: 1px solid #cfd6de; }
   .basis { font-size: 11px; color: #8a919c; }
   .none { color: #8a919c; }
   .claimed { font-size: 11px; color: #1558a0; }
@@ -43,21 +45,21 @@ happens to the pile — and nothing plans against that column.
   </p>
 
   <p class="allstock">
-    {{ totals.units }} unit{{ totals.units|pluralize }} in all, across the three
+    {{ totals.units|floatformat:"0g" }} unit{{ totals.units|pluralize }} in all, across the three
     piles below.
   </p>
 
   <div class="headline">
     <div class="fig">
-      <div class="n">${{ totals.retail|floatformat:0 }}</div>
+      <div class="n">${{ totals.retail|floatformat:"0g" }}</div>
       <div class="what">at the asking price</div>
     </div>
     <div class="fig">
-      <div class="n quiet">${{ totals.cost|floatformat:0 }}</div>
+      <div class="n quiet">${{ totals.cost|floatformat:"0g" }}</div>
       <div class="what">what it cost to buy</div>
     </div>
     <div class="fig">
-      <div class="n quiet">${{ totals.margin|floatformat:0 }}</div>
+      <div class="n quiet">${{ totals.margin|floatformat:"0g" }}</div>
       <div class="what">the difference, before dye, labour and the stall</div>
     </div>
     {% comment %}
@@ -67,8 +69,8 @@ happens to the pile — and nothing plans against that column.
     not.
     {% endcomment %}
     <div class="fig">
-      <div class="n quiet">{{ totals.baths }}</div>
-      <div class="what">baths still to dye, from {{ totals.undyed_units }} undyed unit{{ totals.undyed_units|pluralize }}</div>
+      <div class="n quiet">{{ totals.baths|floatformat:"0g" }}</div>
+      <div class="what">baths still to dye, from {{ totals.undyed_units|floatformat:"0g" }} undyed unit{{ totals.undyed_units|pluralize }}</div>
     </div>
   </div>
 
@@ -90,47 +92,66 @@ happens to the pile — and nothing plans against that column.
           </tr>
         </thead>
         <tbody>
-          {% for row in section.rows %}
-            <tr>
-              <td>
-                {{ row.name }}
-                <span class="cat">{{ row.category }}</span>
-                {% if row.claimed %}
-                  <span class="claimed">{{ row.claimed }} on an open sheet</span>
-                {% endif %}
-              </td>
-              <td class="num">{{ row.units }}</td>
-              {% if section.shows_baths %}
-                <td class="num">
-                  {% if row.baths is None %}<span class="none">—</span>
-                  {% else %}{{ row.baths }}{% endif %}
+          {% comment %}
+          A heading row per category and its rows indented under it, so the
+          category is said once rather than on every row. The subtotal is
+          left off when a section holds one category — it would repeat the
+          total directly beneath it.
+          {% endcomment %}
+          {% for group in section.groups %}
+            <tr class="group"><td colspan="{% if section.shows_baths %}7{% else %}6{% endif %}">{{ group.name }}</td></tr>
+            {% for row in group.rows %}
+              <tr>
+                <td class="indent">
+                  {{ row.label }}
+                  {% if row.claimed %}
+                    <span class="claimed">{{ row.claimed }} on an open sheet</span>
+                  {% endif %}
                 </td>
-              {% endif %}
-              <td class="num">${{ row.unit_cost|floatformat:2 }}</td>
-              <td class="num">${{ row.cost|floatformat:2 }}</td>
-              <td class="num">
-                {% if row.unit_retail is None %}
-                  <span class="none">—</span>
-                {% else %}
-                  ${{ row.unit_retail|floatformat:2 }}
-                  <span class="basis">{{ row.retail_basis }}</span>
+                <td class="num">{{ row.units|floatformat:"0g" }}</td>
+                {% if section.shows_baths %}
+                  <td class="num">
+                    {% if row.baths is None %}<span class="none">—</span>
+                    {% else %}{{ row.baths|floatformat:"0g" }}{% endif %}
+                  </td>
                 {% endif %}
-              </td>
-              <td class="num">
-                {% if row.retail is None %}
-                  <span class="none">not priced</span>
-                {% else %}${{ row.retail|floatformat:2 }}{% endif %}
-              </td>
-            </tr>
+                <td class="num">${{ row.unit_cost|floatformat:"2g" }}</td>
+                <td class="num">${{ row.cost|floatformat:"2g" }}</td>
+                <td class="num">
+                  {% if row.unit_retail is None %}
+                    <span class="none">—</span>
+                  {% else %}
+                    ${{ row.unit_retail|floatformat:"2g" }}
+                    {% if row.basis_note %}<span class="basis">{{ row.basis_note }}</span>{% endif %}
+                  {% endif %}
+                </td>
+                <td class="num">
+                  {% if row.retail is None %}
+                    <span class="none">not priced</span>
+                  {% else %}${{ row.retail|floatformat:"2g" }}{% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+            {% if section.groups|length > 1 %}
+              <tr class="subtotal">
+                <td class="indent">{{ group.name }} total</td>
+                <td class="num">{{ group.units|floatformat:"0g" }}</td>
+                {% if section.shows_baths %}<td class="num">{{ group.baths|floatformat:"0g" }}</td>{% endif %}
+                <td></td>
+                <td class="num">${{ group.cost|floatformat:"2g" }}</td>
+                <td></td>
+                <td class="num">${{ group.retail|floatformat:"2g" }}</td>
+              </tr>
+            {% endif %}
           {% endfor %}
           <tr class="total">
             <td>{{ section.rows|length }} row{{ section.rows|length|pluralize }}</td>
-            <td class="num">{{ section.units }}</td>
-            {% if section.shows_baths %}<td class="num">{{ section.baths }}</td>{% endif %}
+            <td class="num">{{ section.units|floatformat:"0g" }}</td>
+            {% if section.shows_baths %}<td class="num">{{ section.baths|floatformat:"0g" }}</td>{% endif %}
             <td></td>
-            <td class="num">${{ section.cost|floatformat:2 }}</td>
+            <td class="num">${{ section.cost|floatformat:"2g" }}</td>
             <td></td>
-            <td class="num">${{ section.retail|floatformat:2 }}</td>
+            <td class="num">${{ section.retail|floatformat:"2g" }}</td>
           </tr>
         </tbody>
       </table>

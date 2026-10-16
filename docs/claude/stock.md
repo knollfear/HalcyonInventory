@@ -1323,6 +1323,14 @@ carrying a selling price, and those blanks are held out of the undyed
 section — which leaves that section meaning *yarn waiting for a dye bath*,
 the only thing a bath count means anything for anyway.
 
+**Inside each section, rows sit under a heading per category** — Yarn, Silk,
+Notions — with a subtotal under each, because one pooled total couldn't say how much
+of a section was yarn and how much was silk. The heading says the category once, so a row drops it from its own
+name ("Heavenly Yarn" under *Yarn* reads "Heavenly"), trimmed only at either
+end so a colour name with the word in the middle is left alone. A section
+holding a single category skips the subtotal, which would only repeat the
+total beneath it.
+
 **Claimed yarn is counted here, and this is the only page that adds it back to
 a shelf reading.** `number_on_hand` means unclaimed — see *The blanks come off
 when the run is made* in `docs/claude/production.md` — and that is right for
@@ -1340,7 +1348,10 @@ dye, labour and the stall, not profit.
 **Undyed yarn has no retail price of its own**, so the figure on those rows is
 what the colour sells for once dyed: `suggested_price` when somebody set one,
 otherwise the stock-weighted average of what that blank's colorways actually
-ring at, and **the row says which**. A derived number with no visible basis is
+ring at, and **the row says when it is the average**. A price set on the blank
+is the ordinary case and prints bare — labelling every row "set on the blank"
+was noise that buried the few rows actually carrying a derived figure. A
+derived number with no visible basis is
 the `par` failure again — see *The app advises, a person decides* in
 `CLAUDE.md`. A blank with neither gets a dash and its units are reported
 under the table: nothing is priced and it is worth nothing are different
