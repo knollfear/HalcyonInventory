@@ -60,7 +60,7 @@ the moment somebody knows the two halves belong together.
           {% for product in sources %}
             <option value="{{ product.pk }}">
               {{ product.recipe.name }} — {{ product.raw_product.name }}
-              ({{ product.number_on_hand }} on hand)
+              ({{ product.number_on_hand }} on hand · par {{ product.par }} · sold {{ product.sold_this_season }} this season)
             </option>
           {% endfor %}
         </select>

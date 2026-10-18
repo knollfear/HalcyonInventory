@@ -52,7 +52,7 @@
                   <input type="checkbox" name="raw_ids" value="{{ rp.id }}">
                   <span>
                     {{ rp.name }}
-                    <span class="muted small">(id={{ rp.id }}, on&nbsp;hand&nbsp;{{ rp.number_on_hand }})</span>
+                    <span class="muted small">(id={{ rp.id }}, on&nbsp;hand&nbsp;{{ rp.number_on_hand }} · par&nbsp;{{ rp.par_level }} · sold&nbsp;{{ rp.sold_this_season }}&nbsp;this&nbsp;season)</span>
                   </span>
                 </label>
               {% endfor %}
@@ -89,10 +89,12 @@
           <table>
             <thead>
               <tr>
-                <th style="width: 26%;">Colorway</th>
-                <th style="width: 10%;">Current</th>
-                <th style="width: 14%;">New count</th>
-                <th style="width: 30%;">Why (optional)</th>
+                <th style="width: 22%;">Colorway</th>
+                <th style="width: 7%;">Current</th>
+                <th style="width: 6%;">Par</th>
+                <th style="width: 8%;">Sold this season</th>
+                <th style="width: 13%;">New count</th>
+                <th style="width: 26%;">Why (optional)</th>
                 <th>Finished product</th>
               </tr>
             </thead>
@@ -110,6 +112,8 @@
                     {% endif %}
                   </td>
                   <td>{{ row.fp.number_on_hand }}</td>
+                  <td>{{ row.fp.par }}</td>
+                  <td>{{ row.sold }}</td>
                   <td>
                     {{ row.field }}
                     {% if row.field.errors %}

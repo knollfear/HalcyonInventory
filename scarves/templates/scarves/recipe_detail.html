@@ -285,16 +285,16 @@
               <th colspan="2">Product</th>
               <th>Base (raw)</th>
               <th class="num">On hand</th>
+              {% comment %}
+              What the till sold this season, per blank — `sold_per_blank`,
+              the same figure `private/production-needed/` ranks on rather
+              than a second answer to the question. In both modes, because
+              on hand, par and sold travel together on every page that prints
+              one of them: none of the three can be judged alone. In par mode
+              it is also the evidence beside the box. It proposes nothing.
+              {% endcomment %}
+              <th class="num">Sold this season</th>
               {% if par_mode %}
-                {% comment %}
-                What the till sold this season, per blank — `sold_per_blank`,
-                the same figure `private/production-needed/` ranks on rather
-                than a second answer to the question. Par is the number this
-                app treats as a fact and never was one, and it is the one
-                thing here a person is expected to overrule, so the evidence
-                to judge it by prints beside the box. It proposes nothing.
-                {% endcomment %}
-                <th class="num">Sold this season</th>
                 <th class="par-col">Par</th>
               {% else %}
                 <th class="num">Par</th>
@@ -321,8 +321,8 @@
                 </td>
                 <td>{{ p.raw_product.name }} <span class="muted small">{{ p.raw_product.category.name }}</span></td>
                 <td class="num">{{ p.number_on_hand }}</td>
+                <td class="num">{{ p.sold_this_season }}</td>
                 {% if par_mode %}
-                  <td class="num">{{ p.sold_this_season }}</td>
                   <td class="par-col">
                     {% if p.is_active %}
                       <input type="number" name="par_{{ p.pk }}" min="0" step="1"
@@ -397,20 +397,6 @@
             of production planning.
           </span>
         </div>
-        {% comment %}
-        Said out loud because the number beside the box comes from the till
-        ledger and the "sold, all time" figure at the top of this page comes
-        from the stock log — two legitimate answers to two different
-        questions, which on one page read as the page disagreeing with itself
-        unless each says which question it answered.
-        {% endcomment %}
-        <p class="small muted">
-          Sold counts the current season off the till ledger — the same figure
-          <a href="{% url 'production_needed' %}">Production Needed</a> ranks
-          on and <a href="{% url 'slow_sellers' %}">Slow Sellers</a> reports.
-          The lifetime figures at the top of this page are the stock log,
-          which is a different question.
-        </p>
       {% else %}
         <div class="actions">
           <button class="btn" type="submit">Record production</button>
@@ -420,6 +406,21 @@
           </span>
         </div>
       {% endif %}
+
+      {% comment %}
+      Said out loud, in both modes, because the Sold column comes from the
+      till ledger and the "sold, all time" figure at the top of this page
+      comes from the stock log — two legitimate answers to two different
+      questions, which on one page read as the page disagreeing with itself
+      unless each says which question it answered.
+      {% endcomment %}
+      <p class="small muted">
+        Sold counts the current season off the till ledger — the same figure
+        <a href="{% url 'production_needed' %}">Production Needed</a> ranks
+        on and <a href="{% url 'slow_sellers' %}">Slow Sellers</a> reports.
+        The lifetime figures at the top of this page are the stock log,
+        which is a different question.
+      </p>
 
       {% comment %}
       This form means one thing: baths dyed now, stock moves. It used to carry

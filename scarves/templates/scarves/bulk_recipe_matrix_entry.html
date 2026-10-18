@@ -67,7 +67,7 @@
                   <input type="checkbox" name="raw_ids" value="{{ rp.id }}">
                   <span>
                     {{ rp.name }}
-                    <span class="muted small">(id={{ rp.id }}, on&nbsp;hand&nbsp;{{ rp.number_on_hand }})</span>
+                    <span class="muted small">(id={{ rp.id }}, on&nbsp;hand&nbsp;{{ rp.number_on_hand }} · par&nbsp;{{ rp.par_level }} · sold&nbsp;{{ rp.sold_this_season }}&nbsp;this&nbsp;season)</span>
                   </span>
                 </label>
               {% endfor %}

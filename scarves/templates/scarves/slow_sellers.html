@@ -143,7 +143,7 @@ things — stop dyeing it, or dye more of it.
       <thead>
         <tr>
           <th>Colorway</th><th class="num">Sold</th>
-          <th class="num">On hand</th><th class="num">Blanks</th>
+          <th class="num">On hand</th><th class="num">Par</th><th class="num">Blanks</th>
           <th class="num">On boards</th><th></th>
         </tr>
       </thead>
@@ -153,6 +153,7 @@ things — stop dyeing it, or dye more of it.
             <td><a href="{% url 'recipe_detail' row.recipe.pk %}">{{ row.name }}</a></td>
             <td class="num {% if not row.units %}zero{% endif %}">{{ row.units }}</td>
             <td class="num">{{ row.on_hand }}</td>
+            <td class="num">{{ row.par }}</td>
             <td class="num">{{ row.products }}</td>
             <td class="num">{{ row.stocked }}</td>
             <td>
@@ -160,7 +161,7 @@ things — stop dyeing it, or dye more of it.
             </td>
           </tr>
         {% empty %}
-          <tr><td colspan="6" class="empty">No colorway sold that little over {{ range.label|lower }}.</td></tr>
+          <tr><td colspan="7" class="empty">No colorway sold that little over {{ range.label|lower }}.</td></tr>
         {% endfor %}
       </tbody>
     </table>

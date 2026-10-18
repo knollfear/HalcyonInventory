@@ -4,10 +4,25 @@ out-of-band on a chip click, because these sit above the fold and the chips
 are at the bottom — leaving them behind would put a colorway-wide total over
 a one-product list.
 {% endcomment %}
+{% comment %}
+On hand, par and sold this season lead as three figures, always all three:
+none of them can be judged without the other two. Par prints at 0 too —
+0 is a real answer (nothing is being made), and hiding it read as par
+not applying. Sold here is the till's season, like the table's column; the
+lifetime pair after it is the stock log's and says so.
+{% endcomment %}
 <div class="figures">
   <div class="figure">
     <div class="value">{{ on_hand }}</div>
-    <div class="label">on hand{% if par_total %} · par {{ par_total }}{% endif %}</div>
+    <div class="label">on hand</div>
+  </div>
+  <div class="figure">
+    <div class="value">{{ par_total }}</div>
+    <div class="label">par</div>
+  </div>
+  <div class="figure sold">
+    <div class="value">{{ sold_season }}</div>
+    <div class="label">sold this season</div>
   </div>
   <div class="figure made">
     <div class="value">{{ produced }}</div>

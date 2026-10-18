@@ -874,6 +874,16 @@ def sold_per_blank():
     return slowsellers.sold_units(slowsellers.season_range({}))
 
 
+def sold_per_raw_blank():
+    """`{raw_product_id: units}` this season — the blank's own sold figure.
+
+    The third of the three numbers every page printing a blank's on hand and
+    par shows beside them. Everything rung up on the blank, colorway or not;
+    see `slowsellers.sold_by_raw_blank` for why the flat-price lines count.
+    """
+    return slowsellers.sold_by_raw_blank(slowsellers.season_range({}))
+
+
 def _urgency(product):
     """Empty shelf first, then biggest shortfall, then a stable name.
 
@@ -2116,6 +2126,11 @@ def render_sheet(run, return_url, upload_url) -> bytes:
     # and two dry with one still wet is exactly what it has to be able to
     # say.
     lines = lines_for(rows)
+    # Each line prints on hand and par, so it prints season sold with them:
+    # none of the three can be judged alone. One lookup for the document.
+    sold = sold_per_blank()
+    for line in lines:
+        line.product.sold_this_season = sold.get(line.product.pk, 0)
     per_page = int((page_h - PAGE_MARGIN * 2 - HEADER_HEIGHT) // ROW_HEIGHT)
     per_page = max(per_page, 1)
 
@@ -2557,8 +2572,16 @@ def _draw_line(pdf, line, number, y, page_w):
     baths = f" · {line.baths} baths" if line.baths > 1 else ""
     pdf.drawString(
         text_x, baseline + 2,
-        f"{product.raw_product.name} · {product.sku or 'no SKU'}{baths} · "
-        f"{product.number_on_hand} on hand, par {product.par}",
+        f"{product.raw_product.name} · {product.sku or 'no SKU'}{baths}",
+    )
+    # The three stock numbers on a line of their own: they travel together
+    # wherever one prints, and appended to the line above they ran into the
+    # row number on the right. Inside the row's height, under the box.
+    pdf.setFont("Helvetica", 8)
+    pdf.drawString(
+        text_x, baseline - 9,
+        f"{product.number_on_hand} on hand · par {product.par} · "
+        f"sold {product.sold_this_season} this season",
     )
 
     # A ruled space to write the number that actually came out, against what

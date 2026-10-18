@@ -660,7 +660,7 @@ class OvenRunTests(TestCase):
 
         response = self.client.get(self.sheet_url, {"baths": 15, "oven": "1"})
 
-        offered = {product.pk for product, _ in response.context["top_ups"]}
+        offered = {product.pk for product, *_ in response.context["top_ups"]}
         self.assertIn(stocked.pk, offered)
         # Offered, not added: the list is still just the shortage.
         self.assertEqual(len(response.context["baths"]), 2)
@@ -672,7 +672,7 @@ class OvenRunTests(TestCase):
 
         response = self.client.get(self.sheet_url, {"baths": 15, "oven": "1"})
 
-        for product, _ in response.context["top_ups"]:
+        for product, *_ in response.context["top_ups"]:
             self.assertTrue(product.oven_dyed)
 
     def test_nothing_is_offered_once_the_box_is_full(self):
@@ -682,7 +682,7 @@ class OvenRunTests(TestCase):
     def test_a_top_up_is_not_something_already_on_the_list(self):
         response = self.client.get(self.sheet_url, {"baths": 15, "oven": "1"})
 
-        offered = {product.pk for product, _ in response.context["top_ups"]}
+        offered = {product.pk for product, *_ in response.context["top_ups"]}
         self.assertNotIn(self.oven_product.pk, offered)
 
     # --- editing a printed oven sheet -------------------------------------

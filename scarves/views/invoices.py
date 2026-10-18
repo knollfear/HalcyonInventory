@@ -16,7 +16,7 @@ from django.shortcuts import render, redirect
 
 from ..sitemap import page_meta
 from ..models import RawProduct, Supplier, SupplierInvoice, SupplierInvoiceLine
-from .. import invoiceread
+from .. import invoiceread, production
 
 
 # --- Invoices -------------------------------------------------------------
@@ -247,6 +247,11 @@ def _review_context(invoice, lines, typed=None, errors=None):
         RawProduct.objects.active()
         .select_related("category").order_by("category__name", "name")
     )
+    # Each option prints the blank's on hand, so it prints par and season
+    # sold with it — the three travel together wherever one prints.
+    sold = production.sold_per_raw_blank()
+    for p in products:
+        p.sold_this_season = sold.get(p.pk, 0)
 
     def row(key, line=None, spare=False):
         entered = typed.get(key)

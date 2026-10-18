@@ -514,7 +514,15 @@ def sales_report(request):
     par, which stays a deliberate decision about demand rather than something
     a report gets to make.
     """
-    rng = sales.resolve_range(request.GET)
+    # `season` is the shared vocabulary's, resolved the way the slow sellers
+    # and dye statements resolve it. Offered here because this page prints
+    # on hand and par beside what sold, and the sold that goes with those
+    # two everywhere else is the season's. The default stays today: a till
+    # page opened cold means today.
+    if request.GET.get("range") == "season":
+        rng = slowsellers.season_range(request.GET)
+    else:
+        rng = sales.resolve_range(request.GET)
 
     q = request.GET.get("q", "").strip()
     category_id = _int_or_none(request.GET.get("category"))
@@ -574,7 +582,7 @@ def sales_report(request):
                     base, range=key, **{"from": None, "to": None}
                 ),
             }
-            for key, label in sales.RANGES
+            for key, label in SALES_RANGES
         ],
         "rows": rows,
         "columns": columns,
@@ -598,6 +606,15 @@ def sales_report(request):
         "any_filter": bool(q or category_id or raw_product_id),
     })
 
+
+#: The till page's pills: the shared presets with the season added before
+#: "All time". Kept here rather than in `sales.RANGES`, whose keys
+#: `sales.resolve_range` accepts — it has no season to resolve one to.
+SALES_RANGES = (
+    [r for r in sales.RANGES if r[0] not in ("all", "custom")]
+    + [("season", "Season so far")]
+    + [r for r in sales.RANGES if r[0] in ("all", "custom")]
+)
 
 #: The ranges a line is read over. Season first because it is the default and
 #: the question — "this year" — and the rest are the shared vocabulary, so a

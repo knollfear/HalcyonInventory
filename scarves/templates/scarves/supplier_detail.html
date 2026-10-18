@@ -66,6 +66,7 @@
           <th>Table</th>
           <th class="num">On hand</th>
           <th class="num">Par</th>
+          <th class="num">Sold this season</th>
           <th>Product page</th>
         </tr>
       </thead>
@@ -76,6 +77,7 @@
             <td>{{ b.category.name }}</td>
             <td class="num">{{ b.number_on_hand }}</td>
             <td class="num">{{ b.par_level }}</td>
+            <td class="num">{{ b.sold_this_season }}</td>
             <td>
               {% if b.order_urls %}
                 {% for u in b.order_urls %}<a href="{{ u }}" target="_blank">{% if forloop.first %}order this{% else %}{{ forloop.counter }}{% endif %}</a>{% if not forloop.last %} · {% endif %}{% endfor %}
@@ -85,7 +87,7 @@
             </td>
           </tr>
         {% empty %}
-          <tr><td colspan="5" class="empty">Nothing is linked to them yet.</td></tr>
+          <tr><td colspan="6" class="empty">Nothing is linked to them yet.</td></tr>
         {% endfor %}
       </tbody>
     </table>

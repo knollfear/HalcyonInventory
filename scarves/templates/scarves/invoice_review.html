@@ -171,7 +171,7 @@
                 <option value="">— not matched —</option>
                 {% for p in products %}
                   <option value="{{ p.pk }}" {% if row.product_id == p.pk %}selected{% endif %}>
-                    {{ p.name }} · {{ p.category.name }} — now ${{ p.price }}, {{ p.number_on_hand }} on hand
+                    {{ p.name }} · {{ p.category.name }} — now ${{ p.price }}, {{ p.number_on_hand }} on hand · par {{ p.par_level }} · sold {{ p.sold_this_season }} this season
                   </option>
                 {% endfor %}
               </select>

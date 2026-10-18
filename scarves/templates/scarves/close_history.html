@@ -135,9 +135,9 @@ actionable one stops being read.
             <td>
               {% for row in entry.rows %}
                 {% if row.outcome == "missing" %}
-                  <span class="under">app too low</span>
+                  <span class="under">app too low by {{ row.off_by }}</span>
                 {% else %}
-                  <span class="over">app too high by {{ row.on_hand_before }}</span>
+                  <span class="over">app too high by {{ row.off_by }}</span>
                 {% endif %}
                 {% if not forloop.last %}·{% endif %}
               {% endfor %}

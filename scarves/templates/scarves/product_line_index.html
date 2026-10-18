@@ -46,7 +46,7 @@ so the ten that matter sit at the top without anybody keeping a list.
   <div class="wrap">
     <table class="rows">
       <thead>
-        <tr><th>Blank</th><th class="n">Sold</th><th class="n">Made</th><th class="n">Colorways</th><th class="n">Dyed on hand</th><th class="n">Undyed blanks</th><th class="n">On a sheet</th></tr>
+        <tr><th>Blank</th><th class="n">Sold</th><th class="n">Made</th><th class="n">Colorways</th><th class="n">Dyed on hand / par</th><th class="n">Undyed blanks / par</th><th class="n">On a sheet</th></tr>
       </thead>
       <tbody>
         {% for row in blanks %}
@@ -58,9 +58,9 @@ so the ten that matter sit at the top without anybody keeping a list.
             <td class="n {% if not row.sold %}none{% endif %}">{{ row.sold }}</td>
             <td class="n {% if not row.made %}none{% endif %}">{{ row.made }}</td>
             <td class="n">{{ row.colorways }}</td>
-            <td class="n">{{ row.on_hand }}</td>
+            <td class="n">{{ row.on_hand }} / {{ row.par }}</td>
             <td class="n">
-              {{ row.undyed }}
+              {{ row.undyed }} / {{ row.blank.par_level }}
               <div class="when">{% if row.counted_at %}counted {{ row.counted_at|date:"j M" }}{% else %}never counted{% endif %}</div>
             </td>
             <td class="n {% if not row.on_sheets %}none{% endif %}">{{ row.on_sheets }}</td>

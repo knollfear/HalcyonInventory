@@ -9,7 +9,7 @@ from django.shortcuts import render, redirect
 
 from ..sitemap import page_meta
 from ..models import LabelStock
-from .. import labels
+from .. import labels, production
 from ..forms import LabelRunForm
 
 
@@ -89,11 +89,20 @@ def label_index(request):
         stock = _label_stock_from(form)
         start_at = form.cleaned_data["start_at"] - 1  # UI is 1-indexed
         run = _label_run_from(form)
+        # The on-hand run prints each product's on hand, so it prints par and
+        # season sold beside it: none of the three can be judged alone. The
+        # other two datasets print a count of something else and carry none.
+        show_stock = form.cleaned_data["dataset"] == LabelRunForm.INVENTORY
+        if show_stock:
+            sold = production.sold_per_blank()
+            for row in run.rows:
+                row.sold_this_season = sold.get(row.product.pk, 0)
         sequence = run.sequence(stock.columns)
         blanks = {i for i, p in enumerate(sequence) if p is None}
 
         context.update({
             "run": run,
+            "show_stock": show_stock,
             "stock": stock,
             "padding": len(blanks),
             "plan": labels.plan_sheets(stock, len(sequence), start_at, blanks),

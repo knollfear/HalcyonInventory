@@ -3173,6 +3173,17 @@ class CloseRunRow(models.Model):
         return self.applied_log_id is not None
 
     @property
+    def off_by(self) -> int:
+        """How far the app was wrong, whichever way — the size of the error.
+
+        Not `on_hand_before`, which is what the app *believed*: the two only
+        agree when the count was zero, and close history printed the belief
+        as the error for every other overcount. `closing.tally` sums the same
+        difference into its unit totals.
+        """
+        return abs((self.counted or 0) - self.on_hand_before)
+
+    @property
     def is_answered(self) -> bool:
         return self.outcome != self.PENDING
 

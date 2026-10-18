@@ -702,7 +702,8 @@ the preview is deliberately a GET and the print button is the only POST.
             {{ product.name }}
             <span class="muted">
               — {% for reason in product.blocked_by %}{{ reason }}{% if not forloop.last %}, {% endif %}{% endfor %}
-              · short {{ product.net_shortage }}, sold {{ product.sold_here }}
+              · {{ product.number_on_hand }} on hand, par {% firstof product.target_par product.par %},
+              sold {{ product.sold_here }} · short {{ product.net_shortage }}
             </span>
           </li>
         {% endfor %}

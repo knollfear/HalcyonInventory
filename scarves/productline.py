@@ -116,14 +116,7 @@ def blanks(rng):
         .annotate(q=Sum("quantity"))
         .order_by()
     }
-    sold = {
-        row["raw_product"]: int(row["q"] or 0)
-        for row in slowsellers.lines(rng)
-        .filter(raw_product__isnull=False)
-        .values("raw_product")
-        .annotate(q=Sum("quantity"))
-        .order_by()
-    }
+    sold = slowsellers.sold_by_raw_blank(rng)
     found = (
         RawProduct.objects.active()
         .filter(finished_products__recipe__isnull=False)
@@ -139,6 +132,13 @@ def blanks(rng):
                 filter=Q(finished_products__recipe__is_active=True,
                          finished_products__is_active=True),
             ),
+            # Over the same colorways as `on_hand`, because the two print
+            # together: on hand, par and sold travel as three.
+            par=Sum(
+                "finished_products__par",
+                filter=Q(finished_products__recipe__is_active=True,
+                         finished_products__is_active=True),
+            ),
         )
         .select_related("category")
         .order_by()
@@ -149,6 +149,7 @@ def blanks(rng):
         {"blank": blank, "sold": sold.get(blank.pk, 0),
          "made": made.get(blank.pk, 0),
          "colorways": blank.colorways, "on_hand": blank.on_hand or 0,
+         "par": blank.par or 0,
          "undyed": blank.number_on_hand, "counted_at": blank.counted_at,
          "on_sheets": sheets.get(blank.pk, 0)}
         for blank in found
@@ -314,6 +315,7 @@ def totals(found):
         "sold": sum(r.sold for r in found),
         "made": sum(r.made for r in found),
         "on_hand": sum(r.on_hand for r in found),
+        "par": sum(r.par for r in found),
         "in_flight": sum(r.in_flight for r in found),
         "sold_none": sum(1 for r in found if r.sold == 0),
         "never_out": sum(1 for r in found if r.never_out),

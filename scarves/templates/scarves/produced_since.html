@@ -173,6 +173,8 @@ wrong number nobody mentions.
             <th>What</th>
             <th class="n">Recorded</th>
             <th class="n">On hand now</th>
+            <th class="n">Par</th>
+            <th class="n">Sold this season</th>
             <th>Recorded from</th>
             <th class="note-col">Note</th>
             <th></th>
@@ -198,6 +200,13 @@ wrong number nobody mentions.
                   <span class="history-only">history only</span>
                 {% endif %}
               </td>
+              {% comment %}
+              The other two of the three, which travel with on hand wherever
+              it prints — and only where it prints: a history-only row says
+              nothing about the shelf, so it says none of them.
+              {% endcomment %}
+              <td class="n">{% if log.moved_stock %}{{ log.finished_product.par }}{% endif %}</td>
+              <td class="n">{% if log.moved_stock %}{{ log.sold_this_season }}{% endif %}</td>
               <td class="from">
                 {{ log.get_source_display|default:"not recorded" }}
                 {% comment %}

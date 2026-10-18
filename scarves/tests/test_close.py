@@ -6,6 +6,7 @@ import csv
 import re
 import tempfile
 from datetime import date, datetime, time, timedelta
+from django.contrib.auth.models import User
 from django.core.management import call_command
 from django.utils import timezone
 from django.db import connection
@@ -1023,6 +1024,29 @@ class SundayClosePageTests(TestCase):
         response = self.client.get(reverse("close_history"))
         self.assertEqual(response.status_code, 302)
         self.assertIn("/login", response["Location"])
+
+    def test_a_repeat_offender_is_off_by_the_difference_not_the_belief(self):
+        """It printed `on_hand_before` as the error, which is only the error
+        when the count was zero: believed 5, counted 3, is too high by 2."""
+        self.client.force_login(User.objects.create_user("hist", password="pw"))
+        product = make_close_product("Repeat", on_hand=5)
+        today = timezone.localdate()
+        for days_ago, counted, outcome in (
+            (7, 3, CloseRunRow.EXTRA),
+            (14, 8, CloseRunRow.MISSING),
+        ):
+            run = CloseRun.objects.create(
+                day=today - timedelta(days=days_ago), token=new_run_token()
+            )
+            CloseRunRow.objects.create(
+                run=run, finished_product=product, on_hand_before=5,
+                counted=counted, outcome=outcome,
+            )
+
+        response = self.client.get(reverse("close_history"))
+
+        self.assertContains(response, "app too high by 2")
+        self.assertContains(response, "app too low by 3")
 class CloseAnsweredDrawerTests(TestCase):
     """Answered rows come off the counting list, and come back on request.
 

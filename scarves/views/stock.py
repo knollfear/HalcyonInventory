@@ -23,7 +23,7 @@ from ..models import (
     SaleLine,
     Supplier,
 )
-from .. import fancy, ledger, rawdemand
+from .. import fancy, ledger, production, rawdemand
 from ..forms import RawProductForm
 from .invoices import _remember_wording
 from .matrix import _parse_raw_ids
@@ -68,6 +68,10 @@ def raw_inventory_index(request):
                 "raw_products__number_on_hand",
                 filter=bought,
             ),
+            par_total=Sum(
+                "raw_products__par_level",
+                filter=bought,
+            ),
             below_par=Count(
                 "raw_products",
                 filter=bought & Q(
@@ -80,6 +84,19 @@ def raw_inventory_index(request):
         .filter(product_count__gt=0)
         .order_by("name")
     )
+    # The card prints on hand and par, so it prints season sold too — over
+    # the same bought blanks, summed from the per-blank figure rather than
+    # joined in, for the double-counting reason above.
+    sold = production.sold_per_raw_blank()
+    per_category = {}
+    for pk, category_id in (
+        RawProduct.objects.active().exclude(pk__in=made_here)
+        .values_list("pk", "category_id")
+    ):
+        per_category[category_id] = per_category.get(category_id, 0) + sold.get(pk, 0)
+    categories = list(categories)
+    for category in categories:
+        category.sold_this_season = per_category.get(category.pk, 0)
     return render(request, "scarves/raw_inventory_index.html", {"categories": categories})
 
 
@@ -188,6 +205,14 @@ def raw_inventory_view(request, category_id):
             "typed": {},
             "errors": {},
         })
+
+    # The bill's table prints on hand and par, so it prints season sold with
+    # them: none of the three can be judged alone. Everything rung up on the
+    # blank — `sold_per_raw_blank`, the product-line picker's figure — rather
+    # than plan mode's faire-day projection input, which answers a forecast.
+    sold = production.sold_per_raw_blank()
+    for p in products:
+        p.sold_this_season = sold.get(p.pk, 0)
 
     typed, errors = {}, {}
     if request.method == "POST":
@@ -470,6 +495,10 @@ def supplier_detail(request, supplier_id):
         RawProduct.objects.active().filter(supplier=supplier)
         .select_related("category").order_by("category__name", "name")
     )
+    # On hand and par print per blank, so season sold prints with them.
+    sold = production.sold_per_raw_blank()
+    for b in blanks:
+        b.sold_this_season = sold.get(b.pk, 0)
     return render(request, "scarves/supplier_detail.html", {
         "supplier": supplier,
         "blanks": blanks,
@@ -615,13 +644,20 @@ def _bulk_inventory_picker_products():
     """
     Raw products worth picking on the bulk-inventory page: active, and with at
     least one active finished product. Anything else has no rows to edit.
+
+    Each carries `sold_this_season`, because the picker prints the blank's
+    on hand and so prints its par and sold too.
     """
-    return (
+    found = list(
         RawProduct.objects.active().filter(finished_products__is_active=True)
         .select_related("category")
         .distinct()
         .order_by("category__name", "name")
     )
+    sold = production.sold_per_raw_blank()
+    for raw in found:
+        raw.sold_this_season = sold.get(raw.pk, 0)
+    return found
 
 
 #: The handful of reasons a counted number actually differs from a recorded
@@ -840,11 +876,15 @@ def bulk_inventory_update(request):
         form = FormClass()
 
     # Group rows by raw product for display, pairing each fp with its bound field.
+    # Each row prints its current on hand, so it prints par and season sold
+    # with it: a count corrected without them is corrected blind.
+    sold = production.sold_per_blank()
     groups = []
     for rp in raw_products:
         rows = [
             {
                 "fp": fp,
+                "sold": sold.get(fp.id, 0),
                 "field": form[f"count_{fp.id}"],
                 "reason_preset_field": form[f"reason_preset_{fp.id}"],
                 "reason_field": form[f"reason_{fp.id}"],
@@ -930,9 +970,16 @@ def fancy_convert(request):
             )
         return redirect("fancy_convert")
 
+    # Each option prints its on hand, so it prints par and season sold too —
+    # which colorway to fancy is a judgement none of the three answers alone.
+    sources = list(fancy.convertible())
+    sold = production.sold_per_blank()
+    for product in sources:
+        product.sold_this_season = sold.get(product.pk, 0)
+
     return render(request, "scarves/fancy_convert.html", {
         "blanks": blanks,
-        "sources": fancy.convertible(),
+        "sources": sources,
         "recent": InventoryLog.objects.filter(
             source=InventoryLog.SOURCE_FANCY_CONVERSION, quantity__gt=0
         ).select_related("finished_product__recipe", "finished_product__raw_product")[:15],

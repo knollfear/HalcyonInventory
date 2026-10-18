@@ -437,6 +437,19 @@ def _carried(oven, out_blanks, out_dyes, close, reporting):
     return carry
 
 
+def _with_raw_sold(short):
+    """`(raw, needed, on_hand, sold)` — each short blank with its season sold.
+
+    The blank's sold is only looked up when something is short, which is
+    the rare case; a sheet that fits its shelf pays nothing for it.
+    """
+    if not short:
+        return []
+    sold = production.sold_per_raw_blank()
+    return [(raw, needed, on_hand, sold.get(raw.pk, 0))
+            for raw, needed, on_hand in short]
+
+
 def _tick_groups(things, ticked, group):
     """`[{"name": ..., "items": [{"thing", "checked"}]}]` for a tick panel.
 
@@ -694,8 +707,15 @@ def production_sheet_index(request):
         # it only ever answers a question the page is already asking — and
         # each suggestion prints what it sold, because the ranking has to be
         # checkable by looking rather than trusted.
-        "top_ups": (
-            production.top_ups(
+        #
+        # Each also carries this blank's own sold, the figure the Sold column
+        # above it prints, so the panel says on hand, par and sold like every
+        # other place a colorway's stock is printed — with the pooled figure
+        # the ranking actually read beside it, because a ranking has to be
+        # checkable against the number it was made from.
+        "top_ups": [
+            (product, sold, per_blank.get(product.pk, 0))
+            for product, sold in production.top_ups(
                 [product for product, _ in rows],
                 tray_gap,
                 category=form.cleaned_data.get("category") if form.is_bound and form.is_valid() else None,
@@ -705,8 +725,7 @@ def production_sheet_index(request):
                 without_blanks=out_blanks,
                 without_dyes=out_dyes,
             )
-            if oven else []
-        ),
+        ] if oven else [],
         "baths": baths,
         "plan": production.dye_plan_for_baths(baths),
         # The two tick lists and what they have already ruled out.
@@ -731,7 +750,9 @@ def production_sheet_index(request):
         # the bath count reads back as "nothing needs dyeing" — which is a
         # different and much more alarming statement.
         "submitted": form.is_bound and form.is_valid() and form.asked_anything,
-        "short_blanks": production.short_blanks(baths),
+        # With the blank's par and season sold beside the on hand it is short
+        # of: a shelf number printed alone cannot be judged.
+        "short_blanks": _with_raw_sold(production.short_blanks(baths)),
         # One list, with a remove link per row. Paired here rather than in the
         # template because "the list without this row" is a query-string
         # question, and the template has no business assembling one.
@@ -1563,9 +1584,17 @@ def produced_since_view(request):
         for label, days in PRODUCED_SINCE_PRESETS
     ]
 
+    # On hand now prints beside each entry, so par and season sold print with
+    # it: none of the three can be judged alone. One lookup for the page.
+    record = producedsince.build(since, category=category)
+    sold = production.sold_per_blank()
+    for group in record.groups:
+        for log in group.rows:
+            log.sold_this_season = sold.get(log.finished_product_id, 0)
+
     return render(request, "scarves/produced_since.html", {
         "form": form,
-        "record": producedsince.build(since, category=category),
+        "record": record,
         "since": since,
         "category": category,
         "presets": presets,

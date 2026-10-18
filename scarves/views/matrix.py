@@ -14,6 +14,7 @@ from django.shortcuts import render, redirect
 from ..sitemap import page_meta
 from ..models import FinishedProduct, RawProduct
 from ..models import Recipe
+from .. import production
 
 
 def _parse_raw_ids(raw_ids_param: str) -> list[int]:
@@ -215,12 +216,19 @@ def _matrix_picker_products():
     Deliberately unfiltered, unlike `_bulk_inventory_picker_products`: this is
     the page where a raw product's finished products get *created*, so the ones
     with none yet are the point rather than a dead end.
+
+    Each carries `sold_this_season`: the picker prints the blank's on hand,
+    so it prints its par and sold with it.
     """
-    return (
+    found = list(
         RawProduct.objects.active()
         .select_related("category")
         .order_by("category__name", "name")
     )
+    sold = production.sold_per_raw_blank()
+    for raw in found:
+        raw.sold_this_season = sold.get(raw.pk, 0)
+    return found
 
 
 def _matrix_picker_response(request):

@@ -273,8 +273,8 @@ sends somebody to the shelf for the wrong things.
         print would be the app arguing with someone who can see the shelf.
         {% endcomment %}
         <ul>
-          {% for raw, needed, on_hand in short_blanks %}
-            <li>{{ raw.name }} — needs {{ needed }}, {{ on_hand }} on hand</li>
+          {% for raw, needed, on_hand, sold in short_blanks %}
+            <li>{{ raw.name }} — needs {{ needed }}, {{ on_hand }} on hand · par {{ raw.par_level }} · sold {{ sold }} this season</li>
           {% endfor %}
         </ul>
       </div>
@@ -303,7 +303,7 @@ sends somebody to the shelf for the wrong things.
           each — add what's worth the space, and nothing is added on its own.
         </p>
         <ul class="topup-list">
-          {% for product, sold in top_ups %}
+          {% for product, sold, sold_here in top_ups %}
             <li>
               {% comment %}
               The same button the search results use: an htmx swap of the
@@ -322,7 +322,8 @@ sends somebody to the shelf for the wrong things.
                       hx-push-url="true">+</button>
               <span class="who">{{ product.name }}</span>
               <span class="muted">
-                sold {{ sold }} · {{ product.number_on_hand }} on hand ·
+                sold {{ sold_here }} here ({{ sold }} across the colorway) ·
+                {{ product.number_on_hand }} on hand · par {{ product.par }} ·
                 makes {{ product.bath_size }}
               </span>
             </li>

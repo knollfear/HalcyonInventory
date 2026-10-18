@@ -354,7 +354,19 @@ labels get used, and what the marker sticker will say.
         <thead>
           <tr>
             <th>SKU</th><th>Product</th>
-            <th class="num">{% if form.cleaned_data.dataset == 'since' %}Produced{% else %}On hand{% endif %}</th>
+            {% comment %}
+            The middle column is whatever the run's count came from, named for
+            it — the hand-picked run used to say "On hand" over the numbers
+            somebody typed. The on-hand run is the one that prints stock, so
+            it prints par and season sold with it.
+            {% endcomment %}
+            {% if show_stock %}
+              <th class="num">On hand</th><th class="num">Par</th><th class="num">Sold this season</th>
+            {% elif form.cleaned_data.dataset == 'since' %}
+              <th class="num">Produced</th>
+            {% else %}
+              <th class="num">Asked for</th>
+            {% endif %}
             <th class="num">Labels</th>
           </tr>
         </thead>
@@ -364,6 +376,10 @@ labels get used, and what the marker sticker will say.
               <td><code>{{ row.product.sku }}</code></td>
               <td>{{ row.product.name }}</td>
               <td class="num">{{ row.base }}</td>
+              {% if show_stock %}
+                <td class="num">{{ row.product.par }}</td>
+                <td class="num">{{ row.sold_this_season }}</td>
+              {% endif %}
               <td class="num">{{ row.quantity }}</td>
             </tr>
           {% endfor %}

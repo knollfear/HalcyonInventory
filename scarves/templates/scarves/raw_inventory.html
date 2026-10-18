@@ -208,6 +208,13 @@
         <thead>
           <tr>
             <th>Raw Product</th>
+            {% comment %}
+            On hand and par beside what sold, because the three travel
+            together wherever one prints. Sold stays all time here: it is the
+            revenue the table is ranked on, not a season reading.
+            {% endcomment %}
+            <th class="num">On hand</th>
+            <th class="num">Par</th>
             <th class="num">Sold, all time</th>
             <th class="num">Sells for</th>
             <th class="entry">Costs you</th>
@@ -221,6 +228,8 @@
             {% with entry=typed|lookup:r.blank.pk %}
             <tr>
               <td>{{ r.blank.name }}</td>
+              <td class="num">{{ r.blank.number_on_hand }}</td>
+              <td class="num">{{ r.blank.par_level }}</td>
               <td class="num">
                 ${{ r.revenue|floatformat:0 }}
                 <div class="sub">{{ r.units }} unit{{ r.units|pluralize }}</div>
@@ -477,6 +486,7 @@
             <th>Raw Product</th>
             <th>On Hand</th>
             <th>Par</th>
+            <th>Sold this season</th>
             <th>Shortage</th>
             <th class="entry">Received</th>
             <th class="entry">Counted</th>
@@ -489,6 +499,7 @@
               <td>{{ p.name }}</td>
               <td>{{ p.number_on_hand }}</td>
               <td>{{ p.par_level }}</td>
+              <td>{{ p.sold_this_season }}</td>
               <td>
                 {% comment %}
                 The shortage is already net of what is on order — par is an
@@ -543,7 +554,7 @@
             saying which one is a hunt.
             {% endcomment %}
             {% if why %}
-              <tr class="bad"><td colspan="6" class="bad-why">{{ p.name }}: {{ why }}</td></tr>
+              <tr class="bad"><td colspan="7" class="bad-why">{{ p.name }}: {{ why }}</td></tr>
             {% endif %}
             {% endwith %}
           {% endfor %}

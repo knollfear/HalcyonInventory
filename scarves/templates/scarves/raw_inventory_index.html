@@ -18,6 +18,8 @@
         <span class="stat">
           {{ category.product_count }} product{{ category.product_count|pluralize }}
           · {{ category.on_hand|default:0 }} on hand
+          · par {{ category.par_total|default:0 }}
+          · {{ category.sold_this_season }} sold this season
         </span>
         {% if category.below_par %}
           <span class="short">{{ category.below_par }} below par</span>

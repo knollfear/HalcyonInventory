@@ -180,6 +180,27 @@ def sold_units(rng):
     }
 
 
+def sold_by_raw_blank(rng):
+    """`{raw_product_id: units}` — everything rung up on a blank in the range.
+
+    **Counts the lines with no colorway too**, which is what makes it more
+    than the sum of `sold_units` over the blank's colorways: a flat-price ring
+    names the blank and nothing else, and leaving it out reads a line whose
+    till habit is "Sash Belt, $20" as one that barely sells. Shared by the
+    product-line picker and every page that prints a blank's on hand and par,
+    because a blank's sold figure that differed between them would be two
+    answers to one question.
+    """
+    return {
+        row["raw_product"]: int(row["q"] or 0)
+        for row in lines(rng)
+        .filter(raw_product__isnull=False)
+        .values("raw_product")
+        .annotate(q=Sum("quantity"))
+        .order_by()
+    }
+
+
 def sold_by_recipe(rng, category=None):
     """`{recipe_id: units}` pooled across every blank a colorway is dyed on.
 
@@ -252,6 +273,9 @@ class ColorwayRow:
     on_hand: int
     products: int
     stocked: int          # how many of its blanks had something to sell
+    # Pooled like `on_hand`, because the two print side by side: on hand,
+    # par and sold travel together wherever one of them prints.
+    par: int = 0
 
     @property
     def never_out(self) -> bool:
@@ -289,11 +313,12 @@ def colorway_rows(rng, max_units=1, category=None):
     for product in catalogue:
         row = pooled.setdefault(
             product.recipe_id,
-            {"recipe": product.recipe, "units": 0, "on_hand": 0,
+            {"recipe": product.recipe, "units": 0, "on_hand": 0, "par": 0,
              "products": 0, "stocked": 0},
         )
         row["units"] += sold.get(product.pk, 0)
         row["on_hand"] += product.number_on_hand
+        row["par"] += product.par or 0
         row["products"] += 1
         if product.number_on_hand:
             row["stocked"] += 1
@@ -301,7 +326,7 @@ def colorway_rows(rng, max_units=1, category=None):
     found = [
         ColorwayRow(
             recipe=row["recipe"], units=row["units"], on_hand=row["on_hand"],
-            products=row["products"], stocked=row["stocked"],
+            par=row["par"], products=row["products"], stocked=row["stocked"],
         )
         for row in pooled.values()
         if row["units"] <= max_units

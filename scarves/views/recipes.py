@@ -838,15 +838,13 @@ def recipe_detail(request, pk):
     # one meaning per button.
     par_mode = request.GET.get("par") == "1"
     if par_mode:
-        # What the till sold this season, per blank — the same function
-        # `private/production-needed/` ranks on, not a second answer to the
-        # question. It is here because par is the one number in this app that
-        # a person is expected to overrule and there was nothing beside it to
-        # judge by. It does not propose a par: display capacity must never
-        # reach production, and neither may a sales figure on its own.
-        sold = production.sold_per_blank()
+        # What the till sold this season rides on every product already
+        # (`_recipe_products`), in both modes. In this one it is the evidence
+        # beside the box: par is the one number in this app that a person is
+        # expected to overrule. It does not propose a par: display capacity
+        # must never reach production, and neither may a sales figure on its
+        # own.
         for product in products:
-            product.sold_this_season = sold.get(product.pk, 0)
             # Par restated in the unit production actually spends. Across the
             # live catalogue every distinct (par, bath size) pair lands
             # between 1.0 and 2.0 baths — par is a MOQ floor with a bath of
@@ -905,13 +903,24 @@ def recipe_history(request, pk):
 
 
 def _recipe_products(recipe):
-    """This colorway on every blank it is dyed on, retired ones last."""
-    return list(
+    """This colorway on every blank it is dyed on, retired ones last.
+
+    Each carries `sold_this_season`, because on hand, par and sold travel
+    together on every page that prints one of them, and both renderers of
+    this page print all three — the table, and the figures the chip swap
+    replaces. `sold_per_blank()` is the same figure
+    `private/production-needed/` ranks on, not a second answer to "what sold".
+    """
+    products = list(
         recipe.finished_products
         .select_related("raw_product", "raw_product__category")
         .prefetch_related("images")
         .order_by("-is_active", "name")
     )
+    sold = production.sold_per_blank()
+    for product in products:
+        product.sold_this_season = sold.get(product.pk, 0)
+    return products
 
 
 def _recipe_history(request, recipe, products):
@@ -1028,6 +1037,9 @@ def _recipe_history(request, recipe, products):
         "all_count": sum(chip_counts.values()),
         "on_hand": sum(p.number_on_hand for p in scope),
         "par_total": sum(p.par or 0 for p in scope),
+        # Off the till ledger, unlike the lifetime `sold` below it, which is
+        # the stock log. Both print, each labelled with its question.
+        "sold_season": sum(p.sold_this_season for p in scope),
         "produced": _qty(InventoryLog.PRODUCTION),
         # Sales are recorded negative; show the count as a positive number.
         "sold": -_qty(InventoryLog.SALE),
