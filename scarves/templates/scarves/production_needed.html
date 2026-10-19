@@ -103,8 +103,33 @@
        href="?{% if selected_category_id %}category={{ selected_category_id }}&{% endif %}sort=sales_par">
       Par from sales
     </a>
+    <a class="pill {% if sort == 'tier' %}on{% endif %}"
+       href="?{% if selected_category_id %}category={{ selected_category_id }}&{% endif %}sort=tier">
+      By tier
+    </a>
     <span class="pill-note">sales over {{ range.label|lower }}</span>
   </div>
+
+  {% if by_tier %}
+    {% comment %}
+    The ladder, said in the words it is set in. The rule is a person's — the
+    tier on each colorway is chosen at private/tiers/ — and it reads as hers
+    only if the page says what it is doing with it.
+    {% endcomment %}
+    <p class="netnote">
+      {% if well_stocked %}
+        <strong>Well stocked.</strong> Every tiered colorway has its baths:
+        three for High, two for Medium, one for Low, on top of the two on
+        display. Anything listed below is short by less than a bath.
+      {% else %}
+        Ordered <strong>by tier, a bath at a time</strong>: every High's first
+        bath, then every Medium's, then every Low's; then a second for High and
+        Medium; then a third for High. Each row says how many of its baths it
+        has. Tiers are set on <a href="{% url 'tiers_index' %}">Tiers</a>, and
+        no sold-out bath is added.
+      {% endif %}
+    </p>
+  {% endif %}
 
   {% if demand_par %}
     {% comment %}
@@ -257,7 +282,7 @@
           </thead>
           <tbody>
             {% for fp in g.items %}
-              {% include "scarves/partials/production_needed_row.html" with fp=fp demand_par=demand_par %}
+              {% include "scarves/partials/production_needed_row.html" with fp=fp demand_par=demand_par by_tier=by_tier %}
             {% endfor %}
           </tbody>
         </table>

@@ -786,6 +786,7 @@ class ProductionSheetForm(forms.Form):
             ("sold", "Best sellers first"),
             ("par", "Use par"),
             ("sales_par", "Par from sales"),
+            ("tier", "By tier"),
         ],
         initial="sold",
         required=False,
@@ -797,7 +798,10 @@ class ProductionSheetForm(forms.Form):
             "least one, doubles it and adds one — never less than three — and "
             "orders by that shortage. A par of 0 still means not making it, so "
             "those are left out either way; "
-            "the stored par is not changed. This matches what "
+            "the stored par is not changed. By tier dyes every High's first "
+            "bath, then every Medium's, every Low's, then a second High and "
+            "Medium, then a third High — and says well stocked when that is "
+            "done. This matches what "
             "production-needed lists, so asking for the first N baths gives "
             "the N you were just looking at."
         ),

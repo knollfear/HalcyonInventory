@@ -1,0 +1,30 @@
+{% extends "scarves/base_internal.html" %}
+
+{% block title %}Tiers{% endblock %}
+{% block heading %}Tiers{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 760px; }
+{% endblock %}
+
+{% block content %}
+  <p class="lead">
+    Pick a base and say how well each colorway sells. The production sheet's
+    <strong>By tier</strong> order dyes from these: every High's first bath,
+    then every Medium's, then every Low's, then the second round.
+  </p>
+
+  <div class="cards">
+    {% for blank in blanks %}
+      <a class="card" href="{% url 'tiers_blank' blank.pk %}">
+        <span class="name">{{ blank.name }}</span>
+        <span class="stat">
+          {{ blank.tiered }} of {{ blank.colorways }} colorway{{ blank.colorways|pluralize }} tiered
+        </span>
+      </a>
+    {% empty %}
+      <p class="empty">No yarn bases have colorways yet.</p>
+    {% endfor %}
+  </div>
+{% endblock %}

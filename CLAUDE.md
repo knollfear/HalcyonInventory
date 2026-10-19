@@ -15,7 +15,7 @@ were about to make.
 |---|---|
 | the pinned nav, `scarves/nav.py`, `?nav=` | `docs/claude/nav.md` |
 | dye entry, the dye picker, colour bands, `private/recipes/`, a recipe page | `docs/claude/recipes.md` |
-| the planner, production sheets, the oven, `sheetscan`, `secret/production/`, `private/produced-since/`, taking an entry back, planning from a close (`closeplan.py`) | `docs/claude/production.md` |
+| the planner, production sheets, the oven, `sheetscan`, `secret/production/`, `private/produced-since/`, taking an entry back, planning from a close (`closeplan.py`), tiers (`tiers.py`, `private/tiers/`) | `docs/claude/production.md` |
 | raw inventory, undyed yarn, notions, passthroughs, fancy veils, supplier invoices, `private/invoices/`, `private/stock-value/` | `docs/claude/stock.md` |
 | the display map, `DisplayFixture`, `secret/restock/` | `docs/claude/restock.md` |
 | `secret/close/`, `closing.py`, kanban tags | `docs/claude/close.md` |
@@ -520,6 +520,19 @@ writes nothing, and says on the page what it divided by. The other two
 answers are the old arithmetic exactly. See *"Par from sales"* in
 `docs/claude/production.md` for why the sold ranking and the flat par
 filter were disagreeing about the best seller.
+
+**Tiers are the answer that stuck for the yarn, and they are a person's.**
+Each yarn colorway is High, Medium or Low, set at `private/tiers/`; a tier
+writes par (two on display plus three, two or one bath), and *By tier* plans
+one bath of every High, every Medium, every Low, then a second High and
+Medium, then a third High, then says **well stocked**. It replaced the hunt
+for a better formula because a backtest found none: every per-colorway
+method came out within noise of the others, and a single colorway's
+"enough for 90% of weekends" swung by a whole bath on the same data. Three
+tiers and a bath count is the precision the data has. Every tiered row
+prints its rung (`High · has 1 of 3 baths`) so the ladder can be checked
+against the rule it came from — see *"By tier"* in
+`docs/claude/production.md`.
 
 Two things follow, and both are cheap:
 

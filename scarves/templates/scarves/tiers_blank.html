@@ -1,0 +1,78 @@
+{% extends "scarves/base_internal.html" %}
+
+{% block title %}Tiers — {{ blank.name }}{% endblock %}
+{% block heading %}Tiers: {{ blank.name }}{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 960px; }
+  table.tiers .num { text-align: right; font-variant-numeric: tabular-nums; }
+  table.tiers .choice label { margin-right: 10px; white-space: nowrap; }
+  table.tiers .hint, table.tiers tr.off td { color: var(--muted); }
+  .save { margin: 16px 0; }
+{% endblock %}
+
+{% block content %}
+  <p class="lead">
+    Each tier sets par: the {{ display }} on display, plus
+    {% for label, baths, par in pars %}{{ baths }} bath{{ baths|pluralize }} for {{ label }} (par {{ par }}){% if not forloop.last %}, {% endif %}{% endfor %}
+    on this base ({{ blank.bath_size }} to a bath). Discontinued sets par to 0, so
+    nothing is suggested for it.
+  </p>
+  {% comment %}
+  The suggestion is printed, never applied. It is where the lines would fall
+  on this season's sales — {{ high_at }} a faire day and up is High, under
+  {{ medium_at }} is Low — and the choice beside it is the person's. A
+  suggestion that filled itself in would be the app setting the rule it then
+  asks somebody to trust.
+  {% endcomment %}
+  <p class="muted">
+    {% if demand.available %}
+      Sold is this season, over {{ demand.days }} faire day{{ demand.days|pluralize }}
+      with sales recorded. <em>Suggests</em> is where the line falls on that alone —
+      {{ high_at }} a day and up is High, under {{ medium_at }} is Low. It is a
+      starting point, not the answer.
+    {% else %}
+      No faire day has sales recorded yet, so there is nothing to suggest from.
+    {% endif %}
+  </p>
+
+  <form method="post">
+    {% csrf_token %}
+    <table class="tiers">
+      <thead>
+        <tr>
+          <th>Colorway</th>
+          <th class="num">Sold</th>
+          <th class="num">A day</th>
+          <th class="num">On hand</th>
+          <th class="num">Par</th>
+          <th>Suggests</th>
+          <th>Tier</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+          <tr{% if row.current == "discontinued" %} class="off"{% endif %}>
+            <td>{{ row.product.recipe.name }}</td>
+            <td class="num">{{ row.sold }}</td>
+            <td class="num">{% if row.per_day is not None %}{{ row.per_day|floatformat:1 }}{% endif %}</td>
+            <td class="num">{{ row.product.number_on_hand }}</td>
+            <td class="num">{{ row.product.par }}</td>
+            <td class="hint">{{ row.suggested|capfirst }}</td>
+            <td class="choice">
+              {% for value, label in choices %}
+                <label>
+                  <input type="radio" name="tier-{{ row.product.pk }}" value="{{ value }}"
+                         {% if row.current == value %}checked{% endif %}>
+                  {{ label }}
+                </label>
+              {% endfor %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div class="save"><button type="submit">Save tiers</button></div>
+  </form>
+{% endblock %}

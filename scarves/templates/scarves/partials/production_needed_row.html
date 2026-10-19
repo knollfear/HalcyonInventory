@@ -18,7 +18,16 @@ than erroring.
 <tr id="fp-{{ fp.id }}"{% if fp.behind_a_bath_net %} class="behind"{% endif %}>
   <td>{{ fp.name }}</td>
   <td>{{ fp.raw_product.category.name }}</td>
-  <td>{{ fp.raw_product.name }}</td>
+  <td>
+    {{ fp.raw_product.name }}
+    {% comment %}
+    The rung, in the ladder's own words, on every tiered row whichever pill
+    is on: a ranking somebody can check against the rule she set is one she
+    does not have to take on trust. Under the blank, as on the sheet,
+    because the tier is per blank — Sunset is High on Homespun only.
+    {% endcomment %}
+    {% if fp.ladder_label %}<div class="soldhere">{{ fp.ladder_label }}</div>{% endif %}
+  </td>
   <td class="num">
     {{ fp.number_on_hand }}
     {% comment %}
@@ -80,6 +89,7 @@ than erroring.
       the stored par in the middle of a list measured against sales.
       {% endcomment %}
       {% if demand_par %}<input type="hidden" name="demand_par" value="1">{% endif %}
+      {% if by_tier %}<input type="hidden" name="tier" value="1">{% endif %}
       {% comment %}
       "Bagged", not "Dye bath": this button puts the units straight into
       stock, so it means the bath has been accepted into inventory — dyed,

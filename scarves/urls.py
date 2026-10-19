@@ -46,6 +46,12 @@ urlpatterns = [
         views.record_dye_bath,
         name="record_dye_bath",
     ),
+    path("private/tiers/", views.tiers_index, name="tiers_index"),
+    path(
+        "private/tiers/<int:raw_id>/",
+        views.tiers_blank,
+        name="tiers_blank",
+    ),
 
     # --- Inventory ---
     path(

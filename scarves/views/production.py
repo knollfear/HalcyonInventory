@@ -35,6 +35,7 @@ from .. import (
     production,
     sheetscan,
     slowsellers,
+    tiers,
 )
 from ..forms import (
     LabelRunForm,
@@ -99,17 +100,26 @@ def production_needed_view(request):
     # that shortage — the third choice of the sheet form's "which shortages
     # first", so the two pages offer the same three answers. The stored par
     # is not written; the other two pills are the old page.
-    sorts = {"sold": "sold", "shortage": "shortage", "sales_par": "sales_par"}
+    #
+    # The fourth, `tier`, is the ladder (`scarves/tiers.py`): judged on the
+    # stored par a tier wrote, ordered by which rung each colorway's next
+    # bath fills — every High's first, then every Medium's, every Low's,
+    # then the second round.
+    sorts = {"sold": "sold", "shortage": "shortage", "sales_par": "sales_par",
+             "tier": "tier"}
     sort = sorts.get(request.GET.get("sort"), "sold")
     demand = production.demand_par() if sort == "sales_par" else None
 
     products = production.candidates(
         category=category,
         include_overshoot=True,
-        order=production.ORDER_SOLD,
+        order=production.ORDER_TIER if sort == "tier" else production.ORDER_SOLD,
         oven=None,
         demand_par=demand,
     )
+    # Every tiered row says its rung, whichever pill is on — the ladder is
+    # her rule, and it reads as hers only if it is visible everywhere.
+    _ladder_labels(products)
 
     by_recipe = _by_recipe(products)
 
@@ -151,7 +161,14 @@ def production_needed_view(request):
     # The old ordering stays one click away, and neither is a filter — every
     # group is listed either way, so the sort changes what is read first and
     # never what exists.
-    if demand is not None and demand.available:
+    if sort == "tier":
+        # Rung first, then tier, then what sold — `tiers.key`, the same one
+        # the sheet walks, so the first twenty here are the twenty it would
+        # suggest. A colorway's place is its most urgent row's.
+        for g in groups:
+            g["items"].sort(key=tiers.first_key)
+        groups.sort(key=lambda g: tiers.first_key(g["items"][0]))
+    elif demand is not None and demand.available:
         # With par from sales the sales are already in the number, so the
         # order is shortage from that par — `candidates()` makes the same
         # call for the sheet, and the two pages have to agree about what
@@ -206,6 +223,14 @@ def production_needed_view(request):
         # it is showing was divided by — advice you cannot inspect is a
         # decision in disguise, and this one is a formula.
         "demand_par": demand,
+        # **"Well stocked" is the ladder's own answer, and it is said.** With
+        # every rung climbed, what is left below par is only ever short by
+        # less than a bath — listed, because this page reports everything,
+        # but not work the ladder asks for.
+        "by_tier": sort == "tier",
+        "well_stocked": sort == "tier" and not any(
+            step for p in products for step in p.ladder if not step.overshoot
+        ),
         "covered": covered,
         # So the page can say it is netting off printed sheets rather than
         # leaving somebody to wonder why a colorway went quiet.
@@ -275,14 +300,23 @@ def record_dye_bath(request, pk):
         demand = (
             production.demand_par() if request.POST.get("demand_par") else None
         )
-        production.annotate_flight([finished_product], demand_par=demand)
+        # The ladder travels the same way: no sold-out bath, and the row's
+        # rung recomputed off the stock it now has.
+        by_tier = bool(request.POST.get("tier"))
+        production.annotate_flight(
+            [finished_product], demand_par=demand,
+            stockout={} if by_tier else None,
+        )
+        if by_tier:
+            tiers.annotate(finished_product, include_overshoot=True)
         finished_product.sold_here = production.sold_per_blank().get(
             finished_product.pk, 0
         )
         return TemplateResponse(
             request,
             "scarves/partials/production_needed_row.html",
-            {"fp": finished_product, "demand_par": demand},
+            {"fp": finished_product, "demand_par": demand,
+             "by_tier": by_tier},
         )
 
     # Normal browser POST: message + redirect
@@ -389,6 +423,27 @@ def sheet_list(form):
             order.append(bath.product)
         counts[bath.product.pk] = counts.get(bath.product.pk, 0) + 1
     return [(product, counts[product.pk]) for product in order], plan.skipped
+
+
+def _ladder_labels(products):
+    """Give every tiered row on the list its rung, however it got there.
+
+    A suggestion by tier already carries one. A pick, or any row once the
+    list has been edited, is loaded fresh from `items` and has none — and a
+    label that showed on the suggestion and vanished on the first edit would
+    read as the app changing its mind. So does a row suggested by another
+    order, which went through the planner but not the ladder. Rows judged
+    against a *par from sales* are left alone: a rung counted against a par
+    nobody stored would describe a different ladder.
+    """
+    fresh = [p for p in products
+             if p.tier and not hasattr(p, "target_par")]
+    if fresh:
+        production.annotate_flight(fresh, stockout={})
+    for product in products:
+        if (product.tier and not hasattr(product, "ladder_label")
+                and product.target_par == product.par):
+            tiers.annotate(product)
 
 
 def _without(rows, product, carry):
@@ -574,6 +629,7 @@ def production_sheet_index(request):
         reporting = form.cleaned_data.get("reporting") or ProductionRun.PAPER
     baths = production.baths_from_picks(rows)
     carry = _carried(oven, out_blanks, out_dyes, carried_close, reporting)
+    _ladder_labels([product for product, _ in rows])
 
     # **The close panel.** The close a list came from, or else the latest,
     # so a bare visit leads with Sunday's stack — during the nine weeks that
@@ -692,6 +748,12 @@ def production_sheet_index(request):
             if form.is_bound
             and form.data.get("order") == production.ORDER_SALES_PAR
             else None
+        ),
+        # So an empty suggestion by tier can say "well stocked", which is the
+        # ladder's own answer and a different one from "nothing is short".
+        "by_tier": (
+            form.is_bound
+            and form.data.get("order") == production.ORDER_TIER
         ),
         "sheet_url": sheet_url,
         "oven_trays": production.OVEN_TRAYS,

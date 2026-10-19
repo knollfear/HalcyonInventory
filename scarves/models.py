@@ -994,6 +994,27 @@ class FinishedProduct(models.Model):
         default=8,
         help_text="How many finished items of this kind you expect to have.",
     )
+    TIER_HIGH = "high"
+    TIER_MEDIUM = "medium"
+    TIER_LOW = "low"
+    TIER_CHOICES = [
+        (TIER_HIGH, "High"),
+        (TIER_MEDIUM, "Medium"),
+        (TIER_LOW, "Low"),
+    ]
+    tier = models.CharField(
+        max_length=8,
+        choices=TIER_CHOICES,
+        blank=True,
+        help_text=(
+            "How well this sells, said by a person — set at private/tiers/. "
+            "Setting it writes par as the display plus that tier's baths, and "
+            "the planner's *By tier* order dyes every High's first bath, then "
+            "every Medium's, every Low's, then the second round. Discontinued "
+            "is not a tier: it is par 0, the switch every page already "
+            "honours. See `scarves/tiers.py`."
+        ),
+    )
     display_slots = models.PositiveIntegerField(
         default=2,
         help_text=(

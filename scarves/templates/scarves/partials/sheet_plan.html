@@ -133,7 +133,10 @@ sends somebody to the shelf for the wrong things.
                   </span>
                 {% endif %}
               </td>
-              <td>{{ row.product.raw_product.name }}</td>
+              <td>
+                {{ row.product.raw_product.name }}
+                {% if row.product.ladder_label %}<div class="muted">{{ row.product.ladder_label }}</div>{% endif %}
+              </td>
               <td class="num">
                 <input type="hidden" name="items"
                        value="{{ row.product.pk }}:{{ row.baths }}">
@@ -387,6 +390,16 @@ sends somebody to the shelf for the wrong things.
         Everything that's below par needs something you've ticked as missing.
         Untick one above to see what comes back, or search under
         <strong>I know what to dye</strong> for something else.
+      {% elif by_tier %}
+        {% comment %}
+        The ladder's own answer, and a different one from "nothing is
+        short": every rung is climbed, and what is left below par is short
+        by less than a bath.
+        {% endcomment %}
+        <strong>Well stocked.</strong> Every tiered colorway has its baths —
+        three for High, two for Medium, one for Low, on top of the two on
+        display. To dye something anyway, search for it under
+        <strong>I know what to dye</strong>.
       {% else %}
         Nothing is below par for those settings. To dye something anyway,
         search for it under <strong>I know what to dye</strong> — par is not

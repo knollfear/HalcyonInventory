@@ -46,7 +46,7 @@ from django.db.models import Count, F, Q, Sum, Value
 from django.db.models.functions import Greatest
 from django.utils import timezone
 
-from . import ledger, slowsellers
+from . import ledger, slowsellers, tiers
 from .dyeamounts import bath_amounts, format_ounces
 from .models import (
     OVERDUE_AFTER,
@@ -238,6 +238,12 @@ ORDER_PAR = "par"
 #: the other two, and the user called that a disjointed experience: it is
 #: the same question, so it is the same control.
 ORDER_SALES_PAR = "sales_par"
+#: The fourth: the tier ladder (`scarves/tiers.py`). Membership is the stored
+#: par — which a tier writes — and the order is bath by bath: every High's
+#: first bath, every Medium's, every Low's, then the second round, then a
+#: third High. A person's rule written down rather than a formula, so it is
+#: the order most likely to read as hers.
+ORDER_TIER = "tier"
 
 
 #: Par from sales, in one line: **a day's sales rounded up, at least one,
@@ -622,6 +628,12 @@ def candidates(category=None, include_overshoot=False, order=ORDER_SOLD,
     # — which is the case the rule exists for, since par being adequate on
     # paper is exactly what a stockout disproves.
     stockout = stockout_baths()
+    # **No sold-out bath on the ladder.** The tier is a person's statement of
+    # how much of this to hold, and the bonus would dye past it on one
+    # Sunday's count — the same reason *par from sales* leaves it off, and it
+    # is on the chopping block anyway.
+    if order == ORDER_TIER:
+        stockout = {}
 
     # A demand par with nothing to divide by is the stored par, and it is
     # dropped here so every branch below asks one question of one object.
@@ -686,6 +698,17 @@ def candidates(category=None, include_overshoot=False, order=ORDER_SOLD,
     # narrowed to one, so a silk sheet is not ranked on yarn sales.
     sold = slowsellers.sold_by_recipe(slowsellers.season_range({}),
                                       category=category)
+
+    if order == ORDER_TIER and demand_par is None:
+        # Bath by bath rather than product by product: a High with nothing on
+        # hand wants rungs one, two and three, and only the first of them
+        # comes before every Medium's first. `suggest` walks the steps; this
+        # orders products by where their first one falls, which is what
+        # `private/production-needed/` lists.
+        for product in wanted:
+            product.sold_colorway = sold.get(product.recipe_id, 0)
+            tiers.annotate(product, include_overshoot)
+        return sorted(wanted, key=tiers.first_key)
 
     if demand_par is not None:
         # The sales are already in the par, so the order is how far below it
@@ -931,6 +954,12 @@ def suggest(limit, category=None, include_overshoot=False, order=ORDER_SOLD,
     for twenty baths cannot come back saying it declined to suggest forty
     colorways nobody was going to see anyway.
     """
+    if order == ORDER_TIER and demand_par is None:
+        return _suggest_by_tier(
+            limit, candidates(category, include_overshoot, order, oven,
+                              without_blanks, without_dyes)
+        )
+
     by_recipe = {}
     for product in candidates(category, include_overshoot, order, oven,
                               without_blanks, without_dyes, demand_par):
@@ -956,6 +985,42 @@ def suggest(limit, category=None, include_overshoot=False, order=ORDER_SOLD,
         if len(baths) >= limit:
             break
     return Suggestion(baths=baths[:limit], skipped=list(skipped.values()))
+
+
+def _suggest_by_tier(limit, products):
+    """The ladder, a bath at a time, then grouped so a colorway shares a pot.
+
+    **The rung decides which baths make the cut; the recipe decides the
+    print order.** Twenty baths are the first twenty steps of the ladder —
+    a third High bath never displaces a Low's first — and once chosen they
+    are gathered by colorway, in the order each colorway first appears,
+    because one mix serves several loads and that is what makes the session
+    cheaper. Grouping first would let one colorway's third rung ride in on
+    its first.
+
+    A blocked colorway takes no place in the limit and is named in
+    `skipped`, as everywhere else on the sheet.
+    """
+    steps = sorted(
+        ((tiers.key(product, step), product)
+         for product in products for step in product.ladder),
+        key=lambda pair: pair[0],
+    )
+    chosen, skipped = [], {}
+    for _key, product in steps:
+        if len(chosen) >= limit:
+            break
+        if product.blocked_by:
+            skipped.setdefault(product.pk, product)
+            continue
+        chosen.append(product)
+    by_recipe = {}
+    for product in chosen:
+        by_recipe.setdefault(product.recipe_id, []).append(
+            Bath(product=product, quantity=product.bath_size)
+        )
+    baths = [bath for group in by_recipe.values() for bath in group]
+    return Suggestion(baths=baths, skipped=list(skipped.values()))
 
 
 def plan_baths(limit, category=None, include_overshoot=False, order=ORDER_SOLD,

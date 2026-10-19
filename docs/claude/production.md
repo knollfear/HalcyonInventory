@@ -421,6 +421,104 @@ it crossed a bath boundary four times in 333; this asks a different question
 — two days of cover plus one, per product — and whether that question is a
 better one is what having both on a checkbox is for.
 
+### "By tier": the rule she runs in her head, written down
+
+**The fourth answer to "which shortages first" — `?sort=tier` on
+`private/production-needed/`, `order=tier` on the sheet form.** Every yarn
+colorway is High, Medium or Low, set by a person at `private/tiers/`. The
+ladder is: one bath of every High, one of every Medium, one of every Low; a
+second of every High and every Medium; a third of every High. Then
+**well stocked**, and nothing more is suggested. `scarves/tiers.py`,
+`production.ORDER_TIER`, `production._suggest_by_tier`.
+
+**Why tiers and not a better formula: the formulas were tried first and
+none of them won.** Backtested on the four main yarns at the end of 2026
+weekend 8 (160 colorways, 15 faire days), weekend by weekend, each method
+fed only the weekends before it and compared at the same total stock:
+
+| Method | Units short at 2× what sold |
+|---|---|
+| Flat par, every colour the same | 336 |
+| Shuffled Saturdays and Sundays, 90% (the Monte Carlo) | 296 |
+| Rate × days, scaled | 294 |
+| Poisson 90% | 290 |
+| Rate × days + a fixed cushion | 255 |
+
+The colour-aware rows are within noise of each other, and which one leads
+changes with the budget (at 3× the cushion falls behind). The simulation's
+"covers 90% of weekends" number for one colorway, recomputed on reshuffles
+of the same season, swung across a whole bath (Homespun Midnight: 5, could
+be 1–6). Split in half, 13 of the first half's top 20 were still top 20 and
+6 had left the top 40. Weekends are lumpier than chance (variance ≈ 1.7 ×
+the mean): weather and crowd, which no colorway's history predicts. **What
+the data does support is coarse**: a base's total is steady (Heavenly 24.3 →
+24.0 a day across the halves), the ranking is real, and a yarn bath is five
+skeins, so precision finer than a bath is rounded away at the microwave. A
+formula that prints 7 where the evidence says "one bath or two" is an air
+of precision the data cannot produce — the user's objection to the Monte
+Carlo, and it applies equally to the square-root safety stock that was
+proposed against it and then withdrawn.
+
+**A tier writes par, and that is what keeps one number.** `tiers.set_tier`
+stores the tier *and* par = the display (2) + the tier's baths × bath size
+— 17 / 12 / 7 on a five-skein yarn. So the close, *Use par*, the recipe
+page's par box and the ladder all read the same par. Membership on the
+ladder is the ordinary stored-par shortage; only the order is new. The
+recipe page's box still overrides it, and the ladder reads its depth from
+par, so a High hand-raised for the pre-season simply gets a fourth rung.
+
+- **The display is a constant two, not `display_slots`.** Four pegs, and
+  down to two is still a stocked display. A constant is what keeps a new
+  rack from ever raising a par — *Display capacity is not demand* — which
+  `display_slots` on the path to par would undo.
+- **Discontinued is par 0, not a tier value.** Par 0 already means "not
+  making it to order" on every page; a second switch for the same meaning
+  is two things that eventually disagree. The tier is kept, so bringing a
+  colour back is one click that remembers what it was.
+- **Whole baths only.** A rung's bath fires when its bag is empty — the
+  existing `behind_a_bath` rule, a whole bath still landing at or under par.
+  A Low at nothing on hand gets one bath, not two: par 7 less five is still
+  short by two, and rounding that up is the second Low bath the ladder
+  exists not to suggest. The remainder is overshoot, offered only with the
+  overshoot tick and always after every whole rung on the list.
+- **A row's rung is counted off stock *and* paper.** `rungs_had` reads
+  `number_on_hand + in_flight`, so a bath already on a sheet is on its way.
+  A High at 9 is into its second bath (past 7), so its next is its third
+  and comes after every Medium's second.
+- **Chosen by rung, printed by pot.** The first N baths are the first N
+  steps of the ladder — a third High never displaces a Low's first — and
+  only then are they gathered by colorway, because one mix serves several
+  loads. Grouping first would let a colorway's third rung ride in on its
+  first.
+- **Untiered rows come after the Lows, never off the list.** An untiered
+  shortage is still a shortage.
+- **No sold-out bath.** The tier is a person's statement of how much to
+  hold, and the Sunday-night bonus would dye past it on one count.
+
+**Every tiered row says its rung, under every pill** — `High · has 1 of 3
+baths`, under the blank on both pages. This is the part about trust. The
+ladder is a path to a goal she set, and she has reasons to resist a planner
+anyway (*The close is the shop's own signal*, above). A ranking she can
+check against her own rule by looking is one she does not have to take on
+faith. The same reason **"well stocked" is said in words** on both pages:
+it is the ladder's own answer, and different from "nothing is short" — what
+is left below par is short by less than a bath.
+
+**The tier page is yarn only** (`views/tiers.py`, `TIERED_CATEGORY`). The
+numbers — two on display, three/two/one baths of five — were worked out on
+the yarn's season, and a tier writes par; offered on a veil it would write
+14 off arithmetic nobody did for silk. Rows are ordered by what sold, with a
+**suggested** tier printed beside each choice (1.5 a faire day and up High,
+under 0.5 Low; on 2026's yarn that splits roughly 18 / 69 / 41) and never
+applied. A suggestion that filled itself in would be the app setting the
+rule it then asks her to trust.
+
+**Deferred, and the next thing to ask about:** the season phase. The ladder
+is the mid-season shape. Before the season the best handful need 20–26
+skeins to cover the first 5–7 sale days (a fourth and fifth High rung); in
+the last weeks no rungs at all. Raising those pars by hand already deepens
+the ladder; nothing changes it by date.
+
 ### The colorways that are missing, and the row that cannot carry a badge
 
 In-flight baths are subtracted here (see *In-flight baths are subtracted*
