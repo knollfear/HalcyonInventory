@@ -110,6 +110,7 @@ the preview is deliberately a GET and the print button is the only POST.
                  margin: 10px 0 2px; }
   .havent .help { font-size: 12px; color: #667; margin: 0 0 10px; }
   .havent h3.spaced { margin-top: 18px; }
+  .havent [hidden] { display: none; }
   ul.ticks { list-style: none; padding: 0; margin: 0; }
   ul.ticks li { padding: 2px 0; font-size: 13px; }
   ul.ticks label { display: flex; gap: 7px; align-items: center; }
@@ -566,10 +567,11 @@ the preview is deliberately a GET and the print button is the only POST.
           {% endcomment %}
           <h3>Blanks you haven't got</h3>
           {% for group in blank_groups %}
+            <div class="tick-group"{% if not group.shown %} hidden{% endif %}>
             <p class="cat">{{ group.name }}</p>
             <ul class="ticks cols">
               {% for choice in group.items %}
-                <li>
+                <li data-cats="{{ choice.cats }}"{% if not choice.shown %} hidden{% endif %}>
                   <label>
                     <input type="checkbox" name="without_blanks"
                            value="{{ choice.thing.pk }}"
@@ -579,6 +581,7 @@ the preview is deliberately a GET and the print button is the only POST.
                 </li>
               {% endfor %}
             </ul>
+            </div>
           {% endfor %}
 
           {% comment %}
@@ -589,10 +592,11 @@ the preview is deliberately a GET and the print button is the only POST.
           {% endcomment %}
           <h3 class="spaced">Dyes you're out of</h3>
           {% for group in dye_groups %}
+            <div class="tick-group"{% if not group.shown %} hidden{% endif %}>
             <p class="cat">{{ group.name }}</p>
             <ul class="ticks cols">
               {% for choice in group.items %}
-                <li>
+                <li data-cats="{{ choice.cats }}"{% if not choice.shown %} hidden{% endif %}>
                   <label>
                     <input type="checkbox" name="without_dyes"
                            value="{{ choice.thing.pk }}"
@@ -603,9 +607,39 @@ the preview is deliberately a GET and the print button is the only POST.
                 </li>
               {% endfor %}
             </ul>
+            </div>
           {% endfor %}
         </div>
       </details>
+      {% comment %}
+      Follows the category select so the panel narrows before anything is
+      submitted. The server renders the same answer for the category it was
+      sent, so with the script blocked the panel is right after one suggest
+      — wider than it needs to be before then, never narrower. A ticked box
+      is never hidden: it has to stay where it can be undone.
+      {% endcomment %}
+      <script>
+        (function () {
+          var select = document.getElementById("{{ form.category.id_for_label }}");
+          var panel = document.querySelector(".havent");
+          if (!select || !panel) return;
+          function narrow() {
+            var cat = select.value;
+            panel.querySelectorAll(".tick-group").forEach(function (group) {
+              var any = false;
+              group.querySelectorAll("li[data-cats]").forEach(function (li) {
+                var box = li.querySelector("input");
+                var show = !cat || (box && box.checked)
+                  || li.dataset.cats.split(" ").indexOf(cat) !== -1;
+                li.hidden = !show;
+                any = any || show;
+              });
+              group.hidden = !any;
+            });
+          }
+          select.addEventListener("change", narrow);
+        })();
+      </script>
 
       {% comment %}
       Carries no `items`, which is what makes this re-seed rather than do

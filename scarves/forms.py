@@ -854,24 +854,32 @@ class ProductionSheetForm(forms.Form):
         # Per-instance, so a category added this morning is selectable
         # without a redeploy — same reasoning as the employee pickers.
         self.fields["category"].queryset = RawProductCategory.objects.order_by("name")
-        # Only blanks that are dyed at all: a passthrough or a fancy veil was
-        # never going to be suggested, so offering it as something to rule out
-        # is a tick that can only do nothing.
+        # **Both lists are read off what a bath can make, and nothing else.**
+        # `dyeable()` is the planner's own population, so a box here is one
+        # that can actually take a colorway off a sheet. The first cut was
+        # `made_in_a_dye_bath` on the blank, which reads right and lets in
+        # every notion and every one-off undyed yarn — that flag is the
+        # fancy-veil marker and is deliberately left on for those (see
+        # `docs/claude/stock.md`), so twenty-odd scissors and button cards sat
+        # in a panel about dye-room shelves. What decides it is whether some
+        # live colorway is dyed on the blank, which a notion never is.
+        dyeable = FinishedProduct.objects.dyeable()
         self.fields["without_blanks"].queryset = (
-            RawProduct.objects.active().filter(made_in_a_dye_bath=True)
+            RawProduct.objects.active()
+            .filter(pk__in=dyeable.values("raw_product"))
             .select_related("category")
             .order_by("category__name", "name")
         )
-        # **Every dye a recipe actually uses, and no more.** The shelf holds
-        # a hundred and thirty-two; the fifty-five that no live colorway
-        # calls for cannot block a bath, so a box beside one is a tick that
-        # can only do nothing — the same reason a passthrough is not offered
-        # as a blank. The list does not depend on what has been suggested:
-        # "out of J purple" is something she knows walking in, and a panel
-        # that only filled itself in after a suggestion asked her to plan
-        # before she could say what she hadn't got.
+        # **Every dye a live colorway actually uses, and no more.** Read
+        # through the products rather than the recipe alone: an active recipe
+        # with nothing left on any blank is a colour nobody can be sent to
+        # dye, so its dyes cannot block a bath either. The list does not
+        # depend on what has been suggested: "out of J purple" is something
+        # she knows walking in, and a panel that only filled itself in after
+        # a suggestion asked her to plan before she could say what she
+        # hadn't got.
         self.fields["without_dyes"].queryset = (
-            Dye.objects.filter(recipe_dyes__recipe__is_active=True)
+            Dye.objects.filter(recipe_dyes__recipe__in=dyeable.values("recipe"))
             .distinct()
             .select_related("brand")
         )

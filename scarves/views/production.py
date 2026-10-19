@@ -505,23 +505,45 @@ def _with_raw_sold(short):
             for raw, needed, on_hand in short]
 
 
-def _tick_groups(things, ticked, group):
-    """`[{"name": ..., "items": [{"thing", "checked"}]}]` for a tick panel.
+def _tick_groups(things, ticked, group, cats, category):
+    """`[{"name", "shown", "items": [{"thing", "checked", "cats", "shown"}]}]`.
 
     The two "haven't got" lists are the same shape and want the same
     grouping — headings that match how the shelf is actually laid out, so
     somebody scanning for a blank or a dye is scanning the order they
     already know. `things` arrives pre-sorted; this only breaks it into runs.
+
+    `cats(thing)` is the set of category ids it could block a bath in, and
+    `category` the one the session is narrowed to, if any. An item outside it
+    is rendered hidden rather than left out, so the script can bring it back
+    the moment the select changes — and **a ticked one is never hidden**,
+    because a tick has to stay where it can be undone.
     """
     groups = []
     for thing in things:
         name = group(thing)
         if not groups or groups[-1]["name"] != name:
-            groups.append({"name": name, "items": []})
-        groups[-1]["items"].append(
-            {"thing": thing, "checked": thing.pk in ticked}
-        )
+            groups.append({"name": name, "items": [], "shown": False})
+        in_cats = cats(thing)
+        checked = thing.pk in ticked
+        shown = checked or category is None or category in in_cats
+        groups[-1]["items"].append({
+            "thing": thing, "checked": checked, "shown": shown,
+            "cats": " ".join(str(pk) for pk in sorted(in_cats)),
+        })
+        groups[-1]["shown"] |= shown
     return groups
+
+
+def _narrowed_category(form):
+    """The category pk the setup is narrowed to, read before validation.
+
+    Off the raw data for the same reason as `is_oven_run`: the panel renders
+    on a bare visit and on an invalid one too, and it has to agree with the
+    select it sits under whatever state the rest of the form is in.
+    """
+    raw = (form.data.get("category") or "").strip() if form.is_bound else ""
+    return int(raw) if raw.isdigit() else None
 
 
 @page_meta(
@@ -702,13 +724,37 @@ def production_sheet_index(request):
     # no live recipe calls for can never block a bath, so both are left out
     # by the form's querysets: a box that can only do nothing is worse than
     # no box, because ticking it looks like saying something.
+    #
+    # **Narrowed by the category above it, though, because that is also
+    # something said on the way in.** A yarn session has no use for a silk
+    # blank or a dye only the silk recipes call for, and showing them made a
+    # yarn day read the whole dye room. This is the setup narrowing the
+    # panel, never the suggestion — the same list on the way in as after
+    # twenty baths. The other items are rendered hidden and a few lines of
+    # script follow the select, so changing it changes the panel before
+    # anything is submitted.
     ticked_blanks = {raw.pk for raw in out_blanks}
     ticked_dyes = {dye.pk for dye in out_dyes}
+    category = _narrowed_category(form)
     blank_groups = _tick_groups(
         form.fields["without_blanks"].queryset,
         ticked_blanks,
         group=lambda raw: raw.category.name if raw.category_id else "Uncategorised",
+        cats=lambda raw: {raw.category_id} if raw.category_id else set(),
+        category=category,
     )
+    # Which categories each dye is used in, by the same population the form
+    # drew the list from — one query, a dye on a yarn recipe and a silk one
+    # sitting under both.
+    dye_cats = {}
+    for dye_id, cat_id in (
+        FinishedProduct.objects.dyeable()
+        .filter(recipe__recipe_dyes__dye__isnull=False)
+        .values_list("recipe__recipe_dyes__dye_id", "raw_product__category_id")
+        .distinct()
+    ):
+        if cat_id is not None:
+            dye_cats.setdefault(dye_id, set()).add(cat_id)
     # Sorted in Python because `sort_name` is a property — it drops the
     # catalog number off the front, so `425 Amethyst` files under A where
     # somebody looking for a purple will actually look for it.
@@ -717,6 +763,8 @@ def production_sheet_index(request):
                key=lambda dye: (dye.brand.name, dye.sort_name)),
         ticked_dyes,
         group=lambda dye: dye.brand.name,
+        cats=lambda dye: dye_cats.get(dye.pk, set()),
+        category=category,
     )
 
     # Flags for the picked half. One query for the lot rather than walking

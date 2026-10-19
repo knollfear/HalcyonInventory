@@ -64,7 +64,9 @@ from .helpers import (
     _pdf_text_items,
     make_bathable,
     make_employee,
+    make_product,
     make_recipe,
+    make_undyed,
     mark_oven,
 )
 
@@ -1753,6 +1755,69 @@ class HaventGotOnThePageTests(TestCase):
         html = self.client.get(self.url, {"baths": "10"}).content.decode()
 
         self.assertNotIn("Only Here", html)
+
+    def test_a_blank_no_colorway_is_dyed_on_is_not_offered(self):
+        """Notions and the one-off undyed yarns keep `made_in_a_dye_bath`
+        on — that flag is the fancy marker — so it cannot be the test. What
+        decides it is whether a live colorway is dyed on the blank."""
+        make_undyed("Yarn Bowl", category_name="Notions")
+        make_undyed("Tibetan 3 ply")
+
+        html = self.client.get(self.url).content.decode()
+
+        self.assertIn("raw-Stormy Silk", html)
+        self.assertNotIn("Yarn Bowl", html)
+        self.assertNotIn("Tibetan 3 ply", html)
+
+    def test_a_dye_whose_recipe_is_on_nothing_live_is_not_offered(self):
+        """An active recipe with every product retired is still a colour
+        nobody can be sent to dye."""
+        link_dye(self.stormy, "Fuchsia")
+        orphan = make_recipe("On No Blank", hexes=())
+        link_dye(orphan, "Only Here")
+        make_product(orphan, "Retired Thing", with_image=False, active=False)
+
+        html = self.client.get(self.url).content.decode()
+
+        self.assertNotIn("Only Here", html)
+
+    def _yarn_session(self):
+        """Wool moved to Yarn, one dye on each side, and the category's pk."""
+        yarn = RawProductCategory.objects.create(name="Yarn")
+        RawProduct.objects.filter(pk=self.wool.raw_product_id).update(category=yarn)
+        self.silk_dye = link_dye(self.stormy, "Silk Only")
+        self.yarn_dye = link_dye(self.aegean, "Yarn Dye")
+        return str(yarn.pk)
+
+    @staticmethod
+    def _li(html, name, value):
+        """The opening `<li>` around one tick."""
+        at = html.index(f'name="{name}"\n                           value="{value}"')
+        start = html.rindex("<li", 0, at)
+        return html[start:html.index(">", start) + 1]
+
+    def test_narrowing_to_yarn_hides_silk_blanks_and_silk_only_dyes(self):
+        """A yarn day has no use for a silk blank or a dye only silk recipes
+        call for. Rendered hidden rather than dropped, so changing the select
+        back brings them without a round trip."""
+        yarn = self._yarn_session()
+
+        html = self.client.get(self.url, {"category": yarn}).content.decode()
+
+        self.assertIn("hidden", self._li(html, "without_blanks", self.silk.raw_product_id))
+        self.assertNotIn("hidden", self._li(html, "without_blanks", self.wool.raw_product_id))
+        self.assertIn("hidden", self._li(html, "without_dyes", self.silk_dye.pk))
+        self.assertNotIn("hidden", self._li(html, "without_dyes", self.yarn_dye.pk))
+
+    def test_a_ticked_box_outside_the_category_stays_visible(self):
+        """A tick has to stay where it can be undone."""
+        yarn = self._yarn_session()
+
+        html = self.client.get(self.url, {
+            "category": yarn, "without_dyes": str(self.silk_dye.pk),
+        }).content.decode()
+
+        self.assertNotIn("hidden", self._li(html, "without_dyes", self.silk_dye.pk))
 
     def test_a_ticked_dye_stays_tickable_after_it_drops_off_the_list(self):
         """It has just left the collection list by being ticked, and a tick

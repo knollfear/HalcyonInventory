@@ -1433,11 +1433,22 @@ below it: there is nothing for it to wait on.
 
 Neither list is the whole table, though, and the cut is the same both times:
 **a box that can only do nothing is worse than no box, because ticking it
-looks like saying something.** The blanks are the 25 that are dyed at all —
-no passthroughs, no fancy veils. The dyes are the 77 of 132 that at least one
-*active* recipe calls for; the other 55 cannot block a bath. Both cuts live
-in the form's querysets, which also means a tick is always reachable to
-undo, because the list it came from never changes. Dyes file under the colour
+looks like saying something.** Both are read off `dyeable()`, the
+planner's own population: the blanks some live colorway is dyed on (13 —
+six silk, seven yarn) and the dyes those colorways call for (48 of 132).
+The first cut was `made_in_a_dye_bath` on the blank, and it let in the
+whole Notions shelf and every one-off undyed yarn — that flag is the fancy
+marker and stays on for those, so it cannot answer "does this go in a pot".
+The dyes were "any active recipe", which kept the dyes of recipes with
+nothing live on any blank. Both cuts live in the form's querysets.
+
+**The category in the setup narrows the panel, and that is not the panel
+reacting to a suggestion.** "Just one category?" is said on the way in like
+the ticks are, and on a yarn day a silk blank or a dye only silk recipes use
+is a dead box. The rest are rendered `hidden` rather than left out, and a
+few lines of script follow the select, so the panel changes as the select
+does and changing it back costs no round trip. **A ticked box is never
+hidden**, whatever the category, so a tick is always reachable to undo. Dyes file under the colour
 name with the catalog number stripped (`425 Amethyst` under A) and print it
 anyway — the number is what is on the jar, the name is what she asks for.
 
