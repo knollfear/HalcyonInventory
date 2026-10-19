@@ -1062,7 +1062,8 @@ class ReportsAreTheirOwnCategoryTests(TestCase):
     """
 
     REPORTS = ["Top Sellers", "Slow Sellers", "Season Pace", "Close History",
-               "Stock Value", "Dye Statements", "Product Lines"]
+               "Stock Value", "Dye Statements", "Product Lines",
+               "Weekends of Cover"]
 
     def setUp(self):
         self.client.force_login(User.objects.create_user("staff", password="pw"))
@@ -1096,8 +1097,9 @@ class ReportsAreTheirOwnCategoryTests(TestCase):
         import scarves.stockvalue as value
         import scarves.dyebill as bill
         import scarves.productline as line
+        import scarves.nextseason as cover
 
-        for module in (sales, slow, value, bill, line):
+        for module in (sales, slow, value, bill, line, cover):
             source = pathlib.Path(module.__file__).read_text()
             for forbidden in (".save(", ".create(", ".update(", ".delete("):
                 self.assertNotIn(

@@ -1,0 +1,55 @@
+{% extends "scarves/base_internal.html" %}
+
+{% block title %}Weekends of Cover — {{ row.raw.name }}{% endblock %}
+{% block heading %}Weekends of Cover: {{ row.raw.name }}{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 1000px; }
+  .cover .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .bad { color: #8a2f2a; font-weight: 600; }
+  .note { color: var(--muted); font-size: 12px; }
+{% endblock %}
+
+{% block content %}
+  <p><a href="{% url 'next_season_index' %}{% if query %}?{{ query }}{% endif %}">All bases</a></p>
+  {% if row %}
+  <p class="lead">
+    {% if hz.current %}The rest of {{ hz.year }}: weekend{{ numbers|length|pluralize }} {{ numbers|join:", " }}.
+    {% else %}All of {{ hz.year }}, at {{ row.growth }}% growth over {{ hz.source_year }}.{% endif %}
+    {{ row.colours|length }} live colours, least covered first. {{ display }} on display is held back
+    as a floor; covered means the display is still there at least {{ confidence }}% of the time.
+    {{ row.raw.bath_size }} to a bath.
+  </p>
+  <table class="cover">
+    <thead>
+      <tr>
+        <th>Colour</th>
+        <th>Tier</th>
+        <th class="num">Sold this season</th>
+        <th class="num">Expected, weekend {{ numbers.0 }}</th>
+        <th class="num">Expected through weekend {{ target }}</th>
+        <th class="num">On hand</th>
+        <th class="num">Above the display, with sheets</th>
+        <th>Covered through</th>
+        <th class="num">Baths to reach weekend {{ target }}</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in row.colours %}
+        <tr>
+          <td>{{ c.product.recipe.name }}</td>
+          <td>{{ c.product.get_tier_display|default:"—" }}</td>
+          <td class="num">{{ c.sold }}{% if c.from_tier %}<div class="note">planned at its tier's average</div>{% endif %}</td>
+          <td class="num">{{ c.expected.0|floatformat:1 }}</td>
+          <td class="num">{{ c.to_target|floatformat:1 }}</td>
+          <td class="num">{{ c.product.number_on_hand }}</td>
+          <td class="num">{{ c.available }}</td>
+          <td>{% if c.covers_all %}all {{ numbers|length }} weekend{{ numbers|length|pluralize }}{% elif c.covered_through %}weekend {{ c.covered_through }}{% else %}<span class="bad">not weekend {{ numbers.0 }}</span>{% endif %}</td>
+          <td class="num">{{ c.baths|default:"" }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+{% endblock %}

@@ -46,6 +46,12 @@ urlpatterns = [
         views.record_dye_bath,
         name="record_dye_bath",
     ),
+    path("private/next-season/", views.next_season_index, name="next_season_index"),
+    path(
+        "private/next-season/<int:raw_id>/",
+        views.next_season_blank,
+        name="next_season_blank",
+    ),
     path("private/tiers/", views.tiers_index, name="tiers_index"),
     path(
         "private/tiers/<int:raw_id>/",

@@ -800,7 +800,7 @@ a measurement. The days to come are every traded day after today, whatever
 has been imported. Before the first counted day the column is a dash, not a
 zero; after the run it is 0, which is the honest answer to "how many more
 this season" and the wrong question to ask in December. Next season's order
-is a different calculation, and not built.
+is a different calculation: `private/next-season/`, below.
 
 The reorder question for anything dyed is not "how many will we sell" but
 "how many will we **dye**", and those differ by everything already on a peg.
@@ -833,6 +833,63 @@ would have ordered against the price change.
 more will sell" and "nothing here can say" are different answers and only one
 is a reason not to order. The count of prior seasons prints with the figure,
 because yarn has one behind it and silk has five.
+
+### `private/next-season/`: each colour's stock as weekends, and what more costs
+
+*Weekends of Cover* (`scarves/nextseason.py`, a Report: it writes nothing).
+The plan-an-order mode above works in blank totals, which is right for
+ordering and blind to the question the dye room actually has: **when does
+this colour run out?** 26 skeins of Homespun Cabernet and 26 of a colour
+that sells one a weekend are the same line in a blank total, and they are
+two weekends against a whole season. So every live yarn colour gets its own
+expected sales, weekend by weekend, and its stock is walked forward until it
+no longer covers the next one.
+
+**It looks at whatever is next.** While the running season has weekends to
+come it looks at those, at this season's rates; once the run is over it
+looks at all nine weekends of the next one, at the season on file times a
+growth figure per base. The first half is deliberate: it is how the page
+gets checked. On 19 October 2026 it said what weekend 9 would run out of,
+and then weekend 9 happened.
+
+**How a colour's expected sales are made:**
+
+- **The base's weekend shape.** Each weekend's sales per faire day for the
+  blank, times the days that weekend trades (three for weekend 2). A struck
+  day leaves the denominator rather than reading as a day nothing sold. A
+  weekend not yet reached is the blank's per-day rate times how much stronger
+  that weekend ran the season before, pooled across the bases on the page
+  because one base's one weekend is too thin to scale by. (In 2025 the last
+  weekend ran 1.42 times an average yarn day.)
+- **Times the colour's share of its base**, from colour-attributed sales,
+  or **its tier's average** when it sold fewer than `MIN_HISTORY` (5). That
+  is what makes a new colour plannable before it has sold: tier it Medium and
+  it is planned like a Medium. The shares are rescaled to sum to one, so the
+  base total, which is the number the data actually supports, holds however
+  the colours are guessed.
+- **Times growth**, next season only.
+
+**Covered is at a confidence, not on average**: 90% or 95%, with
+Poisson-shaped weekends. The backtest under *"By tier"* in
+`docs/claude/production.md` found that sizing for most weekends rather than
+the average is the part that matters, and that how it is computed matters
+much less. Real weekends are lumpier than Poisson (variance about 1.7 × the
+mean), so 90% here is a little generous; it is the setting to raise if
+weekend 9 shows misses.
+
+**Two on display is an absolute floor** (`tiers.TIER_DISPLAY`). Only stock
+above it counts as cover, because a bare peg is a lost sale. A bath on a
+production sheet counts as on its way.
+
+**What it costs**: the baths each colour needs to stay covered through the
+chosen weekend at that confidence, in the base's own bath size. Undyed yarn
+on the shelf is used first, and the rest is bought in packs of ten
+(`YARN_PACK`; no blank stores a pack size yet) at the blank's cost.
+
+**Yarn only.** Silk colours were rung without a colour until 12 September
+2026, so silk's colour shares are not usable. Its style totals are, and the
+off-season silk planner lives outside the app until silk has a season of
+colour data.
 
 ### `counted_at`: raw is the one pile nothing recounts on its own
 

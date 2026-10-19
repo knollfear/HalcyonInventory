@@ -1,0 +1,124 @@
+{% extends "scarves/base_internal.html" %}
+
+{% block title %}Weekends of Cover{% endblock %}
+{% block heading %}Weekends of Cover{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 1100px; }
+  .settings { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: end; margin: 8px 0 16px; }
+  .settings label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+  .cover .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .cover input[type="number"] { width: 4.5rem; }
+  .cover tfoot td { font-weight: 600; border-top: 1px solid #e1e5ea; }
+  .headline { font-size: 18px; margin: 8px 0; }
+  .bad { color: #8a2f2a; font-weight: 600; }
+{% endblock %}
+
+{% block content %}
+  {% if not hz %}
+    <p class="empty">No faire is on file yet, so there is nothing to look ahead over.</p>
+  {% else %}
+  <p class="lead">
+    {% if hz.current %}
+      Looking ahead at <strong>what is left of the {{ hz.year }} season</strong>:
+      weekend{{ numbers|length|pluralize }} {{ numbers|join:", " }}. Rates are this season's so far;
+      a weekend not yet reached is projected from how it ran last season. Growth does not apply.
+    {% else %}
+      Looking ahead at <strong>all of {{ hz.year }}</strong>: {{ hz.source_year }}'s sales, weekend by
+      weekend, times each base's growth.
+    {% endif %}
+    Each colour keeps <strong>{{ display }} on display as a floor</strong>; only what is above it counts
+    as cover. "Covered" means it still has its display left at least {{ confidence }}% of the time.
+  </p>
+
+  <form method="get" id="plan">
+    <div class="settings">
+      <label>Confidence
+        <select name="confidence">
+          {% for c in confidences %}<option value="{{ c }}"{% if c == confidence %} selected{% endif %}>{{ c }}%</option>{% endfor %}
+        </select>
+      </label>
+      <label>Cover through weekend
+        <select name="through">
+          {% for n in numbers %}<option value="{{ n }}"{% if n == target %} selected{% endif %}>{{ n }}</option>{% endfor %}
+        </select>
+      </label>
+      {% if not hz.current %}
+        <label>Growth, every base (%)
+          <input type="number" name="growth" value="{{ growth_all }}" step="5">
+        </label>
+        <label>Weeks of dyeing
+          <input type="number" name="weeks" value="{{ weeks }}" min="1" max="40">
+        </label>
+      {% endif %}
+      <button type="submit">Update</button>
+    </div>
+
+    <p class="headline">
+      {% if totals.uncovered %}<span class="bad">{{ totals.uncovered }}</span>{% else %}0{% endif %}
+      of {{ totals.colours }} colours are not covered for weekend {{ numbers.0 }}.
+      {% if totals.baths %}
+        Reaching weekend {{ target }} takes <strong>{{ totals.baths }} bath{{ totals.baths|pluralize }}</strong>
+        across {{ totals.short }} colour{{ totals.short|pluralize }}{% if totals.to_buy %}, and
+        <strong>${{ totals.cost|floatformat:0 }}</strong> of yarn ({{ totals.packs }} pack{{ totals.packs|pluralize }} of {{ pack }}){% else %}, all from yarn already on the shelf{% endif %}.
+        {% if not hz.current %}About {{ per_week }} a week over {{ weeks }} week{{ weeks|pluralize }}.{% endif %}
+      {% else %}
+        Every colour is covered through weekend {{ target }}.
+      {% endif %}
+    </p>
+
+    <table class="cover">
+      <thead>
+        <tr>
+          <th>Base</th>
+          {% if not hz.current %}<th class="num">Growth %</th>{% endif %}
+          <th class="num">Expected sales</th>
+          <th class="num">Live colours</th>
+          <th class="num">Not covered for weekend {{ numbers.0 }}</th>
+          <th class="num">Baths to reach weekend {{ target }}</th>
+          <th class="num">Skeins</th>
+          <th class="num">Undyed on shelf</th>
+          <th class="num">To buy</th>
+          <th class="num">Cost</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+          <tr>
+            <td><a href="{% url 'next_season_blank' row.raw.pk %}{% if query %}?{{ query }}{% endif %}">{{ row.raw.name }}</a></td>
+            {% if not hz.current %}<td class="num"><input type="number" name="g{{ row.raw.pk }}" value="{{ row.growth }}" step="5" aria-label="Growth for {{ row.raw.name }}"></td>{% endif %}
+            <td class="num">{{ row.expected_total|floatformat:0 }}</td>
+            <td class="num">{{ row.colours|length }}</td>
+            <td class="num">{{ row.not_covered_first }}</td>
+            <td class="num">{{ row.baths }}</td>
+            <td class="num">{{ row.skeins }}</td>
+            <td class="num">{{ row.raw.number_on_hand }}</td>
+            <td class="num">{{ row.to_buy }}</td>
+            <td class="num">${{ row.cost|floatformat:0 }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot>
+        <tr>
+          <td>All</td>{% if not hz.current %}<td></td>{% endif %}<td></td>
+          <td class="num">{{ totals.colours }}</td>
+          <td class="num">{{ totals.uncovered }}</td>
+          <td class="num">{{ totals.baths }}</td>
+          <td class="num">{{ totals.skeins }}</td>
+          <td></td>
+          <td class="num">{{ totals.to_buy }}</td>
+          <td class="num">${{ totals.cost|floatformat:0 }}</td>
+        </tr>
+      </tfoot>
+    </table>
+  </form>
+
+  <p class="muted">
+    Yarn only: silk colours were not rung at the till until mid-September 2026, so silk's colour
+    shares are not usable yet. A colour that sold fewer than {{ min_history }} in the season is
+    planned at its tier's average. Stock on a production sheet counts as on its way. Undyed yarn on
+    the shelf is used before any is bought. Each base's own bath size is used.
+  </p>
+  {% endif %}
+{% endblock %}

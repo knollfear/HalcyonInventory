@@ -14,12 +14,8 @@ from .. import production, tiers
 from ..models import FinishedProduct, RawProduct
 from ..sitemap import page_meta
 
-#: **Yarn only, on purpose.** The ladder's numbers — two on display, then
-#: three, two or one bath of five — were worked out from the yarn's season,
-#: and a tier writes par. Offered on a veil it would write a par of 14 off
-#: arithmetic nobody did for silk. When silk wants tiers it wants its own
-#: numbers first.
-TIERED_CATEGORY = "Yarn"
+#: Yarn only — see `tiers.TIERED_CATEGORY` for why.
+TIERED_CATEGORY = tiers.TIERED_CATEGORY
 
 
 def _blanks():

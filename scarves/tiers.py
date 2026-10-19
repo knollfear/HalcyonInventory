@@ -59,6 +59,12 @@ PRIORITY = {
     "": 3,
 }
 
+#: **Yarn only, on purpose.** The ladder's numbers — two on display, then
+#: three, two or one bath — were worked out from the yarn's season, and a
+#: tier writes par. Offered on a veil it would write a par off arithmetic
+#: nobody did for silk. When silk wants tiers it wants its own numbers first.
+TIERED_CATEGORY = "Yarn"
+
 #: The tier page's fourth answer. Stored as par 0, not as a tier value.
 DISCONTINUED = "discontinued"
 
