@@ -521,12 +521,15 @@ answers are the old arithmetic exactly. See *"Par from sales"* in
 `docs/claude/production.md` for why the sold ranking and the flat par
 filter were disagreeing about the best seller.
 
-**Tiers are the answer that stuck for the yarn, and they are a person's.**
-Each yarn colorway is High, Medium or Low, set at `private/tiers/`; a tier
-writes par (two on display plus three, two or one bath), and *By tier* plans
-one bath of every High, every Medium, every Low, then a second High and
-Medium, then a third High, then says **well stocked**. It replaced the hunt
-for a better formula because a backtest found none: every per-colorway
+**Tiers are a proposal on trial for the yarn, not a decision, and they
+are a person's.** The user, 2026-10-19: not committed to it yet, because it
+is guessed from one season of colour data. Don't describe it as settled.
+Each yarn colorway can be High, Medium or Low, set at `private/tiers/`; a
+tier writes par (two on display plus three, two or one bath in the base's
+own bath size), and *By tier* plans one bath of every High, every Medium,
+every Low, then a second High and Medium, then a third High, then says
+**well stocked**. Nothing uses it until tiers are set. It came out of the
+hunt for a better formula because a backtest found none: every per-colorway
 method came out within noise of the others, and a single colorway's
 "enough for 90% of weekends" swung by a whole bath on the same data. Three
 tiers and a bath count is the precision the data has. Every tiered row
