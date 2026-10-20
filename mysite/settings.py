@@ -134,6 +134,8 @@ TEMPLATES = [
                 'django.contrib.messages.context_processors.messages',
                 # The pinned pages in the corner of every internal page.
                 'scarves.nav.context',
+                # Cards struck off a page with its hide button, until morning.
+                'scarves.hiding.context',
             ],
         },
     },

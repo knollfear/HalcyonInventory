@@ -8,7 +8,7 @@ from django.contrib.auth.models import User
 from django.test import TestCase, override_settings
 from django.urls import NoReverseMatch, reverse
 from .. import (
-    closing, colorbands, crew, fancy, nav, photowalk, production, restock,
+    closing, colorbands, crew, fancy, hiding, nav, photowalk, production, restock,
     sales, seasonreport, seasons, sheetscan, skus, slowsellers, timesheets,
     weather,
 )
@@ -1108,15 +1108,17 @@ class ReportsAreTheirOwnCategoryTests(TestCase):
                 )
 
 
-class HideUntilRefreshTests(TestCase):
-    """A card struck off a long list by looking at it, and nothing stored.
+class HideUntilMorningTests(TestCase):
+    """A card struck off a long list by looking at it, until 4 a.m.
 
-    The control is a checkbox and its label — no script, no session, no query
-    parameter. **That a refresh brings everything back is the feature**, not a
-    shortcut: these lists are derived from the shelf on every request, so a
-    hidden row that outlived the page would be a stored decision nobody made,
-    and the first thing it would quietly hide is a colorway that had since gone
-    short.
+    The control is a checkbox and its label; a script remembers the ticks in a
+    cookie scoped to the page, and the page renders them back as `checked`.
+    It used to forget on every reload, which was argued as the design — the
+    list is derived from the shelf on every request — until it turned out the
+    list is worked down across reloads. The deadline is what is left of that
+    argument, and it lives in the browser (local time), so what is pinned here
+    is the server's half: the right cards come back hidden, only on their own
+    page, and nothing in a cookie can break the page.
 
     The rules live in the house style so a page adopting the pattern adds no
     CSS of its own — which is the whole point of it being a pattern.
@@ -1183,3 +1185,61 @@ class HideUntilRefreshTests(TestCase):
         body = self.client.get(reverse("production_needed")).content.decode()
 
         self.assertIn("@media print { .hide-btn { display: none; } }", body)
+
+    def _checked(self, body):
+        return set(re.findall(
+            r'<input type="checkbox" id="hide-([^"]+)"[^>]*\bchecked\b', body))
+
+    def test_a_card_hidden_earlier_comes_back_hidden(self):
+        """Rendered `checked` by the server rather than ticked by the script
+        after load, so a hidden card never flashes up and then vanishes."""
+        second = make_bathable(make_recipe("Sage"), "Sage Wool",
+                               on_hand=0, par=8, bath=4)
+        url = reverse("production_needed")
+        self.client.cookies[hiding.cookie_name(url)] = f"{self.recipe.pk}%20999"
+
+        body = self.client.get(url).content.decode()
+
+        self.assertEqual(self._checked(body), {str(self.recipe.pk)})
+        self.assertIn(f'data-hide-id="{second.recipe.pk}"', body)
+
+    def test_the_query_string_does_not_change_which_cookie(self):
+        """Re-sorting the list is the same list; what was hidden stays hidden."""
+        url = reverse("production_needed")
+        self.client.cookies[hiding.cookie_name(url)] = str(self.recipe.pk)
+
+        body = self.client.get(url + "?sort=sales_par").content.decode()
+
+        self.assertEqual(self._checked(body), {str(self.recipe.pk)})
+
+    def test_another_pages_cookie_hides_nothing_here(self):
+        self.client.cookies[hiding.cookie_name(reverse("index"))] = str(self.recipe.pk)
+
+        body = self.client.get(reverse("production_needed")).content.decode()
+
+        self.assertEqual(self._checked(body), set())
+
+    def test_a_page_below_another_has_its_own_name(self):
+        """The cookie's path is a prefix match, so a page under this one is
+        sent this one's cookie too; the name is what keeps them apart."""
+        self.assertNotEqual(hiding.cookie_name("/scarves/private/a/"),
+                            hiding.cookie_name("/scarves/private/a/b/"))
+
+    def test_junk_in_the_cookie_is_ignored(self):
+        url = reverse("production_needed")
+        self.client.cookies[hiding.cookie_name(url)] = "%E0%A4%A' \"><x"
+
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self._checked(response.content.decode()), set())
+
+    def test_the_page_carries_the_cookie_name_and_the_script(self):
+        """The name comes from the server, so the script writes exactly the
+        cookie `hiding.hidden` reads."""
+        url = reverse("production_needed")
+        body = self.client.get(url).content.decode()
+
+        self.assertIn(f'data-hide-cookie="{hiding.cookie_name(url)}"', body)
+        self.assertIn("show them", body)
+        self.assertIn('autocomplete="off"', body)

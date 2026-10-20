@@ -211,10 +211,10 @@
       {% comment %}
       One card per colorway, and each one can be struck off the page — she
       works down this list planning baths, and a list that only gets longer
-      is one you lose your place in. Nothing brings a row back but a refresh,
-      which is the right bargain here: the list is derived from the shelf on
-      every request, so a hidden row that survived a reload would be a
-      decision nobody made.
+      is one you lose your place in. A hidden row stays hidden through reloads
+      until 4 a.m. (scarves/hiding.py) and no longer: the list is derived
+      from the shelf on every request, so a hide that outlived the evening
+      would be a decision nobody made for tomorrow.
       {% endcomment %}
       <div class="card hideable">
         {% include "scarves/partials/hide_toggle.html" with hide_id=g.recipe_id %}

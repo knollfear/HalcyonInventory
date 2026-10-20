@@ -566,13 +566,30 @@ Every colorway card carries a **hide** button in its corner
 list planning baths, and a list that only ever grows is one you lose your
 place in.
 
-Nothing brings a row back but a refresh, and **that is the design rather than
-a shortcut**. The list is derived from the shelf on every request, so a hidden
-row that outlived the page would be a stored decision nobody made — and the
-first thing it would quietly hide is a colorway that had since gone short.
-It is a checkbox and a label, no script and nothing stored: `:has()` removes
-the card, and an `@supports` guard takes the button away rather than leaving a
-dead one where that selector is not understood.
+**A hidden row lasts until 4 a.m.**, through reloads, in that browser only.
+It used to last until the next refresh, and that was argued as the design:
+the list is derived from the shelf on every request, so a hidden row that
+outlived the page would be a stored decision nobody made, and the first thing
+it would quietly hide is a colorway that had since gone short. What that
+missed is how the list is used — worked down over an evening, with a reload
+every time a bath is recorded or a sheet printed, and every reload put back
+every row already dealt with. So the user (2026-10-19) asked for it to
+persist, and the old worry is answered by the **deadline** rather than by
+forgetting: a hide is about one session, so it runs out overnight and the
+morning starts from the whole list. 4 a.m. rather than midnight so a late
+session isn't cut in half; computed in the browser because it is local time.
+
+The mechanics: the checkbox is still the state, and `:has()` still removes
+the card, so hiding works with no script at all. The script in
+`base_internal.html` writes the ticks to a cookie scoped to the page's own
+path; `scarves/hiding.py` reads it back and the partial renders `checked`, so
+a hidden card arrives hidden instead of flashing up. A write merges with what
+the cookie already held, so a row hidden under one sort survives a hide under
+another. *N hidden until morning · show them* above the first card is the
+way back from a mis-click, now that a refresh no longer is. Per browser and
+not per account on purpose — losing the cookie costs the list coming back,
+which is what a refresh used to cost anyway. An `@supports` guard takes the
+button away rather than leaving a dead one where `:has()` is not understood.
 
 The pattern is deliberately page-agnostic — `hideable` on the block, one
 include inside it — because the next long list will want the same thing and a

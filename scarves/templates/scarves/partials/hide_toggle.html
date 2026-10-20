@@ -1,21 +1,27 @@
 {% comment %}
-**Hide this card until the page is refreshed.** Include it *inside* a block
-carrying the `hideable` class, once, with a `hide_id` unique on the page:
+**Hide this card until morning.** Include it *inside* a block carrying the
+`hideable` class, once, with a `hide_id` unique on the page:
 
     <div class="card hideable">
       {% include "scarves/partials/hide_toggle.html" with hide_id=g.recipe_id %}
       ...
 
-A checkbox and its label, no script and nothing stored. What it buys is a way
-to work down a long list by taking finished rows off it — and the reason
-nothing brings a row back is that nothing should: the list is derived from the
-shelf on every request, so a hidden row that outlived the page would be a
-decision nobody made, quietly hiding a colorway that had since gone short.
+A checkbox and its label. What it buys is a way to work down a long list by
+taking finished rows off it. The script in `base_internal.html` remembers the
+ticks in a cookie for this page that runs out at 4 a.m., and
+`scarves/hiding.py` reads it back so a hidden card arrives already hidden —
+see there for why the deadline is the point. `hide_id` should be a plain
+token (an id); it is what the cookie stores.
+
+`autocomplete="off"` because some browsers restore a checkbox's state on
+reload from their own memory, and that would argue with the cookie.
 
 `hide_label` overrides the word for a page where "hide" reads wrong. The
 rules are in the house style (`base_internal.html`), so a page using this
 adds no CSS of its own.
 {% endcomment %}
-<input type="checkbox" id="hide-{{ hide_id }}" class="hider">
+<input type="checkbox" id="hide-{{ hide_id }}" class="hider" autocomplete="off"
+       data-hide-id="{{ hide_id }}" data-hide-cookie="{{ hide_cookie }}"
+       {% if hide_id|stringformat:"s" in hidden_cards %}checked{% endif %}>
 <label class="hide-btn" for="hide-{{ hide_id }}"
-       title="Hide this until the page is refreshed">{{ hide_label|default:"hide" }}</label>
+       title="Hide this until tomorrow morning">{{ hide_label|default:"hide" }}</label>

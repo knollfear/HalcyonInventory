@@ -646,12 +646,21 @@ rules. Widths are per-page and expected to vary; colours generally aren't.
 
 **Shared behaviour goes in the layer, not in the page that needed it first.**
 `hide_toggle.html` is the worked example: a **hide** button that removes a card
-until the page is refreshed, as a checkbox and a label with no script and
-nothing stored. A page adopts it with `hideable` on the block and one include
-inside — the CSS is in `base_internal.html`, so the second page to want it
-cannot end up with a copy that behaves differently. Nothing brings a hidden
-row back on purpose: these lists are derived on every request, and a hidden row
-that survived a reload would be a stored decision nobody made.
+until 4 a.m., as a checkbox and a label plus a per-page cookie. A page adopts
+it with `hideable` on the block and one include inside — the CSS, the script
+that writes the cookie and the *N hidden · show them* line are all in
+`base_internal.html`, and `scarves/hiding.py` reads the cookie back, so the
+second page to want it cannot end up with a copy that behaves differently.
+
+**It used to forget on every reload, and that was argued as the design** —
+these lists are derived on every request, so a hidden row that survived
+would be a stored decision nobody made. The user, 2026-10-19, reversed it:
+the list is worked down over an evening with reloads in between, and each
+one put back every row already dealt with. What survives of the old argument
+is the **deadline**. A hide is a decision about one session, so it is stored
+per browser (not per account — losing the cookie just brings the list back)
+and runs out overnight; a colorway that goes short after it was hidden is out
+of sight for an evening, never for good. Don't extend it past the morning.
 
 **Partials under `templates/scarves/partials/` extend nothing.** They're htmx
 swap targets and embed payloads, so they carry no shell and inherit styling

@@ -44,16 +44,17 @@ renders bare. BaseTemplateTests guards it.
   .card-link:hover, a.card:hover {
       border-color: var(--accent); box-shadow: 0 2px 10px rgba(21, 88, 160, .12);
   }
-  /* **Hide until refresh**: a card struck off the page by looking at it.
+  /* **Hide until morning**: a card struck off the page by looking at it.
      `partials/hide_toggle.html` is the whole control — put `hideable` on the
      block to remove and include the partial inside it.
 
-     A checkbox and a label, no script: the state is the checkbox's, so the
-     page has nothing to remember and a refresh is the way back. That is the
-     feature rather than a shortcut — the list is rebuilt from the shelf every
-     time it is opened, so a hidden row that survived a reload would be a
-     stored decision nobody made, and the first thing it would hide is a
-     colorway that had since gone short.
+     The state is the checkbox's, so hiding works without the script; the
+     script below only remembers the ticks in a cookie that runs out at
+     4 a.m., and `scarves/hiding.py` renders them back as `checked`. A
+     refresh used to be the way back, and that put back every row already
+     dealt with each time a bath was recorded mid-list. The deadline is what
+     keeps the old worry small: a colorway that went short after it was
+     hidden is out of sight for one evening, not for good.
 
      `:has()` because the label has to sit inside the block it removes, in the
      corner; the `@supports` below takes the button away rather than leaving a
@@ -77,6 +78,14 @@ renders bare. BaseTemplateTests guards it.
   .hider:focus-visible + .hide-btn { outline: 2px solid var(--accent); outline-offset: 2px; }
   @media print { .hide-btn { display: none; } }
   @supports not selector(:has(*)) { .hide-btn { display: none; } }
+  /* The way back from a hide that lasts. Above the first card, where the
+     list starts, and only while something on this page is hidden. */
+  .unhide { font-size: 13px; color: #6b7280; margin: 0 0 10px; }
+  .unhide button {
+      font: inherit; color: var(--accent); background: none; border: 0;
+      padding: 0; cursor: pointer; text-decoration: underline;
+  }
+  @media print { .unhide { display: none; } }
 
   /* A bath already claimed by paper, said under the number it changed.
      Shared because two pages print it — `private/production-needed/` and the
@@ -291,4 +300,86 @@ renders bare. BaseTemplateTests guards it.
       <a class="back" href="{% url 'index' %}">← Site map</a>
     </nav>
   {% endblock %}
+
+  {% comment %}
+  **Hidden cards outlast a reload, until 4 a.m.** — see `scarves/hiding.py`.
+  Here rather than in a page's scripts block because a page that overrides
+  that block without `block.super` would quietly go back to forgetting.
+
+  The cookie is rewritten from what is on the page *merged with* what it
+  already held, so an id that is not on the page right now (a different sort,
+  a colorway that has dropped off the list) keeps its place rather than being
+  forgotten by a hide somewhere else. "Show them" clears the lot.
+
+  The expiry is computed here because it is local time: the next 4 a.m., so
+  an evening's session is never cut at midnight and the morning starts from
+  the whole list.
+  {% endcomment %}
+  <script>
+  (function () {
+    var boxes = [].slice.call(document.querySelectorAll(".hider[data-hide-cookie]"));
+    if (!boxes.length) return;
+    var name = boxes[0].getAttribute("data-hide-cookie");
+
+    function stored() {
+      var hit = document.cookie.split("; ").filter(function (c) {
+        return c.indexOf(name + "=") === 0;
+      })[0];
+      if (!hit) return [];
+      try { return decodeURIComponent(hit.slice(name.length + 1)).split(" ").filter(Boolean); }
+      catch (e) { return []; }
+    }
+
+    function morning() {
+      var d = new Date();
+      if (d.getHours() >= 4) d.setDate(d.getDate() + 1);
+      d.setHours(4, 0, 0, 0);
+      return d;
+    }
+
+    function write(ids) {
+      var tail = "; path=" + location.pathname + "; SameSite=Lax; ";
+      document.cookie = ids.length
+        ? name + "=" + encodeURIComponent(ids.join(" ")) + tail + "expires=" + morning().toUTCString()
+        : name + "=" + tail + "max-age=0";
+    }
+
+    var line = document.createElement("p");
+    line.className = "unhide";
+    var count = document.createElement("span");
+    var show = document.createElement("button");
+    show.type = "button";
+    show.textContent = "show them";
+    line.appendChild(count);
+    line.appendChild(document.createTextNode(" · "));
+    line.appendChild(show);
+    var first = boxes[0].closest(".hideable");
+    if (first) first.parentNode.insertBefore(line, first);
+
+    function refresh() {
+      var n = boxes.filter(function (b) { return b.checked; }).length;
+      count.textContent = n + " hidden until morning";
+      line.hidden = n === 0;
+    }
+
+    boxes.forEach(function (box) {
+      box.addEventListener("change", function () {
+        var here = {};
+        boxes.forEach(function (b) { here[b.getAttribute("data-hide-id")] = b.checked; });
+        var ids = stored().filter(function (id) { return !(id in here); });
+        boxes.forEach(function (b) { if (b.checked) ids.push(b.getAttribute("data-hide-id")); });
+        write(ids);
+        refresh();
+      });
+    });
+
+    show.addEventListener("click", function () {
+      boxes.forEach(function (b) { b.checked = false; });
+      write([]);
+      refresh();
+    });
+
+    refresh();
+  })();
+  </script>
 {% endblock %}
