@@ -61,3 +61,18 @@ def ounces(value):
     this fibre" both come back as — a zero there would read as "no dye".
     """
     return format_ounces(value)
+
+
+@register.filter
+def dollars(value):
+    """Dollars → `$1,234`, or `−$1,234` below zero. Whole dollars.
+
+    `money_cents` is the ledger's unit; this is for figures already in
+    dollars, like the show planner's. The minus goes before the sign, since
+    a show that lost money is the one reading here that must not be missed.
+    """
+    try:
+        whole = round(float(value))
+    except (TypeError, ValueError):
+        return ""
+    return f"−${-whole:,}" if whole < 0 else f"${whole:,}"

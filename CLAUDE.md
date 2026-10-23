@@ -21,6 +21,7 @@ were about to make.
 | `secret/close/`, `closing.py`, kanban tags | `docs/claude/close.md` |
 | top/slow sellers, `private/lines/`, `private/seasons/`, the faire calendar, weather | `docs/claude/reports.md` |
 | `Sale`/`SaleLine`, importing history from Square | `docs/claude/sales-ledger.md` |
+| the show planner, `Show`/`ShowCost`, `shows.py`, `private/shows/` | `docs/claude/shows.md` |
 | `sync_to_square`, variation order, prices, catalogue images | `docs/claude/square.md` |
 | hours, `secret/booth/`, unidentified sales, the handbook, the crew PIN | `docs/claude/crew.md` |
 | barcode labels, `LabelStock`, `LABELLED_LOG_TYPES`, photographing stock | `docs/claude/labels.md` |

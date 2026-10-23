@@ -30,6 +30,8 @@ from .models import (  # RecipeDye is the through model
     ProductionRun,
     RawProduct,
     RawProductCategory,
+    Show,
+    ShowCost,
     Supplier,
     TimeEntry,
     dye_match_key,
@@ -2163,3 +2165,73 @@ class RawProductForm(forms.ModelForm):
             blank, self.cleaned_data.get("colorways") or []
         )
         return blank
+
+
+class _ShowDates(forms.ModelForm):
+    """The dates, and the check the database also makes."""
+
+    def clean(self):
+        cleaned = super().clean()
+        first, last = cleaned.get("first_day"), cleaned.get("last_day")
+        if first and last and last < first:
+            self.add_error("last_day", "The show ends before it starts.")
+        days = cleaned.get("days_open")
+        if first and last and days and days > (last - first).days + 1:
+            self.add_error(
+                "days_open",
+                f"There are only {(last - first).days + 1} days in those dates.",
+            )
+        return cleaned
+
+
+class NewShowForm(_ShowDates):
+    """Just enough to start one. Everything else is on the show's page."""
+
+    class Meta:
+        model = Show
+        fields = ["name", "first_day", "last_day", "days_open"]
+        widgets = {
+            "first_day": forms.DateInput(attrs={"type": "date"}),
+            "last_day": forms.DateInput(attrs={"type": "date"}),
+        }
+
+
+class ShowForm(_ShowDates):
+    """The whole plan for one show."""
+
+    class Meta:
+        model = Show
+        fields = [
+            "name", "location", "decision",
+            "first_day", "last_day", "days_open",
+            "round_trip_miles", "trips",
+            "sales_per_day", "silk_share", "yarn_share",
+            "silk_price", "silk_blank", "silk_dyeing",
+            "yarn_price", "yarn_blank", "yarn_dyeing",
+            "bought_price", "bought_cost",
+            "card_fee_percent", "notes",
+        ]
+        widgets = {
+            "first_day": forms.DateInput(attrs={"type": "date"}),
+            "last_day": forms.DateInput(attrs={"type": "date"}),
+            "notes": forms.Textarea(attrs={"rows": 3}),
+        }
+
+    def clean(self):
+        cleaned = super().clean()
+        silk, yarn = cleaned.get("silk_share"), cleaned.get("yarn_share")
+        if silk is not None and yarn is not None and silk + yarn > 100:
+            self.add_error("yarn_share", "Silk and yarn come to more than 100%.")
+        return cleaned
+
+
+class ShowCostForm(forms.ModelForm):
+    class Meta:
+        model = ShowCost
+        fields = ["label", "per", "amount", "actual"]
+
+
+#: Two empty lines to add to, and a remove box on every line already there.
+ShowCostFormSet = forms.inlineformset_factory(
+    Show, ShowCost, form=ShowCostForm, extra=2, can_delete=True,
+)

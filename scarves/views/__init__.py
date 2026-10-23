@@ -93,6 +93,11 @@ from .nextseason import (  # noqa: F401
     next_season_blank,
     next_season_index,
 )
+from .shows import (  # noqa: F401
+    show_detail,
+    show_pull_sales,
+    shows_index,
+)
 from .tiers import (  # noqa: F401
     tiers_blank,
     tiers_index,

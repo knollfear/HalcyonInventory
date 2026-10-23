@@ -1,0 +1,259 @@
+{% extends "scarves/base_internal.html" %}
+{% load form_extras %}
+{% comment %}
+One show: the reading on top, plan beside actual, and the plan's inputs
+underneath. The reading comes first because it is what the page is for;
+the form is how to disagree with it.
+
+Every per-piece figure is printed where it is used, so the arithmetic can
+be checked on the page. A dyeing rate left empty is said out loud rather
+than priced at zero quietly.
+{% endcomment %}
+
+{% block title %}{{ show.name }} — Shows{% endblock %}
+{% block heading %}{{ show.name }}{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 960px; }
+  table.reading { width: 100%; border-collapse: collapse; }
+  table.reading th, table.reading td { padding: 5px 8px; border-bottom: 1px solid #eef0f3; text-align: left; }
+  table.reading .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; width: 9em; }
+  table.reading .sub td:first-child { padding-left: 24px; color: #4a5361; }
+  table.reading .note { color: var(--muted); font-size: 13px; }
+  table.reading tr.total td { font-weight: 600; border-top: 1px solid #c9d1db; }
+  table.reading tr.bottom td { font-weight: 700; font-size: 17px; border-top: 2px solid #1a3a5c; }
+  table.reading tr.section td { padding-top: 14px; font-weight: 600; color: #1a3a5c; border-bottom: none; }
+  .loss { color: #b42318; }
+  .unset { color: #b54708; }
+  .break-even { margin: 14px 0 0; }
+  .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px 16px; }
+  .fields label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 3px; }
+  .fields input, .fields select, .fields textarea { width: 100%; box-sizing: border-box; }
+  .fields .wide { grid-column: 1 / -1; }
+  .helptext { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  table.pieces { border-collapse: collapse; }
+  table.pieces th, table.pieces td { padding: 4px 8px; text-align: left; }
+  table.pieces input { width: 9em; }
+  table.costs { width: 100%; border-collapse: collapse; }
+  table.costs td, table.costs th { padding: 4px 6px; text-align: left; }
+  table.costs input[type=text], table.costs input[type=number], table.costs select { width: 100%; box-sizing: border-box; }
+  .errorlist { color: #b42318; margin: 4px 0 0; padding: 0; list-style: none; font-size: 13px; }
+  .save { margin: 18px 0; }
+  .pull { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+  .table-wrap { overflow-x: auto; }
+{% endblock %}
+
+{% block content %}
+  <p class="lead">
+    {{ show.first_day|date:"D j M Y" }}{% if show.last_day != show.first_day %} to {{ show.last_day|date:"D j M Y" }}{% endif %},
+    {{ show.days_open }} day{{ show.days_open|pluralize }} open{% if show.location %}, {{ show.location }}{% endif %}.
+    {{ show.get_decision_display }}.
+    <a href="{% url 'shows_index' %}">All shows</a>
+  </p>
+
+  <div class="card">
+    <div class="table-wrap">
+    <table class="reading">
+      <thead>
+        <tr><th></th><th class="num">Planned</th><th class="num">Actual</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Takings <span class="note">before tax</span></td>
+          <td class="num">{{ plan.sales|dollars }}</td>
+          <td class="num">{% if actual %}{{ actual.sales|dollars }}{% else %}—{% endif %}</td>
+        </tr>
+        <tr class="sub">
+          <td>a day open</td>
+          <td class="num">{{ plan.per_day|dollars }}</td>
+          <td class="num">{% if actual %}{{ actual.per_day|dollars }}{% endif %}</td>
+        </tr>
+
+        <tr class="section"><td colspan="3">Replacing what sold</td></tr>
+        <tr>
+          <td>Pieces sold, so pieces to make again</td>
+          <td class="num">{{ plan.whole_pieces|plain }}</td>
+          <td class="num">{% if actual %}{{ actual.whole_pieces|plain }}{% endif %}</td>
+        </tr>
+        {% for group, a in groups %}
+          <tr class="sub">
+            <td>{{ group.label }}</td>
+            <td class="num">{{ group.pieces|plain }}</td>
+            <td class="num">{% if a %}{{ a.pieces|plain }}{% endif %}</td>
+          </tr>
+        {% endfor %}
+        <tr>
+          <td>Blanks and bought-in stock, at replacement cost</td>
+          <td class="num">{{ plan.blanks|dollars }}</td>
+          <td class="num">{% if actual %}{{ actual.blanks|dollars }}{% endif %}</td>
+        </tr>
+        <tr>
+          <td>
+            Dyeing, {{ plan.whole_dyed_pieces|plain }} piece{{ plan.whole_dyed_pieces|pluralize }} planned
+            {% if plan.dyeing_unset %}<span class="unset">— rate not set</span>{% endif %}
+          </td>
+          <td class="num{% if plan.dyeing_unset %} unset{% endif %}">{% if plan.dyeing_unset and not plan.dyeing %}not set{% else %}{{ plan.dyeing|dollars }}{% endif %}</td>
+          <td class="num{% if actual.dyeing_unset %} unset{% endif %}">{% if actual %}{% if actual.dyeing_unset and not actual.dyeing %}not set{% else %}{{ actual.dyeing|dollars }}{% endif %}{% endif %}</td>
+        </tr>
+        <tr>
+          <td>Card fees <span class="note">{{ show.card_fee_percent.normalize }}% of takings</span></td>
+          <td class="num">{{ plan.card|dollars }}</td>
+          <td class="num">{% if actual %}{{ actual.card|dollars }}{% endif %}</td>
+        </tr>
+        <tr class="total">
+          <td>Replacing what sold</td>
+          <td class="num">{{ plan.making|dollars }}</td>
+          <td class="num">{% if actual %}{{ actual.making|dollars }}{% endif %}</td>
+        </tr>
+
+        <tr class="section"><td colspan="3">Being there</td></tr>
+        {% for line, a in cost_rows %}
+          <tr>
+            <td>{{ line.label }} {% if line.note %}<span class="note">{{ line.note }}</span>{% endif %}</td>
+            <td class="num">{{ line.amount|dollars }}</td>
+            <td class="num">{% if a %}{{ a.amount|dollars }}{% if a.as_planned %} <span class="note">as planned</span>{% endif %}{% endif %}</td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="3" class="note">No costs entered.</td></tr>
+        {% endfor %}
+        <tr class="total">
+          <td>Being there</td>
+          <td class="num">{{ plan.being_there|dollars }}</td>
+          <td class="num">{% if actual %}{{ actual.being_there|dollars }}{% endif %}</td>
+        </tr>
+
+        <tr class="bottom">
+          <td>Left over{% if plan.dyeing_unset or actual.dyeing_unset %}, <span class="unset">before dyeing</span>{% endif %}</td>
+          <td class="num{% if plan.left < 0 %} loss{% endif %}">{{ plan.left|dollars }}</td>
+          <td class="num{% if actual and actual.left < 0 %} loss{% endif %}">{% if actual %}{{ actual.left|dollars }}{% endif %}</td>
+        </tr>
+        <tr class="sub">
+          <td>a day open</td>
+          <td class="num">{{ plan.left_per_day|dollars }}</td>
+          <td class="num">{% if actual %}{{ actual.left_per_day|dollars }}{% endif %}</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <p class="break-even">
+      {% if break_even is not None %}
+        At this mix and these prices, {{ keep_cents }}¢ of every dollar
+        taken is left once what sold is replaced{% if plan.dyeing_unset %} — less,
+        once dyeing has a rate{% endif %}. Being there costs {{ plan.being_there|dollars }},
+        so the show has to take <strong>{{ break_even|dollars }} a day</strong> just
+        to break even.
+      {% else %}
+        At this mix and these prices, replacing what sold costs more than it
+        sells for, so no amount of takings covers the cost of being there.
+      {% endif %}
+    </p>
+
+    {% if actual %}
+      {% if actual.as_planned %}
+        <p class="muted">{{ actual.as_planned }} cost{{ actual.as_planned|pluralize }} still at the planned figure —
+          put what {{ actual.as_planned|pluralize:"it,they" }} really came to in the Actual box below.</p>
+      {% endif %}
+      {% for g in actual.groups %}{% if g.estimated %}
+        <p class="muted">{{ g.estimated|plain }} {{ g.label|lower }} piece{{ g.estimated|pluralize }} sold with no blank cost on file,
+          priced at the plan's figure.</p>
+      {% endif %}{% endfor %}
+    {% endif %}
+
+    {% if show.decision == "going" and started %}
+      <div class="pull">
+        <span class="muted">
+          {% if on_file %}{{ on_file|plain }} sale line{{ on_file|pluralize }} on file for these dates.
+          {% else %}No sales on file for these dates yet.{% endif %}
+        </span>
+        <form method="post" action="{% url 'show_pull_sales' show_id=show.pk %}">
+          {% csrf_token %}
+          <button type="submit">Pull sales from Square</button>
+        </form>
+      </div>
+    {% elif show.decision != "going" %}
+      <p class="muted">Actual is read once the show is marked going.</p>
+    {% endif %}
+  </div>
+
+  <form method="post">
+    {% csrf_token %}
+    {{ form.non_field_errors }}
+
+    <h2>The show</h2>
+    <div class="fields">
+        {% for field in fields.0 %}
+          <div>
+            <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+            {{ field }}
+            {% if field.help_text %}<div class="helptext">{{ field.help_text }}</div>{% endif %}
+            {{ field.errors }}
+          </div>
+        {% endfor %}
+    </div>
+
+    <h2>What it might sell</h2>
+    <div class="fields">
+        {% for field in fields.1 %}
+          <div>
+            <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+            {{ field }}
+            {% if field.help_text %}<div class="helptext">{{ field.help_text }}</div>{% endif %}
+            {{ field.errors }}
+          </div>
+        {% endfor %}
+    </div>
+
+    <h2>A piece</h2>
+    <p class="muted">
+      What one sells for on average, and what making another costs. Prices
+      and blanks were copied from the last Labor Day run when this show was
+      made; dyeing starts empty, since no rate is agreed.
+    </p>
+    <div class="table-wrap">
+    <table class="pieces">
+      <thead><tr><th></th><th>Sells for</th><th>Blank or cost</th><th>Dyeing</th></tr></thead>
+      <tbody>
+        {% for label, price, blank, dyeing in pieces %}
+          <tr>
+            <th scope="row">{{ label }}</th>
+            <td>{{ price }}{{ price.errors }}</td>
+            <td>{{ blank }}{{ blank.errors }}</td>
+            <td>{% if dyeing %}{{ dyeing }}{{ dyeing.errors }}{% else %}<span class="muted">sold as it arrives</span>{% endif %}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+
+    <h2>Being there</h2>
+    <p class="muted">
+      Plan each one as a rate; put the real total in Actual afterwards. The
+      crew is one number a day, whoever works it.
+    </p>
+    {{ costs.management_form }}
+    {{ costs.non_form_errors }}
+    <div class="table-wrap">
+    <table class="costs">
+      <thead><tr><th>Cost</th><th>Per</th><th>Planned rate</th><th>Actual total</th><th>Remove</th></tr></thead>
+      <tbody>
+        {% for f in costs %}
+          <tr>
+            <td>{{ f.id }}{{ f.label }}{{ f.label.errors }}</td>
+            <td>{{ f.per }}</td>
+            <td>{{ f.amount }}{{ f.amount.errors }}</td>
+            <td>{{ f.actual }}{{ f.actual.errors }}</td>
+            <td>{% if f.instance.pk %}{{ f.DELETE }}{% endif %}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+
+    <h2>Notes</h2>
+    <div class="fields"><div class="wide">{{ form.notes }}</div></div>
+
+    <div class="save"><button type="submit">Save</button></div>
+  </form>
+{% endblock %}

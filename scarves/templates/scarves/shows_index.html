@@ -1,0 +1,115 @@
+{% extends "scarves/base_internal.html" %}
+{% load form_extras %}
+{% comment %}
+Every show on file, planned beside actual. A show passed on stays in the
+list: what it was expected to make is worth reading the next time it is
+offered. Left over a day is the column to compare across shows, since the
+Labor Day run's nineteen days and a weekend's two share nothing else.
+{% endcomment %}
+
+{% block title %}Shows{% endblock %}
+{% block heading %}Shows{% endblock %}
+
+{% block style %}
+  {{ block.super }}
+  :root { --column: 1040px; }
+  table.shows { width: 100%; border-collapse: collapse; }
+  table.shows th, table.shows td { padding: 6px 8px; border-bottom: 1px solid #e1e5ea; text-align: left; }
+  table.shows .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  table.shows th.group { text-align: center; border-bottom: 2px solid #c9d1db; }
+  table.shows tr.passed td { color: var(--muted); }
+  .loss { color: #b42318; font-weight: 600; }
+  .new-show { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px 16px; align-items: end; }
+  .new-show label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 3px; }
+  .new-show input { width: 100%; box-sizing: border-box; }
+  .errorlist { color: #b42318; margin: 4px 0 0; padding: 0; list-style: none; font-size: 13px; }
+  .table-wrap { overflow-x: auto; }
+{% endblock %}
+
+{% block content %}
+  <p class="lead">
+    Every piece a show sells is a piece to dye again. So a show has two kinds
+    of cost: replacing what it sold, which grows with takings, and being
+    there at all, which doesn't. What's left after both is what the show was
+    worth.
+  </p>
+
+  {% if rows %}
+    <div class="table-wrap">
+    <table class="shows">
+      <thead>
+        <tr>
+          <th rowspan="2">Show</th>
+          <th rowspan="2">Dates</th>
+          <th rowspan="2" class="num">Days</th>
+          <th rowspan="2">Decision</th>
+          <th colspan="2" class="group">Planned</th>
+          <th colspan="2" class="group">Actual</th>
+        </tr>
+        <tr>
+          <th class="num">A day</th>
+          <th class="num">Left over a day</th>
+          <th class="num">A day</th>
+          <th class="num">Left over a day</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+          <tr{% if row.show.decision == "passed" %} class="passed"{% endif %}>
+            <td><a href="{% url 'show_detail' show_id=row.show.pk %}">{{ row.show.name }}</a></td>
+            <td>{{ row.show.first_day|date:"j M" }}{% if row.show.last_day != row.show.first_day %}–{{ row.show.last_day|date:"j M Y" }}{% else %} {{ row.show.first_day|date:"Y" }}{% endif %}</td>
+            <td class="num">{{ row.show.days_open }}</td>
+            <td>{{ row.show.get_decision_display }}</td>
+            <td class="num">{{ row.plan.per_day|dollars }}</td>
+            <td class="num{% if row.plan.left < 0 %} loss{% endif %}">{{ row.plan.left_per_day|dollars }}{% if row.plan.dyeing_unset %}*{% endif %}</td>
+            {% if row.actual %}
+              <td class="num">{{ row.actual.per_day|dollars }}</td>
+              <td class="num{% if row.actual.left < 0 %} loss{% endif %}">{{ row.actual.left_per_day|dollars }}{% if row.actual.dyeing_unset %}*{% endif %}</td>
+            {% else %}
+              <td class="num muted" colspan="2">—</td>
+            {% endif %}
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    <p class="muted">
+      * Before dyeing: no dyeing rate is set on that show yet, so dyeing is
+      counted as nothing and the real figure is lower. Actual is only read for
+      a show marked going, from the sales on file for its dates.
+    </p>
+  {% else %}
+    <p class="muted">No shows yet.</p>
+  {% endif %}
+
+  <h2>Add a show</h2>
+  <div class="card">
+    <form method="post">
+      {% csrf_token %}
+      <div class="new-show">
+        {% for field in form %}
+          <div>
+            <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+            {{ field }}
+            {{ field.errors }}
+          </div>
+        {% endfor %}
+        <div><button type="submit">Start planning</button></div>
+      </div>
+      {{ form.non_field_errors }}
+    </form>
+    <p class="muted">
+      {% if basis.faire %}
+        A new show starts from what {{ basis.faire }} sold: silk
+        {{ basis.shares.silk }}% of takings at {{ basis.price.silk|dollars }} a piece
+        ({{ basis.blank.silk|dollars }} blank), dyed yarn {{ basis.shares.yarn }}% at
+        {{ basis.price.yarn|dollars }} ({{ basis.blank.yarn|dollars }} blank), the
+        rest bought in. Change any of it on the show's page — a fiber festival
+        won't sell much silk.
+      {% else %}
+        No season's sales are on file to start from, so the per-piece figures
+        start empty.
+      {% endif %}
+    </p>
+  </div>
+{% endblock %}

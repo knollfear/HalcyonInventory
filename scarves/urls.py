@@ -59,6 +59,15 @@ urlpatterns = [
         name="tiers_blank",
     ),
 
+    # --- Shows ---
+    path("private/shows/", views.shows_index, name="shows_index"),
+    path("private/shows/<int:show_id>/", views.show_detail, name="show_detail"),
+    path(
+        "private/shows/<int:show_id>/pull-sales/",
+        views.show_pull_sales,
+        name="show_pull_sales",
+    ),
+
     # --- Inventory ---
     path(
         "private/raw-inventory/",

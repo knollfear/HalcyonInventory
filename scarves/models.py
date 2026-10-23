@@ -3943,3 +3943,188 @@ class SupplierInvoiceLine(models.Model):
     def price_moved(self):
         """Whether booking this changed what the blank is believed to cost."""
         return self.previous_price is not None and self.previous_price != self.unit_cost
+
+
+class Show(models.Model):
+    """A show the booth might go to, or went to: the plan, and what came of it.
+
+    **Every piece sold is a piece somebody has to dye again.** That is the
+    whole reason this is more than a takings sheet. A show that sells 2,500
+    pieces has sold 2,500 blanks and 2,500 pieces of dyeing, so what it costs
+    rises with what it sells, and what is left to pay for the stall, the crew
+    and the miles is a share of takings rather than all of it. At the Labor
+    Day run that share is large enough that nobody needs to do the sum. At
+    $1,500 a day the sum is the whole question.
+
+    **Not a `Faire`.** A faire is an event the ledger is organised around and
+    its dates are unique across the app, because the booth cannot be in two
+    places at once. A show is being *weighed*, and two candidates on the same
+    weekend is exactly what weighing looks like, so a show carries its own
+    dates and claims none. Its actual takings are read off the ledger by date
+    — only for a show marked going, so a candidate that lost out never reads
+    the weekend the booth spent somewhere else.
+
+    The per-piece figures are **copied in when the show is made**, from the
+    last season of the Labor Day run, and then belong to the show. They are
+    advice, printed and editable, and a plan made in January still says what
+    it said in January once a new season's prices arrive. The dyeing rates
+    start empty: nothing is agreed, so the box waits for the person who knows.
+    """
+
+    CONSIDERING = "considering"
+    GOING = "going"
+    PASSED = "passed"
+    DECISION_CHOICES = [
+        (CONSIDERING, "Considering"),
+        (GOING, "Going"),
+        (PASSED, "Passed on it"),
+    ]
+
+    name = models.CharField(max_length=150)
+    location = models.CharField(max_length=200, blank=True)
+    first_day = models.DateField()
+    last_day = models.DateField()
+    days_open = models.PositiveSmallIntegerField(
+        validators=[MinValueValidator(1)],
+        help_text=(
+            "Days the stall trades. Not the span of the dates — a show over "
+            "two weekends is four days open across nine — and it is the "
+            "denominator of every per-day figure."
+        ),
+    )
+    decision = models.CharField(
+        max_length=20, choices=DECISION_CHOICES, default=CONSIDERING,
+        help_text=(
+            "Kept for the shows passed on too: what one was expected to make "
+            "is worth reading again the next time it is offered."
+        ),
+    )
+    round_trip_miles = models.PositiveIntegerField(default=0)
+    trips = models.PositiveSmallIntegerField(
+        default=1,
+        help_text="Round trips made — two weekends driven home between is two.",
+    )
+    sales_per_day = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0,
+        validators=[MinValueValidator(0)],
+        help_text="What a day is expected to take, before tax.",
+    )
+    silk_share = models.PositiveSmallIntegerField(
+        default=0, validators=[MaxValueValidator(100)],
+        help_text="Percent of takings that is silk.",
+    )
+    yarn_share = models.PositiveSmallIntegerField(
+        default=0, validators=[MaxValueValidator(100)],
+        help_text="Percent of takings that is dyed yarn. The rest is bought in.",
+    )
+    silk_price = models.DecimalField(
+        max_digits=8, decimal_places=2, default=0, validators=[MinValueValidator(0)],
+        help_text="What a silk piece sells for, on average.",
+    )
+    silk_blank = models.DecimalField(
+        max_digits=8, decimal_places=2, default=0, validators=[MinValueValidator(0)],
+        help_text="What its blank costs to replace.",
+    )
+    yarn_price = models.DecimalField(
+        max_digits=8, decimal_places=2, default=0, validators=[MinValueValidator(0)],
+    )
+    yarn_blank = models.DecimalField(
+        max_digits=8, decimal_places=2, default=0, validators=[MinValueValidator(0)],
+    )
+    bought_price = models.DecimalField(
+        max_digits=8, decimal_places=2, default=0, validators=[MinValueValidator(0)],
+        help_text="Notions and undyed yarn — sold as they arrive, so no dyeing.",
+    )
+    bought_cost = models.DecimalField(
+        max_digits=8, decimal_places=2, default=0, validators=[MinValueValidator(0)],
+    )
+    silk_dyeing = models.DecimalField(
+        max_digits=8, decimal_places=2, null=True, blank=True,
+        validators=[MinValueValidator(0)],
+        help_text=(
+            "What dyeing one silk piece costs. Empty until somebody says — "
+            "nothing is agreed, and the page says so rather than guess."
+        ),
+    )
+    yarn_dyeing = models.DecimalField(
+        max_digits=8, decimal_places=2, null=True, blank=True,
+        validators=[MinValueValidator(0)],
+    )
+    card_fee_percent = models.DecimalField(
+        max_digits=4, decimal_places=2, default=Decimal("2.7"),
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+        help_text=(
+            "Taken off every sale. 2.7% is what the Labor Day run's card "
+            "takings and Square's payouts measured in 2026; cash pays none, "
+            "so on a mostly-cash show it reads a little high."
+        ),
+    )
+    notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-first_day", "name"]
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(last_day__gte=models.F("first_day")),
+                name="show_ends_after_it_starts",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.first_day:%b %Y})"
+
+    @property
+    def miles(self) -> int:
+        return self.round_trip_miles * self.trips
+
+
+class ShowCost(models.Model):
+    """One thing a show costs that does not depend on what it sells.
+
+    A line rather than a column per cost, because the list is different for
+    every show — one charges a booth fee and one a percentage, one is a
+    drive and one is three nights in a motel — and a column nobody fills is
+    how a schema grows dimensions nothing reads.
+
+    **The plan is a rate and the actual is a total.** A plan is reasoned in
+    rates — so much a day for the crew, so much a mile — and a cost that
+    happened arrives as one number off a receipt. A line with no actual
+    carries its plan into the actual column and the page says it did, so a
+    show half-reconciled never reads as a show that cost less.
+
+    **The crew is one number a day**, not people × hours × rate: not
+    everybody is paid the same or works the same hours, and the decomposed
+    version is a fight rather than a figure.
+    """
+
+    PER_SHOW = "show"
+    PER_DAY = "day"
+    PER_MILE = "mile"
+    PER_CHOICES = [
+        (PER_SHOW, "for the show"),
+        (PER_DAY, "a day open"),
+        (PER_MILE, "a mile"),
+    ]
+
+    show = models.ForeignKey(Show, on_delete=models.CASCADE, related_name="costs")
+    label = models.CharField(max_length=100)
+    per = models.CharField(max_length=10, choices=PER_CHOICES, default=PER_SHOW)
+    amount = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0,
+        validators=[MinValueValidator(0)],
+        help_text="The planned rate — per show, per day open, or per mile.",
+    )
+    actual = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True,
+        validators=[MinValueValidator(0)],
+        help_text="What it really came to, in total. Empty means as planned.",
+    )
+    order = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ["order", "pk"]
+
+    def __str__(self):
+        return f"{self.label} ({self.show})"
